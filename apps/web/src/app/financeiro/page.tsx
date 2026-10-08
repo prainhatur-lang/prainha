@@ -5,7 +5,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
-import { and, asc, count, desc, eq, gte, isNotNull, isNull, lte, sql, sum } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte, inArray, isNotNull, isNull, lte, sql, sum } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDate, int } from '@/lib/format';
 import { hojeBr, diasAtrasBr, brDateStart, brDateEnd } from '@/lib/datas';
@@ -45,6 +45,16 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
   const filiais = await filiaisDoUsuario(user.id);
   const filialSelecionada =
     await escolherFilial(filiais, sp.filialId);
+  // "Todas as filiais": só pela URL (?filialId=todas) e só as casas que o
+  // usuário já acessa. Não mexe na filial ativa do menu.
+  const todasFiliais = sp.filialId === 'todas' && filiais.length > 1;
+  const filtroFilial = todasFiliais
+    ? inArray(
+        schema.contaPagar.filialId,
+        filiais.map((f) => f.id),
+      )
+    : eq(schema.contaPagar.filialId, filialSelecionada?.id ?? '');
+  const nomeFilial = new Map(filiais.map((f) => [f.id, f.nome]));
 
   const tipoData: TipoData = (['vencimento', 'pagamento', 'lancamento'] as const).includes(
     sp.tipoData as TipoData,
@@ -85,7 +95,7 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
         )
         .where(
           and(
-            eq(schema.contaPagar.filialId, filialSelecionada.id),
+            filtroFilial,
             isNull(schema.contaPagar.dataDelete),
           ),
         )
@@ -101,19 +111,33 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
         .innerJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.contaPagar.fornecedorId))
         .where(
           and(
-            eq(schema.contaPagar.filialId, filialSelecionada.id),
+            filtroFilial,
             isNull(schema.contaPagar.dataDelete),
           ),
         )
         .orderBy(asc(schema.fornecedor.nome))
     : [];
 
+  // Categoria é cadastrada por casa: em "todas", a mesma descrição aparece uma
+  // vez só no select e o filtro pega a categoria de mesmo nome nas outras casas.
+  const categoriasSelect = todasFiliais
+    ? categoriasDisponiveis.filter(
+        (c, i, arr) =>
+          c.id === categoriaId ||
+          (arr.findIndex((o) => o.descricao === c.descricao) === i &&
+            c.descricao !== categoriasDisponiveis.find((o) => o.id === categoriaId)?.descricao),
+      )
+    : categoriasDisponiveis;
+  const categoriaDescricaoFiltro = categoriaId
+    ? (categoriasDisponiveis.find((c) => c.id === categoriaId)?.descricao ?? null)
+    : null;
+
   // KPIs ficam fixos (independem do filtro principal — sao informativos
   // sobre o estado total da filial).
   const kpis = filialSelecionada
     ? await (async () => {
         const baseWhere = and(
-          eq(schema.contaPagar.filialId, filialSelecionada.id),
+          filtroFilial,
           isNull(schema.contaPagar.dataDelete),
         );
         const [emAberto] = await db
@@ -175,6 +199,7 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
     ? await db
         .select({
           id: schema.contaPagar.id,
+          filialId: schema.contaPagar.filialId,
           codigoExterno: schema.contaPagar.codigoExterno,
           parcela: schema.contaPagar.parcela,
           totalParcelas: schema.contaPagar.totalParcelas,
@@ -200,7 +225,7 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
         .where(
           (() => {
             const base = and(
-              eq(schema.contaPagar.filialId, filialSelecionada.id),
+              filtroFilial,
               isNull(schema.contaPagar.dataDelete),
             );
 
@@ -241,7 +266,9 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
 
             // Filtros adicionais
             const categoriaFilter = categoriaId
-              ? eq(schema.contaPagar.categoriaId, categoriaId)
+              ? todasFiliais && categoriaDescricaoFiltro
+                ? eq(schema.categoriaConta.descricao, categoriaDescricaoFiltro)
+                : eq(schema.contaPagar.categoriaId, categoriaId)
               : undefined;
             const origemFilter =
               origemFiltro !== 'todas'
@@ -300,7 +327,8 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
 
   function href(next: Partial<SP>): string {
     const qs = new URLSearchParams();
-    if (filialSelecionada) qs.set('filialId', filialSelecionada.id);
+    if (todasFiliais) qs.set('filialId', 'todas');
+    else if (filialSelecionada) qs.set('filialId', filialSelecionada.id);
     const t = next.tipoData ?? tipoData;
     if (t !== 'vencimento') qs.set('tipoData', t);
     qs.set('dataIni', next.dataIni ?? dataIni);
@@ -346,7 +374,7 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                 key={f.id}
                 href={`/financeiro?filialId=${f.id}`}
                 className={`rounded-md border px-3 py-1 text-xs ${
-                  f.id === filialSelecionada?.id
+                  !todasFiliais && f.id === filialSelecionada?.id
                     ? 'border-slate-900 bg-slate-900 text-white'
                     : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
                 }`}
@@ -354,6 +382,16 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                 {f.nome}
               </Link>
             ))}
+            <Link
+              href="/financeiro?filialId=todas"
+              className={`rounded-md border px-3 py-1 text-xs ${
+                todasFiliais
+                  ? 'border-slate-900 bg-slate-900 text-white'
+                  : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              Todas as filiais
+            </Link>
           </div>
         )}
 
@@ -426,7 +464,11 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
 
                 <form action="/financeiro" method="GET" className="flex flex-wrap items-end gap-2">
                   {filialSelecionada && (
-                    <input type="hidden" name="filialId" value={filialSelecionada.id} />
+                    <input
+                      type="hidden"
+                      name="filialId"
+                      value={todasFiliais ? 'todas' : filialSelecionada.id}
+                    />
                   )}
                   <input type="hidden" name="tipoData" value={tipoData} />
                   {status !== 'todas' && (
@@ -486,7 +528,7 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                       className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
                     >
                       <option value="">todas</option>
-                      {categoriasDisponiveis.map((c) => (
+                      {categoriasSelect.map((c) => (
                         <option key={c.id} value={c.id}>
                           {c.descricao ?? '(sem descrição)'}
                         </option>
@@ -626,6 +668,7 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                 <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
                   <tr>
                     <th className="px-4 py-2 w-2"></th>
+                    {todasFiliais && <th className="px-4 py-2">Filial</th>}
                     <th className="px-4 py-2">Vencimento</th>
                     <th className="px-4 py-2">Lançado em</th>
                     <th className="px-4 py-2">Fornecedor</th>
@@ -639,7 +682,7 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                 <tbody>
                   {contas.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="px-4 py-6 text-center text-xs text-slate-500">
+                      <td colSpan={todasFiliais ? 10 : 9} className="px-4 py-6 text-center text-xs text-slate-500">
                         Nenhuma conta nesse filtro.
                       </td>
                     </tr>
@@ -672,6 +715,11 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                           <td className="px-0 py-2">
                             <div className={`h-full w-1 ${stripe}`} style={{ minHeight: '2.25rem' }} />
                           </td>
+                          {todasFiliais && (
+                            <td className="px-4 py-2 text-xs text-slate-700">
+                              {nomeFilial.get(c.filialId) ?? '—'}
+                            </td>
+                          )}
                           <td
                             className={`px-4 py-2 font-mono text-xs ${
                               atrasado ? 'text-rose-700 font-medium' : 'text-slate-700'
@@ -789,7 +837,7 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                 {contas.length > 0 && (
                   <tfoot className="border-t-2 border-slate-300 bg-slate-50 text-xs">
                     <tr>
-                      <td colSpan={7} className="px-4 py-2 text-right text-slate-600">
+                      <td colSpan={todasFiliais ? 8 : 7} className="px-4 py-2 text-right text-slate-600">
                         Pagas · <b className="text-slate-900">{int(resumo.pagas)}</b>{' '}
                         {resumo.pagas === 1 ? 'pagamento' : 'pagamentos'}
                       </td>
@@ -799,7 +847,7 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                       <td />
                     </tr>
                     <tr>
-                      <td colSpan={7} className="px-4 py-2 text-right text-slate-600">
+                      <td colSpan={todasFiliais ? 8 : 7} className="px-4 py-2 text-right text-slate-600">
                         Em aberto · <b className="text-slate-900">{int(resumo.abertas)}</b>{' '}
                         {resumo.abertas === 1 ? 'conta' : 'contas'}
                       </td>
@@ -809,7 +857,7 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                       <td />
                     </tr>
                     <tr className="border-t border-slate-200">
-                      <td colSpan={7} className="px-4 py-2 text-right font-medium text-slate-700">
+                      <td colSpan={todasFiliais ? 8 : 7} className="px-4 py-2 text-right font-medium text-slate-700">
                         Total · <b className="text-slate-900">{int(contas.length)}</b>{' '}
                         {contas.length === 1 ? 'conta' : 'contas'}
                       </td>
