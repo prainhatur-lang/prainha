@@ -12,7 +12,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
-import { and, eq, gte, isNull, lte } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull, lte } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDate, int } from '@/lib/format';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
@@ -88,6 +88,7 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
       ? await db
           .select({
             id: schema.contaPagar.id,
+            filialId: schema.contaPagar.filialId,
             valor: schema.contaPagar.valor,
             dataVencimento: schema.contaPagar.dataVencimento,
             dataPagamento: schema.contaPagar.dataPagamento,
@@ -102,7 +103,12 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
           .leftJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.contaPagar.fornecedorId))
           .where(
             and(
-              eq(schema.contaPagar.filialId, escolhida.id),
+              // todas as casas que o usuário acessa: o boleto de uma casa pode ter
+              // sido pago pela conta do Inter da outra
+              inArray(
+                schema.contaPagar.filialId,
+                filiais.map((f) => f.id),
+              ),
               isNull(schema.contaPagar.dataDelete),
               gte(schema.contaPagar.dataVencimento, somaDias(dataIni, -60)),
               lte(schema.contaPagar.dataVencimento, somaDias(dataFim, 60)),
@@ -112,20 +118,34 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
 
   // Casa cada boleto com UMA conta: mesmo valor (o do título ou o pago, com
   // juros) e mesmo CNPJ do fornecedor; sem CNPJ batendo, mesmo valor e mesmo
-  // vencimento. Conta já usada não casa de novo.
+  // vencimento. Conta já usada não casa de novo. Procura primeiro na casa dona
+  // da conta do Inter; a conta de OUTRA casa só ganha quando bate valor + CNPJ +
+  // vencimento, ou quando a casa não tem nenhuma candidata.
+  const nomeFilial = new Map(filiais.map((f) => [f.id, f.nome]));
   const usadas = new Set<string>();
   const linhas = validos.map((p) => {
     const valores = new Set([centavos(p.valorNominal), centavos(p.valorPago)]);
     const cnpj = soDigitos(p.cpfCnpjBeneficiario);
     const candidatas = contas.filter((c) => !usadas.has(c.id) && valores.has(centavos(c.valor)));
+    const daCasa = candidatas.filter((c) => c.filialId === escolhida?.id);
+    const deFora = candidatas.filter((c) => c.filialId !== escolhida?.id);
+    const mesmoCnpj = (c: (typeof contas)[number]) =>
+      !!cnpj && soDigitos(c.fornecedorCnpj) === cnpj;
+    const mesmoVenc = (c: (typeof contas)[number]) =>
+      c.dataVencimento === p.dataVencimentoTitulo ||
+      c.dataVencimento === p.dataVencimentoDigitada;
     const conta =
-      candidatas.find((c) => cnpj && soDigitos(c.fornecedorCnpj) === cnpj) ??
-      candidatas.find(
-        (c) =>
-          c.dataVencimento === p.dataVencimentoTitulo ||
-          c.dataVencimento === p.dataVencimentoDigitada,
-      ) ??
+      daCasa.find((c) => mesmoCnpj(c) && mesmoVenc(c)) ??
+      deFora.find((c) => mesmoCnpj(c) && mesmoVenc(c)) ??
+      daCasa.find(mesmoCnpj) ??
+      daCasa.find(mesmoVenc) ??
+      deFora.find(mesmoCnpj) ??
+      deFora.find(mesmoVenc) ??
       null;
+    const outraCasa =
+      conta && conta.filialId !== escolhida?.id
+        ? (nomeFilial.get(conta.filialId) ?? 'outra casa')
+        : null;
     if (conta) usadas.add(conta.id);
     const situacao: Situacao = !conta ? 'sem' : conta.dataPagamento ? 'paga' : 'aberta';
     // Baixa pronta pra conta em aberto: quita o saldo na data em que o banco
@@ -155,11 +175,11 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
     }
     // juros/multa: o que o banco pagou acima do valor do título
     const jurosBanco = Math.max(0, centavos(p.valorPago) - centavos(p.valorNominal)) / 100;
-    return { p, conta, situacao, baixa, conferir, jurosBanco };
+    return { p, conta, situacao, baixa, conferir, jurosBanco, outraCasa };
   });
   const podeBaixar = await podeUsuario(user.id, 'conta_pagar.marcar_pago');
   const lote = podeBaixar
-    ? linhas.filter((l) => l.baixa && !l.conferir).map((l) => l.baixa!)
+    ? linhas.filter((l) => l.baixa && !l.conferir && !l.outraCasa).map((l) => l.baixa!)
     : [];
 
   const resumo = { paga: { q: 0, v: 0 }, aberta: { q: 0, v: 0 }, sem: { q: 0, v: 0 } };
@@ -172,6 +192,11 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
   }
   const comJuros = linhas.filter((l) => l.jurosBanco > 0);
   const totalJuros = comJuros.reduce((s, l) => s + l.jurosBanco, 0);
+  const deOutraCasa = linhas.filter((l) => l.outraCasa);
+  const totalOutraCasa = deOutraCasa.reduce(
+    (s, l) => s + Number(l.p.valorPago ?? l.p.valorNominal ?? 0),
+    0,
+  );
   const visiveis = ver === 'todos' ? linhas : linhas.filter((l) => l.situacao === ver);
 
   function href(next: Partial<SP>): string {
@@ -339,6 +364,18 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                   </p>
                 )}
 
+                {deOutraCasa.length > 0 && (
+                  <p className="mt-3 rounded-xl border border-violet-200 bg-violet-50 p-3 text-xs text-violet-900">
+                    <span className="font-semibold">
+                      {int(deOutraCasa.length)}{' '}
+                      {deOutraCasa.length === 1 ? 'boleto' : 'boletos'} ({brl(totalOutraCasa)})
+                    </span>{' '}
+                    {deOutraCasa.length === 1 ? 'foi pago' : 'foram pagos'} por esta conta do Inter,
+                    mas a conta está lançada em outra casa. Estão marcados na lista e ficam fora do
+                    botão de baixar todos.
+                  </p>
+                )}
+
                 <BaixarBoletosLote boletos={lote} />
 
                 <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -362,7 +399,7 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                           </td>
                         </tr>
                       ) : (
-                        visiveis.map(({ p, conta, situacao, baixa, conferir, jurosBanco }) => (
+                        visiveis.map(({ p, conta, situacao, baixa, conferir, jurosBanco, outraCasa }) => (
                           <tr key={p.codigoTransacao} className="border-t border-slate-100">
                             <td className="px-4 py-2 font-mono text-xs text-slate-700">
                               {p.dataPagamento ? formatDate(p.dataPagamento) : '—'}
@@ -385,7 +422,7 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                               {brl(p.valorPago)}
                               {jurosBanco > 0 && (
                                 <span className="mt-0.5 block">
-                                  <span className="rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800">
+                                  <span className="whitespace-nowrap rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800">
                                     + {brl(jurosBanco)} juros
                                   </span>
                                 </span>
@@ -413,6 +450,11 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                               ) : (
                                 <span className="inline-flex rounded-md bg-rose-100 px-2 py-0.5 text-rose-800">
                                   sem conta lançada
+                                </span>
+                              )}
+                              {outraCasa && (
+                                <span className="ml-1.5 rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-800">
+                                  conta da {outraCasa}
                                 </span>
                               )}
                               {podeBaixar && baixa && <BaixarBoleto boleto={baixa} />}
