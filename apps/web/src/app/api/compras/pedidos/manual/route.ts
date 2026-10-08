@@ -10,6 +10,7 @@ import { negarSemPerm } from '@/lib/exigir-perm';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq, inArray, max } from 'drizzle-orm';
+import { garantirFornecedorNaFilial } from '@/lib/fornecedor-unico';
 
 interface ItemIn {
   produtoId: string;
@@ -44,11 +45,20 @@ export async function POST(req: Request) {
   }
 
   const [forn] = await db
-    .select({ id: schema.fornecedor.id })
+    .select({ id: schema.fornecedor.id, filialId: schema.fornecedor.filialId })
     .from(schema.fornecedor)
     .where(eq(schema.fornecedor.id, body.fornecedorId))
     .limit(1);
   if (!forn) return NextResponse.json({ error: 'fornecedor nao encontrado' }, { status: 404 });
+  // Cadastro único: fornecedor convocado de outra casa — o pedido fica na linha
+  // DESTA casa (criada/reativada agora), como a cotação já faz.
+  if (forn.filialId !== body.filialId) {
+    try {
+      body.fornecedorId = await garantirFornecedorNaFilial(body.fornecedorId, body.filialId);
+    } catch {
+      /* não deu pra criar a linha: segue com a de origem, como era */
+    }
+  }
 
   const produtoIds = body.itens.map((i) => i.produtoId);
   const produtos = await db

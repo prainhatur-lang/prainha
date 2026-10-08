@@ -11,6 +11,7 @@ import { BotoesCabecalho } from './botoes-cabecalho';
 import { VincularFornecedorBtn } from './vincular-fornecedor';
 import { ConferirNota } from './conferir-nota';
 import { lerConferenciaNota } from '@/lib/nota-conferencia';
+import { fornecedoresParaLancar } from '@/lib/fornecedor-unico';
 
 export const dynamic = 'force-dynamic';
 
@@ -165,6 +166,13 @@ export default async function NotaDetalhePage(props: {
         .where(eq(schema.fornecedor.filialId, nota.filialId))
         .orderBy(asc(schema.fornecedor.nome))
         .limit(2000);
+  // Cadastro único: empresas que só existem nas outras casas também aparecem;
+  // vincular uma delas cria a linha desta casa na hora (rota /fornecedor).
+  if (!nota.fornecedorId) {
+    for (const f of await fornecedoresParaLancar(nota.filialId)) {
+      if (f.casa) fornecedoresDaFilial.push({ id: f.id, nome: `${f.nome ?? '(sem nome)'} · ${f.casa}`, cnpjOuCpf: f.cnpjOuCpf });
+    }
+  }
 
   // Pedido de compra vinculado a esta NF (auto-match no recebimento ou manual)
   const pedidoVinculado = await db

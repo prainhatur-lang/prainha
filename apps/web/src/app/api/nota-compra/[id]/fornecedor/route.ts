@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
+import { garantirFornecedorNaFilial } from '@/lib/fornecedor-unico';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -65,13 +66,20 @@ export async function PATCH(
     .where(eq(schema.fornecedor.id, parsed.data.fornecedorId))
     .limit(1);
   if (!forn) return NextResponse.json({ error: 'fornecedor nao encontrado' }, { status: 404 });
+  // Cadastro único: fornecedor de outra casa ganha a linha desta casa na hora
+  // (sem entrar na lista de compras); se não der, segue a recusa de sempre.
+  let fornecedorId = parsed.data.fornecedorId;
   if (forn.filialId !== nota.filialId) {
-    return NextResponse.json({ error: 'fornecedor de filial diferente' }, { status: 400 });
+    try {
+      fornecedorId = await garantirFornecedorNaFilial(parsed.data.fornecedorId, nota.filialId, db, { ativarCompras: false });
+    } catch {
+      return NextResponse.json({ error: 'fornecedor de filial diferente' }, { status: 400 });
+    }
   }
 
   await db
     .update(schema.notaCompra)
-    .set({ fornecedorId: parsed.data.fornecedorId })
+    .set({ fornecedorId })
     .where(eq(schema.notaCompra.id, id));
 
   return NextResponse.json({ ok: true });

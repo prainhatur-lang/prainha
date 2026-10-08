@@ -329,11 +329,11 @@ export async function outrasCasasDe(ids: string[]): Promise<Map<string, string[]
  *  outra casa cria a linha desta na hora (garantirFornecedorNaFilial na rota). */
 export async function fornecedoresParaLancar(
   filialId: string,
-): Promise<Array<{ id: string; nome: string | null; casa: string | null }>> {
+): Promise<Array<{ id: string; nome: string | null; casa: string | null; cnpjOuCpf: string | null }>> {
   const rows = await db.execute(sql`
     WITH org AS (SELECT organizacao_id FROM filial WHERE id = ${filialId}),
     f AS (
-      SELECT fo.id, fo.nome, fo.filial_id, fo.sincronizado_em, fi.nome AS casa,
+      SELECT fo.id, fo.nome, fo.filial_id, fo.sincronizado_em, fi.nome AS casa, fo.cnpj_ou_cpf AS doc,
         fo.grupo_economico_id::text AS g,
         ${chaveDocSql(sql`fo.cnpj_ou_cpf`)} AS c,
         upper(trim(coalesce(fo.nome, ''))) AS n
@@ -345,7 +345,7 @@ export async function fornecedoresParaLancar(
     ),
     aqui AS (SELECT g, c, n FROM f WHERE filial_id = ${filialId}),
     fora AS (
-      SELECT DISTINCT ON (coalesce(g, c, 'n' || n)) id, nome, casa
+      SELECT DISTINCT ON (coalesce(g, c, 'n' || n)) id, nome, casa, doc
       FROM f
       WHERE filial_id <> ${filialId} AND n <> ''
         AND (g IS NULL OR g NOT IN (SELECT g FROM aqui WHERE g IS NOT NULL))
@@ -353,11 +353,11 @@ export async function fornecedoresParaLancar(
         AND n NOT IN (SELECT n FROM aqui)
       ORDER BY coalesce(g, c, 'n' || n), sincronizado_em DESC
     )
-    SELECT id::text, nome, NULL::text AS casa FROM f WHERE filial_id = ${filialId}
+    SELECT id::text, nome, NULL::text AS casa, doc FROM f WHERE filial_id = ${filialId}
     UNION ALL
-    SELECT id::text, nome, casa FROM fora
+    SELECT id::text, nome, casa, doc FROM fora
   `);
-  return (rows as unknown as Array<{ id: string; nome: string | null; casa: string | null }>)
-    .map((r) => ({ id: String(r.id), nome: r.nome ?? null, casa: r.casa ?? null }))
+  return (rows as unknown as Array<{ id: string; nome: string | null; casa: string | null; doc: string | null }>)
+    .map((r) => ({ id: String(r.id), nome: r.nome ?? null, casa: r.casa ?? null, cnpjOuCpf: r.doc ?? null }))
     .sort((a, b) => (a.nome ?? '').localeCompare(b.nome ?? '', 'pt-BR'));
 }
