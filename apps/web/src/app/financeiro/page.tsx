@@ -92,6 +92,22 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
         .orderBy(asc(schema.categoriaConta.descricao))
     : [];
 
+  // Nomes de fornecedor que já têm conta nessa filial — sugestões do campo
+  // de busca enquanto digita (datalist nativo, sem JS).
+  const fornecedoresSugestao = filialSelecionada
+    ? await db
+        .selectDistinct({ nome: schema.fornecedor.nome })
+        .from(schema.contaPagar)
+        .innerJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.contaPagar.fornecedorId))
+        .where(
+          and(
+            eq(schema.contaPagar.filialId, filialSelecionada.id),
+            isNull(schema.contaPagar.dataDelete),
+          ),
+        )
+        .orderBy(asc(schema.fornecedor.nome))
+    : [];
+
   // KPIs ficam fixos (independem do filtro principal — sao informativos
   // sobre o estado total da filial).
   const kpis = filialSelecionada
@@ -450,8 +466,15 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                       name="nome"
                       defaultValue={nomeBusca}
                       placeholder="busca por nome ou texto da descrição"
+                      list="fornecedores-sugestao"
+                      autoComplete="off"
                       className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
                     />
+                    <datalist id="fornecedores-sugestao">
+                      {fornecedoresSugestao.map((f) =>
+                        f.nome ? <option key={f.nome} value={f.nome} /> : null,
+                      )}
+                    </datalist>
                   </div>
                   <div className="min-w-[200px]">
                     <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
@@ -763,6 +786,40 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                     })
                   )}
                 </tbody>
+                {contas.length > 0 && (
+                  <tfoot className="border-t-2 border-slate-300 bg-slate-50 text-xs">
+                    <tr>
+                      <td colSpan={7} className="px-4 py-2 text-right text-slate-600">
+                        Pagas · <b className="text-slate-900">{int(resumo.pagas)}</b>{' '}
+                        {resumo.pagas === 1 ? 'pagamento' : 'pagamentos'}
+                      </td>
+                      <td className="px-4 py-2 text-right font-mono text-sm font-medium text-emerald-700">
+                        {brl(resumo.pago)}
+                      </td>
+                      <td />
+                    </tr>
+                    <tr>
+                      <td colSpan={7} className="px-4 py-2 text-right text-slate-600">
+                        Em aberto · <b className="text-slate-900">{int(resumo.abertas)}</b>{' '}
+                        {resumo.abertas === 1 ? 'conta' : 'contas'}
+                      </td>
+                      <td className="px-4 py-2 text-right font-mono text-sm font-medium text-slate-900">
+                        {brl(resumo.aberto)}
+                      </td>
+                      <td />
+                    </tr>
+                    <tr className="border-t border-slate-200">
+                      <td colSpan={7} className="px-4 py-2 text-right font-medium text-slate-700">
+                        Total · <b className="text-slate-900">{int(contas.length)}</b>{' '}
+                        {contas.length === 1 ? 'conta' : 'contas'}
+                      </td>
+                      <td className="px-4 py-2 text-right font-mono text-sm font-bold text-slate-900">
+                        {brl(resumo.total)}
+                      </td>
+                      <td />
+                    </tr>
+                  </tfoot>
+                )}
               </table>
               {contas.length >= 500 && (
                 <p className="border-t border-slate-200 bg-slate-50 px-4 py-2 text-center text-xs text-slate-500">
