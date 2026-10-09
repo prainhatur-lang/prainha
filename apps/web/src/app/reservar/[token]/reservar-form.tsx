@@ -749,6 +749,13 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
             pessoas={pessoas}
             selecionada={mesaEscolhida}
             onSelecionar={setMesaEscolhida}
+            onTrocarEspaco={
+              // só oferece o atalho se o outro espaço existe e não está lotado
+              // (mesma regra da opção desabilitada no seletor de Espaço)
+              areaVizinha && areas.some((a) => a.nome === areaVizinha) && dispon[areaVizinha]?.livres !== 0
+                ? () => setEspaco(areaVizinha)
+                : undefined
+            }
           />
         ) : espaco === 'Deck Superior' || espaco === 'Lounges' ? (
           <MapaDeckLoungesPublico

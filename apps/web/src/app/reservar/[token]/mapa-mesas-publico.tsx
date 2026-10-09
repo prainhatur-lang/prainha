@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { PLANTA_MAR, PLANTA_MAR_MESAS, PLANTA_MAR_REDONDAS } from '@/lib/planta-mar';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { PLANTA_MAR, PLANTA_MAR_DESENHO, PLANTA_MAR_MESAS, PLANTA_MAR_REDONDAS } from '@/lib/planta-mar';
 
 export interface MesaPublica {
   numero: string;
@@ -403,12 +403,111 @@ const MAR_VARANDA = [
   ['50', '51', '52', '53'],
 ];
 
-/** Largura em px da planta na tela — fixa, pra mesa ter tamanho de dedo no
- *  celular; a janela rola (arrasta) e já abre no espaço escolhido. */
-const MAR_PLANTA_PX = 1280;
-/** Pra onde a janela rola ao abrir cada espaço: [x%, y%] da planta. */
-const MAR_FOCO: Record<string, [number, number]> = { 'Salão': [27, 82], Varanda: [86, 18] };
+type ZonaMarId = 'entrada' | 'bar' | 'corredor' | 'varanda';
+/**
+ * Partes da casa que a planta amplia, da entrada pro fundo. `quadro` =
+ * [x, y, lado] em px da planta (2400×1256): um quadrado que pega as mesas da
+ * parte inteiras e não corta a mesa vizinha pela metade.
+ */
+const MAR_ZONAS: {
+  id: ZonaMarId;
+  nome: string;
+  espaco: 'Salão' | 'Varanda';
+  mesas: string[];
+  quadro: [number, number, number];
+}[] = [
+  { id: 'entrada', nome: 'Entrada', espaco: 'Salão', mesas: MAR_ENTRADA.flat(), quadro: [226, 742, 522] },
+  { id: 'bar', nome: 'Bar', espaco: 'Salão', mesas: MAR_MEIO.flat(), quadro: [740, 645, 530] },
+  { id: 'corredor', nome: 'Corredor', espaco: 'Salão', mesas: MAR_CORREDOR, quadro: [1408, 367, 470] },
+  { id: 'varanda', nome: 'Varanda', espaco: 'Varanda', mesas: MAR_VARANDA.flat(), quadro: [1883, -16, 470] },
+];
+/** Inclinação do corredor e da varanda na planta — os nomes acompanham a parede. */
+const MAR_GIRO = -32.25;
 
+type EstadoMesaMar = 'sel' | 'contexto' | 'ocupada' | 'naoCabe' | 'livre';
+
+/**
+ * A casa desenhada (piso, paredes, bancos, bar, cozinha, Espaço Kids) em
+ * coordenadas da planta. `detalhe` = vista ampliada (traço e letra menores,
+ * porque a ampliação já aumenta tudo).
+ */
+function DesenhoMar({ detalhe = false }: { detalhe?: boolean }) {
+  const d = PLANTA_MAR_DESENHO;
+  const nome = (t: string, x: number, y: number, giro = 0, ancora: 'middle' | 'start' = 'middle') => (
+    <text
+      key={t}
+      x={x}
+      y={y}
+      textAnchor={ancora}
+      transform={giro ? `rotate(${giro} ${x} ${y})` : undefined}
+      fontSize={detalhe ? 19 : 70}
+      fontWeight={600}
+      letterSpacing={detalhe ? 1.5 : 4}
+      fill="var(--rsv-muted)"
+    >
+      {t}
+    </text>
+  );
+  return (
+    <>
+      <polygon points={d.piso} fill="var(--rsv-mesa-panel)" />
+      {[d.fechado, d.bar, d.servico, d.kids, d.escada].map((p) => (
+        <polygon key={p} points={p} fill="var(--rsv-mesa-line)" opacity={0.6} />
+      ))}
+      {[d.bancoFundo, d.bancoJanela, d.bancoCorredor].map((p) => (
+        <polygon key={p} points={p} fill="var(--rsv-mesa-line)" />
+      ))}
+      <path d={d.vidro} fill="none" stroke="var(--rsv-text)" strokeWidth={detalhe ? 3 : 5} opacity={0.4} />
+      <path
+        d={d.mureta}
+        fill="none"
+        stroke="var(--rsv-text)"
+        strokeWidth={detalhe ? 4 : 7}
+        strokeDasharray={detalhe ? '16 12' : '26 20'}
+        opacity={0.5}
+      />
+      <path
+        d={d.paredes}
+        fill="none"
+        stroke="var(--rsv-text)"
+        strokeWidth={detalhe ? 7 : 11}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      {/* porta: seta entrando pela parede da esquerda */}
+      <path
+        d={detalhe ? 'M236 1100h46m-16 -13l17 13l-17 13' : 'M64 1022h124m-44 -36l46 36l-46 36'}
+        fill="none"
+        stroke="var(--rsv-gold)"
+        strokeWidth={detalhe ? 5 : 15}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      {detalhe
+        ? [
+            nome('ENTRADA', 236, 1082, 0, 'start'),
+            nome('BAR', 900, 723),
+            nome('COZINHA', 1195, 716, MAR_GIRO),
+            nome('BANHEIROS', 1474, 508, MAR_GIRO),
+            nome('ESPAÇO KIDS', 1716, 430, MAR_GIRO),
+            nome('CALÇADA', 2290, 345, -33.2),
+          ]
+        : [
+            nome('BAR', 900, 740),
+            nome('COZINHA', 1291, 641, MAR_GIRO),
+            nome('WC', 1541, 481, MAR_GIRO),
+            nome('KIDS', 1752, 348, MAR_GIRO),
+          ]}
+    </>
+  );
+}
+
+/**
+ * Planta da Prainha Mar na reserva pública. Em cima, a casa inteira (pra se
+ * situar: onde é a entrada, o bar, o Kids); embaixo, a parte escolhida
+ * ampliada, com as mesas no tamanho do dedo. Troca de parte tocando na casa,
+ * no nome ou deslizando a ampliação pro lado.
+ */
 function PlantaMarPublica({
   areaAtual,
   salao,
@@ -416,6 +515,7 @@ function PlantaMarPublica({
   pessoas,
   selecionada,
   onSelecionar,
+  onTrocarEspaco,
 }: {
   areaAtual: string;
   salao: MesaPublica[];
@@ -423,34 +523,94 @@ function PlantaMarPublica({
   pessoas: number;
   selecionada: string;
   onSelecionar: (numero: string) => void;
+  onTrocarEspaco?: () => void;
 }) {
+  // Parte que o cliente abriu na mão — vale enquanto o Espaço for o mesmo.
+  const [escolha, setEscolha] = useState<{ area: string; id: ZonaMarId } | null>(null);
   const janela = useRef<HTMLDivElement>(null);
-  const alturaPx = Math.round((MAR_PLANTA_PX * PLANTA_MAR.altura) / PLANTA_MAR.largura);
+  const [larg, setLarg] = useState(0);
+  const [animar, setAnimar] = useState(false);
+  const toque = useRef<{ x: number; y: number } | null>(null);
 
-  useEffect(() => {
-    const el = janela.current;
-    const foco = MAR_FOCO[areaAtual];
-    if (!el || !foco) return;
-    el.scrollTo({
-      left: Math.max(0, (MAR_PLANTA_PX * foco[0]) / 100 - el.clientWidth / 2),
-      top: Math.max(0, (alturaPx * foco[1]) / 100 - el.clientHeight / 2),
-    });
-  }, [areaAtual, alturaPx]);
+  const mesaDe = new Map<string, { mesa: MesaPublica; doSalao: boolean }>();
+  for (const m of varanda) if (PLANTA_MAR_MESAS[m.numero]) mesaDe.set(m.numero, { mesa: m, doSalao: false });
+  for (const m of salao) if (PLANTA_MAR_MESAS[m.numero]) mesaDe.set(m.numero, { mesa: m, doSalao: true });
 
-  const pino = (mesa: MesaPublica, doSalao: boolean) => {
-    const pos = PLANTA_MAR_MESAS[mesa.numero];
-    if (!pos) return null;
+  const estadoDe = ({ mesa, doSalao }: { mesa: MesaPublica; doSalao: boolean }): EstadoMesaMar => {
     const contexto = doSalao ? areaAtual !== 'Salão' : areaAtual !== 'Varanda';
+    if (contexto) return 'contexto';
+    if (selecionada === mesa.numero) return 'sel';
+    if (!mesa.livre) return 'ocupada';
+    if (mesa.lugares < pessoas) return 'naoCabe';
+    return 'livre';
+  };
+
+  const zonas = MAR_ZONAS.filter((z) => z.mesas.some((n) => mesaDe.has(n)));
+  const temZonas = zonas.length > 0;
+  const temLivre = (z: (typeof MAR_ZONAS)[number]) =>
+    z.mesas.some((n) => {
+      const x = mesaDe.get(n);
+      if (!x) return false;
+      const e = estadoDe(x);
+      return e === 'livre' || e === 'sel';
+    });
+
+  // Sem escolha na mão, abre onde está a mesa escolhida; senão, na primeira
+  // parte do Espaço que ainda tem mesa livre pro grupo.
+  const doEspaco = zonas.filter((z) => z.espaco === areaAtual);
+  const zonaAuto =
+    (selecionada ? zonas.find((z) => z.mesas.includes(selecionada)) : undefined) ??
+    doEspaco.find(temLivre) ??
+    doEspaco[0] ??
+    zonas[0];
+  const zona = (escolha && escolha.area === areaAtual && zonas.find((z) => z.id === escolha.id)) || zonaAuto;
+
+  // A ampliação é a planta inteira (2400×1256) com escala: mede a janela pra
+  // saber quanto ampliar. Só anima depois da primeira medida.
+  useLayoutEffect(() => {
+    const el = janela.current;
+    if (!el) return;
+    setLarg(el.clientWidth);
+    const ro = new ResizeObserver(() => setLarg(el.clientWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [temZonas]);
+  useEffect(() => {
+    if (larg > 0) setAnimar(true);
+  }, [larg]);
+
+  if (!zona) return null;
+
+  const abrir = (id: ZonaMarId) => setEscolha({ area: areaAtual, id });
+  const vizinha = (passo: number) => {
+    const i = zonas.findIndex((z) => z.id === zona.id) + passo;
+    if (i >= 0 && i < zonas.length) abrir(zonas[i].id);
+  };
+
+  const [fx, fy, lado] = zona.quadro;
+  const escala = larg > 0 ? larg / lado : 0;
+  const noQuadro = (numero: string) => {
+    const pos = PLANTA_MAR_MESAS[numero];
+    const x = (pos[0] / 100) * PLANTA_MAR.largura;
+    const y = (pos[1] / 100) * PLANTA_MAR.altura;
+    return x >= fx && x <= fx + lado && y >= fy && y <= fy + lado;
+  };
+
+  const pino = ({ mesa, doSalao }: { mesa: MesaPublica; doSalao: boolean }) => {
+    const pos = PLANTA_MAR_MESAS[mesa.numero];
+    const estado = estadoDe({ mesa, doSalao });
+    const contexto = estado === 'contexto';
     const redonda = PLANTA_MAR_REDONDAS.has(mesa.numero);
-    const lado = Math.round((MAR_PLANTA_PX * (redonda ? PLANTA_MAR.ladoRedondaPct : PLANTA_MAR.ladoPct)) / 100);
+    const ladoMesa = (PLANTA_MAR.largura * (redonda ? PLANTA_MAR.ladoRedondaPct : PLANTA_MAR.ladoPct)) / 100;
     const cabe = mesa.lugares >= pessoas;
     const clicavel = !contexto && mesa.livre && cabe;
-    const sel = !contexto && selecionada === mesa.numero;
+    const sel = estado === 'sel';
     return (
       <button
         key={mesa.numero}
         type="button"
         disabled={!clicavel}
+        tabIndex={noQuadro(mesa.numero) ? 0 : -1}
         onClick={() => onSelecionar(sel ? '' : mesa.numero)}
         title={
           contexto
@@ -461,8 +621,15 @@ function PlantaMarPublica({
                 ? `Mesa ${mesa.numero} · ${mesa.lugares} lugares — não cabe ${pessoas} pessoa(s)`
                 : `Mesa ${mesa.numero} · ${mesa.lugares} lugares`
         }
-        style={{ left: `${pos[0]}%`, top: `${pos[1]}%`, width: lado, height: lado }}
-        className={`absolute flex -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center border text-center transition ${redonda ? 'rounded-full' : 'rounded-md'} ${
+        style={{
+          left: (pos[0] / 100) * PLANTA_MAR.largura,
+          top: (pos[1] / 100) * PLANTA_MAR.altura,
+          width: ladoMesa,
+          height: ladoMesa,
+          borderWidth: 3,
+          borderRadius: redonda ? '50%' : 14,
+        }}
+        className={`absolute flex -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center text-center transition-colors ${
           sel
             ? 'z-10 border-[var(--rsv-mesa-sel)] bg-[var(--rsv-mesa-sel)] text-[var(--rsv-mesa-sel-ink)] shadow-md'
             : contexto
@@ -474,36 +641,190 @@ function PlantaMarPublica({
                   : 'border-[var(--rsv-gold)] bg-[var(--rsv-mesa-livre)] text-[var(--rsv-mesa-livre-ink)] shadow-sm active:bg-[var(--rsv-welcome-bg)]'
         }`}
       >
-        <span className="text-xs font-bold leading-none">{mesa.numero}</span>
-        {redonda && <span className="mt-0.5 text-[8px] leading-none opacity-80">{mesa.lugares} lug</span>}
+        <span className="font-bold leading-none" style={{ fontSize: redonda ? 30 : 27 }}>
+          {mesa.numero}
+        </span>
+        {redonda && (
+          <span className="leading-none opacity-80" style={{ fontSize: 15, marginTop: 4 }}>
+            {mesa.lugares} lug
+          </span>
+        )}
       </button>
     );
   };
 
+  // Mesa na vista da casa inteira: só a marca, na cor do estado.
+  const marca = ({ mesa, doSalao }: { mesa: MesaPublica; doSalao: boolean }) => {
+    const pos = PLANTA_MAR_MESAS[mesa.numero];
+    const x = (pos[0] / 100) * PLANTA_MAR.largura;
+    const y = (pos[1] / 100) * PLANTA_MAR.altura;
+    const estado = estadoDe({ mesa, doSalao });
+    const redonda = PLANTA_MAR_REDONDAS.has(mesa.numero);
+    const l = (PLANTA_MAR.largura * (redonda ? PLANTA_MAR.ladoRedondaPct : PLANTA_MAR.ladoPct)) / 100;
+    const cor = {
+      sel: ['var(--rsv-mesa-sel)', 'var(--rsv-mesa-sel)'],
+      contexto: ['var(--rsv-mesa-panel)', 'var(--rsv-mesa-line)'],
+      ocupada: ['var(--rsv-mesa-ocupada)', 'var(--rsv-mesa-ocupada-line)'],
+      naoCabe: ['var(--rsv-mesa-off)', 'var(--rsv-mesa-line)'],
+      livre: ['var(--rsv-mesa-livre)', 'var(--rsv-gold)'],
+    }[estado];
+    return (
+      <rect
+        key={mesa.numero}
+        x={x - l / 2}
+        y={y - l / 2}
+        width={l}
+        height={l}
+        rx={redonda ? l / 2 : 12}
+        fill={cor[0]}
+        stroke={cor[1]}
+        strokeWidth={9}
+        strokeDasharray={estado === 'contexto' ? '14 10' : undefined}
+      />
+    );
+  };
+
+  const mesas = [...mesaDe.values()];
   const escolhida = [...salao, ...varanda].find((m) => m.numero === selecionada);
+  const outroEspaco = zona.espaco !== areaAtual;
 
   return (
     <>
+      {/* a casa inteira */}
+      <div className="relative mt-2 overflow-hidden rounded-lg border border-[var(--rsv-mesa-line)] bg-[var(--rsv-surface)]">
+        <svg
+          viewBox={`0 0 ${PLANTA_MAR.largura} ${PLANTA_MAR.altura}`}
+          className="block h-auto w-full"
+          role="img"
+          aria-label="Planta da Prainha Mar com as mesas"
+        >
+          <DesenhoMar />
+          {mesas.map(marca)}
+          {zonas.map((z) => {
+            const ativa = z.id === zona.id;
+            // o quadro pode passar um pouco da borda da planta: apara
+            const y = Math.max(z.quadro[1], 6);
+            const yFim = Math.min(z.quadro[1] + z.quadro[2], PLANTA_MAR.altura - 6);
+            return (
+              <rect
+                key={z.id}
+                x={z.quadro[0]}
+                y={y}
+                width={z.quadro[2]}
+                height={yFim - y}
+                rx={34}
+                fill={ativa ? 'var(--rsv-gold)' : 'transparent'}
+                fillOpacity={ativa ? 0.1 : 1}
+                stroke={ativa ? 'var(--rsv-gold)' : 'none'}
+                strokeWidth={12}
+                className={ativa ? undefined : 'cursor-pointer'}
+                onClick={() => abrir(z.id)}
+              />
+            );
+          })}
+        </svg>
+        <p className="pointer-events-none absolute left-2 top-1.5 text-[10px] leading-tight text-[var(--rsv-muted)]">
+          a casa inteira
+          <br />
+          toque numa parte pra ampliar
+        </p>
+      </div>
+
+      {/* partes da casa, da entrada pro fundo */}
+      <div className="mt-1.5 flex gap-1">
+        {zonas.map((z) => {
+          const ativa = z.id === zona.id;
+          return (
+            <button
+              key={z.id}
+              type="button"
+              aria-pressed={ativa}
+              onClick={() => abrir(z.id)}
+              className={`min-w-0 flex-1 truncate rounded-full border px-1.5 py-1.5 text-[11px] font-medium leading-none transition-colors ${
+                ativa
+                  ? 'border-[var(--rsv-mesa-sel)] bg-[var(--rsv-mesa-sel)] text-[var(--rsv-mesa-sel-ink)]'
+                  : z.espaco !== areaAtual
+                    ? 'border-dashed border-[var(--rsv-mesa-line)] text-[var(--rsv-mesa-dim-ink)]'
+                    : temLivre(z)
+                      ? 'border-[var(--rsv-gold)] bg-[var(--rsv-mesa-livre)] text-[var(--rsv-mesa-livre-ink)]'
+                      : 'border-[var(--rsv-mesa-line)] bg-[var(--rsv-mesa-off)] text-[var(--rsv-mesa-off-ink)]'
+              }`}
+            >
+              {z.nome}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* a parte escolhida, ampliada */}
       <div
         ref={janela}
-        className="mt-2 max-h-[22rem] overflow-auto overscroll-contain rounded-lg border border-[var(--rsv-mesa-line)] bg-white"
+        className="relative mt-1.5 aspect-square w-full touch-pan-y overflow-hidden rounded-lg border border-[var(--rsv-mesa-line)] bg-[var(--rsv-surface)]"
+        // Quem enquadra é o transform, nunca a rolagem: sem isto, o foco numa
+        // mesa da beirada faz o navegador rolar a janela por dentro (mesmo com
+        // overflow-hidden) e as mesas saem do lugar. `clip` proíbe a rolagem;
+        // onde ele não existe (Safari antigo) fica o hidden da classe + o onScroll.
+        style={{ overflow: 'clip' }}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          if (el.scrollLeft !== 0 || el.scrollTop !== 0) el.scrollTo(0, 0);
+        }}
+        onTouchStart={(e) => {
+          const t = e.touches[0];
+          toque.current = t ? { x: t.clientX, y: t.clientY } : null;
+        }}
+        onTouchEnd={(e) => {
+          const de = toque.current;
+          const t = e.changedTouches[0];
+          toque.current = null;
+          if (!de || !t) return;
+          const dx = t.clientX - de.x;
+          const dy = t.clientY - de.y;
+          if (Math.abs(dx) < 45 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+          vizinha(dx < 0 ? 1 : -1);
+        }}
       >
-        <div className="relative" style={{ width: MAR_PLANTA_PX, height: alturaPx }}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={PLANTA_MAR.src}
-            alt="Planta da Prainha Mar com as mesas"
-            draggable={false}
-            className="pointer-events-none absolute inset-0 h-full w-full select-none opacity-70"
-          />
-          {salao.map((m) => pino(m, true))}
-          {varanda.map((m) => pino(m, false))}
+        <div
+          className="absolute left-0 top-0 origin-top-left"
+          style={{
+            width: PLANTA_MAR.largura,
+            height: PLANTA_MAR.altura,
+            transform: `translate(${-fx * escala}px, ${-fy * escala}px) scale(${escala})`,
+            transition: animar ? 'transform 380ms cubic-bezier(0.4, 0, 0.2, 1)' : undefined,
+            visibility: escala > 0 ? 'visible' : 'hidden',
+          }}
+        >
+          <svg
+            width={PLANTA_MAR.largura}
+            height={PLANTA_MAR.altura}
+            viewBox={`0 0 ${PLANTA_MAR.largura} ${PLANTA_MAR.altura}`}
+            className="absolute left-0 top-0"
+            aria-hidden="true"
+          >
+            <DesenhoMar detalhe />
+          </svg>
+          {mesas.map(pino)}
         </div>
       </div>
-      <p className="mt-1 text-[10px] text-[var(--rsv-mesa-off-ink)]">
-        ↔ arraste a planta pra ver o resto da casa
-        {escolhida ? ` · escolhida: mesa ${escolhida.numero} (${escolhida.lugares} lugares)` : ''}
-      </p>
+
+      {outroEspaco && (
+        <p className="mt-1.5 text-[11px] text-[var(--rsv-muted)]">
+          Estas mesas são {zona.espaco === 'Varanda' ? 'da Varanda' : 'do Salão'}.
+          {onTrocarEspaco && (
+            <>
+              {' '}
+              <button type="button" onClick={onTrocarEspaco} className="font-semibold text-[var(--rsv-gold)] underline">
+                Trocar o espaço pra {zona.espaco}
+              </button>
+            </>
+          )}
+        </p>
+      )}
+      {escolhida && (
+        <p className="mt-1 text-[10px] text-[var(--rsv-mesa-off-ink)]">
+          escolhida: mesa {escolhida.numero} ({escolhida.lugares} lugares)
+        </p>
+      )}
     </>
   );
 }
@@ -515,6 +836,7 @@ export function MapaMarPublico({
   pessoas,
   selecionada,
   onSelecionar,
+  onTrocarEspaco,
 }: {
   areaAtual: string;
   salao: MesaPublica[];
@@ -522,8 +844,12 @@ export function MapaMarPublico({
   pessoas: number;
   selecionada: string;
   onSelecionar: (numero: string) => void;
+  /** Troca o "Espaço" do formulário pro outro (Salão ↔ Varanda) — vira o
+   *  atalho que aparece quando o cliente amplia uma parte do outro espaço. */
+  onTrocarEspaco?: () => void;
 }) {
-  // 'planta' = a planta física (foto do dono); 'lista' = os blocos de antes.
+  // 'planta' = a planta física (a casa desenhada, do mapa do dono); 'lista' =
+  // os blocos de antes.
   const [modo, setModo] = useState<'planta' | 'lista'>('planta');
   const todas = [...salao, ...varanda];
   if (todas.length === 0) return null;
@@ -587,6 +913,7 @@ export function MapaMarPublico({
             pessoas={pessoas}
             selecionada={selecionada}
             onSelecionar={onSelecionar}
+            onTrocarEspaco={onTrocarEspaco}
           />
           {foraDaPlanta.length > 0 && (
             <div className="mt-2 border-t border-dashed border-[var(--rsv-mesa-line)] pt-2">
