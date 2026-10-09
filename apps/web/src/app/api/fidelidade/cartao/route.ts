@@ -7,6 +7,8 @@
 //   'confirmar' { codigo }  → confere; certo = aparelho liberado (cookie) e cartão ativado
 //   'gerar_codigo'          → "Vou pagar agora": código de 4 letras, vale 1 min.
 //                             Só de aparelho confirmado — link encaminhado não gera.
+//   'entregar_drink'        → 81ª SOEA: o garçom dá baixa no drink de boas-vindas na
+//                             tela do cliente (uma vez por cartão, só no período).
 
 import { NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
@@ -17,6 +19,7 @@ import {
 } from '@/lib/fidelidade/aparelho';
 import { gerarCodigoUso } from '@/lib/fidelidade/nucleo';
 import { carregarPrograma } from '@/lib/fidelidade/config';
+import { drinkEntregueEm, drinkNoPeriodo, ehSoea, entregarDrink } from '@/lib/soea';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -51,6 +54,17 @@ export async function POST(req: Request) {
       if (!prog.ativo) return NextResponse.json({ erro: `O ${prog.marca} está pausado no momento.` }, { status: 409 });
       const r = await gerarCodigoUso(c.id, aparelho);
       return NextResponse.json({ ok: true, codigo: r.codigo, expira_em: r.expiraEm.toISOString(), em_uso: r.emUso });
+    }
+    if (b?.acao === 'entregar_drink') {
+      if (!ehSoea(c)) return NextResponse.json({ erro: 'Este cartão não tem o drink da SOEA.' }, { status: 409 });
+      if (!aparelhoConfirmado(c, jar.get(nomeCookie(c))?.value)) {
+        return NextResponse.json({ erro: 'Confirme o seu celular antes (código no WhatsApp).', confirmar: true }, { status: 403 });
+      }
+      if (!c.aderidoEm) return NextResponse.json({ erro: 'Ative o cartão primeiro.' }, { status: 409 });
+      if (!drinkNoPeriodo()) return NextResponse.json({ erro: 'O drink de boas-vindas vale de 13 a 18 de outubro.' }, { status: 409 });
+      const quando = (await entregarDrink(c.id)) ?? drinkEntregueEm(c);
+      if (!quando) return NextResponse.json({ erro: 'Não deu certo, tente de novo.' }, { status: 409 });
+      return NextResponse.json({ ok: true, entregue_em: quando });
     }
   } catch (e) {
     return NextResponse.json({ erro: (e as Error).message || 'Não deu certo, tente de novo.' }, { status: 502 });

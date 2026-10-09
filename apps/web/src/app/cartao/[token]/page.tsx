@@ -14,6 +14,9 @@ import { googleConfigurada } from '@/lib/fidelidade/google';
 import { carregarPrograma } from '@/lib/fidelidade/config';
 import { ApresentacaoPrograma } from '@/components/fidelidade/apresentacao';
 import { BotoesAdesao, VouPagar } from './adesao';
+import { DrinkSoea } from './drink-soea';
+import { SOEA, drinkEntregueEm, drinkNoPeriodo, ehSoea } from '@/lib/soea';
+import { hojeBr } from '@/lib/datas';
 import { aparelhoConfirmado, nomeCookie, telefoneMascarado } from '@/lib/fidelidade/aparelho';
 
 export const dynamic = 'force-dynamic';
@@ -53,10 +56,17 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
             <h1 className="mt-1 text-2xl font-bold leading-tight">
               {primeiro ? `${primeiro}, ` : ''}você agora é {v.marca} {v.nivel}
             </h1>
-            <p className="mt-2 text-sm opacity-90">
-              Você é cliente do {v.casa} e a gente quer te ver mais vezes. Ative e ganhe {v.pct}% de desconto no Pix
-              {v.bonusDiaUtil ? <> ({v.pct + v.bonusDiaUtil}% de segunda a sexta)</> : null} já na próxima visita.
-            </p>
+            {ehSoea(c) && c.origem === 'soea' ? (
+              <p className="mt-2 text-sm opacity-90">
+                Boas-vindas a Aracaju! Ative o cartão e ganhe o drink de boas-vindas da 81ª SOEA e {v.pct}% de desconto
+                na conta{v.bonusDiaUtil ? <> ({v.pct + v.bonusDiaUtil}% de segunda a sexta)</> : null} no {v.casa}.
+              </p>
+            ) : (
+              <p className="mt-2 text-sm opacity-90">
+                Você é cliente do {v.casa} e a gente quer te ver mais vezes. Ative e ganhe {v.pct}% de desconto no Pix
+                {v.bonusDiaUtil ? <> ({v.pct + v.bonusDiaUtil}% de segunda a sexta)</> : null} já na próxima visita.
+              </p>
+            )}
             {v.garantido && (
               <p className="mt-2 text-xs opacity-80">Categoria {v.nivel} garantida pra você pelo convite.</p>
             )}
@@ -109,6 +119,9 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
           <p className="rounded-lg bg-red-100 p-3 text-sm text-red-800">Este cartão está bloqueado. Fale com a gerência.</p>
         ) : (
           <>
+            {ehSoea(c) && confirmado && hojeBr() <= SOEA.fim && (
+              <DrinkSoea token={token} entregueEm={drinkEntregueEm(c)} noPeriodo={drinkNoPeriodo()} />
+            )}
             <VouPagar token={token} confirmado={confirmado} telefone={tel} pctHoje={pctHoje} />
             <div className="rounded-xl bg-white p-4 text-sm shadow-sm">
               <p>

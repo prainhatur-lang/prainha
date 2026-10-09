@@ -36,8 +36,18 @@ const PRAINHAMAR_REWRITES: Record<string, string> = {
   '/reserva': `/reservar/${PRAINHAMAR_RESERVA_TOKEN}`,
 };
 
+// Subdomínio da 81ª SOEA (13 a 18/10/2026): soea.prainhabar.com (root) abre o
+// cadastro do benefício dos participantes (/soea). É o destino do QR Code do
+// card. Requer o CNAME no DNS + domínio na Vercel.
+const SOEA_HOST = 'soea.prainhabar.com';
+
 export async function proxy(request: NextRequest) {
   const hostname = (request.headers.get('host') ?? '').split(':')[0];
+  if (hostname === SOEA_HOST && request.nextUrl.pathname === '/') {
+    const url = request.nextUrl.clone();
+    url.pathname = '/soea';
+    return NextResponse.rewrite(url);
+  }
   if (hostname === RESERVAS_HOST && request.nextUrl.pathname === '/') {
     const url = request.nextUrl.clone();
     url.pathname = `/reservar/${RESERVAS_TOKEN_PRAINHA_BAR}`;
@@ -167,6 +177,8 @@ export async function proxy(request: NextRequest) {
     isCanalPublico ||
     isClimaPublico ||
     isCartaoPublico ||
+    // /soea é o cadastro público do benefício da 81ª SOEA (soea.prainhabar.com).
+    path === '/soea' ||
     // /convite/[token] é o link do botão do convite de campanha (zap): registra
     // o toque e redireciona pro site da casa. O painel é /campanha (protegido).
     path.startsWith('/convite/');
