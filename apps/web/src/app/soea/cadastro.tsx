@@ -31,6 +31,7 @@ export function CadastroSoea({ nivel }: { nivel: string }) {
   const [site, setSite] = useState('');
   const [ocupado, setOcupado] = useState(false);
   const [erro, setErro] = useState('');
+  const [pedirNome, setPedirNome] = useState(false);
   const [existente, setExistente] = useState<null | { enviado: boolean }>(null);
 
   async function enviar(e: React.FormEvent) {
@@ -42,9 +43,10 @@ export function CadastroSoea({ nivel }: { nivel: string }) {
       const r = await fetch('/api/soea', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ nome, telefone, cpf, aceite, site }),
+        body: JSON.stringify({ cpf, telefone, aceite, site, ...(pedirNome ? { nome } : {}) }),
       });
       const j = await r.json().catch(() => ({}));
+      if (j.precisaNome) setPedirNome(true);
       if (!r.ok || !j.ok) throw new Error(j.erro || 'Não deu certo agora. Tente de novo.');
       if (j.url) {
         window.location.assign(j.url);
@@ -76,14 +78,14 @@ export function CadastroSoea({ nivel }: { nivel: string }) {
 
   return (
     <form onSubmit={enviar} className="space-y-4" noValidate>
-      <div>
-        <label htmlFor="soea-nome" className={rotulo}>Nome completo</label>
-        <input
-          id="soea-nome" className={campo} autoComplete="name" required maxLength={120}
-          placeholder="Como está no seu crachá" value={nome} onChange={(e) => setNome(e.target.value)}
-        />
-      </div>
       <div className="grid gap-4 sm:grid-cols-2">
+        <div>
+          <label htmlFor="soea-cpf" className={rotulo}>CPF</label>
+          <input
+            id="soea-cpf" className={campo} inputMode="numeric" autoComplete="off" required autoFocus={false}
+            placeholder="000.000.000-00" value={cpf} onChange={(e) => setCpf(mascaraCpf(e.target.value))}
+          />
+        </div>
         <div>
           <label htmlFor="soea-tel" className={rotulo}>Celular (WhatsApp)</label>
           <input
@@ -91,14 +93,17 @@ export function CadastroSoea({ nivel }: { nivel: string }) {
             placeholder="(00) 00000-0000" value={telefone} onChange={(e) => setTelefone(mascaraTelefone(e.target.value))}
           />
         </div>
+      </div>
+      {/* só aparece quando o CPF não trouxe o nome */}
+      {pedirNome && (
         <div>
-          <label htmlFor="soea-cpf" className={rotulo}>CPF</label>
+          <label htmlFor="soea-nome" className={rotulo}>Nome completo</label>
           <input
-            id="soea-cpf" className={campo} inputMode="numeric" autoComplete="off" required
-            placeholder="000.000.000-00" value={cpf} onChange={(e) => setCpf(mascaraCpf(e.target.value))}
+            id="soea-nome" className={campo} autoComplete="name" required maxLength={120} autoFocus
+            placeholder="Nome e sobrenome" value={nome} onChange={(e) => setNome(e.target.value)}
           />
         </div>
-      </div>
+      )}
       {/* isca de robô: fora da tela, gente não preenche */}
       <div aria-hidden className="absolute -left-[9999px] h-0 w-0 overflow-hidden">
         <label>
@@ -112,8 +117,9 @@ export function CadastroSoea({ nivel }: { nivel: string }) {
           className="mt-0.5 h-5 w-5 shrink-0 accent-[#E8853A]"
         />
         <span>
-          Autorizo o Prainha Bar a usar meu nome, celular e CPF para emitir o cartão Cliente VIP e o benefício da
-          81ª SOEA, e a falar comigo pelo WhatsApp sobre o cartão.
+          Autorizo o Prainha Bar a consultar meus dados cadastrais pelo CPF (como nome e data de nascimento) e a
+          usá-los, com o meu celular, para emitir o cartão Cliente VIP e o benefício da 81ª SOEA, e a falar comigo
+          pelo WhatsApp sobre o cartão.
         </span>
       </label>
       {erro && <p role="alert" className="rounded-lg bg-[#7a1f12]/60 px-3 py-2 text-sm text-[#FFD9CC]">{erro}</p>}

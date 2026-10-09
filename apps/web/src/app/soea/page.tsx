@@ -1,6 +1,7 @@
 // soea.prainhabar.com — página do QR Code do card da 81ª SOEA (13 a 18/10/2026).
-// Pública. O participante se cadastra (nome, celular, CPF) e sai daqui com um
-// Cliente VIP Prainha Bar na categoria do benefício + 1 drink de boas-vindas.
+// Pública. O participante se cadastra (CPF e celular; o nome vem do CPF) e sai daqui com um
+// Cliente VIP Prainha Bar na categoria do benefício. O drink de boas-vindas é o
+// "Avalie e ganhe um drink" do QR da mesa.
 // Regras em @/lib/soea; o cadastro bate em /api/soea.
 
 import Image from 'next/image';
@@ -70,9 +71,9 @@ export default async function SoeaPage() {
     : [];
 
   const passos = [
-    { n: '1', t: 'Cadastre-se', d: 'Nome, celular e CPF. Leva menos de um minuto.' },
+    { n: '1', t: 'Cadastre-se', d: 'Só CPF e celular. Seu nome a gente já encontra.' },
     { n: '2', t: 'Confirme pelo WhatsApp', d: `Chega um código no seu número e o cartão ${prog.marca} ${nivel.nome} abre no celular.` },
-    { n: '3', t: 'No Prainha', d: 'Mostre o cartão e o crachá ao garçom para o drink. Na hora de pagar, toque em “Vou pagar agora” e diga o código de 4 letras.' },
+    { n: '3', t: 'No Prainha', d: 'Ao chegar, conecte-se ao Wi-Fi da casa, avalie o Prainha pelo QR Code da mesa e escolha o seu drink de boas-vindas. Na hora de pagar, toque em “Vou pagar agora” e diga o código de 4 letras.' },
   ];
 
   return (
@@ -201,12 +202,12 @@ export default async function SoeaPage() {
         <footer className="border-t border-white/10 pt-6 text-[12px] leading-relaxed text-[#FBF3E4]/45">
           <p>
             Benefício para participantes da 81ª SOEA, de 13 a 18/10/2026, só no Prainha Bar. Um drink de boas-vindas
-            por participante, mediante crachá do evento e cartão ativado; bebida alcoólica apenas para maiores de 18
+            por participante, ao avaliar a casa pelo QR Code da mesa (conectado ao Wi-Fi do Prainha); bebida alcoólica apenas para maiores de 18
             anos. O desconto vale sobre o consumo (a taxa de serviço continua sobre o valor cheio), um uso por dia.
           </p>
           <p className="mt-3">
-            Seus dados (nome, celular e CPF) são usados só para emitir o cartão e o benefício. Para pedir a exclusão,
-            escreva para prainha@prainhabar.com.
+            Com a sua autorização, consultamos seus dados cadastrais pelo CPF e usamos esses dados e o seu celular
+            só para emitir o cartão e o benefício. Para pedir a exclusão, escreva para prainha@prainhabar.com.
           </p>
         </footer>
       </div>

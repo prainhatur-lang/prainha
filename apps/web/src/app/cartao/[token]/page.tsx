@@ -15,7 +15,7 @@ import { carregarPrograma } from '@/lib/fidelidade/config';
 import { ApresentacaoPrograma } from '@/components/fidelidade/apresentacao';
 import { BotoesAdesao, VouPagar } from './adesao';
 import { DrinkSoea } from './drink-soea';
-import { SOEA, drinkEntregueEm, drinkNoPeriodo, ehSoea } from '@/lib/soea';
+import { SOEA, ehSoea } from '@/lib/soea';
 import { hojeBr } from '@/lib/datas';
 import { aparelhoConfirmado, nomeCookie, telefoneMascarado } from '@/lib/fidelidade/aparelho';
 
@@ -58,8 +58,9 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
             </h1>
             {ehSoea(c) && c.origem === 'soea' ? (
               <p className="mt-2 text-sm opacity-90">
-                Boas-vindas a Aracaju! Ative o cartão e ganhe o drink de boas-vindas da 81ª SOEA e {v.pct}% de desconto
-                na conta{v.bonusDiaUtil ? <> ({v.pct + v.bonusDiaUtil}% de segunda a sexta)</> : null} no {v.casa}.
+                Boas-vindas a Aracaju! Ative o cartão e tenha {v.pct}% de desconto na conta
+                {v.bonusDiaUtil ? <> ({v.pct + v.bonusDiaUtil}% de segunda a sexta)</> : null} no {v.casa}. Ao chegar,
+                avalie a casa pelo QR Code da mesa e escolha o seu drink de boas-vindas.
               </p>
             ) : (
               <p className="mt-2 text-sm opacity-90">
@@ -119,9 +120,7 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
           <p className="rounded-lg bg-red-100 p-3 text-sm text-red-800">Este cartão está bloqueado. Fale com a gerência.</p>
         ) : (
           <>
-            {ehSoea(c) && confirmado && hojeBr() <= SOEA.fim && (
-              <DrinkSoea token={token} entregueEm={drinkEntregueEm(c)} noPeriodo={drinkNoPeriodo()} />
-            )}
+            {ehSoea(c) && hojeBr() <= SOEA.fim && <DrinkSoea />}
             <VouPagar token={token} confirmado={confirmado} telefone={tel} pctHoje={pctHoje} />
             <div className="rounded-xl bg-white p-4 text-sm shadow-sm">
               <p>

@@ -3,8 +3,17 @@
 // evento. O cartão nasce SEM adesão: quem ativa é o dono, confirmando o celular
 // pelo WhatsApp em /cartao/<token> (mesma trava de sempre).
 //
-// POST { nome, telefone, cpf, aceite, site }   (site = isca de robô, vem vazio)
+// O cadastro começa pelo CPF: a pessoa informa só CPF e celular, e o nome (com
+// cidade/bairro) vem da cascata de @/lib/identificar-cpf — nossas bases → cache
+// → SPC. Nascimento e o resto do cadastro ficam em spc_consulta, ligados pelo
+// CPF; NADA disso volta pro navegador (senão a página vira consulta de CPF de
+// graça). A consulta ao SPC é paga: só acontece depois do aceite, e com teto.
+//
+// POST { cpf, telefone, aceite, nome?, site }   (site = isca de robô, vem vazio)
 //   → { ok, url }                    cartão novo (ou o mesmo aparelho voltando)
+//   → { ok:false, precisaNome }      não achamos o nome pelo CPF (SPC sem
+//                                    cadastro, fora do ar ou no teto): o
+//                                    formulário abre o campo de nome e reenvia
 //   → { ok, existente, enviado }     o número já tinha cartão: o benefício
 //                                    entra nele, mas o link NÃO volta na
 //                                    resposta (o token é a senha do cartão —
@@ -21,6 +30,8 @@ import { criarCartao, tocarPass } from '@/lib/fidelidade/nucleo';
 import { baseUrl } from '@/lib/fidelidade/vista';
 import { enviarTextoWhatsApp } from '@/lib/whatsapp-otp';
 import { hojeBr } from '@/lib/datas';
+import { hashCpf, spcConfigurado } from '@/lib/spc';
+import { identificarPorCpf } from '@/lib/identificar-cpf';
 import { SOEA, cpfValido, ehSoea, nivelSoea, soeaAberta } from '@/lib/soea';
 
 export const dynamic = 'force-dynamic';
@@ -30,6 +41,22 @@ export const runtime = 'nodejs';
  *  o teto por IP é folgado; o geral segura robô. */
 const MAX_IP_HORA = 60;
 const MAX_GERAL_HORA = 800;
+/** consultas PAGAS ao SPC que a casa pode disparar em 1 hora (somando reserva e
+ *  SOEA). Passou disso, o cadastro segue — só pede o nome em vez de consultar. */
+const TETO_SPC_HORA = 250;
+
+/** "MARIA DA SILVA" / "maria da silva" → "Maria da Silva" */
+function ajeitarNome(bruto: unknown): string {
+  let nome = String(bruto ?? '').trim().replace(/\s+/g, ' ').slice(0, 120);
+  if (nome === nome.toLowerCase() || nome === nome.toUpperCase()) {
+    nome = nome
+      .toLowerCase()
+      .split(' ')
+      .map((p, i) => (i > 0 && /^(da|de|do|das|dos|e)$/.test(p) ? p : p.charAt(0).toUpperCase() + p.slice(1)))
+      .join(' ');
+  }
+  return nome;
+}
 
 const erro = (msg: string, status = 400) => NextResponse.json({ ok: false, erro: msg }, { status });
 
@@ -40,21 +67,11 @@ export async function POST(req: Request) {
   if (String(b.site ?? '').trim()) return NextResponse.json({ ok: true, existente: true, enviado: false });
   if (!soeaAberta()) return erro('O benefício da 81ª SOEA já encerrou.', 410);
 
-  let nome = String(b.nome ?? '').trim().replace(/\s+/g, ' ').slice(0, 120);
-  // digitado todo em minúsculas ou maiúsculas: ajeita pro cartão ("ana da silva" → "Ana da Silva")
-  if (nome === nome.toLowerCase() || nome === nome.toUpperCase()) {
-    nome = nome
-      .toLowerCase()
-      .split(' ')
-      .map((p, i) => (i > 0 && /^(da|de|do|das|dos|e)$/.test(p) ? p : p.charAt(0).toUpperCase() + p.slice(1)))
-      .join(' ');
-  }
-  if (nome.length < 5 || !nome.includes(' ')) return erro('Informe nome e sobrenome.');
   const telefone = normalizarTelefone(b.telefone);
   if (!telefone || !/^\d{2}9\d{8}$/.test(telefone)) return erro('Informe o celular com DDD (o mesmo do seu WhatsApp).');
   const cpf = cpfValido(b.cpf);
   if (!cpf) return erro('CPF inválido. Confira os números.');
-  if (b.aceite !== true) return erro('Marque a autorização de uso dos dados pra continuar.');
+  if (b.aceite !== true) return erro('Marque a autorização pra continuar.');
 
   const prog = await carregarPrograma(SOEA.filialId);
   if (!prog.ativo) return erro('O cartão do Prainha Bar está pausado no momento. Fale com a casa.', 409);
@@ -127,12 +144,52 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, existente: true, enviado });
   }
 
+  // Quem é: nossas bases e o cache saem de graça; SPC novo só dentro do teto.
+  let nome = '';
+  let cidade: string | null = null;
+  let bairro: string | null = null;
+  try {
+    let permitirSpc = spcConfigurado();
+    if (permitirSpc) {
+      const [jaTem] = await db
+        .select({ h: schema.spcConsulta.cpfHash })
+        .from(schema.spcConsulta)
+        .where(eq(schema.spcConsulta.cpfHash, hashCpf(cpf)))
+        .limit(1);
+      if (!jaTem) {
+        const [{ n }] = await db
+          .select({ n: sql<number>`count(*)::int` })
+          .from(schema.spcConsulta)
+          .where(and(
+            eq(schema.spcConsulta.filialId, SOEA.filialId),
+            gte(schema.spcConsulta.consultadoEm, umaHora),
+          ));
+        if (Number(n) >= TETO_SPC_HORA) permitirSpc = false;
+      }
+    }
+    const r = await identificarPorCpf(cpf, SOEA.filialId, { permitirSpc });
+    nome = ajeitarNome(r.dados.nome);
+    cidade = r.dados.cidade;
+    bairro = r.dados.bairro;
+  } catch (e) {
+    console.error('[soea] identificar', (e as Error)?.message);
+  }
+  // não achou pelo CPF: vale o nome que a pessoa digitar (o campo só aparece nesse caso)
+  if (nome.length < 3) {
+    nome = ajeitarNome(b.nome);
+    if (nome.length < 5 || !nome.includes(' ')) {
+      return NextResponse.json({ ok: false, precisaNome: true, erro: 'Não encontramos seu cadastro pelo CPF. Informe seu nome completo.' });
+    }
+  }
+
   try {
     const { cartao } = await criarCartao({
       filialId: SOEA.filialId,
       nome,
       telefone,
       cpf,
+      cidade,
+      bairro,
       nivelMinimo: nivel.minVisitas > 0 ? nivel.codigo : null,
       nivelMinimoAte: SOEA.fim,
       origem: 'soea',
