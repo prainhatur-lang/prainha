@@ -12,6 +12,7 @@
 import { db } from '@concilia/db';
 import { sql, type SQL } from 'drizzle-orm';
 import { dateToBrYmd } from './datas';
+import { chamarLojaCaixa } from './caixa-loja';
 
 const TZ = 'America/Sao_Paulo';
 const DIA_MS = 24 * 3600 * 1000;
@@ -134,6 +135,80 @@ export interface PracaDia {
   acimaDaMeta: number;
 }
 
+/** Lançamento de dinheiro na gaveta (sangria / despesa / suprimento). */
+export interface MovGaveta {
+  /** HH:MM (BRT) */
+  hora: string;
+  /** DD/MM (BRT) */
+  diaMes: string;
+  caixa: number;
+  /** de quem é a gaveta (operador do caixa) */
+  caixaDe: string;
+  valor: number;
+  /** quem levou o dinheiro — nulo quando o lançamento não diz */
+  levou: string | null;
+  motivo: string;
+  /** quem lançou no sistema */
+  lancou: string | null;
+}
+
+export interface GavetaDia {
+  codigo: number;
+  quem: string;
+  /** "DD/MM HH:MM" (BRT) */
+  abertoEm: string;
+  fechadoEm: string | null;
+  aberta: boolean;
+  /** abriu dentro do dia do relatório (falso = veio de um dia anterior) */
+  doDia: boolean;
+  /** dias corridos aberta até agora (só quando ainda aberta) */
+  diasAberta: number;
+  fundo: number;
+  /** dinheiro recebido, entradas e saídas do caixa inteiro (no trecho lido) */
+  dinheiro: number;
+  entradas: number;
+  saidas: number;
+  /** fechada: o saldo que a loja calculou; aberta: fundo + dinheiro + entradas − saídas (nulo se a gaveta é mais velha que a leitura) */
+  esperado: number | null;
+  contado: number | null;
+  /** contado − esperado */
+  diferenca: number | null;
+}
+
+export interface MaquininhaAberta {
+  codigo: number;
+  quem: string;
+  /** "DD/MM HH:MM" (BRT) */
+  desde: string;
+  dias: number;
+  pagamentos: number;
+  total: number;
+  /** confere e fecha sozinha na próxima passada da madrugada */
+  fecharia: boolean;
+  categoria: string | null;
+  motivo: string | null;
+  /** iFood Online que ficou fora da conferência */
+  canal: number;
+  /** travada de verdade (não é só o extrato do próprio dia que ainda não chegou) */
+  travada: boolean;
+}
+
+/** Caixa do dia, lido direto da loja. `ok = false` = a loja não respondeu. */
+export interface CaixaDia {
+  ok: boolean;
+  erro: string | null;
+  gavetas: GavetaDia[];
+  /** saídas e entradas de dinheiro lançadas dentro do dia (05:00 → 05:00) */
+  saidas: MovGaveta[];
+  entradas: MovGaveta[];
+  totalSaidas: number;
+  totalEntradas: number;
+  /** saídas somadas por quem levou */
+  porPessoa: Array<{ nome: string; valor: number; n: number }>;
+  /** caixas de maquininha abertos AGORA (nulo = a conferência não respondeu) */
+  maquininhas: MaquininhaAberta[] | null;
+}
+
 export interface RelatorioCasa {
   filialId: string;
   nome: string;
@@ -184,6 +259,8 @@ export interface RelatorioCasa {
   quedas: Array<{ hora: string; minutos: number }>;
   descontos: Array<{ numero: number | null; desconto: number; pago: number }>;
   jornadasLongas: Array<{ nome: string; minutos: number }>;
+  /** gavetas, saídas de dinheiro e maquininhas sem fechar — nulo se a casa não tem a loja ligada */
+  caixa: CaixaDia | null;
   atencao: string[];
 }
 
@@ -787,6 +864,7 @@ export async function montarRelatorioCasa(
     quedas,
     descontos,
     jornadasLongas,
+    caixa: null,
     atencao,
   };
 }
@@ -809,6 +887,387 @@ async function metasDaLoja(caixaUrl: string | null): Promise<MetasKds> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Caixa do dia: gavetas, saídas de dinheiro e maquininhas sem fechar
+// ---------------------------------------------------------------------------
+// A nuvem não recebe mais caixa nem sangria desde o corte do Consumer
+// (07/09/2026): `caixa`/`caixa_operacao` pararam ali. A fonte é a loja, pelo
+// canal assinado da Conferência de Caixa — só LEITURA (/relatorio e /conferir).
+// Loja fora do ar não derruba o relatório: sai `caixa.ok = false` e o resto igual.
+//
+// O "dia" de /relatorio?data= é o dia do relógio do banco da loja, e cada loja
+// está num fuso (Bar −03, Tabuará +00, Mar −07). Por isso lê D−1, D e D+1 e
+// recorta pelo INSTANTE, na janela 05:00 → 05:00 BRT: cada saída aparece no
+// relatório de um dia só, o dia em que o dinheiro saiu.
+
+/** A leitura do caixa não pode segurar o relatório (cron e webhook têm 60 s). */
+const PRAZO_CAIXA_MS = 9000;
+
+interface CxLoja {
+  codigo: number;
+  quem?: string | null;
+  aberto_em?: string | null;
+  fechado_em?: string | null;
+  fundo?: number | null;
+  esperado?: number | null;
+  contado?: number | null;
+  tipo?: string | null;
+  formas?: Array<{ codigo?: number; valor?: number }>;
+}
+interface MovLoja {
+  caixa: number;
+  quando?: string | null;
+  entrada?: number | null;
+  saida?: number | null;
+  obs?: string | null;
+}
+interface ConfLoja {
+  codigo: number;
+  quem?: string | null;
+  tipo?: string | null;
+  aberto_em?: string | null;
+  pagamentos?: number;
+  total?: number;
+  fecharia?: boolean;
+  categoria?: string | null;
+  motivo?: string | null;
+  canal?: { n?: number; total?: number } | null;
+}
+
+/** Forma "Dinheiro" no vendas-local. */
+const FORMA_DINHEIRO = 1;
+
+const r2 = (n: number): number => Math.round(n * 100) / 100;
+
+/** Instante vindo da loja: ISO ("…Z") ou texto do Postgres, que vem com o fuso
+ *  DA LOJA ("2026-10-01 08:45:05.628072-07", "2026-09-02 16:36:19.121+00"). */
+function instanteDaLoja(v: unknown): Date | null {
+  if (v == null || v === '') return null;
+  const s = String(v).trim();
+  const m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)(?:\.(\d+))?\s*(Z|[+-]\d{2}(?::?\d{2})?)?$/.exec(s);
+  let d: Date;
+  if (m) {
+    const hora = m[2].length === 5 ? `${m[2]}:00` : m[2];
+    const ms = m[3] ? `.${m[3].slice(0, 3).padEnd(3, '0')}` : '';
+    let fuso = m[4] ?? '-03:00';
+    if (fuso !== 'Z') {
+      const f = /^([+-]\d{2}):?(\d{2})?$/.exec(fuso);
+      fuso = f ? `${f[1]}:${f[2] ?? '00'}` : '-03:00';
+    }
+    d = new Date(`${m[1]}T${hora}${ms}${fuso}`);
+  } else {
+    d = new Date(s);
+  }
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/** "15:10" em BRT. */
+function horaBr(d: Date): string {
+  return new Date(d.getTime() - 3 * 3600 * 1000).toISOString().slice(11, 16);
+}
+
+/** "08/10" em BRT. */
+function diaMesBr(d: Date): string {
+  const y = dateToBrYmd(d);
+  return `${y.slice(8, 10)}/${y.slice(5, 7)}`;
+}
+
+/** A observação do lançamento na gaveta é montada pela loja assim:
+ *  sangria  → "levou: <quem levou> · <motivo> · <quem lançou>"
+ *  despesa / suprimento → "<motivo> · <quem lançou>" */
+function lerObsGaveta(obs: string | null | undefined): { levou: string | null; motivo: string; lancou: string | null } {
+  const partes = String(obs ?? '')
+    .split(' · ')
+    .map((x) => x.trim())
+    .filter(Boolean);
+  let levou: string | null = null;
+  if (partes.length && /^levou:/i.test(partes[0])) {
+    levou = (partes.shift() ?? '').replace(/^levou:\s*/i, '').trim() || null;
+  }
+  const lancou = partes.length > 1 ? (partes.pop() ?? null) : null;
+  return { levou, motivo: partes.join(' · ') || 'sem motivo', lancou };
+}
+
+/** Chave pra somar por pessoa: o nome é digitado no balcão ("Cintia", "cíntia "). */
+function chaveNome(nome: string): string {
+  return nome
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function caixaSemResposta(erro: string): CaixaDia {
+  return {
+    ok: false,
+    erro,
+    gavetas: [],
+    saidas: [],
+    entradas: [],
+    totalSaidas: 0,
+    totalEntradas: 0,
+    porPessoa: [],
+    maquininhas: null,
+  };
+}
+
+/** Gavetas, saídas de dinheiro e maquininhas abertas da casa no dia. Nunca lança. */
+async function caixaDaLoja(filialId: string, dia: string): Promise<CaixaDia> {
+  try {
+    const leitura = Promise.all([
+      chamarLojaCaixa(filialId, `/relatorio?data=${somaDias(dia, -1)}`),
+      chamarLojaCaixa(filialId, `/relatorio?data=${dia}`),
+      chamarLojaCaixa(filialId, `/relatorio?data=${somaDias(dia, 1)}`),
+      chamarLojaCaixa(filialId, '/conferir'),
+    ]);
+    let relogio: ReturnType<typeof setTimeout> | undefined;
+    const prazo = new Promise<null>((res) => {
+      relogio = setTimeout(() => res(null), PRAZO_CAIXA_MS);
+    });
+    const lido = await Promise.race([leitura, prazo]).finally(() => clearTimeout(relogio));
+    if (!lido) return caixaSemResposta('a loja não respondeu a tempo');
+    const [antes, noDia, depois, conf] = lido;
+    const dias = [antes, noDia, depois];
+    const falhou = dias.find((x) => !x.ok);
+    if (falhou) return caixaSemResposta(String(falhou.erro || 'a loja não respondeu'));
+
+    const iniMs = new Date(`${dia}T05:00:00-03:00`).getTime();
+    const fimMs = new Date(`${somaDias(dia, 1)}T05:00:00-03:00`).getTime();
+    const agoraMs = Date.now();
+    // O trecho que as 3 leituras cobrem com certeza, seja qual for o fuso da loja.
+    const cobreDe = new Date(`${somaDias(dia, -1)}T12:00:00Z`).getTime();
+    const cobreAte = new Date(`${somaDias(dia, 2)}T00:00:00Z`).getTime();
+
+    // O estado do caixa (fundo, esperado, contado, fechado) é o de AGORA em
+    // qualquer um dos dias; o recebido por forma é só do dia pedido → soma.
+    interface Acum {
+      codigo: number;
+      quem: string;
+      tipo: string;
+      aberto: Date | null;
+      fechado: Date | null;
+      fundo: number;
+      esperado: number | null;
+      contado: number | null;
+      dinheiro: number;
+      entradas: number;
+      saidas: number;
+    }
+    const cxs = new Map<number, Acum>();
+    const movs = new Map<string, MovLoja>();
+    for (const d of dias) {
+      for (const c of (Array.isArray(d.caixas) ? d.caixas : []) as CxLoja[]) {
+        const cod = Number(c.codigo);
+        if (!Number.isFinite(cod)) continue;
+        const a: Acum = cxs.get(cod) ?? {
+          codigo: cod,
+          quem: '',
+          tipo: 'sistema',
+          aberto: null,
+          fechado: null,
+          fundo: 0,
+          esperado: null,
+          contado: null,
+          dinheiro: 0,
+          entradas: 0,
+          saidas: 0,
+        };
+        a.quem = String(c.quem ?? '').trim() || a.quem;
+        a.tipo = String(c.tipo ?? a.tipo);
+        a.aberto = instanteDaLoja(c.aberto_em) ?? a.aberto;
+        a.fechado = instanteDaLoja(c.fechado_em);
+        a.fundo = num(c.fundo);
+        a.esperado = c.esperado == null ? null : num(c.esperado);
+        a.contado = c.contado == null ? null : num(c.contado);
+        for (const f of c.formas ?? []) {
+          if (Number(f.codigo) === FORMA_DINHEIRO) a.dinheiro += num(f.valor);
+        }
+        cxs.set(cod, a);
+      }
+      for (const m of (Array.isArray(d.movs) ? d.movs : []) as MovLoja[]) {
+        movs.set([m.caixa, m.quando, m.entrada, m.saida, m.obs].join('|'), m);
+      }
+    }
+
+    const saidas: MovGaveta[] = [];
+    const entradas: MovGaveta[] = [];
+    const ordem = new Map<MovGaveta, number>();
+    for (const m of movs.values()) {
+      const quando = instanteDaLoja(m.quando);
+      const cx = cxs.get(Number(m.caixa));
+      const entra = num(m.entrada);
+      const sai = num(m.saida);
+      if (cx) {
+        cx.entradas += entra;
+        cx.saidas += sai;
+      }
+      if (!quando) continue;
+      const t = quando.getTime();
+      if (t < iniMs || t >= fimMs) continue;
+      const obs = lerObsGaveta(m.obs);
+      const base = {
+        hora: horaBr(quando),
+        diaMes: diaMesBr(quando),
+        caixa: Number(m.caixa),
+        caixaDe: cx?.quem || `caixa ${m.caixa}`,
+        ...obs,
+      };
+      if (sai > 0) {
+        const linha = { ...base, valor: r2(sai) };
+        saidas.push(linha);
+        ordem.set(linha, t);
+      }
+      if (entra > 0) {
+        const linha = { ...base, valor: r2(entra) };
+        entradas.push(linha);
+        ordem.set(linha, t);
+      }
+    }
+    const porHora = (a: MovGaveta, b: MovGaveta) => (ordem.get(a) ?? 0) - (ordem.get(b) ?? 0);
+    saidas.sort(porHora);
+    entradas.sort(porHora);
+
+    const pessoas = new Map<string, { nome: string; valor: number; n: number }>();
+    for (const x of saidas) {
+      // Despesa paga no balcão não tem "quem levou": a loja só pede o nome na sangria.
+      const nome = x.levou ?? 'despesa paga no caixa';
+      const k = chaveNome(nome);
+      const p = pessoas.get(k) ?? { nome, valor: 0, n: 0 };
+      p.valor = r2(p.valor + x.valor);
+      p.n += 1;
+      pessoas.set(k, p);
+    }
+
+    const rotulo = (d: Date) => `${diaMesBr(d)} ${horaBr(d)}`;
+    const gavetas: GavetaDia[] = [...cxs.values()]
+      .filter((c) => c.tipo !== 'maquininha' && c.aberto != null)
+      .filter((c) => {
+        const ab = (c.aberto as Date).getTime();
+        return ab < fimMs && (c.fechado == null || c.fechado.getTime() >= iniMs);
+      })
+      .sort((a, b) => (a.aberto as Date).getTime() - (b.aberto as Date).getTime())
+      .map((c) => {
+        const ab = (c.aberto as Date).getTime();
+        const aberta = c.fechado == null;
+        let esperado = c.esperado;
+        // Gaveta ainda aberta: a loja só calcula o saldo ao fechar. Dá pra dizer
+        // quanto deve ter lá dentro se a leitura pegou o caixa desde a abertura.
+        if (aberta && ab >= cobreDe && agoraMs <= cobreAte) {
+          esperado = r2(c.fundo + c.dinheiro + c.entradas - c.saidas);
+        }
+        const contado = aberta ? null : c.contado;
+        return {
+          codigo: c.codigo,
+          quem: c.quem || `caixa ${c.codigo}`,
+          abertoEm: rotulo(c.aberto as Date),
+          fechadoEm: c.fechado ? rotulo(c.fechado) : null,
+          aberta,
+          doDia: ab >= iniMs,
+          diasAberta: aberta ? Math.floor((agoraMs - ab) / DIA_MS) : 0,
+          fundo: r2(c.fundo),
+          dinheiro: r2(c.dinheiro),
+          entradas: r2(c.entradas),
+          saidas: r2(c.saidas),
+          esperado,
+          contado,
+          diferenca: !aberta && esperado != null && contado != null ? r2(contado - esperado) : null,
+        };
+      });
+
+    // Maquininhas: a conferência diz como está AGORA (não tem histórico). Entra
+    // o que abriu até o fim do dia do relatório e continua aberto.
+    let maquininhas: MaquininhaAberta[] | null = null;
+    if (conf.ok && Array.isArray(conf.caixas)) {
+      const passageiras = ['extrato_atrasado', 'extrato_indisponivel', 'erro_banco'];
+      maquininhas = (conf.caixas as ConfLoja[])
+        .filter((c) => c.tipo === 'maquininha')
+        .map((c) => ({ c, aberto: instanteDaLoja(c.aberto_em) }))
+        .filter((x): x is { c: ConfLoja; aberto: Date } => x.aberto != null && x.aberto.getTime() < fimMs)
+        .sort((a, b) => a.aberto.getTime() - b.aberto.getTime())
+        .map(({ c, aberto }) => {
+          const fecharia = c.fecharia === true;
+          const categoria = c.categoria ?? null;
+          return {
+            codigo: Number(c.codigo),
+            quem: cxs.get(Number(c.codigo))?.quem || String(c.quem ?? '').trim() || `caixa ${c.codigo}`,
+            desde: rotulo(aberto),
+            dias: Math.floor((agoraMs - aberto.getTime()) / DIA_MS),
+            pagamentos: num(c.pagamentos),
+            total: r2(num(c.total)),
+            fecharia,
+            categoria,
+            motivo: c.motivo
+              ? String(c.motivo).replace(' (vai até 00/00/0000)', ' (a nuvem ainda não tem extrato da Cielo desta casa)')
+              : null,
+            canal: r2(num(c.canal?.total)),
+            // Extrato do próprio dia que ainda não chegou é passageiro; o resto
+            // (dinheiro lançado, sem par, duplicado, ou caixa de dias atrás) é trava.
+            travada: !fecharia && (!passageiras.includes(categoria ?? '') || aberto.getTime() < iniMs),
+          };
+        });
+    }
+
+    return {
+      ok: true,
+      erro: null,
+      gavetas,
+      saidas,
+      entradas,
+      totalSaidas: r2(saidas.reduce((s, x) => s + x.valor, 0)),
+      totalEntradas: r2(entradas.reduce((s, x) => s + x.valor, 0)),
+      porPessoa: [...pessoas.values()].sort((a, b) => b.valor - a.valor),
+      maquininhas,
+    };
+  } catch (e) {
+    return caixaSemResposta(e instanceof Error ? e.message : 'falha ao ler o caixa da loja');
+  }
+}
+
+/** O que do caixa vira ponto de atenção do dia. */
+function atencaoDoCaixa(cx: CaixaDia): string[] {
+  const out: string[] = [];
+  if (!cx.ok) return out;
+  for (const g of cx.gavetas) {
+    if (g.diferenca != null && Math.abs(g.diferenca) >= 1) {
+      out.push(
+        `Gaveta de ${g.quem} fechou com ${reais(Math.abs(g.diferenca))} ${g.diferenca < 0 ? 'a menos' : 'a mais'} que o esperado (esperado ${reais(g.esperado ?? 0)}, contado ${reais(g.contado ?? 0)})`,
+      );
+    }
+    if (g.aberta && g.diasAberta >= 2) {
+      out.push(`Gaveta de ${g.quem} aberta desde ${g.abertoEm.slice(0, 5)} (${g.diasAberta} dias) — ninguém fechou`);
+    }
+  }
+  const travadas = (cx.maquininhas ?? []).filter((m) => m.travada);
+  if (travadas.length) {
+    const lista = travadas
+      .slice(0, 5)
+      .map((m) => `${m.quem} desde ${m.desde.slice(0, 5)} (${reais(m.total)})`)
+      .join(', ');
+    const mesmoMotivo = travadas.every((m) => m.categoria === travadas[0].categoria);
+    const semExtrato = travadas.every((m) => (m.motivo ?? '').includes('a nuvem ainda não tem extrato'));
+    const curto: Record<string, string> = {
+      extrato_atrasado: 'o extrato da Cielo desses dias ainda não chegou',
+      extrato_indisponivel: 'a loja não conseguiu ler o extrato da Cielo',
+      dinheiro_lancado: 'tem dinheiro lançado em caixa de maquininha',
+      sem_par: 'tem cartão ou Pix sem par na Cielo',
+      duplicado: 'tem pagamento lançado em dobro',
+      erro_banco: 'a conferência deu erro na loja',
+    };
+    const porque = semExtrato
+      ? 'a nuvem não tem extrato da Cielo desta casa, então a conferência não fecha nenhum'
+      : mesmoMotivo
+        ? (curto[travadas[0].categoria ?? ''] ?? travadas[0].motivo ?? 'não conferem')
+        : 'motivos em Financeiro › Conferência de caixa';
+    out.push(
+      `${pl(travadas.length, 'caixa de maquininha travado', 'caixas de maquininha travados')} sem fechar: ${lista}` +
+        (travadas.length > 5 ? ` e mais ${travadas.length - 5}` : '') +
+        ` — ${porque}`,
+    );
+  }
+  return out;
+}
+
 /** Relatório do dia de todas as casas da organização (só as que estão em operação). */
 export async function montarRelatorioOrganizacao(organizacaoId: string, dia: string): Promise<RelatorioCasa[]> {
   const filiais = await q<{ id: string; nome: string; caixa_url: string | null }>(sql`
@@ -822,7 +1281,18 @@ export async function montarRelatorioFiliais(
   dia: string,
 ): Promise<RelatorioCasa[]> {
   const casas = await Promise.all(
-    filiais.map(async (f) => montarRelatorioCasa(f, dia, await metasDaLoja(f.caixa_url ?? null))),
+    filiais.map(async (f) => {
+      // O caixa vem da loja em paralelo com o resto; casa sem loja ligada fica sem.
+      const [casa, caixa] = await Promise.all([
+        (async () => montarRelatorioCasa(f, dia, await metasDaLoja(f.caixa_url ?? null)))(),
+        f.caixa_url?.trim() ? caixaDaLoja(f.id, dia) : Promise.resolve(null),
+      ]);
+      if (caixa) {
+        casa.caixa = caixa;
+        casa.atencao.push(...atencaoDoCaixa(caixa));
+      }
+      return casa;
+    }),
   );
   return casas.filter((c) => c.ativa || c.temMovimento);
 }
@@ -842,11 +1312,74 @@ export function resumoUmaLinha(casas: RelatorioCasa[]): string {
   return `${partes.join(' · ')} · Total ${reais(total, false)}`;
 }
 
+/** Gaveta, saídas de dinheiro e maquininhas sem fechar, pro texto do WhatsApp. */
+function linhasCaixa(c: RelatorioCasa): string[] {
+  const cx = c.caixa;
+  if (!cx) return [];
+  if (!cx.ok) return ['💵 Caixa: a loja não respondeu na hora do relatório — gaveta e saídas ficam na tela.'];
+  const L: string[] = [];
+  // Gaveta do dia: a que abriu ou a que fechou nele. A esquecida aberta vai em Atenção.
+  for (const g of cx.gavetas.filter((x) => x.doDia || !x.aberta)) {
+    let fim: string;
+    if (g.aberta) {
+      fim = g.esperado != null ? `ainda aberta, deve ter ${reais(g.esperado)}` : 'ainda aberta';
+    } else if (g.contado == null) {
+      fim = 'fechou sem contagem';
+    } else if (g.diferenca == null || Math.abs(g.diferenca) < 0.01) {
+      fim = `fechou com ${reais(g.contado)} — bateu`;
+    } else {
+      fim = `fechou com ${reais(g.contado)} — ${reais(Math.abs(g.diferenca))} ${g.diferenca < 0 ? 'a menos' : 'a mais'} que o esperado`;
+    }
+    const conta =
+      `fundo ${reais(g.fundo)} + dinheiro ${reais(g.dinheiro)}` +
+      (g.entradas ? ` + entradas ${reais(g.entradas)}` : '') +
+      (g.saidas ? ` − saídas ${reais(g.saidas)}` : '');
+    L.push(`💵 Gaveta de ${g.quem}${g.doDia ? '' : ` (aberta em ${g.abertoEm.slice(0, 5)})`}: ${conta} · ${fim}`);
+  }
+  const linha = (x: MovGaveta) =>
+    `• ${x.hora} ${reais(x.valor)} — ${x.levou ? `${x.levou}: ` : ''}${x.motivo}${x.lancou ? ` (lançou ${x.lancou})` : ''}`;
+  if (cx.saidas.length) {
+    const quem = cx.porPessoa.map((p) => `${p.nome} ${reais(p.valor)}`).join(', ');
+    L.push(`💸 Saídas de dinheiro: ${reais(cx.totalSaidas)} em ${cx.saidas.length} — ${quem}`);
+    for (const x of cx.saidas.slice(0, 12)) L.push(linha(x));
+    if (cx.saidas.length > 12) L.push(`• e mais ${cx.saidas.length - 12} na tela`);
+  } else if (cx.gavetas.length) {
+    L.push('💸 Nenhuma saída de dinheiro da gaveta.');
+  }
+  if (cx.entradas.length) {
+    L.push(`➕ Entradas na gaveta: ${reais(cx.totalEntradas)} em ${cx.entradas.length}`);
+    for (const x of cx.entradas.slice(0, 5)) L.push(linha(x));
+  }
+  const maq = cx.maquininhas ?? [];
+  if (maq.length) {
+    const sozinhas = maq.filter((m) => m.fecharia).length;
+    const travadas = maq.filter((m) => m.travada).length;
+    const esperando = maq.length - sozinhas - travadas;
+    const partes = [
+      sozinhas ? `${sozinhas} ${sozinhas === 1 ? 'fecha sozinha' : 'fecham sozinhas'} na madrugada` : '',
+      esperando ? `${esperando} esperando o extrato da Cielo` : '',
+      travadas ? `${travadas} ${travadas === 1 ? 'travada' : 'travadas'}` : '',
+    ].filter(Boolean);
+    L.push(`🔓 ${pl(maq.length, 'maquininha aberta', 'maquininhas abertas')} agora: ${partes.join(', ')}`);
+  }
+  return L;
+}
+
 function textoCasa(c: RelatorioCasa): string {
   const L: string[] = [];
   L.push(`*${c.nome}*`);
   if (!c.movimento.contas) {
     L.push(c.equipe.total ? `Sem contas no dia (${c.equipe.total} pessoas bateram ponto).` : 'Sem movimento no dia.');
+    // Casa sem conta no dia também pode ter gaveta aberta, saída de dinheiro ou maquininha parada.
+    const cx = c.caixa;
+    if (cx?.ok && (cx.gavetas.length || cx.saidas.length || cx.entradas.length || cx.maquininhas?.length)) {
+      L.push(...linhasCaixa(c));
+      const doCaixa = atencaoDoCaixa(cx);
+      if (doCaixa.length) {
+        L.push('⚠️ Atenção:');
+        for (const a of doCaixa) L.push(`• ${a}`);
+      }
+    }
     return L.join('\n');
   }
   const m = c.movimento;
@@ -889,6 +1422,7 @@ function textoCasa(c: RelatorioCasa): string {
       `📅 ${pl(c.reservas.total, 'reserva', 'reservas')}: ${pl(c.reservas.sentadas, 'veio', 'vieram')}, ${pl(c.reservas.noShow, 'faltou', 'faltaram')}`,
     );
   }
+  L.push(...linhasCaixa(c));
   if (c.atencao.length) {
     L.push('⚠️ Atenção:');
     for (const a of c.atencao) L.push(`• ${a}`);

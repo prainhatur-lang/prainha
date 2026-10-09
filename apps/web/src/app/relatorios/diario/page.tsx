@@ -18,6 +18,7 @@ import {
   rotuloDia,
   somaDias,
   ultimoDiaFechado,
+  type CaixaDia,
   type RelatorioCasa,
 } from '@/lib/relatorio-diario';
 import {
@@ -68,6 +69,178 @@ function Bloco({ titulo, children, nota }: { titulo: string; children: React.Rea
   );
 }
 
+/** Tem o que mostrar do caixa (ou a loja não respondeu — isso também se mostra). */
+function temCaixa(cx: CaixaDia | null): cx is CaixaDia {
+  if (!cx) return false;
+  if (!cx.ok) return true;
+  return cx.gavetas.length > 0 || cx.saidas.length > 0 || cx.entradas.length > 0 || (cx.maquininhas?.length ?? 0) > 0;
+}
+
+/** Gavetas, saídas de dinheiro (quem levou, pra quê, quem lançou) e maquininhas sem fechar. */
+function CaixaDoDia({ cx }: { cx: CaixaDia }) {
+  if (!cx.ok) {
+    return (
+      <Bloco titulo="Caixa e saídas de dinheiro">
+        <p className="text-amber-700">
+          A loja não respondeu agora ({cx.erro ?? 'sem resposta'}). Recarregue a página em alguns minutos — a gaveta e as
+          saídas são lidas direto do servidor da loja.
+        </p>
+      </Bloco>
+    );
+  }
+  const maq = cx.maquininhas;
+  return (
+    <Bloco
+      titulo="Caixa e saídas de dinheiro"
+      nota="Lido direto do servidor da loja. Maquininha não recebe dinheiro: gaveta é só o caixa do balcão. Entradas e saídas da gaveta contam o caixa inteiro, do abrir ao fechar; a lista de saídas abaixo é só a do dia."
+    >
+      {cx.gavetas.length === 0 ? (
+        <p className="text-slate-500">Nenhuma gaveta aberta nesse dia.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[720px] text-left text-sm">
+            <thead className="text-[11px] uppercase tracking-wide text-slate-400">
+              <tr>
+                <th className="py-1 pr-3 font-medium">Gaveta</th>
+                <th className="py-1 pr-3 font-medium">Abriu</th>
+                <th className="py-1 pr-3 font-medium">Fechou</th>
+                <th className="py-1 pr-3 text-right font-medium">Fundo</th>
+                <th className="py-1 pr-3 text-right font-medium">Dinheiro</th>
+                <th className="py-1 pr-3 text-right font-medium">Entradas</th>
+                <th className="py-1 pr-3 text-right font-medium">Saídas</th>
+                <th className="py-1 pr-3 text-right font-medium">Esperado</th>
+                <th className="py-1 pr-3 text-right font-medium">Contado</th>
+                <th className="py-1 text-right font-medium">Diferença</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {cx.gavetas.map((g) => (
+                <tr key={g.codigo}>
+                  <td className="py-1.5 pr-3 font-medium text-slate-900">{g.quem}</td>
+                  <td className="py-1.5 pr-3 text-slate-500">{g.abertoEm}</td>
+                  <td className="py-1.5 pr-3">
+                    {g.fechadoEm ? (
+                      <span className="text-slate-500">{g.fechadoEm}</span>
+                    ) : (
+                      <span className={g.diasAberta >= 2 ? 'font-medium text-rose-700' : 'text-amber-700'}>
+                        aberta{g.diasAberta >= 1 ? ` há ${pl(g.diasAberta, 'dia', 'dias')}` : ''}
+                      </span>
+                    )}
+                  </td>
+                  <td className="py-1.5 pr-3 text-right">{brl(g.fundo)}</td>
+                  <td className="py-1.5 pr-3 text-right">{brl(g.dinheiro)}</td>
+                  <td className="py-1.5 pr-3 text-right">{g.entradas ? brl(g.entradas) : '—'}</td>
+                  <td className="py-1.5 pr-3 text-right">{g.saidas ? brl(g.saidas) : '—'}</td>
+                  <td className="py-1.5 pr-3 text-right">{g.esperado != null ? brl(g.esperado) : '—'}</td>
+                  <td className="py-1.5 pr-3 text-right">{g.contado != null ? brl(g.contado) : '—'}</td>
+                  <td className="py-1.5 text-right">
+                    {g.diferenca == null ? (
+                      '—'
+                    ) : Math.abs(g.diferenca) < 0.01 ? (
+                      <span className="text-emerald-700">bateu</span>
+                    ) : (
+                      <span className="font-medium text-rose-700">
+                        {g.diferenca < 0 ? '−' : '+'}
+                        {brl(Math.abs(g.diferenca))}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <h4 className="mt-4 text-xs font-semibold uppercase tracking-wide text-slate-500">
+        Saídas de dinheiro{cx.saidas.length ? ` — ${brl(cx.totalSaidas)} em ${cx.saidas.length}` : ''}
+      </h4>
+      {cx.saidas.length === 0 ? (
+        <p className="mt-1 text-slate-500">Nenhuma saída de dinheiro da gaveta nesse dia.</p>
+      ) : (
+        <>
+          <p className="mt-1 text-xs text-slate-500">
+            Por pessoa: {cx.porPessoa.map((p) => `${p.nome} ${brl(p.valor)} (${p.n}x)`).join(' · ')}
+          </p>
+          <div className="mt-1 overflow-x-auto">
+            <table className="w-full min-w-[640px] text-left text-sm">
+              <thead className="text-[11px] uppercase tracking-wide text-slate-400">
+                <tr>
+                  <th className="py-1 pr-3 font-medium">Hora</th>
+                  <th className="py-1 pr-3 text-right font-medium">Valor</th>
+                  <th className="py-1 pr-3 font-medium">Quem levou</th>
+                  <th className="py-1 pr-3 font-medium">Motivo</th>
+                  <th className="py-1 pr-3 font-medium">Lançou</th>
+                  <th className="py-1 font-medium">Gaveta</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {cx.saidas.map((x, i) => (
+                  <tr key={i}>
+                    <td className="py-1.5 pr-3 text-slate-500">{x.hora}</td>
+                    <td className="py-1.5 pr-3 text-right font-medium text-slate-900">{brl(x.valor)}</td>
+                    <td className="py-1.5 pr-3">{x.levou ?? <span className="text-slate-400">despesa do caixa</span>}</td>
+                    <td className="py-1.5 pr-3">{x.motivo}</td>
+                    <td className="py-1.5 pr-3 text-slate-500">{x.lancou ?? '—'}</td>
+                    <td className="py-1.5 text-slate-500">{x.caixaDe}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      {cx.entradas.length > 0 && (
+        <>
+          <h4 className="mt-4 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Entradas na gaveta — {brl(cx.totalEntradas)} em {cx.entradas.length}
+          </h4>
+          <ul className="mt-1 space-y-1">
+            {cx.entradas.map((x, i) => (
+              <li key={i}>
+                <span className="text-slate-500">{x.hora}</span> · <span className="font-medium">{brl(x.valor)}</span> —{' '}
+                {x.motivo}
+                {x.lancou ? <span className="text-slate-500"> (lançou {x.lancou})</span> : null}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      <h4 className="mt-4 text-xs font-semibold uppercase tracking-wide text-slate-500">
+        Maquininhas ainda abertas (situação de agora)
+      </h4>
+      {maq == null ? (
+        <p className="mt-1 text-amber-700">A conferência da loja não respondeu agora.</p>
+      ) : maq.length === 0 ? (
+        <p className="mt-1 text-slate-500">Nenhuma — todos os caixas de maquininha até esse dia estão fechados.</p>
+      ) : (
+        <ul className="mt-1 space-y-1">
+          {maq.map((m) => (
+            <li key={m.codigo} className="flex flex-wrap items-baseline justify-between gap-x-3">
+              <span>
+                <span className="font-medium text-slate-900">{m.quem}</span>{' '}
+                <span className="text-slate-500">
+                  desde {m.desde} · {pl(m.pagamentos, 'pagamento', 'pagamentos')} · {brl(m.total)}
+                  {m.canal > 0 ? ` · iFood Online ${brl(m.canal)} fora da conferência` : ''}
+                </span>
+              </span>
+              <span
+                className={
+                  m.fecharia ? 'text-emerald-700' : m.travada ? 'font-medium text-rose-700' : 'text-amber-700'
+                }
+              >
+                {m.fecharia ? 'confere — fecha sozinha na madrugada' : (m.motivo ?? 'não confere')}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Bloco>
+  );
+}
+
 function Casa({ c }: { c: RelatorioCasa }) {
   if (!c.temMovimento) {
     return (
@@ -77,6 +250,11 @@ function Casa({ c }: { c: RelatorioCasa }) {
           Sem movimento nesse dia
           {c.equipe.total > 0 ? ` — ${c.equipe.total} pessoas bateram ponto.` : '.'}
         </p>
+        {temCaixa(c.caixa) && (
+          <div className="mt-3">
+            <CaixaDoDia cx={c.caixa} />
+          </div>
+        )}
       </section>
     );
   }
@@ -323,6 +501,12 @@ function Casa({ c }: { c: RelatorioCasa }) {
           </ul>
         </Bloco>
       </div>
+
+      {temCaixa(c.caixa) && (
+        <div className="mt-3">
+          <CaixaDoDia cx={c.caixa} />
+        </div>
+      )}
 
       {(c.avaliacoes.baixas.length > 0 ||
         c.reservas.total > 0 ||
