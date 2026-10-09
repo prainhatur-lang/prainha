@@ -747,6 +747,15 @@ async function completarClaude(p: {
   if (msgs.length === 0 || msgs[0].role !== 'user') {
     msgs.unshift({ role: 'user', content: [{ type: 'text', text: '[início da conversa]' }] });
   }
+  // Histórico terminando em fala da própria Nina (retomada forçada depois que a
+  // equipe ensinou a resposta): a Anthropic recusa conversa que acaba em
+  // 'assistant' — deu "Falha técnica" na Claudia em 09/10. Fecha com um turno.
+  if (msgs[msgs.length - 1].role === 'assistant') {
+    msgs.push({
+      role: 'user',
+      content: [{ type: 'text', text: '[o cliente segue aguardando a sua resposta — siga as instruções do sistema]' }],
+    });
+  }
 
   const tools: Anthropic.Tool[] = p.ferramentas
     .filter((f) => f.type === 'function')
