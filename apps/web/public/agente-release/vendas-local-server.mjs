@@ -942,6 +942,20 @@ async function initSchema() {
   await sql`CREATE INDEX IF NOT EXISTS ix_kids_cobranca_entrada ON kids_cobranca (entrada_id)`;
   await sql`CREATE UNIQUE INDEX IF NOT EXISTS ux_kids_cobranca_txid ON kids_cobranca (txid) WHERE txid IS NOT NULL`;
 
+  // ---- TRILHA DA MAQUININHA ----
+  // Toda tentativa de registrar pagamento da LIO (entrou, já tinha, retido,
+  // recusado, sem sessão) e todo desfecho que o app avisa e que NÃO virou
+  // pagamento (cobrança cancelada, erro do terminal, "pago" sem transação).
+  // Até 09/10/2026 isso só existia no console da loja: quando o Pix/débito
+  // "não fechava a conta" e o caixa baixava na mão, não havia como saber de
+  // fora se o pagamento tinha chegado aqui. É só diagnóstico — nada lê esta
+  // tabela pra decidir dinheiro.
+  await sql`CREATE TABLE IF NOT EXISTS lio_trilha (id bigserial PRIMARY KEY,
+    em timestamptz DEFAULT now(), tipo text NOT NULL, login text, terminal text, app text,
+    numero integer, ped integer, forma text, valor numeric, nsu text,
+    resultado text, erro text, extra jsonb)`;
+  await sql`CREATE INDEX IF NOT EXISTS ix_lio_trilha_em ON lio_trilha (em)`;
+
   await initSchemaNativo();
 }
 
@@ -5461,6 +5475,30 @@ async function apiContaPagarSemTrava(body) {
       console.error(`[pagar] recebimento de ${alvo.quando ? alvo.quando.quando.toISOString() : '?'} desviado da conta ${ped || '-'} pra ${alvo.ped} (a que estava aberta na cobrança), número ${n}, R$ ${valor.toFixed(2)}`);
       ped = Number(alvo.ped);
     }
+    // RECUPERADO (app da maquininha >=1.10.30): cobrança que o terminal aprovou
+    // e cujo aviso se perdeu — o app achou de volta no terminal, às vezes
+    // minutos depois. Se nesse meio-tempo alguém já baixou o mesmo valor nesta
+    // conta por fora da maquininha (o caixa fechando na mão: sem NSU, a trava
+    // do NSU não vê), entrar sozinho dobraria o recebimento. Aí NÃO entra: fica
+    // retido, em vermelho no caixa, pra quem está lá decidir — descartar se for
+    // o mesmo dinheiro, lançar se for outro. Só o recuperado passa por aqui
+    // (e o "lançar" do caixa vem com forcar_conta, então não volta pra cá).
+    if (body.recuperado === true && nativo() && ped && alvo.quando) {
+      let porFora = null;
+      try {
+        [porFora] = await sql`SELECT codigo FROM pagamento_local WHERE pedido=${Number(ped)}
+          AND abs(valor-${Number(valor)})<0.005 AND cancelado_em IS NULL
+          AND COALESCE(observacao,'') NOT LIKE 'Prainha LIO%'
+          AND quando >= ${new Date(alvo.quando.quando.getTime() - TOL_RELOGIO_MS)} ORDER BY codigo LIMIT 1`;
+      } catch (e) { console.error('[pagar] conferência do recuperado:', e.message); }
+      if (porFora) {
+        const motivo = `A maquininha aprovou e o aviso se perdeu; quando chegou, a conta ${ped} já tinha R$ ${valor.toFixed(2).replace('.', ',')} lançado por fora da maquininha depois da cobrança. Pode ser o MESMO dinheiro.`;
+        const id = await reterRecebimento(n, body, { quando: alvo.quando, alvo: { codigo: ped } }, motivo);
+        console.error(`[pagar] ⚠️ RETIDO #${id} (recuperado): ${forma} R$ ${valor.toFixed(2)} no número ${n} (NSU ${body.nsu || '-'}) — ${motivo}`);
+        return { ok: false, retido: true, ja_registrado: true, pagamento_id: id,
+          erro: `${motivo} Não lancei de novo: ficou guardado e aparece em VERMELHO no caixa — descarte se for o mesmo, lance se for outro.` };
+      }
+    }
   }
   if (!ped) return { ok: false, erro: 'comanda não está aberta' };
   const cab = (await pedTotais(ped)) || {};
@@ -5565,6 +5603,45 @@ async function apiContaConferir(pagamentoId) {
 // entre os lançamentos, cobrados 1x na Cielo. Aqui o 2º espera o 1º acabar
 // e devolve o MESMO resultado. Vale pra qualquer cliente, sem mexer no app.
 const lioPagarEmVoo = new Map();
+// ---- TRILHA DA MAQUININHA (tabela lio_trilha) ----
+/** O que vale guardar do corpo que o app mandou, aparado. */
+function lioTrilhaExtra(body, mais) {
+  const o = {};
+  const b = body || {};
+  for (const k of ['autorizacao', 'bandeira', 'descricao', 'adquirente', 'aprovado_em', 'agora', '_id',
+    'recuperado', 'pedido_lio', 'fid_uso', 'ref', 'inicio', 'status', 'aprovado', 'display_id']) {
+    const v = b[k];
+    if (v == null || v === '') continue;
+    o[k] = typeof v === 'number' || typeof v === 'boolean' ? v : String(typeof v === 'string' ? v : JSON.stringify(v)).slice(0, 300);
+  }
+  // quanto o relógio do aparelho está fora do nosso (segundos; + = adiantado)
+  const dv = Number(b.agora);
+  if (Number.isFinite(dv) && dv > 0) o.desvio_s = Math.round((dv - Date.now()) / 1000);
+  return Object.assign(o, mais || {});
+}
+/** Grava uma linha na trilha. NUNCA derruba nem atrasa quem chama. */
+function lioTrilha(tipo, req, g, body, resultado, erro, extra) {
+  try {
+    const b = body || {};
+    const num = (v) => { const x = Number(v); return v != null && v !== '' && Number.isFinite(x) && Math.abs(x) < 1e9 ? x : null; };
+    const int = (v) => { const x = Number(v); return v != null && v !== '' && Number.isInteger(x) && Math.abs(x) < 2e9 ? x : null; };
+    const txt = (v, n) => (v == null || v === '' ? null : String(v).slice(0, n));
+    sql`INSERT INTO lio_trilha (tipo, login, terminal, app, numero, ped, forma, valor, nsu, resultado, erro, extra)
+      VALUES (${txt(tipo, 40)}, ${g ? txt(g.login, 60) : null}, ${txt(b.terminal, 60)},
+        ${txt(req && req.headers ? req.headers['x-concilia-app'] : null, 30)},
+        ${int(b.numero)}, ${int(b.ped)}, ${txt(b.forma, 20)}, ${num(b.valor)}, ${txt(b.nsu, 40)},
+        ${txt(resultado, 40)}, ${txt(erro, 300)}, ${sql.json(extra || {})})`
+      .catch((e) => console.error('[lio] trilha:', e.message));
+  } catch (e) { console.error('[lio] trilha:', e.message); }
+}
+/** Leitura da trilha pela nuvem (canal assinado da conferência de caixa). */
+async function apiLioTrilha(dias) {
+  const d = Math.min(Math.max(Math.floor(Number(dias)) || 2, 1), 60);
+  const desde = new Date(Date.now() - d * 864e5);
+  const linhas = await sql`SELECT id, em::text em, tipo, login, terminal, app, numero, ped, forma, valor, nsu, resultado, erro, extra
+    FROM lio_trilha WHERE em > ${desde} ORDER BY id DESC LIMIT 5000`;
+  return { ok: true, dias: d, linhas };
+}
 async function apiLioPagar(body, garcom) {
   // PIX no menu da LIO chega com nsu (cieloCode) VAZIO e o número em authCode
   // (ver apiLioPagarSemTrava). Sem isto a trava em voo era pulada e o reenvio
@@ -5653,6 +5730,12 @@ async function apiLioPagarSemTrava(body, garcom) {
     // caminho (que é justamente o da fila do app reenviando cobrança velha):
     // _id é o carimbo que o app põe ao enfileirar, aprovado_em vem do terminal.
     _id: body._id || null, aprovado_em: body.aprovado_em || null,
+    // relógio do aparelho no instante do POST: é o que instanteDaTransacao usa
+    // pra descontar o atraso da maquininha dos dois carimbos acima. Não vinha
+    // repassado, então a correção de relógio nunca valia neste caminho.
+    agora: body.agora || null,
+    // cobrança achada de volta no terminal pelo app (ver a trava do recuperado em apiContaPagarSemTrava)
+    recuperado: body.recuperado === true,
     nsu: nsu || null, autorizacao: body.autorizacao || null, bandeira: body.bandeira || null,
     adquirente: body.adquirente || 'cielo', // app antigo não manda → é a LIO (Cielo)
     observacao: `Prainha LIO · ${garcom.login}`,
@@ -28750,6 +28833,8 @@ const server = http.createServer(async (req, res) => {
       // por quê" em vez do gerente descobrir só na manhã seguinte.
       if (p === '/api/central/caixa/conferir') return res.end(JSON.stringify(await apiCaixaConferirTodos()));
       if (p === '/api/central/caixa/rastro') return res.end(JSON.stringify(await apiCaixaRastro(u.searchParams.get('caixa'))));
+      // Trilha da maquininha: o que cada LIO tentou registrar e o que o app avisou (só leitura)
+      if (p === '/api/central/caixa/lio-trilha') return res.end(JSON.stringify(await apiLioTrilha(u.searchParams.get('dias'))));
       if (req.method === 'POST' && p === '/api/central/caixa/fechar-um') return res.end(JSON.stringify(await apiCaixaFecharUm(await readBody(req), central)));
       if (req.method === 'POST' && p === '/api/central/caixa/fechar-todos') return res.end(JSON.stringify(await apiCaixaFecharTodos(central)));
       return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
@@ -29234,6 +29319,20 @@ const server = http.createServer(async (req, res) => {
       if (rf.ok && rf.uso_id) console.log('[fidelidade] LIO ' + g.login + ' · mesa ' + body.numero + ' · reservou ' + rf.uso_id);
       return res.end(JSON.stringify(rf));
     }
+    // O app (>=1.10.30) avisa o desfecho que NÃO virou pagamento: cobrança
+    // cancelada, erro do terminal, "pago" sem transação, recuperação em dúvida.
+    // Só grava na trilha — não encosta em conta nenhuma e responde ok sempre.
+    if (req.method === 'POST' && p === '/api/lio/evento') {
+      const g = await garcomDaRequisicao(req, u);
+      res.writeHead(g ? 200 : 401, { 'content-type': 'application/json' });
+      if (!g) return res.end(JSON.stringify({ ok: false, sem_sessao: true }));
+      const body = await readBody(req);
+      const tipoEv = String(body.tipo || '').toLowerCase().replace(/[^a-z_]/g, '').slice(0, 30) || 'evento';
+      lioTrilha('evento', req, g, body, tipoEv, body.erro, lioTrilhaExtra(body));
+      console.log('[lio] evento ' + tipoEv + ' · ' + g.login + (body.numero ? ' · mesa ' + body.numero : '') + (body.ref ? ' · ' + String(body.ref).slice(0, 40) : '')
+        + (body.valor ? ' · R$ ' + body.valor : '') + (body.erro ? ' · ' + String(body.erro).slice(0, 120) : ''));
+      return res.end(JSON.stringify({ ok: true }));
+    }
     if (req.method === 'POST' && p === '/api/lio/pagar') {
       const g = await garcomDaRequisicao(req, u);
       if (!g) {
@@ -29241,6 +29340,8 @@ const server = http.createServer(async (req, res) => {
         // dinheiro que entrou e conta que não fechou — e até 21/08 sumia sem
         // deixar rastro, o que custou horas de investigação às cegas.
         console.error('[lio] RECUSADO sem sessão · token inválido ou expirado');
+        // fica na trilha também (sem esperar o corpo pra responder)
+        readBody(req).then((b0) => lioTrilha('pagar', req, null, b0, 'sem_sessao', null, lioTrilhaExtra(b0))).catch(() => {});
         res.writeHead(401, { 'content-type': 'application/json' });
         return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true }));
       }
@@ -29250,7 +29351,14 @@ const server = http.createServer(async (req, res) => {
       delete body.forcar_conta;
       // Cartão Prainha: o desconto entra na conta antes do recebimento (uma vez só)
       if (body.fid_uso) await lioFidAplicar(body);
-      const rl = await apiLioPagar(body, g);
+      let rl;
+      try { rl = await apiLioPagar(body, g); }
+      catch (e) { lioTrilha('pagar', req, g, body, 'excecao', e.message, lioTrilhaExtra(body)); throw e; }
+      lioTrilha('pagar', req, g, body,
+        rl.ok ? (rl.ja_registrado ? 'ja_registrado' : rl.quitada ? 'quitada' : 'ok') : (rl.retido ? 'retido' : rl.ja_registrado ? 'ja_lancado' : 'recusado'),
+        rl.ok ? null : rl.erro,
+        lioTrilhaExtra(body, { saldo: rl.saldo == null ? null : Number(rl.saldo), fechada: rl.fechada == null ? null : !!rl.fechada,
+          transferida: rl.transferida ? rl.transferida.numero : null }));
       if (body.fid_uso) lioFidPago(body, rl).catch((e) => console.error('[fidelidade] LIO pago:', e.message));
       console.log('[lio] ' + g.login + ' · mesa ' + body.numero + ' · ' + body.forma
         + ' R$ ' + body.valor + (body.nsu ? ' · NSU ' + body.nsu : ' · SEM NSU')
@@ -29920,6 +30028,10 @@ async function main() {
   // log do Windows (por que o servidor desliga) pro Concilia: ~2 min após subir, depois de hora em hora
   setTimeout(() => loopDiagNuvem().catch(() => {}), 120 * 1000);
   setInterval(() => loopDiagNuvem().catch(() => {}), 60 * 60 * 1000);
+  // trilha da maquininha: 60 dias bastam pra investigar; limpa ~3 min após subir e 1x por dia
+  const podaLioTrilha = () => sql`DELETE FROM lio_trilha WHERE em < now() - interval '60 days'`.catch(() => {});
+  setTimeout(podaLioTrilha, 180 * 1000);
+  setInterval(podaLioTrilha, 24 * 60 * 60 * 1000);
   // vigia do túnel: se a nuvem parar de alcançar a loja pelo Funnel, reinicia o serviço do Tailscale sozinho
   vigiaTunelPartida();
   // TV Roku do KDS: ligada e parada na tela inicial → o servidor manda abrir o KDS nela

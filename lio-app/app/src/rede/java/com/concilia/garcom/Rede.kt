@@ -29,6 +29,8 @@ object Rede {
         onPago: (lioOrderId: String, pagamentos: List<PagamentoLio>) -> Unit,
         onCancelado: () -> Unit,
         onErro: (mensagem: String) -> Unit,
+        destino: org.json.JSONObject? = null,
     ) { onErro(AVISO) }
+    fun consultarPedido(pedidoId: String): PedidoTerminal? = null
     fun imprimirBlocos(context: Context, blocos: List<Bloco>, onOk: () -> Unit, onErro: (mensagem: String) -> Unit) { onErro(AVISO) }
 }

@@ -82,6 +82,63 @@ class ContaActivity : AppCompatActivity() {
         super.onResume()
         Session.revalidar(this) // confere local × internet (se a última checagem é velha)
         carregar()
+        conferirCobrancasPerdidas()
+    }
+
+    // Cobrança que ficou sem desfecho — o aviso do pagamento não chegou (ver
+    // EmAndamento): pergunta direto ao terminal e lança o que foi aprovado.
+    // Espera uns segundos: voltando da tela da Cielo, o aviso normal ainda
+    // pode estar a caminho, e ele tem a preferência.
+    private fun conferirCobrancasPerdidas(atrasoMs: Long = 8000L) {
+        if (EmAndamento.quantidade(this) == 0) return
+        val ate = System.currentTimeMillis()
+        window.decorView.postDelayed({
+            if (isFinishing || isDestroyed) return@postDelayed
+            val rodar = {
+                Recuperacao.rodar(this, ate) { r ->
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        // sem cobrança em aberto no aparelho, o botão não tem por que ficar preso
+                        if (EmAndamento.quantidade(this) == 0) cobrando = false
+                        carregar()
+                        Recuperacao.avisar(this, r)
+                    }
+                }
+            }
+            // a tela já se conecta à maquininha ao abrir (bindLio): se ainda não
+            // ligou, espera essa conexão em vez de abrir outra
+            if (Pagamento.pronto) rodar()
+            else window.decorView.postDelayed({
+                if (!isFinishing && !isDestroyed && Pagamento.pronto) rodar()
+            }, 4000L)
+        }, if (Pagamento.emCobranca) atrasoMs else minOf(atrasoMs, 1000L))
+    }
+
+    // A maquininha avisou "pago" e não entregou a transação. Antes isso virava
+    // "✅ Pago! Recebido R$ 0,00" com a conta aberta. Agora a cobrança fica
+    // anotada, o garçom é avisado pra NÃO cobrar de novo e o terminal é
+    // consultado em seguida (e de novo a cada volta pra tela).
+    private fun pagoSemTransacao(pedidoLio: String) {
+        EmAndamento.marcarPago(this, pedidoLio)
+        Recuperacao.evento(this, "vazio", org.json.JSONObject().put("pedido_lio", pedidoLio).put("numero", numero))
+        runOnUiThread {
+            cobrando = false
+            atualizarBotoes()
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            carregar()
+            AlertDialog.Builder(this)
+                .setTitle("⚠️ Não cobre de novo ainda")
+                .setMessage(
+                    "A maquininha avisou que o pagamento passou, mas não devolveu os dados da transação.\n\n" +
+                        "Vou conferir direto no terminal e lançar sozinho se estiver aprovado. " +
+                        "Se a conta não baixar em 1 minuto, confira o comprovante e avise o caixa — " +
+                        "NÃO passe o cartão/Pix de novo antes disso."
+                )
+                .setPositiveButton("OK", null)
+                .setCancelable(false)
+                .show()
+            conferirCobrancasPerdidas(1500L)
+        }
     }
 
     override fun onDestroy() {
@@ -1424,13 +1481,21 @@ class ContaActivity : AppCompatActivity() {
                 val linhas = vivas.map { (p, cents) ->
                     Linha(if (p.numero == numero) "Mesa ${p.numero}" else "Comanda ${p.numero}", cents)
                 }
+                // pra quem é o dinheiro, anotado antes da tela da Cielo abrir (EmAndamento)
+                val destinoRateio = org.json.JSONObject().put("tipo", "rateio").put(
+                    "parcelas",
+                    org.json.JSONArray().also { arr ->
+                        vivas.forEach { (p, cents) -> arr.put(org.json.JSONObject().put("numero", p.numero).put("centavos", cents)) }
+                    },
+                )
                 Pagamento.cobrar(
                     ref = "MESA-$numero-TUDO",
                     linhas = linhas,
                     valorCentavos = total,
                     onInicio = { },
-                    onPago = { _, pagamentos -> registrarRateio(vivas.map { it.first.numero to it.second }, pagamentos) },
+                    onPago = { pedidoLio, pagamentos -> registrarRateio(vivas.map { it.first.numero to it.second }, pagamentos, pedidoLio) },
                     onCancelado = {
+                        Recuperacao.evento(this, "cancelado", org.json.JSONObject().put("ref", "MESA-$numero-TUDO").put("valor", total / 100.0))
                         runOnUiThread {
                             cobrando = false
                             atualizarBotoes()
@@ -1438,12 +1503,14 @@ class ContaActivity : AppCompatActivity() {
                         }
                     },
                     onErro = { m ->
+                        Recuperacao.evento(this, "erro", org.json.JSONObject().put("ref", "MESA-$numero-TUDO").put("valor", total / 100.0).put("erro", m))
                         runOnUiThread {
                             cobrando = false
                             atualizarBotoes()
                             Toast.makeText(this, m, Toast.LENGTH_LONG).show()
                         }
                     },
+                    destino = destinoRateio,
                 )
             }
             .setNegativeButton("Cancelar", null)
@@ -1453,10 +1520,11 @@ class ContaActivity : AppCompatActivity() {
     /** Uma baixa POR CONTA, todas com o NSU da passada única. Cada parcela
      *  entra na fila de pendentes antes e só sai confirmada — igual ao fluxo
      *  normal. NFC-e: por pedido, depois, pelo caixa (rateio não emite). */
-    private fun registrarRateio(parcelas: List<Pair<Int, Long>>, pagamentos: List<PagamentoLio>) {
+    private fun registrarRateio(parcelas: List<Pair<Int, Long>>, pagamentos: List<PagamentoLio>, pedidoLio: String = "") {
         val p = pagamentos.firstOrNull()
         if (p == null) {
             runOnUiThread { cobrando = false; atualizarBotoes() }
+            pagoSemTransacao(pedidoLio)
             return
         }
         val tk = Session.token(this)
@@ -1476,6 +1544,8 @@ class ContaActivity : AppCompatActivity() {
                     .put("descricao", p.descricao)
                     .put("adquirente", Pagamento.ADQUIRENTE)   // cielo | rede — de qual máquina veio
                 val id = Pendentes.adicionar(this, body)
+                // a última parcela entrou na fila: a cobrança tem desfecho, sai da anotação
+                if (alvoP == parcelas.last().first) EmAndamento.fechar(this, pedidoLio)
                 var okEste = false
                 for (t in 1..3) {
                     try {
@@ -1599,14 +1669,18 @@ class ContaActivity : AppCompatActivity() {
         atualizarBotoes()
 
         val ref = (if (Session.ehComanda(this, alvo)) "COMANDA-" else "MESA-") + alvo
+        // pra qual conta é o dinheiro, anotado antes da tela da Cielo abrir (EmAndamento)
+        val destino = org.json.JSONObject().put("tipo", "conta").put("numero", alvo)
+        if (fidUso != null) destino.put("fid_uso", fidUso)
         Pagamento.cobrar(
             ref = ref,
             linhas = linhas,
             valorCentavos = valorCentavos,
             onInicio = { /* a UI de pagamento da Cielo assume a tela */ },
-            onPago = { _, pagamentos -> registrarPagamentos(alvo, pagamentos, fidUso) },
+            onPago = { pedidoLio, pagamentos -> registrarPagamentos(alvo, pagamentos, fidUso, pedidoLio) },
             onCancelado = {
                 fidLiberar(fidUso)
+                Recuperacao.evento(this, "cancelado", org.json.JSONObject().put("numero", alvo).put("ref", ref).put("valor", valorCentavos / 100.0))
                 runOnUiThread {
                     cobrando = false
                     atualizarBotoes()
@@ -1615,19 +1689,23 @@ class ContaActivity : AppCompatActivity() {
             },
             onErro = { msg ->
                 fidLiberar(fidUso)
+                Recuperacao.evento(this, "erro", org.json.JSONObject().put("numero", alvo).put("ref", ref).put("valor", valorCentavos / 100.0).put("erro", msg))
                 runOnUiThread {
                     cobrando = false
                     atualizarBotoes()
                     Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
                 }
-            }
+            },
+            destino = destino,
         )
     }
 
     // Aprovado no terminal → fila de pendentes ANTES, registro com retry, e só
     // então sai da fila. Rede caiu nesse meio tempo: fica pendente e a tela de
     // mesas reenvia — o pagamento nunca se perde.
-    private fun registrarPagamentos(alvo: Int, pagamentos: List<PagamentoLio>, fidUso: String? = null) {
+    private fun registrarPagamentos(alvo: Int, pagamentos: List<PagamentoLio>, fidUso: String? = null, pedidoLio: String = "") {
+        // "pago" sem transação nenhuma: não há o que lançar agora — ver pagoSemTransacao
+        if (pagamentos.isEmpty()) { pagoSemTransacao(pedidoLio); return }
         val tk = Session.token(this)
         val base = Session.servidor(this)
         Thread {
@@ -1640,6 +1718,8 @@ class ContaActivity : AppCompatActivity() {
                 // reenvio leva junto e o servidor aplica o desconto uma vez só
                 if (fidUso != null) body.put("fid_uso", fidUso)
                 val id = Pendentes.adicionar(this, body)
+                // o último pagamento entrou na fila: a cobrança tem desfecho, sai da anotação
+                if (p === pagamentos.last()) EmAndamento.fechar(this, pedidoLio)
                 var okEste = false
                 for (tentativa in 1..3) {
                     try {

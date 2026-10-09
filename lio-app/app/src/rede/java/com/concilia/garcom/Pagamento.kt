@@ -13,6 +13,8 @@ object Pagamento {
 
     fun configured(): Boolean = Rede.configured()
     val pronto: Boolean get() = Rede.pronto
+    /** há cobrança deste processo esperando o aviso da maquininha? (ver Recuperacao) */
+    val emCobranca: Boolean get() = false
     fun bind(context: Context, onReady: () -> Unit, onError: (Throwable) -> Unit) = Rede.bind(context, onReady, onError)
     fun unbind() = Rede.unbind()
     fun vendasDoTerminal(): List<VendaTerminal>? = Rede.vendasDoTerminal()
@@ -22,7 +24,9 @@ object Pagamento {
         onPago: (lioOrderId: String, pagamentos: List<PagamentoLio>) -> Unit,
         onCancelado: () -> Unit,
         onErro: (mensagem: String) -> Unit,
-    ) = Rede.cobrar(ref, linhas, valorCentavos, onInicio, onPago, onCancelado, onErro)
+        destino: org.json.JSONObject? = null,
+    ) = Rede.cobrar(ref, linhas, valorCentavos, onInicio, onPago, onCancelado, onErro, destino)
+    fun consultarPedido(pedidoId: String): PedidoTerminal? = Rede.consultarPedido(pedidoId)
     fun imprimirBlocos(context: Context, blocos: List<Bloco>, onOk: () -> Unit, onErro: (mensagem: String) -> Unit) =
         Rede.imprimirBlocos(context, blocos, onOk, onErro)
 }

@@ -73,10 +73,46 @@ class MesasActivity : AppCompatActivity() {
         handler.postDelayed(refreshRunnable, 15000)
         atualizarPendentes()
         if (Pendentes.quantidade(this) > 0) reenviarPendentes(silencioso = true)
+        conferirCobrancasPerdidas()
+    }
+
+    // Cobrança que ficou sem desfecho — o aviso do pagamento não chegou (ver
+    // EmAndamento): pergunta direto ao terminal e lança o que foi aprovado.
+    // É aqui que cai quem reabre o app depois de ele ter sido derrubado com a
+    // tela da Cielo na frente.
+    private val conferirPerdidas = Runnable { conferirCobrancasPerdidasJa() }
+    private var conferirAte = 0L
+
+    private fun conferirCobrancasPerdidas() {
+        if (EmAndamento.quantidade(this) == 0) return
+        conferirAte = System.currentTimeMillis()
+        handler.removeCallbacks(conferirPerdidas)
+        // sem cobrança viva neste processo não há aviso a caminho — confere logo
+        handler.postDelayed(conferirPerdidas, if (Pagamento.emCobranca) 8000L else 1000L)
+    }
+
+    private fun conferirCobrancasPerdidasJa() {
+        val ate = conferirAte
+        run {
+            if (isFinishing || isDestroyed) return
+            val rodar = {
+                Recuperacao.rodar(this, ate) { r ->
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        atualizarPendentes()
+                        carregar()
+                        Recuperacao.avisar(this, r)
+                    }
+                }
+            }
+            if (Pagamento.pronto) rodar()
+            else if (Pagamento.configured()) Pagamento.bind(this, onReady = { rodar() }, onError = { })
+        }
     }
 
     override fun onPause() {
         handler.removeCallbacks(refreshRunnable)
+        handler.removeCallbacks(conferirPerdidas)   // a tela que abriu faz a própria conferência
         super.onPause()
     }
 

@@ -12,6 +12,7 @@ import cielo.sdk.order.payment.PaymentCode
 import cielo.sdk.order.payment.PaymentError
 import cielo.sdk.order.payment.PaymentListener
 import cielo.sdk.printer.PrinterManager
+import org.json.JSONObject
 
 // Wrapper do Order Manager SDK da Cielo — pagamento NO TERMINAL (pinpad/NFC
 // da própria maquininha). É o caminho exigido pela certificação da Cielo
@@ -28,6 +29,15 @@ object Lio {
 
     private var orderManager: OrderManager? = null
     private var bound = false
+    // contexto do app (nunca de tela): é com ele que a cobrança em andamento
+    // é anotada — ver EmAndamento.
+    private var appCtx: Context? = null
+
+    /** true enquanto uma cobrança DESTE processo espera o aviso da Cielo. Se o
+     *  app foi derrubado e reaberto, nasce false: não há aviso a caminho, e a
+     *  Recuperacao não precisa esperar por ele. */
+    @Volatile var emCobranca = false
+        private set
 
     /** true quando as credenciais do Dev Console foram configuradas no build. */
     fun configured(): Boolean =
@@ -41,11 +51,13 @@ object Lio {
      */
     fun bind(context: Context, onReady: () -> Unit, onError: (Throwable) -> Unit) {
         if (!configured()) { onError(IllegalStateException("Credenciais Cielo não configuradas")); return }
+        if (appCtx == null) appCtx = context.applicationContext
         if (bound) { onReady(); return }
         // applicationContext SEMPRE: o bind é GLOBAL do app. Amarrar na
         // Activity derrubava o serviço quando uma tela filha fechava (mesa →
         // comanda → voltar → "maquininha indisponível" na hora de receber).
         val app = context.applicationContext
+        appCtx = app
         val om = OrderManager(
             Credentials(BuildConfig.CIELO_CLIENT_ID, BuildConfig.CIELO_ACCESS_TOKEN),
             app
@@ -118,11 +130,15 @@ object Lio {
         onPago: (lioOrderId: String, pagamentos: List<PagamentoLio>) -> Unit,
         onCancelado: () -> Unit,
         onErro: (mensagem: String) -> Unit,
+        destino: JSONObject? = null, // pra qual conta é (EmAndamento); null = não anota
     ) {
         val om = orderManager
         if (om == null || !bound) { onErro("Serviço de pagamento da maquininha indisponível"); return }
         if (valorCentavos <= 0) { onErro("Valor inválido"); return }
 
+        // número do pedido no terminal — é a chave da anotação da cobrança
+        var pedidoId = ""
+        fun riscar() { val c = appCtx; if (c != null && pedidoId.isNotBlank()) EmAndamento.fechar(c, pedidoId) }
         try {
             val order: Order? = om.createDraftOrder(ref)
             if (order == null) { onErro("Não foi possível criar o pedido na maquininha"); return }
@@ -138,28 +154,230 @@ object Lio {
             }
             om.placeOrder(order)
 
+            // ANOTA a cobrança ANTES da tela da Cielo abrir. Se o aviso do
+            // pagamento se perder (app derrubado com a tela da Cielo na frente,
+            // SDK que não monta o pedido pago), a Recuperacao pergunta ao
+            // terminal por este pedido e registra o que foi aprovado.
+            pedidoId = order.id ?: ""
+            val ctx = appCtx
+            if (destino != null && ctx != null) EmAndamento.abrir(ctx, pedidoId, ref, valorCentavos, destino)
+
+            emCobranca = true
             om.checkoutOrder(order.id ?: "", valorCentavos, object : PaymentListener {
                 override fun onStart() { onInicio() }
 
                 override fun onPayment(paidOrder: Order) {
                     // Fecha o pedido no catálogo da maquininha e devolve as
                     // transações (NSU/authCode/bandeira) pra baixa no backend.
+                    emCobranca = false
                     try { paidOrder.markAsPaid(); om.updateOrder(paidOrder) } catch (_: Exception) { }
-                    val pagos = try {
+                    var pagos = try {
                         paidOrder.payments.map { toPagamento(it) }
                     } catch (_: Exception) { emptyList() }
-                    onPago(paidOrder.id ?: "", pagos)
+                    // O SDK avisou "pago" mas não entregou as transações: lê o
+                    // pedido direto do terminal antes de desistir.
+                    if (pagos.isEmpty()) {
+                        val t = try { consultarPedido(pedidoId.ifBlank { paidOrder.id ?: "" }) } catch (_: Throwable) { null }
+                        // mesma régua da recuperação: aprovada, de pé e no valor exato
+                        if (t != null && !t.duvidoso && t.pagamentos.sumOf { it.valorCentavos } == valorCentavos) pagos = t.pagamentos
+                    }
+                    // A anotação NÃO sai aqui: quem risca é a tela, depois de
+                    // pôr o pagamento na fila de pendentes (gravada no aparelho).
+                    // Sem transação nenhuma ela fica, e a Recuperacao confere.
+                    onPago(pedidoId.ifBlank { paidOrder.id ?: "" }, pagos)
                 }
 
-                override fun onCancel() { onCancelado() }
+                // "Cancelado"/"erro" vindo do SDK nem sempre é verdade: quando
+                // ele não consegue montar o pedido pago, avisa CANCELAMENTO com
+                // o dinheiro já aprovado. Então, antes de aceitar, pergunta ao
+                // terminal. Só vira pagamento com transação aprovada, de pé e
+                // no valor exato pedido; no resto, segue igual a sempre.
+                override fun onCancel() {
+                    emCobranca = false
+                    val pagos = aprovadoNoTerminal()
+                    if (pagos.isNotEmpty()) { onPago(pedidoId, pagos); return }
+                    riscar(); onCancelado()
+                }
 
                 override fun onError(error: PaymentError) {
+                    emCobranca = false
+                    val pagos = aprovadoNoTerminal()
+                    if (pagos.isNotEmpty()) { onPago(pedidoId, pagos); return }
+                    riscar()
                     onErro(error.description ?: "Pagamento não concluído")
+                }
+
+                private fun aprovadoNoTerminal(): List<PagamentoLio> {
+                    val t = try { consultarPedido(pedidoId) } catch (_: Throwable) { null } ?: return emptyList()
+                    if (t.duvidoso || t.pagamentos.isEmpty()) return emptyList()
+                    return if (t.pagamentos.sumOf { it.valorCentavos } == valorCentavos) t.pagamentos else emptyList()
                 }
             })
         } catch (e: Exception) {
+            // a anotação (se já foi feita) FICA: a Recuperacao pergunta ao
+            // terminal — pedido sem transação some sozinho, sem lançar nada.
+            emCobranca = false
             onErro(e.message ?: "Erro ao iniciar a cobrança na maquininha")
         }
+    }
+
+    /**
+     * O que o TERMINAL tem gravado do pedido `pedidoId` — pergunta direta ao
+     * serviço de pedidos da maquininha, sem passar pelo aviso de pagamento.
+     * null = não deu pra saber agora (serviço fora, pedido não achado).
+     *
+     * Lê primeiro o pedido CRU (retrieveOrderById): o conversor do SDK estoura
+     * com campo nulo, e é justamente esse tropeço que some com o aviso. Cada
+     * campo é lido com guarda. Só entra transação aprovada e de pé; havendo
+     * cancelamento/estorno no pedido, devolve `duvidoso` e ninguém registra.
+     * Vale transação com NSU OU com autorização: o Pix às vezes vem sem NSU
+     * (o servidor casa pela autorização).
+     */
+    fun consultarPedido(pedidoId: String): PedidoTerminal? {
+        if (orderManager == null || !bound || pedidoId.isBlank()) return null
+        // Duas leituras do MESMO pedido. Vale a primeira que trouxer transação
+        // (ou cancelamento); as duas vazias = o terminal não tem nada aprovado.
+        val a = pedidoCru(pedidoId)
+        if (a != null && (a.pagamentos.isNotEmpty() || a.duvidoso)) return a
+        val b = pedidoDoSdk(pedidoId)
+        if (b != null && (b.pagamentos.isNotEmpty() || b.duvidoso)) return b
+        return a ?: b
+    }
+
+    private fun pedidoCru(pedidoId: String): PedidoTerminal? {
+        val om = orderManager ?: return null
+        try {
+            val po = om.retrieveOrderById(pedidoId)
+            if (po != null) {
+                val status = try { po.status?.name } catch (_: Throwable) { null } ?: ""
+                val trans = try { po.transactions } catch (_: Throwable) { null } ?: emptyList()
+                val pagoTerminal = try { po.paidAmount } catch (_: Throwable) { -1L }
+                var duvidoso = status == "CANCELED"
+                val lidas = mutableListOf<Pair<PagamentoLio, String>>()
+                for (t in trans) {
+                    val campos = try { JSONObject(t.paymentFields ?: "{}") } catch (_: Throwable) { JSONObject() }
+                    val l = try {
+                        cru(
+                            id = t.id, descricao = t.description, nsu = t.cieloCode, autorizacao = t.authCode,
+                            bandeira = t.brand, mask = t.mask, terminal = t.terminal, centavos = t.amount, campos = campos,
+                        )
+                    } catch (_: Throwable) { null }
+                    if (l == null) duvidoso = true else lidas.add(l)
+                }
+                return montar(lidas, duvidoso, status, pagoTerminal, "cru")
+            }
+        } catch (_: Throwable) { }
+        return null
+    }
+
+    // O pedido já convertido pelo SDK (terminal novo responde por outra
+    // chamada; o cru pode vir sem as transações).
+    private fun pedidoDoSdk(pedidoId: String): PedidoTerminal? {
+        val om = orderManager ?: return null
+        try {
+            val o = om.findOrderById(pedidoId) ?: return null
+            val status = try { o.status?.name } catch (_: Throwable) { null } ?: ""
+            val lista = try { o.payments } catch (_: Throwable) { null } ?: return null
+            val pagoTerminal = try { o.paidAmount } catch (_: Throwable) { -1L }
+            var duvidoso = status == "CANCELED"
+            val lidas = mutableListOf<Pair<PagamentoLio, String>>()
+            for (pay in lista) {
+                val campos = JSONObject()
+                try { for ((k, v) in pay.paymentFields) campos.put(k, v) } catch (_: Throwable) { }
+                val l = try {
+                    cru(
+                        id = pay.id, descricao = pay.description, nsu = pay.cieloCode, autorizacao = pay.authCode,
+                        bandeira = pay.brand, mask = pay.mask, terminal = pay.terminal, centavos = pay.amount, campos = campos,
+                    )
+                } catch (_: Throwable) { null }
+                if (l == null) duvidoso = true else lidas.add(l)
+            }
+            return montar(lidas, duvidoso, status, pagoTerminal, "sdk")
+        } catch (_: Throwable) { }
+        return null
+    }
+
+    // Decide o que do pedido lido conta como DINHEIRO APROVADO. A situação de
+    // cada transação é a que o próprio terminal carimba (statusCode):
+    //   "1"  autorizada  → conta;
+    //   "2"  cancelada   → pedido duvidoso, ninguém registra;
+    //   outro valor      → ainda não autorizada (Pix esperando o cliente): não conta;
+    //   sem carimbo      → só conta se o terminal dá o PEDIDO como pago nesse
+    //                      valor (paidAmount); senão é como se não houvesse.
+    // O `status` devolvido é um resumo pra diagnóstico (vai no rastro da loja).
+    private fun montar(
+        lidas: List<Pair<PagamentoLio, String>>, duvidosoIni: Boolean, status: String, pagoTerminal: Long, via: String,
+    ): PedidoTerminal {
+        var duvidoso = duvidosoIni
+        var semCarimbo = false
+        val pags = mutableListOf<PagamentoLio>()
+        for ((p, sc) in lidas) {
+            when {
+                p.forma == "cancelada" -> duvidoso = true
+                sc == "1" -> pags.add(p)
+                sc.isEmpty() -> { pags.add(p); semCarimbo = true }
+                else -> { /* declarada e não autorizada: ainda não é dinheiro */ }
+            }
+        }
+        val validas = pags.filter { it.valorCentavos > 0 && (it.nsu.isNotBlank() || it.autorizacao.isNotBlank()) }
+        val aceitas = if (semCarimbo && pagoTerminal < validas.sumOf { it.valorCentavos }) emptyList() else validas
+        val resumo = "$status · $via · pago $pagoTerminal · " +
+            lidas.joinToString(",") { (p, sc) -> "${p.forma}:${p.valorCentavos}:sc${sc.ifEmpty { "?" }}" }.ifEmpty { "sem transação" }
+        return PedidoTerminal(aceitas, duvidoso, resumo.take(300))
+    }
+
+    /**
+     * Transação crua do terminal → PagamentoLio, com a MESMA regra de forma do
+     * toPagamento (descrição manda; débito por código/bandeira; Pix pelo código
+     * 25) — mais dois sinais de Pix que o campo de produto às vezes não traz:
+     * a autorização no formato do Banco Central (E + 31) e "PIX" no nome do
+     * produto. Transação cancelada (statusCode 2 / v40Code 28 / "CANCEL" no
+     * nome) volta com forma "cancelada" pra quem chama marcar como duvidoso.
+     */
+    private fun cru(
+        id: String?, descricao: String?, nsu: String?, autorizacao: String?, bandeira: String?,
+        mask: String?, terminal: String?, centavos: Long, campos: JSONObject,
+    ): Pair<PagamentoLio, String> {
+        fun campo(k: String): String = try { if (campos.isNull(k)) "" else campos.optString(k, "") } catch (_: Throwable) { "" }
+        val primary = campo("primaryProductCode")
+        val secondary = campo("secondaryProductCode")
+        val code = PaymentCode.values().firstOrNull { it.codePrimary == primary && it.codeSecondary == secondary }
+            ?: PaymentCode.values().firstOrNull { it.codePrimary == primary }
+        val desc = (descricao ?: "").uppercase()
+        val brand = (bandeira ?: "").uppercase()
+        val nomes = (desc + " " + campo("productName") + " " + campo("primaryProductName") + " " +
+            campo("secondaryProductName") + " " + campo("cardLabelApplication")).uppercase()
+        val aut = autorizacao ?: ""
+        val cancelada = campo("statusCode") == "2" || campo("v40Code") == "28" || nomes.contains("CANCEL")
+        val ehPix = code == PaymentCode.PIX || primary == "25" ||
+            Regex("^E\\d{8}\\d{12}[A-Za-z0-9]{11}$").matches(aut.trim()) ||
+            Regex("\\bPIX\\b").containsMatchIn(nomes) || brand == "PIX"
+        val ehDebito =
+            code?.name?.startsWith("DEBITO") == true ||
+            Regex("D[EÉ]BITO").containsMatchIn(nomes) ||
+            brand.contains("MAESTRO") || brand.contains("ELECTRON") ||
+            Regex("D[EÉ]BITO").containsMatchIn(brand)
+        val forma = when {
+            cancelada -> "cancelada"
+            ehPix -> "pix"
+            Regex("CR[EÉ]DITO").containsMatchIn(desc) -> "credito"
+            ehDebito -> "debito"
+            else -> "credito"
+        }
+        val quando = campo("requestDate").trim().toLongOrNull()?.takeIf { it > 1_000_000_000_000L } ?: 0L
+        return Pair(PagamentoLio(
+            forma = forma,
+            nsu = nsu ?: "",
+            autorizacao = aut,
+            bandeira = bandeira ?: "",
+            mask = mask ?: "",
+            terminal = terminal ?: "",
+            valorCentavos = centavos,
+            parcelas = (campo("numberOfQuotas").toIntOrNull() ?: 1).coerceAtLeast(1),
+            pagamentoId = id ?: "",
+            descricao = descricao ?: "",
+            aprovadoEm = quando,
+        ), campo("statusCode").trim())
     }
 
     /**

@@ -156,8 +156,8 @@ android {
         // tinha trocado o campo pelo botão, e o que já funciona não sai. O
         // "✏️ Outro valor" fica só como atalho a mais; a rolagem garante que o
         // campo aparece mesmo com "Receber de" e o teclado aberto.
-        versionCode = 53
-        versionName = "1.10.29"
+        versionCode = 54
+        versionName = "1.10.30"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CONCILIA_BASE", "\"$conciliaBase\"")
     }

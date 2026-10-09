@@ -767,6 +767,13 @@ object Api {
         } catch (_: Exception) { }
     }
 
+    /** Rastro da maquininha (cobrança cancelada, erro, recuperação) pro
+     *  servidor da loja. Só diagnóstico: calado, e servidor antigo sem a rota
+     *  responde 404 e segue a vida. */
+    fun lioEvento(base: String, token: String?, body: JSONObject) {
+        try { postJson("$base/api/lio/evento", token, body) } catch (_: Exception) { }
+    }
+
     fun bodyPagamento(numero: Int, p: PagamentoLio): JSONObject = JSONObject()
         .put("numero", numero)
         .put("forma", p.forma)

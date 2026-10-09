@@ -19,6 +19,16 @@ data class PagamentoLio(
     val parcelas: Int,
     val pagamentoId: String,
     val descricao: String = "",   // descrição do produto da adquirente (auditoria: "... DEBITO A VISTA")
+    val aprovadoEm: Long = 0,     // quando o terminal aprovou (epoch ms); 0 = não sabe. Só a recuperação usa.
+)
+
+/** O que o TERMINAL tem gravado de um pedido, lido direto dele (sem depender
+ *  do aviso do SDK). `pagamentos` = só transação aprovada e de pé; `duvidoso` =
+ *  há cancelamento/estorno no pedido, então ninguém registra sozinho. */
+data class PedidoTerminal(
+    val pagamentos: List<PagamentoLio>,
+    val duvidoso: Boolean,
+    val status: String,
 )
 
 /** Uma venda PAGA do catálogo deste terminal (pro fechamento do dia). */

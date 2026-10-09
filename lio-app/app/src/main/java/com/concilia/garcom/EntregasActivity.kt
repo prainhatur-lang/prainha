@@ -59,6 +59,33 @@ class EntregasActivity : AppCompatActivity() {
         Session.revalidar(this) // saiu/voltou da rua: confere local × internet
         handler.removeCallbacks(refresh)
         handler.post(refresh)
+        conferirCobrancasPerdidas()
+    }
+
+    // Cobrança que ficou sem desfecho — o aviso do pagamento não chegou (ver
+    // EmAndamento): pergunta direto ao terminal e lança o que foi aprovado.
+    private fun conferirCobrancasPerdidas(atrasoMs: Long = 8000L) {
+        if (EmAndamento.quantidade(this) == 0) return
+        val ate = System.currentTimeMillis()
+        handler.postDelayed({
+            if (isFinishing || isDestroyed) return@postDelayed
+            val rodar = {
+                Recuperacao.rodar(this, ate) { r ->
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        if (EmAndamento.quantidade(this) == 0) cobrando = false
+                        carregar()
+                        Recuperacao.avisar(this, r)
+                    }
+                }
+            }
+            // a tela já se conecta à maquininha ao abrir (bindMaquininha): se ainda
+            // não ligou, espera essa conexão em vez de abrir outra
+            if (Pagamento.pronto) rodar()
+            else handler.postDelayed({
+                if (!isFinishing && !isDestroyed && Pagamento.pronto) rodar()
+            }, 4000L)
+        }, if (Pagamento.emCobranca) atrasoMs else minOf(atrasoMs, 1000L))
     }
 
     override fun onPause() {
@@ -184,24 +211,53 @@ class EntregasActivity : AppCompatActivity() {
     private fun cobrarNoTerminal(e: Api.Entrega, ped: Int, valorCentavos: Long) {
         val linhas = e.itens.map { Linha("${it.qtd}x ${it.nome}", it.valorCentavos) }.toMutableList()
         if (e.taxaCentavos > 0) linhas.add(Linha("Taxa de entrega", e.taxaCentavos))
+        val ref = "ENTREGA-" + e.displayId.ifBlank { ped.toString() }
         Pagamento.cobrar(
-            ref = "ENTREGA-" + e.displayId.ifBlank { ped.toString() },
+            ref = ref,
             linhas = linhas,
             valorCentavos = valorCentavos,
             onInicio = { /* a UI de pagamento da maquininha assume a tela */ },
-            onPago = { _, pagamentos -> registrarPagamentos(e, ped, pagamentos) },
+            onPago = { pedidoLio, pagamentos -> registrarPagamentos(e, ped, pagamentos, pedidoLio) },
             onCancelado = {
+                Recuperacao.evento(this, "cancelado", org.json.JSONObject().put("ped", ped).put("ref", ref).put("valor", valorCentavos / 100.0))
                 runOnUiThread { cobrando = false; Toast.makeText(this, "Pagamento cancelado", Toast.LENGTH_SHORT).show() }
             },
             onErro = { msg ->
+                Recuperacao.evento(this, "erro", org.json.JSONObject().put("ped", ped).put("ref", ref).put("valor", valorCentavos / 100.0).put("erro", msg))
                 runOnUiThread { cobrando = false; Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
             },
+            // pra qual pedido é o dinheiro, anotado antes da tela da maquininha abrir (EmAndamento)
+            destino = org.json.JSONObject().put("tipo", "entrega").put("ped", ped).put("display_id", e.displayId),
         )
     }
 
     // Aprovado no terminal → fila de pendentes ANTES, registro com retry, e só
     // então sai da fila (mesmo desenho da mesa: dinheiro capturado não se perde).
-    private fun registrarPagamentos(e: Api.Entrega, ped: Int, pagamentos: List<PagamentoLio>) {
+    private fun registrarPagamentos(e: Api.Entrega, ped: Int, pagamentos: List<PagamentoLio>, pedidoLio: String = "") {
+        // A maquininha avisou "pago" e não entregou a transação: antes virava
+        // "✅ Pago! Recebido R$ 0,00" com o pedido aberto. A cobrança fica
+        // anotada e o terminal é consultado em seguida.
+        if (pagamentos.isEmpty()) {
+            EmAndamento.marcarPago(this, pedidoLio)
+            Recuperacao.evento(this, "vazio", org.json.JSONObject().put("pedido_lio", pedidoLio).put("ped", ped))
+            runOnUiThread {
+                cobrando = false
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                AlertDialog.Builder(this)
+                    .setTitle("⚠️ Não cobre de novo ainda")
+                    .setMessage(
+                        "A maquininha avisou que o pagamento passou, mas não devolveu os dados da transação.\n\n" +
+                            "Vou conferir direto no terminal e lançar sozinho se estiver aprovado. " +
+                            "Se o pedido não baixar em 1 minuto, confira o comprovante e avise o caixa — " +
+                            "NÃO passe o cartão/Pix de novo antes disso."
+                    )
+                    .setPositiveButton("OK", null)
+                    .setCancelable(false)
+                    .show()
+                conferirCobrancasPerdidas(1500L)
+            }
+            return
+        }
         val tk = Session.token(this)
         val base = Session.servidor(this)
         Thread {
@@ -214,6 +270,8 @@ class EntregasActivity : AppCompatActivity() {
                     .put("descricao", p.descricao)
                     .put("adquirente", Pagamento.ADQUIRENTE)
                 val id = Pendentes.adicionar(this, body)
+                // o último pagamento entrou na fila: a cobrança tem desfecho, sai da anotação
+                if (p === pagamentos.last()) EmAndamento.fechar(this, pedidoLio)
                 var okEste = false
                 for (tentativa in 1..3) {
                     try {

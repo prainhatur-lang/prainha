@@ -14,6 +14,8 @@ object Pagamento {
 
     fun configured(): Boolean = Lio.configured()
     val pronto: Boolean get() = Lio.pronto
+    /** há cobrança deste processo esperando o aviso da maquininha? (ver Recuperacao) */
+    val emCobranca: Boolean get() = Lio.emCobranca
     fun bind(context: Context, onReady: () -> Unit, onError: (Throwable) -> Unit) = Lio.bind(context, onReady, onError)
     fun unbind() = Lio.unbind()
     fun vendasDoTerminal(): List<VendaTerminal>? = Lio.vendasDoTerminal()
@@ -23,7 +25,10 @@ object Pagamento {
         onPago: (lioOrderId: String, pagamentos: List<PagamentoLio>) -> Unit,
         onCancelado: () -> Unit,
         onErro: (mensagem: String) -> Unit,
-    ) = Lio.cobrar(ref, linhas, valorCentavos, onInicio, onPago, onCancelado, onErro)
+        destino: org.json.JSONObject? = null,
+    ) = Lio.cobrar(ref, linhas, valorCentavos, onInicio, onPago, onCancelado, onErro, destino)
+    /** O que o terminal tem gravado desse pedido (null = não deu pra saber). */
+    fun consultarPedido(pedidoId: String): PedidoTerminal? = Lio.consultarPedido(pedidoId)
     fun imprimirBlocos(context: Context, blocos: List<Bloco>, onOk: () -> Unit, onErro: (mensagem: String) -> Unit) =
         Lio.imprimirBlocos(context, blocos, onOk, onErro)
 }
