@@ -170,6 +170,8 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
           mesasTotal: sql<number | null>`(${b.dados}#>>'{mesas,total}')::int`,
           atrasadas: sql<number | null>`(${b.dados}#>>'{atrasos,total_atrasadas}')::int`,
           criticas: sql<number | null>`(${b.dados}#>>'{atrasos,total_criticas}')::int`,
+          // quais mesas estavam atrasadas NAQUELA foto (a coluna só dava o número)
+          atrasosLista: sql<{ numero: number; area: string | null; espera_min: number; prazo_min: number; critico: boolean; itens: number }[] | null>`${b.dados}#>'{atrasos,lista}'`,
           cancelamentos: sql<number | null>`(${b.dados}#>>'{cancelamentos,n}')::int`,
           estornos: sql<number | null>`(${b.dados}#>>'{estornos,n}')::int`,
           reclamacoes: sql<number | null>`(${b.dados}#>>'{reclamacoes,hoje}')::int`,
@@ -690,6 +692,15 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
                                 <td className={`py-1 pr-2 text-right tabular-nums ${l.criticas ? 'text-rose-700' : l.atrasadas ? 'text-amber-700' : ''}`}>
                                   {l.atrasadas ?? '—'}
                                   {l.criticas ? ` (${l.criticas} crít.)` : ''}
+                                  {Array.isArray(l.atrasosLista) && l.atrasosLista.length > 0 && (
+                                    <div className="mt-0.5 text-[11px] font-normal leading-snug text-slate-500">
+                                      {l.atrasosLista.map((x, i) => (
+                                        <div key={i} className={x.critico ? 'text-rose-700' : 'text-amber-700'}>
+                                          mesa {x.numero} · {x.area ?? 'sem praça'} · {x.itens} {x.itens === 1 ? 'item' : 'itens'} · {x.espera_min} min (prazo {x.prazo_min})
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
                                 </td>
                                 <td className="py-1 pr-2 text-right tabular-nums">{l.cancelamentos ?? '—'}</td>
                                 <td className="py-1 pr-2 text-right tabular-nums">{l.estornos ?? '—'}</td>
