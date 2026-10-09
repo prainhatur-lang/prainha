@@ -334,7 +334,7 @@ export async function simularUso(
   }
   if (cartao.status !== 'ativo') return { ok: false, erro: 'bloqueado' };
   if (!cartao.aderidoEm) return { ok: false, erro: 'nao_aderido' };
-  if (await funcionarioDoCartao(cartao.filialId, cartao.telefone, cartao.cpf)) return { ok: false, erro: 'funcionario' };
+  if (!cartao.funcionarioLiberado && await funcionarioDoCartao(cartao.filialId, cartao.telefone, cartao.cpf)) return { ok: false, erro: 'funcionario' };
 
   // um uso por dia
   const [hoje] = await db

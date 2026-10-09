@@ -86,6 +86,8 @@ export const fidelidadeCartao = pgTable(
     conviteWamid: varchar('convite_wamid', { length: 200 }),
     conviteStatus: varchar('convite_status', { length: 12 }),
     conviteStatusEm: timestamp('convite_status_em', { withTimezone: true }),
+    /** exceção do dono à regra "funcionário não usa o cartão" (ex.: o cartão dele, pra demonstrar) */
+    funcionarioLiberado: boolean('funcionario_liberado').notNull().default(false),
     /** cidade/bairro do cadastro na hora do convite (campanha por região) */
     cidade: varchar('cidade', { length: 100 }),
     bairro: varchar('bairro', { length: 100 }),

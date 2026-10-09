@@ -57,7 +57,7 @@ export async function POST(req: Request) {
       const aparelho = aparelhoConfirmado(c, jar.get(nomeCookie(c))?.value);
       if (!aparelho) return NextResponse.json({ erro: 'Confirme o seu celular antes (código no WhatsApp).', confirmar: true }, { status: 403 });
       if (!c.aderidoEm) return NextResponse.json({ erro: 'Ative o cartão primeiro.' }, { status: 409 });
-      if (await funcionarioDoCartao(c.filialId, c.telefone, c.cpf)) {
+      if (!c.funcionarioLiberado && await funcionarioDoCartao(c.filialId, c.telefone, c.cpf)) {
         return NextResponse.json({ erro: MSG_FUNCIONARIO }, { status: 403 });
       }
       const prog = await carregarPrograma(c.filialId);
