@@ -18486,6 +18486,40 @@ async function lioFidPago(body, rl) {
   await sql`UPDATE lio_fidelidade SET pago_em=COALESCE(pago_em, now()) WHERE uso_id=${uso} AND aplicado_em IS NOT NULL`;
   await lioFidConfirmar(uso);
 }
+// ---- CARTÃO PRAINHA NO DINHEIRO (tela do caixa) ----
+// Mesmo cartão, mesma reserva (tabela lio_fidelidade), quando o cliente paga
+// em dinheiro no caixa: o operador digita o código na tela "Receber em
+// dinheiro", a loja reserva na nuvem e devolve quanto fica a conta. O desconto
+// só entra na conta na hora do recebimento. Conta inteira, sem dividir.
+async function apiCaixaFidelidade(body, quem) {
+  if (body.ped) return { ok: false, erro: 'O Cartão Prainha no dinheiro vale só pra conta de mesa.' };
+  const r = await apiLioFidelidade({ acao: body.acao, uso_id: body.uso_id, numero: body.numero, codigo: body.codigo },
+    { login: quem.login });
+  if (!r.ok || !r.uso_id) return r;
+  r.a_pagar = await caixaFidAPagar(Number(body.numero), r.desconto);
+  return r;
+}
+async function caixaFidAPagar(numero, desconto) {
+  // o mesmo "falta" que a tela do caixa mostra (total gravado no pedido − pago)
+  const conta = await apiCaixaConta(numero, null);
+  if (!conta || !conta.ok || !(Number(conta.falta) > 0)) return null;
+  return Math.max(0, +(Number(conta.falta) - Number(desconto || 0)).toFixed(2));
+}
+/** Antes de receber o dinheiro: a reserva ainda vale e o valor cobre a conta
+ *  inteira já com o desconto? Devolve o erro pra tela ou null. */
+async function caixaFidConferir(b) {
+  const uso = String(b.fid_uso || '');
+  const n = Number(b.numero);
+  const [c] = await sql`SELECT desconto FROM lio_fidelidade WHERE uso_id=${uso} AND numero=${n}
+    AND aplicado_em IS NULL AND liberado_em IS NULL AND criado_em > now() - interval '45 minutes'`.catch(() => []);
+  if (!c) return 'O código do Cartão Prainha não vale mais nesta conta. Digite o código de novo.';
+  const aPagar = await caixaFidAPagar(n, c.desconto);
+  if (aPagar == null) return 'Não consegui conferir a conta pro desconto do Cartão Prainha.';
+  if (Number(b.valor) < aPagar - 0.01) {
+    return 'Com o Cartão Prainha é a conta inteira: faltam R$ ' + aPagar.toFixed(2).replace('.', ',') + ' já com o desconto.';
+  }
+  return null;
+}
 async function loopLioFidelidade() {
   try {
     const fila = await sql`SELECT uso_id FROM lio_fidelidade WHERE aplicado_em IS NOT NULL AND pago_em IS NOT NULL
@@ -25753,27 +25787,52 @@ async function lancaFiado(btn){
   FLASH='✓ '+brl(r.valor)+' no fiado de '+r.cliente+' — conta fechada. Ele deve '+brl(r.saldo_novo)+'.';
   FIADOCLI=null;voltarMesas();listar();
 }
+/* Cartão Prainha no dinheiro: o código digitado aqui reserva o desconto; ele
+   só entra na conta quando o recebimento é confirmado. Vale pra conta inteira. */
+var FIDDIN=null;
+function fidDin(){ return (FIDDIN&&FIDDIN.mesa===MESA&&FIDDIN.ped===(PEDALVO||null))?FIDDIN:null }
+function faltaDin(){ var f=fidDin(); return f?f.a_pagar:CONTA.falta }
+async function fidDinPedir(){
+  var cod=prompt('Código do Cartão Prainha (4 letras):')||'';cod=cod.toUpperCase().replace(/[^A-Z]/g,'');
+  if(!cod)return;
+  var r=await jpost('/api/caixa/fidelidade',{numero:MESA,codigo:cod});
+  if(!r.ok||!r.uso_id||r.a_pagar==null){FIDDIN=null;irTela('rec');var eo=document.getElementById('rerr');if(eo)eo.textContent=r.erro||'Código não aceito.';return}
+  FIDDIN={mesa:MESA,ped:(PEDALVO||null),uso_id:r.uso_id,nome:r.nome,nivel:r.nivel,pct:r.pct,desconto:r.desconto,a_pagar:r.a_pagar};
+  irTela('rec');
+}
+function fidDinTirar(){
+  var f=fidDin();FIDDIN=null;
+  if(f)jpost('/api/caixa/fidelidade',{acao:'liberar',uso_id:f.uso_id});
+  irTela('rec');
+}
 function telaReceber(el){
-  var falta=CONTA.falta;
+  var fd=fidDin();
+  var falta=faltaDin();
   el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="irTela(\\'conta\\')">◂ voltar</button>'+
     '<div class="card"><div class="tit" style="margin-top:0">Receber em dinheiro</div>'+
-    '<div class="mut">Falta '+brl(falta)+' na mesa '+MESA+'</div>'+
+    '<div class="mut">Falta '+brl(CONTA.falta)+' na mesa '+MESA+'</div>'+
+    (fd?'<div style="margin-top:6px;font-weight:700;color:#8a6d1a">Cartão Prainha · '+esc(fd.nome)+' ('+esc(fd.nivel)+') · '+fd.pct+'% = − '+brl(fd.desconto)+'<br>A receber: '+brl(fd.a_pagar)+
+      ' <button class="seg" style="margin-left:6px" onclick="fidDinTirar()">tirar</button></div>':'')+
     '<input id="rv" class="num" inputmode="decimal" value="'+falta.toFixed(2).replace('.',',')+'" style="margin-top:8px" readonly onclick="kpAlvo(this)">'+kpHtml('rv')+
     '<div class="mut" id="rtroco" style="margin-top:6px"></div>'+
     '<button class="big" onclick="receber()">Confirmar recebimento</button>'+
+    ((!fd&&!PEDALVO)?'<button class="seg" style="margin-top:6px;width:100%" onclick="fidDinPedir()">🎟 Cartão Prainha (desconto)</button>':'')+
     '<div id="rerr" class="err"></div></div>';
   var e=document.getElementById('rv');if(e){e.focus();e.addEventListener('input',troco)}
 }
 function troco(){
   var v=numBr((document.getElementById('rv')||{}).value);
   var el=document.getElementById('rtroco');
-  if(el)el.textContent=(v>CONTA.falta)?('Troco: '+brl(v-CONTA.falta)):'';
+  if(el)el.textContent=(v>faltaDin())?('Troco: '+brl(v-faltaDin())):'';
 }
 async function receber(){
   var v=numBr((document.getElementById('rv')||{}).value);
   if(!(v>0)){document.getElementById('rerr').textContent='digite o valor';return}
-  var reg=Math.min(v,CONTA.falta);
-  var r=await jpost('/api/caixa/receber',alvo({numero:MESA,valor:reg}));
+  var fd=fidDin();
+  var reg=Math.min(v,faltaDin());
+  if(fd&&v<fd.a_pagar-0.005){document.getElementById('rerr').textContent='Com o Cartão Prainha é a conta inteira: '+brl(fd.a_pagar)+'. Pra receber só uma parte, toque em "tirar".';return}
+  var r=await jpost('/api/caixa/receber',alvo(fd?{numero:MESA,valor:reg,fid_uso:fd.uso_id}:{numero:MESA,valor:reg}));
+  if(fd&&(r.ok||r.fidelidade_erro))FIDDIN=null;
   if(!r.ok){
     var eo=document.getElementById('rerr');
     /* dinheiro exige o caixa DO operador aberto — em vez de só reclamar, leva lá */
@@ -29075,11 +29134,28 @@ const server = http.createServer(async (req, res) => {
         // aberto, não recebe (regra do dono: abertura só pra quem pega dinheiro)
         const cx = await fbCaixaDoOperador(quem.login);
         if (!cx) return res.end(JSON.stringify({ ok: false, sem_caixa: true, erro: 'Abra o SEU caixa antes de receber dinheiro.' }));
+        // Cartão Prainha no dinheiro: confere a reserva e põe o desconto na conta (uma vez só)
+        if (b.fid_uso) {
+          const ef = await caixaFidConferir(b);
+          if (ef) return res.end(JSON.stringify({ ok: false, erro: ef, fidelidade_erro: true }));
+          await lioFidAplicar({ fid_uso: b.fid_uso, numero: b.numero });
+        }
         const r = await apiContaPagar({ numero: b.numero, ped: b.ped, valor: b.valor, forma: 'dinheiro', modo: 'manual',
           caixa_codigo: cx.codigo, observacao: 'Caixa · ' + (quem.nome || quem.login) });
+        if (b.fid_uso) {
+          console.log('[fidelidade] dinheiro ' + quem.login + ' · mesa ' + b.numero + ' · ' + b.fid_uso + ' → ' + (r.ok ? 'ok' : 'ERRO: ' + r.erro));
+          lioFidPago({ fid_uso: b.fid_uso }, r).catch((e) => console.error('[fidelidade] dinheiro pago:', e.message));
+        }
         // caixa que recebe é caixa que libera: quitou -> fecha o pedido na hora
         if (r.ok && r.quitada) { const f = await apiCaixaFechar(b.numero, b.ped); r.fechada = !!f.ok; }
         return res.end(JSON.stringify(r));
+      }
+      if (req.method === 'POST' && p === '/api/caixa/fidelidade') {
+        const b = await readBody(req);
+        let rf;
+        try { rf = await apiCaixaFidelidade(b, quem); }
+        catch (e) { console.error('[fidelidade] caixa:', e.message); rf = { ok: false, erro: 'Não consegui consultar o Cartão Prainha agora.' }; }
+        return res.end(JSON.stringify(rf));
       }
       if (req.method === 'POST' && p === '/api/caixa/fechar') { const b = await readBody(req); return res.end(JSON.stringify(await apiCaixaFechar(b.numero, b.ped))); }
       if (req.method === 'POST' && p === '/api/caixa/desbloquear') return res.end(JSON.stringify(await apiCaixaDesbloquear(await readBody(req), quem)));
