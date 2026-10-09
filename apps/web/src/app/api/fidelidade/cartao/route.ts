@@ -15,7 +15,7 @@ import { eq } from 'drizzle-orm';
 import {
   COOKIE_DIAS, aparelhoConfirmado, confirmarAparelho, enviarConfirmacao, nomeCookie,
 } from '@/lib/fidelidade/aparelho';
-import { gerarCodigoUso } from '@/lib/fidelidade/nucleo';
+import { MSG_FUNCIONARIO, funcionarioDoCartao, gerarCodigoUso } from '@/lib/fidelidade/nucleo';
 import { linkAtivarPorZap } from '@/lib/fidelidade/zap-ativar';
 import { carregarPrograma } from '@/lib/fidelidade/config';
 
@@ -57,6 +57,9 @@ export async function POST(req: Request) {
       const aparelho = aparelhoConfirmado(c, jar.get(nomeCookie(c))?.value);
       if (!aparelho) return NextResponse.json({ erro: 'Confirme o seu celular antes (código no WhatsApp).', confirmar: true }, { status: 403 });
       if (!c.aderidoEm) return NextResponse.json({ erro: 'Ative o cartão primeiro.' }, { status: 409 });
+      if (await funcionarioDoCartao(c.filialId, c.telefone, c.cpf)) {
+        return NextResponse.json({ erro: MSG_FUNCIONARIO }, { status: 403 });
+      }
       const prog = await carregarPrograma(c.filialId);
       if (!prog.ativo) return NextResponse.json({ erro: `O ${prog.marca} está pausado no momento.` }, { status: 409 });
       const r = await gerarCodigoUso(c.id, aparelho);

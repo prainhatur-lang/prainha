@@ -109,6 +109,37 @@ export interface NovoCartaoInput {
   aderido?: boolean;
 }
 
+/** Regra do dono (09/10/2026): o desconto do cartão é proibido pra funcionário
+ *  do Prainha. Funcionário = cadastro ATIVO no RH de qualquer casa da mesma
+ *  organização, casado pelo CPF ou pelo celular (DDD + 8 finais, porque o 9
+ *  nem sempre está no cadastro). Devolve o nome do RH, ou null. */
+export async function funcionarioDoCartao(
+  filialId: string, telefone: string | null, cpf: string | null,
+): Promise<string | null> {
+  const tel = String(telefone ?? '').replace(/\D/g, '').replace(/^55(?=\d{10,11}$)/, '');
+  const doc = String(cpf ?? '').replace(/\D/g, '');
+  const ddd = tel.length >= 10 ? tel.slice(0, 2) : '';
+  const fim = tel.length >= 10 ? tel.slice(-8) : '';
+  if (doc.length !== 11 && !fim) return null;
+  const r = (await db.execute(sql`
+    SELECT f.nome
+    FROM funcionario f
+    JOIN filial fl ON fl.id = f.filial_id
+    WHERE fl.organizacao_id = (SELECT organizacao_id FROM filial WHERE id = ${filialId})
+      AND f.ativo AND f.data_desligamento IS NULL
+      AND (
+        (${doc}::text <> '' AND length(${doc}::text) = 11 AND f.cpf = ${doc}::text)
+        OR (${fim}::text <> ''
+          AND right(regexp_replace(coalesce(f.telefone, ''), '[^0-9]', '', 'g'), 8) = ${fim}::text
+          AND left(regexp_replace(regexp_replace(coalesce(f.telefone, ''), '[^0-9]', '', 'g'), '^55', ''), 2) = ${ddd}::text)
+      )
+    LIMIT 1
+  `)) as unknown as Array<{ nome: string }>;
+  return r[0]?.nome ?? null;
+}
+
+export const MSG_FUNCIONARIO = 'O desconto do cartão não vale pra funcionário do Prainha.';
+
 /** Cria o cartão (ou devolve o que já existe pro telefone). */
 export async function criarCartao(inp: NovoCartaoInput): Promise<{ cartao: Cartao; novo: boolean }> {
   const telefone = normalizarTelefone(inp.telefone);
@@ -133,6 +164,9 @@ export async function criarCartao(inp: NovoCartaoInput): Promise<{ cartao: Carta
       return { cartao: c ?? existe, novo: false };
     }
     return { cartao: existe, novo: false };
+  }
+  if (await funcionarioDoCartao(inp.filialId, telefone, inp.cpf ?? null)) {
+    throw new Error('É funcionário do Prainha — o cartão não vale pra funcionário.');
   }
 
   // colisão de código/número/token é rara; tenta de novo com outros
@@ -238,7 +272,8 @@ export async function gerarCodigoUso(
 
 export type ErroUso =
   | 'programa_inativo' | 'codigo_invalido' | 'nao_encontrado' | 'bloqueado'
-  | 'ja_usado_hoje' | 'em_uso' | 'consumo_minimo' | 'sem_desconto' | 'nao_aderido' | 'outra_casa';
+  | 'ja_usado_hoje' | 'em_uso' | 'consumo_minimo' | 'sem_desconto' | 'nao_aderido' | 'outra_casa'
+  | 'funcionario';
 
 export const MSG_ERRO: Record<ErroUso, string> = {
   programa_inativo: 'O Cliente VIP não está ativo nesta casa.',
@@ -251,6 +286,7 @@ export const MSG_ERRO: Record<ErroUso, string> = {
   sem_desconto: 'Não há consumo pra aplicar o desconto.',
   nao_aderido: 'Cartão ainda não ativado: abra o link do convite e toque em "Quero meu cartão".',
   outra_casa: 'Esse cartão é de outra casa. O Cliente VIP só vale na casa do cartão.',
+  funcionario: MSG_FUNCIONARIO,
 };
 
 export interface Simulacao {
@@ -298,6 +334,7 @@ export async function simularUso(
   }
   if (cartao.status !== 'ativo') return { ok: false, erro: 'bloqueado' };
   if (!cartao.aderidoEm) return { ok: false, erro: 'nao_aderido' };
+  if (await funcionarioDoCartao(cartao.filialId, cartao.telefone, cartao.cpf)) return { ok: false, erro: 'funcionario' };
 
   // um uso por dia
   const [hoje] = await db
