@@ -81,21 +81,43 @@ export async function enviarPedidoAuto(pedidoId: string): Promise<EnvioPedidoRes
     )
     .join('; ');
 
+  // Versões mais curtas da lista, usadas SÓ se a Meta recusar por tamanho
+  // (#132005: corpo do modelo + parâmetros passa de 1024). Pedido 59 da Mega
+  // (12 itens com observação de estoque, 09/10) ficou GERADO sem sair por isso.
+  const itensSemObs = itens
+    .map((i) => `${i.produtoNome} ${Number(i.quantidade).toLocaleString('pt-BR')} ${i.unidade} = ${brl(Number(i.valorTotal))}`)
+    .join('; ');
+  const itensCurto = itens
+    .map((i) => `${(i.produtoNome ?? '').slice(0, 30).trim()} ${Number(i.quantidade).toLocaleString('pt-BR')} ${i.unidade}`)
+    .join('; ');
+
   // Dados de faturamento JUNTO com o pedido — o fornecedor não precisa
   // perguntar "qual CNPJ pra tirar o pedido?" (linha única: parâmetro de
   // template da Meta não aceita quebra de linha).
   const faturamento = await dadosFaturamentoLinha(p.filialId).catch(() => null);
 
-  try {
-    await enviarPedidoCompra(tel, {
+  const enviar = (lista: string) =>
+    enviarPedidoCompra(tel, {
       // Cumprimenta a PESSOA; o nome da empresa vai no corpo do pedido.
       fornecedor: (p.vendedorNome ?? p.fornecedorNome ?? '').split(/[\s(/-]/)[0] || 'tudo bem',
       filial: p.filialNome ?? 'Prainha',
       numero: String(p.numero),
-      itens: `${itensStr || '(itens no sistema)'}${faturamento ? `; ${faturamento}` : ''}`,
+      itens: `${lista || '(itens no sistema)'}${faturamento ? `; ${faturamento}` : ''}`,
       total: p.valorTotal != null ? brl(Number(p.valorTotal)) : '—',
       pedidoId, // p/ o payload dos botões Confirmar/Não consigo
     });
+  try {
+    // 1ª tentativa é a de sempre; as outras só entram no erro de tamanho.
+    const tentativas = [itensStr, itensSemObs, itensCurto];
+    for (let t = 0; t < tentativas.length; t++) {
+      try {
+        await enviar(tentativas[t]!);
+        break;
+      } catch (e) {
+        const longo = /132005|too long/i.test((e as Error).message);
+        if (!longo || t === tentativas.length - 1) throw e;
+      }
+    }
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
