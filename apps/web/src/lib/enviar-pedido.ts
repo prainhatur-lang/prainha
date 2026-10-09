@@ -90,7 +90,8 @@ export async function enviarPedidoAuto(pedidoId: string): Promise<EnvioPedidoRes
   // faturamento). A mensagem de modelo da Meta tem teto de 1024 caracteres
   // (#132005): o pedido 59 da Mega (12 itens com observação de estoque, 09/10)
   // ficou GERADO sem sair por isso. Em vez de cortar item, a lista vai no link.
-  const link = `Pedido completo: https://app.prainhabar.com/cotacao/preencher/pedido/${pedidoId}`;
+  // "Preço final com impostos" vai junto do link — regra do dono (09/10).
+  const link = `Preços FINAIS, com impostos. Pedido completo: https://app.prainhabar.com/cotacao/preencher/pedido/${pedidoId}`;
   const lista = itensStr || '(itens no sistema)';
   const fat = faturamento ? `; ${faturamento}` : '';
   const resumo = `${itens.length} ${itens.length === 1 ? 'item' : 'itens'}, lista com quantidades e valores no link`;

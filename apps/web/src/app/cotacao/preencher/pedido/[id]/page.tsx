@@ -74,6 +74,11 @@ export default async function PedidoCompraPublicoPage(props: { params: Promise<{
         </p>
       )}
 
+      {/* Regra do dono (09/10): o preço do pedido é o que se paga, sem acréscimo na nota. */}
+      <p className="mt-4 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900">
+        Os preços deste pedido são PREÇO FINAL, já com todos os impostos. A nota deve sair com estes valores.
+      </p>
+
       <ul className="mt-5 divide-y divide-slate-200 rounded-xl border border-slate-200">
         {itens.map((i) => (
           <li key={i.id} className="flex items-start justify-between gap-3 px-3 py-3">
