@@ -683,6 +683,7 @@ export async function processarEntrada(params: {
           ocupacaoAgora,
           nomePerfil: conversa.nomeCliente,
           retomada: params.retomada === true,
+          perguntaPendente: params.retomada === true ? entrada.corpo : null,
           // Número dedicado (ex.: Tabuará próprio) se apresenta só como a
           // filial dele; o número histórico do Prainha Bar atende as duas.
           duasCasas: /prainha bar/i.test(filialNome),
@@ -708,6 +709,7 @@ export async function processarEntrada(params: {
           ocupacaoAgora,
           nomePerfil: conversa.nomeCliente,
           retomada: params.retomada === true,
+          perguntaPendente: params.retomada === true ? entrada.corpo : null,
           // Número dedicado (ex.: Tabuará próprio) se apresenta só como a
           // filial dele; o número histórico do Prainha Bar atende as duas.
           duasCasas: /prainha bar/i.test(filialNome),
@@ -733,6 +735,7 @@ export async function processarEntrada(params: {
             ocupacaoAgora,
             nomePerfil: conversa.nomeCliente,
             retomada: params.retomada === true,
+            perguntaPendente: params.retomada === true ? entrada.corpo : null,
             duasCasas: /prainha bar/i.test(filialNome),
             imagem,
             imagemJaRespondida,

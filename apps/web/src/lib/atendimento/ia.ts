@@ -816,6 +816,9 @@ export async function gerarResposta(params: {
    *  system message: posição vence a regra escrita no meio do prompt. */
   ocupacaoAgora?: string | null;
   retomada?: boolean;
+  /** Na retomada: a fala do cliente que ficou sem resposta — vai citada na
+   *  ordem final (a Nina respondeu "Combinado!" pro 👍 da Claudia em 09/10). */
+  perguntaPendente?: string | null;
   /** false = número dedicado de UMA casa (Nina se apresenta só como ela). */
   duasCasas?: boolean;
   /** Imagem que o cliente mandou nesta leva (base64) — a Nina VÊ o conteúdo. */
@@ -869,7 +872,10 @@ export async function gerarResposta(params: {
     mensagens.push({
       role: 'system',
       content:
-        'ATENÇÃO — ordem imediata: a equipe devolveu esta conversa pra você resolver AGORA a pergunta pendente do cliente. A resposta está nos blocos de "O QUE VOCÊ SABE" (releia-os — a base foi ATUALIZADA depois da sua última mensagem) ou nas ferramentas (consultar_cardapio etc.). Entregue a informação concreta nesta resposta, como boa notícia e fechando a promessa que ficou ("consultei aqui com a equipe e: pode sim!" / "confirmei com o pessoal: ..."). É TERMINANTEMENTE PROIBIDO responder que "alguém da equipe vai falar com você", "vou confirmar" ou qualquer variação de promessa — promessas antigas no histórico NÃO valem mais que esta ordem. Sem emoji. Só se NEM os blocos NEM as ferramentas tiverem a resposta, chame transferir_para_humano.',
+        'ATENÇÃO — ordem imediata: a equipe devolveu esta conversa pra você resolver AGORA a pergunta pendente do cliente. A resposta está nos blocos de "O QUE VOCÊ SABE" (releia-os — a base foi ATUALIZADA depois da sua última mensagem) ou nas ferramentas (consultar_cardapio etc.). Entregue a informação concreta nesta resposta, como boa notícia e fechando a promessa que ficou ("consultei aqui com a equipe e: pode sim!" / "confirmei com o pessoal: ..."). É TERMINANTEMENTE PROIBIDO responder que "alguém da equipe vai falar com você", "vou confirmar" ou qualquer variação de promessa — promessas antigas no histórico NÃO valem mais que esta ordem. Sem emoji. Só se NEM os blocos NEM as ferramentas tiverem a resposta, chame transferir_para_humano.' +
+        (params.perguntaPendente?.trim()
+          ? ` A PERGUNTA PENDENTE é esta fala do cliente: "${params.perguntaPendente.trim().slice(0, 600)}" — responda a ELA (e ao assunto que ela continua no histórico), não a um "ok"/👍/"combinado" que tenha vindo depois. Responder só "combinado" ou "perfeito" é ERRO.`
+          : ''),
     });
   }
 
