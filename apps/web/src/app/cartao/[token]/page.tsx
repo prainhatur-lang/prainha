@@ -59,7 +59,7 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
             {evento && nasceuEmEvento(c) ? (
               <p className="mt-2 text-sm opacity-90">
                 {evento.saudacao} Ative o cartão e tenha {v.soDiaUtil ? v.pct + v.bonusDiaUtil : v.pct}% de desconto na conta
-                {v.soDiaUtil ? <> (de segunda a sexta, fora feriado)</> : v.bonusDiaUtil ? <> ({v.pct + v.bonusDiaUtil}% de segunda a sexta)</> : null} no {v.casa}. Ao chegar,
+                {v.soDiaUtil ? <> (de segunda a sexta, fora feriado)</> : v.bonusDiaUtil ? <> ({v.pct + v.bonusDiaUtil}% de segunda a sexta)</> : null} {evento.casa.noNome}. Ao chegar,
                 avalie a casa pelo QR Code da mesa e escolha o seu drink de boas-vindas.
               </p>
             ) : (
@@ -123,7 +123,7 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
           <p className="rounded-lg bg-red-100 p-3 text-sm text-red-800">Este cartão está bloqueado. Fale com a gerência.</p>
         ) : (
           <>
-            {evento && <DrinkEvento evento={evento.nome} />}
+            {evento && <DrinkEvento evento={evento.nome} daCasa={evento.casa.da} />}
             {v.valeHoje ? (
               <VouPagar token={token} confirmado={confirmado} telefone={tel} pctHoje={pctHoje} />
             ) : (

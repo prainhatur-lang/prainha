@@ -71,7 +71,7 @@ export async function cadastrarNoEvento(ev: Evento, req: Request) {
   if (b.aceite !== true) return erro('Marque a autorização pra continuar.');
 
   const prog = await carregarPrograma(ev.filialId);
-  if (!prog.ativo) return erro('O cartão do Prainha Bar está pausado no momento. Fale com a casa.', 409);
+  if (!prog.ativo) return erro(`O cartão ${ev.casa.da} está pausado no momento. Fale com a casa.`, 409);
   const nivel = nivelDoEvento(prog.config, ev);
 
   const ipBruto = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || 'sem-ip';
@@ -112,7 +112,7 @@ export async function cadastrarNoEvento(ev: Evento, req: Request) {
     .limit(1);
 
   if (ja) {
-    if (ja.status !== 'ativo') return erro('Este número tem um cartão bloqueado. Fale com a gerência do Prainha.', 409);
+    if (ja.status !== 'ativo') return erro(`Este número tem um cartão bloqueado. Fale com a gerência ${ev.casa.da}.`, 409);
     // benefício no cartão que já existe — sem derrubar garantia que ele já tenha
     const garantiaViva = !!ja.nivelMinimo && (!ja.nivelMinimoAte || ja.nivelMinimoAte >= hojeBr());
     const set: Partial<typeof T.$inferInsert> = {};
@@ -138,7 +138,7 @@ export async function cadastrarNoEvento(ev: Evento, req: Request) {
     // cartão de cliente da casa: o link só vai pro WhatsApp do dono
     const enviado = await enviarTextoWhatsApp(
       `55${telefone}`,
-      `Prainha Bar · ${ev.nome}\n\nSeu benefício já está no seu Cliente VIP: drink de boas-vindas e categoria ${nivel.nome} até ${ev.fimCurto}.\n\nAbra o seu cartão: ${link(ja.token)}`,
+      `${ev.casa.nome} · ${ev.nome}\n\nSeu benefício já está no seu Cliente VIP: drink de boas-vindas e categoria ${nivel.nome} até ${ev.fimCurto}.\n\nAbra o seu cartão: ${link(ja.token)}`,
     ).catch(() => false);
     return NextResponse.json({ ok: true, existente: true, enviado });
   }

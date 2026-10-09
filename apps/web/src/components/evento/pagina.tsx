@@ -1,6 +1,7 @@
-// Página pública de EVENTO (soea.prainhabar.com, jipeshow.prainhabar.com) — o
-// destino do QR Code do card. O participante se cadastra (CPF e celular; o
-// nome vem do CPF) e sai daqui com um Cliente VIP Prainha Bar na categoria do
+// Página pública de EVENTO (soea.prainhabar.com, jipeshow.prainhabar.com,
+// tabuara.com.br/soea) — o destino do QR Code do card. Marca, links e cores vêm
+// da CASA do evento (ev.casa.tema vira as variáveis --ev-* do <main>). O participante se cadastra (CPF e celular; o
+// nome vem do CPF) e sai daqui com um Cliente VIP da casa na categoria do
 // benefício. O drink de boas-vindas é o "Avalie e ganhe um drink" do QR da mesa.
 // Regras em @/lib/eventos; o cadastro bate em /api/<slug>.
 
@@ -12,12 +13,6 @@ import { carregarPrograma } from '@/lib/fidelidade/config';
 import { baseUrl } from '@/lib/fidelidade/vista';
 import { type Evento, eventoAberto, nivelDoEvento } from '@/lib/eventos';
 import { CadastroEvento } from './cadastro';
-
-const RESERVAS_URL = 'https://reservas.prainhabar.com';
-const SITE_URL = 'https://www.prainhabar.com';
-const INSTAGRAM_URL = 'https://www.instagram.com/prainha.se/';
-const MAPS_URL = 'https://www.google.com/maps/search/?api=1&query=Prainha+Bar+Matapoa+Aracaju';
-const ENDERECO = 'Estrada Matapoã, 2288 · Mosqueiro, Aracaju/SE';
 
 const display = { fontFamily: 'var(--font-display-soea)' };
 const texto = { fontFamily: 'var(--font-texto-soea)' };
@@ -40,23 +35,35 @@ function Atalho({ href, titulo, sub, children }: { href: string; titulo: string;
       href={href}
       target="_blank"
       rel="noopener"
-      className="group flex items-center gap-4 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-4 transition hover:border-[#F2C27A]/50 hover:bg-white/[0.08]"
+      className="group flex items-center gap-4 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-4 transition hover:border-[var(--ev-acento)]/50 hover:bg-white/[0.08]"
     >
-      <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#F2C27A]/10 text-[#F2C27A]">{children}</span>
+      <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[var(--ev-acento)]/10 text-[color:var(--ev-acento)]">{children}</span>
       <span className="min-w-0 flex-1">
         <span className="block text-[15px] font-medium text-[#FBF3E4]">{titulo}</span>
         <span className="block truncate text-[13px] text-[#FBF3E4]/55">{sub}</span>
       </span>
-      <Seta className="h-5 w-5 shrink-0 text-[#FBF3E4]/30 transition group-hover:translate-x-0.5 group-hover:text-[#F2C27A]" />
+      <Seta className="h-5 w-5 shrink-0 text-[#FBF3E4]/30 transition group-hover:translate-x-0.5 group-hover:text-[color:var(--ev-acento)]" />
     </a>
   );
 }
 
 export async function PaginaEvento({ ev }: { ev: Evento }) {
+  const casa = ev.casa;
+  const tema = {
+    '--ev-acento': casa.tema.acento,
+    '--ev-fundo': casa.tema.fundo,
+    '--ev-painel': casa.tema.painel,
+    '--ev-botao1': casa.tema.botao1,
+    '--ev-botao2': casa.tema.botao2,
+    '--ev-botao-texto': casa.tema.botaoTexto,
+  } as React.CSSProperties;
   const prog = await carregarPrograma(ev.filialId);
   const nivel = nivelDoEvento(prog.config, ev);
   const bonus = prog.config.bonusDiaUtilPct;
-  const aberta = eventoAberto(ev) && prog.ativo;
+  // casa com "desconto só de segunda a sexta": o número é um só e vale em dia útil
+  const soUtil = prog.config.soDiaUtil;
+  const noPrazo = eventoAberto(ev);
+  const aberta = noPrazo && prog.ativo;
 
   // quem já se cadastrou neste aparelho volta direto pro cartão
   const tk = (await cookies()).get(ev.cookie)?.value;
@@ -71,29 +78,30 @@ export async function PaginaEvento({ ev }: { ev: Evento }) {
   const passos = [
     { n: '1', t: 'Cadastre-se', d: 'Só CPF e celular. Seu nome a gente já encontra.' },
     { n: '2', t: 'Confirme pelo WhatsApp', d: `Chega um código no seu número e o cartão ${prog.marca} ${nivel.nome} abre no celular.` },
-    { n: '3', t: 'No Prainha', d: 'Ao chegar, conecte-se ao Wi-Fi da casa, avalie o Prainha pelo QR Code da mesa e escolha o seu drink de boas-vindas. Na hora de pagar, toque em “Vou pagar agora” e diga o código de 4 letras.' },
+    { n: '3', t: casa.na, d: `Ao chegar, conecte-se ao Wi-Fi da casa, avalie ${casa.a} pelo QR Code da mesa e escolha o seu drink de boas-vindas. Na hora de pagar, toque em “Vou pagar agora” e diga o código de 4 letras.` },
   ];
 
   return (
-    <main className="min-h-screen bg-[#160c08] text-[#FBF3E4] antialiased" style={texto}>
+    <main className="min-h-screen bg-[var(--ev-fundo)] text-[#FBF3E4] antialiased" style={{ ...texto, ...tema }}>
       {/* Abertura: o pôr do sol */}
       <section className="relative isolate overflow-hidden">
         {/* a foto ocupa a primeira tela; o sol fica acima do texto, que cai sobre a água */}
         <div className="absolute inset-x-0 top-0 -z-20 h-[88svh] min-h-[560px]">
           <Image
-            src="/soea/por-do-sol.jpg"
-            alt="Pôr do sol sobre o rio, visto do Prainha Bar, em Aracaju"
+            src={casa.foto}
+            alt={casa.fotoAlt}
             fill
             priority
             sizes="100vw"
-            className="object-cover object-[50%_45%]"
+            className="object-cover"
+            style={{ objectPosition: casa.fotoPos }}
           />
           <div
             aria-hidden
             className="absolute inset-0"
             style={{
               background:
-                'linear-gradient(180deg, rgba(22,12,8,.50) 0%, rgba(22,12,8,0) 20%, rgba(22,12,8,0) 44%, rgba(22,12,8,.62) 62%, rgba(22,12,8,.92) 86%, #160c08 100%)',
+                'linear-gradient(180deg, color-mix(in srgb, var(--ev-fundo) 50%, transparent) 0%, transparent 20%, transparent 44%, color-mix(in srgb, var(--ev-fundo) 62%, transparent) 62%, color-mix(in srgb, var(--ev-fundo) 92%, transparent) 86%, var(--ev-fundo) 100%)',
             }}
           />
         </div>
@@ -101,9 +109,9 @@ export async function PaginaEvento({ ev }: { ev: Evento }) {
           <header className="flex items-center justify-between gap-3">
             <div>
               <div className="text-[22px] font-semibold uppercase leading-none tracking-[0.32em] text-white" style={display}>
-                Prainha
+                {casa.letreiro}
               </div>
-              <div className="mt-1 whitespace-nowrap text-[10px] uppercase tracking-[0.2em] text-white/75">Bar e restaurante<span className="hidden min-[380px]:inline"> · Aracaju</span></div>
+              <div className="mt-1 whitespace-nowrap text-[10px] uppercase tracking-[0.2em] text-white/75">{casa.sub}<span className="hidden min-[380px]:inline"> · Aracaju</span></div>
             </div>
             <div className="shrink-0 whitespace-nowrap rounded-full border border-white/35 bg-black/20 px-3 py-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-white backdrop-blur-sm">
               {ev.nome}
@@ -111,31 +119,31 @@ export async function PaginaEvento({ ev }: { ev: Evento }) {
           </header>
 
           <div className="pt-[max(50svh,330px)]">
-            <p className="text-[11px] font-medium uppercase tracking-[0.3em] text-[#F2C27A]">{ev.periodo}</p>
+            <p className="text-[11px] font-medium uppercase tracking-[0.3em] text-[color:var(--ev-acento)]">{ev.periodo}</p>
             <h1 className="mt-3 text-[44px] font-medium leading-[1.02] text-white sm:text-[56px]" style={display}>
               {ev.titulo[0]}
               <br />
-              <span className="italic text-[#F2C27A]">{ev.titulo[1]}</span>
+              <span className="italic text-[color:var(--ev-acento)]">{ev.titulo[1]}</span>
             </h1>
             <p className="mt-4 max-w-md text-[16px] leading-relaxed text-white/85">
-              {ev.chamada} um drink de boas-vindas e {nivel.pct}% de desconto na conta
-              {bonus ? <>, {nivel.pct + bonus}% de segunda a sexta</> : null}.
+              {ev.chamada} um drink de boas-vindas e {soUtil ? nivel.pct + bonus : nivel.pct}% de desconto na conta
+              {soUtil ? <>, de segunda a sexta</> : bonus ? <>, {nivel.pct + bonus}% de segunda a sexta</> : null}.
             </p>
 
             <dl className="mt-6 grid grid-cols-2 gap-3">
               <div className="rounded-2xl border border-white/12 bg-black/25 px-4 py-3.5 backdrop-blur-md">
-                <dt className="text-[10px] uppercase tracking-[0.2em] text-[#F2C27A]">Boas-vindas</dt>
+                <dt className="text-[10px] uppercase tracking-[0.2em] text-[color:var(--ev-acento)]">Boas-vindas</dt>
                 <dd className="mt-1 text-[22px] leading-tight text-white" style={display}>1 drink da casa</dd>
               </div>
               <div className="rounded-2xl border border-white/12 bg-black/25 px-4 py-3.5 backdrop-blur-md">
-                <dt className="text-[10px] uppercase tracking-[0.2em] text-[#F2C27A]">Na conta</dt>
+                <dt className="text-[10px] uppercase tracking-[0.2em] text-[color:var(--ev-acento)]">Na conta</dt>
                 <dd className="mt-1 text-[22px] leading-tight text-white" style={display}>
-                  {bonus ? `${nivel.pct}% a ${nivel.pct + bonus}%` : `${nivel.pct}% de desconto`}
+                  {soUtil ? `${nivel.pct + bonus}% seg a sex` : bonus ? `${nivel.pct}% a ${nivel.pct + bonus}%` : `${nivel.pct}% de desconto`}
                 </dd>
               </div>
             </dl>
 
-            <div id="cadastro" className="mt-5 rounded-3xl border border-white/12 bg-[#1d110b]/85 p-5 shadow-2xl backdrop-blur-xl sm:p-6">
+            <div id="cadastro" className="mt-5 rounded-3xl border border-white/12 bg-[var(--ev-painel)]/85 p-5 shadow-2xl backdrop-blur-xl sm:p-6">
               {meu ? (
                 <div className="space-y-4 text-center">
                   <p className="text-2xl leading-tight" style={display}>
@@ -143,7 +151,7 @@ export async function PaginaEvento({ ev }: { ev: Evento }) {
                   </p>
                   <a
                     href={`${baseUrl()}/cartao/${meu.token}`}
-                    className="block w-full rounded-xl bg-gradient-to-b from-[#F2A65A] to-[#E0782A] px-5 py-4 text-[16px] font-semibold tracking-wide text-[#2A1408]"
+                    className="block w-full rounded-xl bg-gradient-to-b from-[var(--ev-botao1)] to-[var(--ev-botao2)] px-5 py-4 text-[16px] font-semibold tracking-wide text-[color:var(--ev-botao-texto)]"
                   >
                     Abrir meu cartão
                   </a>
@@ -154,12 +162,17 @@ export async function PaginaEvento({ ev }: { ev: Evento }) {
                   <p className="mb-5 mt-1 text-[14px] text-[#FBF3E4]/65">
                     Vira um {prog.marca} {nivel.nome}, no seu celular, válido durante o evento.
                   </p>
-                  <CadastroEvento nivel={nivel.nome} slug={ev.slug} doEvento={ev.doEvento} />
+                  <CadastroEvento nivel={nivel.nome} slug={ev.slug} doEvento={ev.doEvento} casa={casa.nome} oCasa={casa.oNome} />
                 </>
+              ) : noPrazo ? (
+                <div className="space-y-2 text-center">
+                  <p className="text-2xl leading-tight" style={display}>Em instantes por aqui.</p>
+                  <p className="text-[15px] text-[#FBF3E4]/70">O cartão Cliente VIP {casa.da} está sendo preparado. Volte em breve.</p>
+                </div>
               ) : (
                 <div className="space-y-2 text-center">
                   <p className="text-2xl leading-tight" style={display}>O benefício {ev.doEvento} encerrou.</p>
-                  <p className="text-[15px] text-[#FBF3E4]/70">O pôr do sol continua todos os dias. Reserve sua mesa.</p>
+                  <p className="text-[15px] text-[#FBF3E4]/70">{casa.depois}</p>
                 </div>
               )}
             </div>
@@ -173,7 +186,7 @@ export async function PaginaEvento({ ev }: { ev: Evento }) {
           <ol className="mt-5 space-y-5">
             {passos.map((p) => (
               <li key={p.n} className="flex gap-4">
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[#F2C27A]/50 text-[17px] text-[#F2C27A]" style={display}>
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-[var(--ev-acento)]/50 text-[17px] text-[color:var(--ev-acento)]" style={display}>
                   {p.n}
                 </span>
                 <div>
@@ -188,19 +201,18 @@ export async function PaginaEvento({ ev }: { ev: Evento }) {
         <section aria-labelledby="casa" className="space-y-3">
           <h2 id="casa" className="text-[30px] leading-tight" style={display}>A casa</h2>
           <p className="pb-2 text-[15px] leading-relaxed text-[#FBF3E4]/70">
-            Mesas na areia, à beira do rio, com música ao vivo, moqueca de camarão e o pôr do sol mais bonito da cidade.
-            Entrada gratuita.
+            {casa.sobre}
           </p>
-          <Atalho href={RESERVAS_URL} titulo="Reservar mesa" sub="Escolha dia, horário e área"><Calendario className="h-5 w-5" /></Atalho>
-          <Atalho href={MAPS_URL} titulo="Como chegar" sub={ENDERECO}><Pino className="h-5 w-5" /></Atalho>
-          <Atalho href={INSTAGRAM_URL} titulo="Instagram" sub="@prainha.se"><Insta className="h-5 w-5" /></Atalho>
-          <Atalho href={SITE_URL} titulo="Site" sub="prainhabar.com"><Globo className="h-5 w-5" /></Atalho>
+          <Atalho href={casa.reservas} titulo="Reservar mesa" sub="Escolha dia, horário e área"><Calendario className="h-5 w-5" /></Atalho>
+          <Atalho href={casa.maps} titulo="Como chegar" sub={casa.endereco}><Pino className="h-5 w-5" /></Atalho>
+          <Atalho href={casa.instagram} titulo="Instagram" sub={casa.instagramRotulo}><Insta className="h-5 w-5" /></Atalho>
+          <Atalho href={casa.site} titulo="Site" sub={casa.siteRotulo}><Globo className="h-5 w-5" /></Atalho>
         </section>
 
         <footer className="border-t border-white/10 pt-6 text-[12px] leading-relaxed text-[#FBF3E4]/45">
           <p>
-            Benefício para participantes {ev.doEvento}, {ev.periodoRodape}, só no Prainha Bar. Um drink de boas-vindas
-            por participante, ao avaliar a casa pelo QR Code da mesa (conectado ao Wi-Fi do Prainha); bebida alcoólica apenas para maiores de 18
+            Benefício para participantes {ev.doEvento}, {ev.periodoRodape}, só {casa.noNome}. Um drink de boas-vindas
+            por participante, ao avaliar a casa pelo QR Code da mesa (conectado ao Wi-Fi {casa.da}); bebida alcoólica apenas para maiores de 18
             anos. O desconto vale sobre o consumo (a taxa de serviço continua sobre o valor cheio), um uso por dia.
           </p>
           <p className="mt-3">

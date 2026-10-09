@@ -1,9 +1,11 @@
-// Benefício de EVENTO no Prainha Bar: quem veio pra um evento da cidade se
-// cadastra numa página pública (CPF + celular) e sai com um Cliente VIP Prainha
-// Bar já na categoria garantida até o fim do evento.
+// Benefício de EVENTO: quem veio pra um evento da cidade se cadastra numa
+// página pública (CPF + celular) e sai com um Cliente VIP da CASA (Prainha Bar
+// ou Tabuará — cada casa tem o seu cartão) já na categoria garantida até o fim
+// do evento.
 //
 //   81ª SOEA (Semana Oficial da Engenharia e da Agronomia) — 13 a 16/10/2026,
 //     o público fica até domingo 18/10 → soea.prainhabar.com
+//     · a mesma SOEA na Tabuará → tabuara.com.br/soea (Cliente VIP Tabuará)
 //   27º Jipe Show de Sergipe (Jipe Clube de Sergipe) — 8 a 11/10/2026, com o
 //     feriado de segunda 12/10 → jipeshow.prainhabar.com
 //
@@ -23,11 +25,95 @@ import type { FidelidadeConfig, NivelFidelidade } from '@/lib/fidelidade/config'
 
 type Cartao = typeof schema.fidelidadeCartao.$inferSelect;
 
+/** A casa do benefício: marca, links e as cores da página. */
+export interface Casa {
+  /** "Prainha Bar" — como aparece em frase */
+  nome: string;
+  /** letreiro do topo */
+  letreiro: string;
+  sub: string;
+  /** "No Prainha" / "Na Tabuará" */
+  na: string;
+  /** "do Prainha" / "da Tabuará" */
+  da: string;
+  /** "o Prainha" / "a Tabuará" */
+  a: string;
+  /** no meio da frase, com o nome inteiro: "no Prainha Bar" / "na Tabuará" */
+  noNome: string;
+  /** "o Prainha Bar" / "a Tabuará" */
+  oNome: string;
+  foto: string;
+  fotoAlt: string;
+  /** object-position da foto de abertura */
+  fotoPos: string;
+  sobre: string;
+  /** frase de quando o benefício já encerrou */
+  depois: string;
+  reservas: string;
+  site: string;
+  siteRotulo: string;
+  instagram: string;
+  instagramRotulo: string;
+  maps: string;
+  endereco: string;
+  tema: { acento: string; fundo: string; painel: string; botao1: string; botao2: string; botaoTexto: string };
+}
+
+export const CASAS = {
+  prainha: {
+    nome: 'Prainha Bar',
+    letreiro: 'Prainha',
+    sub: 'Bar e restaurante',
+    na: 'No Prainha',
+    da: 'do Prainha',
+    a: 'o Prainha',
+    noNome: 'no Prainha Bar',
+    oNome: 'o Prainha Bar',
+    foto: '/soea/por-do-sol.jpg',
+    fotoAlt: 'Pôr do sol sobre o rio, visto do Prainha Bar, em Aracaju',
+    fotoPos: '50% 45%',
+    sobre: 'Mesas na areia, à beira do rio, com música ao vivo, moqueca de camarão e o pôr do sol mais bonito da cidade. Entrada gratuita.',
+    depois: 'O pôr do sol continua todos os dias. Reserve sua mesa.',
+    reservas: 'https://reservas.prainhabar.com',
+    site: 'https://www.prainhabar.com',
+    siteRotulo: 'prainhabar.com',
+    instagram: 'https://www.instagram.com/prainha.se/',
+    instagramRotulo: '@prainha.se',
+    maps: 'https://www.google.com/maps/search/?api=1&query=Prainha+Bar+Matapoa+Aracaju',
+    endereco: 'Estrada Matapoã, 2288 · Mosqueiro, Aracaju/SE',
+    tema: { acento: '#F2C27A', fundo: '#160c08', painel: '#1d110b', botao1: '#F2A65A', botao2: '#E0782A', botaoTexto: '#2A1408' },
+  },
+  tabuara: {
+    nome: 'Tabuará',
+    letreiro: 'Tabuará',
+    sub: 'Gastronomia sensorial',
+    na: 'Na Tabuará',
+    da: 'da Tabuará',
+    a: 'a Tabuará',
+    noNome: 'na Tabuará',
+    oNome: 'a Tabuará',
+    foto: '/tabuara/ambiente.jpg',
+    fotoAlt: 'Salão da Tabuará, na Coroa do Meio, em Aracaju',
+    fotoPos: '50% 30%',
+    sobre: 'Cozinha autoral, coquetelaria e carta de vinhos, num ambiente sofisticado na Coroa do Meio, em Aracaju.',
+    depois: 'A casa continua de portas abertas. Reserve sua mesa.',
+    reservas: 'https://tabuara.com.br/reserva',
+    site: 'https://tabuara.com.br',
+    siteRotulo: 'tabuara.com.br',
+    instagram: 'https://instagram.com/tabuara.se',
+    instagramRotulo: '@tabuara.se',
+    maps: 'https://www.google.com/maps/search/?api=1&query=Tabuara+Praca+de+Eventos+Coroa+do+Meio+Aracaju',
+    endereco: 'Praça de Eventos · Coroa do Meio, Aracaju/SE',
+    tema: { acento: '#d9bd82', fundo: '#0d0b09', painel: '#15120e', botao1: '#d9bd82', botao2: '#c9a24b', botaoTexto: '#0d0b09' },
+  },
+} as const satisfies Record<string, Casa>;
+
 export interface Evento {
   /** rota (/soea), API (/api/soea) e fidelidade_cartao.origem */
   slug: string;
   host: string;
   filialId: string;
+  casa: Casa;
   /** marca em origem_detalhe */
   tag: string;
   inicio: string;
@@ -55,12 +141,15 @@ export interface Evento {
 
 /** 01 Prainha Bar */
 const PRAINHA_BAR = '7c5c66ce-cceb-4e89-9c6d-d0785255c4f9';
+/** 02 Tabuará */
+const TABUARA = 'fde37b95-7c7e-4b41-a618-2aba1fbc0de7';
 
 export const EVENTOS = {
   soea: {
     slug: 'soea',
     host: 'soea.prainhabar.com',
     filialId: PRAINHA_BAR,
+    casa: CASAS.prainha,
     tag: 'soea81',
     inicio: '2026-10-13',
     fim: '2026-10-18',
@@ -79,6 +168,7 @@ export const EVENTOS = {
     slug: 'jipeshow',
     host: 'jipeshow.prainhabar.com',
     filialId: PRAINHA_BAR,
+    casa: CASAS.prainha,
     tag: 'jipeshow27',
     inicio: '2026-10-08',
     fim: '2026-10-12',
@@ -92,6 +182,27 @@ export const EVENTOS = {
     titulo: ['Depois da trilha,', 'o pôr do sol é à beira-rio.'],
     chamada: 'Quem veio para o Jipe Show é convidado da casa:',
     saudacao: 'Boas-vindas ao Prainha!',
+  },
+  // A SOEA na Tabuará (tabuara.com.br/soea): Cliente VIP TABUARÁ — outro
+  // cartão, outra casa. A tag não pode conter a da SOEA do Prainha ("soea81").
+  tabuaraSoea: {
+    slug: 'tabuara-soea',
+    host: 'tabuara.com.br',
+    filialId: TABUARA,
+    casa: CASAS.tabuara,
+    tag: 'soeatab81',
+    inicio: '2026-10-13',
+    fim: '2026-10-18',
+    nivel: 'platinum',
+    cookie: 'tabuara_soea_t',
+    nome: '81ª SOEA',
+    doEvento: 'da 81ª SOEA',
+    periodo: '13 a 18 de outubro',
+    fimCurto: '18/10',
+    periodoRodape: '13 a 18/10/2026',
+    titulo: ['Aracaju servida', 'à mesa.'],
+    chamada: 'Participante da SOEA é convidado da casa:',
+    saudacao: 'Boas-vindas a Aracaju!',
   },
 } as const satisfies Record<string, Evento>;
 
@@ -108,9 +219,9 @@ export function ehDoEvento(c: Pick<Cartao, 'origemDetalhe'>, ev: Evento): boolea
 
 /** O evento EM ANDAMENTO (até o último dia) em que este cartão entrou — se
  *  entrou em mais de um, o que termina primeiro. */
-export function eventoDoCartao(c: Pick<Cartao, 'origemDetalhe'>): Evento | null {
+export function eventoDoCartao(c: Pick<Cartao, 'origemDetalhe' | 'filialId'>): Evento | null {
   const h = hojeBr();
-  return LISTA.filter((ev) => ehDoEvento(c, ev) && h <= ev.fim).sort((a, b) => a.fim.localeCompare(b.fim))[0] ?? null;
+  return LISTA.filter((ev) => ev.filialId === c.filialId && ehDoEvento(c, ev) && h <= ev.fim).sort((a, b) => a.fim.localeCompare(b.fim))[0] ?? null;
 }
 
 /** O cartão NASCEU num cadastro de evento (não é cliente antigo que ganhou o benefício). */

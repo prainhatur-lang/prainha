@@ -24,6 +24,8 @@ const TABUARA_REWRITES: Record<string, string> = {
   '/': '/tabuara',
   '/reserva': `/reservar/${TABUARA_RESERVA_TOKEN}`,
   '/delivery': '/delivery/tabuara',
+  // benefício da 81ª SOEA na Tabuará (até 18/10/2026) — destino do QR do card
+  '/soea': '/tabuara/soea',
 };
 // Domínio próprio da Prainha Mar e Grill (filial 03): landing + reserva, no
 // mesmo esquema da Tabuará.
