@@ -523,18 +523,23 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
       let criados = 0;
       const ids: string[] = [];
       const falhas: string[] = [];
+      const jaTinham: string[] = [];
       // lotes de 100 (cada cartão é um insert com checagem de colisão)
       for (let i = 0; i < pessoas.length; i += 100) {
         const j = (await p.api({ acao: 'criar', pessoas: pessoas.slice(i, i + 100) })) as {
-          criados: Array<{ id: string; novo: boolean }>;
+          criados: Array<{ id: string; novo: boolean; nome?: string; telefone?: string }>;
           falhas: Array<{ nome: string; erro: string }>;
         };
         criados += j.criados.filter((x) => x.novo).length;
+        jaTinham.push(...j.criados.filter((x) => !x.novo).map((x) => `${x.nome ?? 'cartão'} (${x.telefone ?? '?'})`));
         ids.push(...j.criados.map((x) => x.id));
         falhas.push(...j.falhas.map((f) => `${f.nome}: ${f.erro}`));
       }
       const resumo =
         `${criados} cartão(ões) criado(s).` +
+        (jaTinham.length
+          ? `\n${jaTinham.length} já tinha(m) cartão nesta casa com esse celular (nada mudou): ${jaTinham.slice(0, 5).join('; ')}`
+          : '') +
         (falhas.length ? `\n${falhas.length} falha(s): ${falhas.slice(0, 5).join('; ')}` : '');
       if (enviarJunto && p.zapTemplate && ids.length && !pessoas.some((x) => x.manual)) {
         p.setMsg(`${resumo}\n${await enviarConvitesLote(p.api, ids)}`);
