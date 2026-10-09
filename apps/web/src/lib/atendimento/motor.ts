@@ -9,7 +9,7 @@
 
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, sql } from 'drizzle-orm';
-import { gerarResposta, type MsgHistorico } from './ia';
+import { gerarResposta, NINA_SILENCIO, type MsgHistorico } from './ia';
 import { enviarTexto, enviarAudio, marcarLidaComDigitando, baixarMidia } from './zap';
 import { gerarAudioNina } from './voz';
 import { transcreverAudio } from './transcrever';
@@ -321,6 +321,25 @@ export async function responderPendenteAposDevolucao(conversaId: string): Promis
   }
 }
 
+/** Id da última mensagem do cliente que PEDE resposta. Reação e figurinha
+ *  ficam no transcript mas não disparam processarEntrada — se contassem aqui,
+ *  um texto seguido de figurinha ficava sem resposta de ninguém. */
+async function ultimaEntradaQuePedeResposta(conversaId: string): Promise<string | null> {
+  const [ultima] = await db
+    .select({ id: schema.atendimentoMensagem.id })
+    .from(schema.atendimentoMensagem)
+    .where(
+      and(
+        eq(schema.atendimentoMensagem.conversaId, conversaId),
+        eq(schema.atendimentoMensagem.direcao, 'entrada'),
+        sql`${schema.atendimentoMensagem.tipo} not in ('reacao', 'figurinha')`,
+      ),
+    )
+    .orderBy(desc(schema.atendimentoMensagem.criadoEm))
+    .limit(1);
+  return ultima?.id ?? null;
+}
+
 /** Roda depois do 200: transcricao, debounce, IA, envio. Nunca lanca. */
 export async function processarEntrada(params: {
   registro: EntradaRegistrada;
@@ -355,18 +374,8 @@ export async function processarEntrada(params: {
     await Promise.all(tarefas);
 
     // Debounce: se chegou mensagem mais nova nessa conversa, quem responde e ela
-    const [ultima] = await db
-      .select({ id: schema.atendimentoMensagem.id })
-      .from(schema.atendimentoMensagem)
-      .where(
-        and(
-          eq(schema.atendimentoMensagem.conversaId, registro.conversaId),
-          eq(schema.atendimentoMensagem.direcao, 'entrada'),
-        ),
-      )
-      .orderBy(desc(schema.atendimentoMensagem.criadoEm))
-      .limit(1);
-    if (!ultima || ultima.id !== registro.mensagemId) return;
+    const ultimaId = await ultimaEntradaQuePedeResposta(registro.conversaId);
+    if (!ultimaId || ultimaId !== registro.mensagemId) return;
 
     // Anti-duplicação: se há resposta da Nina recente (< 5s), cancel (outra
     // processarEntrada já respondeu — pode ser retomada simultânea).
@@ -433,9 +442,14 @@ export async function processarEntrada(params: {
     // na chamada do modelo — a Nina passa a VER comprovante, print, foto.
     // Best-effort: falha no download vira o placeholder de sempre.
     let imagem: { base64: string; mime: string } | null = null;
+    // Imagem que chegou ANTES da última resposta da Nina já foi vista e
+    // respondida: segue anexada (o cliente pode perguntar mais sobre ela), mas
+    // com o recado de não explicar de novo — em 09/10 um "Otimoooo" e um
+    // "Ótimo.." fizeram ela repetir o peixe e o AquaArena inteiros.
+    let imagemJaRespondida = false;
     try {
       const [imgMsg] = await db
-        .select({ mediaId: schema.atendimentoMensagem.mediaId })
+        .select({ mediaId: schema.atendimentoMensagem.mediaId, criadoEm: schema.atendimentoMensagem.criadoEm })
         .from(schema.atendimentoMensagem)
         .where(
           and(
@@ -452,6 +466,19 @@ export async function processarEntrada(params: {
         // 4MB de imagem = ~5,3MB em base64; acima disso não anexa (limite da API)
         if (midia && /^image\//.test(midia.mime) && midia.buffer.length <= 4 * 1024 * 1024) {
           imagem = { base64: midia.buffer.toString('base64'), mime: midia.mime };
+          const [respostaDepois] = await db
+            .select({ id: schema.atendimentoMensagem.id })
+            .from(schema.atendimentoMensagem)
+            .where(
+              and(
+                eq(schema.atendimentoMensagem.conversaId, registro.conversaId),
+                eq(schema.atendimentoMensagem.direcao, 'saida'),
+                eq(schema.atendimentoMensagem.autor, 'bot'),
+                sql`${schema.atendimentoMensagem.criadoEm} > ${imgMsg.criadoEm.toISOString()}::timestamptz`,
+              ),
+            )
+            .limit(1);
+          imagemJaRespondida = !!respostaDepois;
         }
       }
     } catch (e) {
@@ -619,6 +646,7 @@ export async function processarEntrada(params: {
     let texto: string | null = null;
     let transferiu = false;
     let leadRegistrado = false;
+    let usouFerramenta = false;
     try {
       let resposta;
       try {
@@ -639,6 +667,7 @@ export async function processarEntrada(params: {
           // filial dele; o número histórico do Prainha Bar atende as duas.
           duasCasas: /prainha bar/i.test(filialNome),
           imagem,
+          imagemJaRespondida,
         });
       } catch (e1) {
         console.error('[nina] geracao tentativa 1 falhou:', e1 instanceof Error ? e1.message : e1);
@@ -663,6 +692,7 @@ export async function processarEntrada(params: {
           // filial dele; o número histórico do Prainha Bar atende as duas.
           duasCasas: /prainha bar/i.test(filialNome),
           imagem,
+          imagemJaRespondida,
         });
         } catch (e2) {
           // FAILOVER DE MOTOR (domingo 06/09: 8 falhas em rajada no pico —
@@ -685,6 +715,7 @@ export async function processarEntrada(params: {
             retomada: params.retomada === true,
             duasCasas: /prainha bar/i.test(filialNome),
             imagem,
+            imagemJaRespondida,
             forcarModelo: alternativo,
           });
         }
@@ -692,6 +723,21 @@ export async function processarEntrada(params: {
       texto = resposta.texto;
       transferiu = resposta.transferiu;
       leadRegistrado = resposta.leadRegistrado;
+      usouFerramenta = resposta.usouFerramenta === true;
+      // RESPOSTA AUTOMÁTICA DE OUTRO NEGÓCIO (09/10/2026): convite nosso caiu
+      // em número com saudação automática ("O Gprado Contabilidade agradece o
+      // seu contato") e a Nina se apresentou e ofereceu reserva pro robô — 5
+      // conversas numa tarde. Ela agora devolve o marcador e nada é enviado.
+      // Só vale no começo da conversa (antes de qualquer resposta dela) e sem
+      // ferramenta; fora disso o marcador é descartado e segue o fluxo normal.
+      if (texto && texto.includes(NINA_SILENCIO)) {
+        const jaFalou = historico.some((m) => m.direcao === 'saida');
+        if (modo === 'cliente' && !jaFalou && !usouFerramenta && !transferiu && !leadRegistrado && !audioEnviado) {
+          console.log('[nina] resposta automática de outro negócio — fico calada', registro.conversaId);
+          return;
+        }
+        texto = texto.split(NINA_SILENCIO).join('').trim() || null;
+      }
       // Sem texto E sem áudio enviado = fallback; áudio sozinho é resposta válida.
       if (!texto && !audioEnviado) {
         // "Só um minutinho" pela SEGUNDA vez = Nina travada de verdade: o
@@ -769,6 +815,20 @@ export async function processarEntrada(params: {
         texto,
         digitandoDesde,
       );
+      // RESPOSTA ATRASADA (09/10/2026: 15 respostas em dobro num dia): o
+      // cliente mandou outra mensagem enquanto esta era escrita — "Olá" e, 12 s
+      // depois, a pergunta de verdade → duas apresentações seguidas. Quem
+      // responde é a mensagem mais nova, que já lê o histórico inteiro. Só
+      // descarta quando NADA foi feito nesta rodada (sem ferramenta, sem
+      // transferência, sem lead, sem áudio): se uma reserva foi criada, o
+      // cliente precisa ouvir a confirmação mesmo atrasada.
+      if (!usouFerramenta && !transferiu && !leadRegistrado && !audioEnviado && params.retomada !== true) {
+        const maisNova = await ultimaEntradaQuePedeResposta(registro.conversaId);
+        if (maisNova && maisNova !== registro.mensagemId) {
+          console.log('[nina] chegou mensagem mais nova durante a resposta — descarto esta', registro.conversaId);
+          return;
+        }
+      }
       const envio = await enviarTexto(entrada.phoneNumberId, entrada.telefone, texto);
       await db.insert(schema.atendimentoMensagem).values({
         conversaId: registro.conversaId,

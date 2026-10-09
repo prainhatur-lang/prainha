@@ -67,3 +67,28 @@ export async function ehDiaEspecial(data: string): Promise<boolean> {
   if (diaSemana === 0 || diaSemana === 6) return true;
   return ehFeriadoOuProlongado(data);
 }
+
+const DIAS_SEMANA = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'];
+
+/** Feriados (nacional + locais fixos) de `de` até `de + dias`, em ordem, com
+ *  nome e dia da semana. Usado pela Nina: sem essa lista ela perguntava "qual
+ *  feriado?" numa sexta com feriado na segunda (caso Claudia, 09/10/2026). */
+export async function proximosFeriados(
+  de: string,
+  dias: number,
+): Promise<{ data: string; nome: string; diaSemana: string }[]> {
+  const ate = addDias(de, dias);
+  const anos = [...new Set([Number(de.slice(0, 4)), Number(ate.slice(0, 4))])];
+  const achados = new Map<string, string>();
+  for (const ano of anos) {
+    for (const f of await buscarFeriadosNacionais(ano)) achados.set(f.date, f.name);
+    for (const f of FERIADOS_LOCAIS_FIXOS) achados.set(`${ano}-${f.mesDia}`, f.nome);
+  }
+  return [...achados.entries()]
+    .filter(([data]) => data >= de && data <= ate)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([data, nome]) => {
+      const [y, m, d] = data.split('-').map(Number);
+      return { data, nome, diaSemana: DIAS_SEMANA[new Date(Date.UTC(y, m - 1, d)).getUTCDay()] };
+    });
+}

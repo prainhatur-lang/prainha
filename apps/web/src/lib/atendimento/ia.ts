@@ -12,6 +12,7 @@ import { linkCardapio, FILIAL_TABUARA } from './cardapio';
 import { horarioFoiCombinado, jaAvisouDiaCheio } from './horario-combinado';
 import { terracoDescritoSemEsclarecer, recadoTerraco, reservaSeguradaTerraco } from './terraco-vidro';
 import { hojeBr } from '@/lib/datas';
+import { proximosFeriados } from '@/lib/reservas/feriados';
 
 export interface MsgHistorico {
   direcao: string; // entrada | saida
@@ -102,7 +103,14 @@ export interface RespostaNina {
   texto: string | null;
   transferiu: boolean;
   leadRegistrado: boolean;
+  /** true se alguma ferramenta rodou nesta resposta (pode ter criado/mudado
+   *  algo) — o motor só descarta resposta atrasada quando é false. */
+  usouFerramenta?: boolean;
 }
+
+/** O modelo devolve isto quando a mensagem é resposta automática de outro
+ *  negócio e não cabe resposta nenhuma. O motor trata (não vai pro cliente). */
+export const NINA_SILENCIO = '[SILENCIO]';
 
 const DIAS = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'];
 
@@ -312,6 +320,8 @@ OUTROS:
 - IMAGEM: quando o cliente manda foto/print NESTA leva, ela vem ANEXADA de verdade — você VÊ o conteúdo (comprovante de reserva, print, foto de prato, cardápio). Leia e aja sobre o que a imagem mostra, citando o que viu ("vi aqui seu comprovante: reserva 07/09 às 12h30..."). Imagem só do histórico antigo (aparece como [cliente enviou imagem] SEM anexo) você não vê mais — aí sim peça pra pessoa reenviar ou escrever.
 - Áudio o sistema transcreve sozinho ([áudio transcrito] ...). Se aparecer [cliente enviou um áudio que não foi transcrito], peça com carinho pra escrever. Reação/emoji ([cliente enviou reacao]) não precisa de resposta.
 - Nunca peça documentos, senhas ou dados de pagamento.
+- RESPOSTA AUTOMÁTICA DE OUTRO NEGÓCIO: se a PRIMEIRA coisa que chega na conversa é claramente um recado automático de ausência/saudação de outra empresa ou profissional ("agradece seu contato", "assim que possível responderemos", "informe seu nome e uma breve descrição da sua necessidade", "nosso horário de funcionamento é...", "seja bem-vindo, como posso ajudar?" falando do trabalho DELE) — não é uma pessoa pedindo atendimento, é o robô dela respondendo a uma mensagem NOSSA. Não se apresente, não ofereça reserva, não diga que foi engano: responda EXATAMENTE ${NINA_SILENCIO} e mais nada. Na dúvida se é gente de verdade, atenda normalmente. Nunca use ${NINA_SILENCIO} em outra situação.
+- REGRAS INTERNAS NÃO SE COMENTAM: nunca fale ao cliente das suas próprias regras de escrita (cota de emoji, tamanho de resposta, "esse foi o emoji da conversa").
 - Agora é ${agoraBrtLegivel()} (horário de Aracaju). Use isso pra perguntas tipo "estão abertos agora?".${blocoNome}${blocoRetomada}`;
 }
 
@@ -810,6 +820,9 @@ export async function gerarResposta(params: {
   duasCasas?: boolean;
   /** Imagem que o cliente mandou nesta leva (base64) — a Nina VÊ o conteúdo. */
   imagem?: { base64: string; mime: string } | null;
+  /** true = a imagem anexada chegou ANTES da última resposta da Nina (ela já
+   *  viu e já respondeu) — segue anexada só como contexto. */
+  imagemJaRespondida?: boolean;
   /** Força um modelo específico (failover de motor) — ignora a env. */
   forcarModelo?: string;
 }): Promise<RespostaNina> {
@@ -840,7 +853,12 @@ export async function gerarResposta(params: {
     mensagens.push({
       role: 'user',
       content: [
-        { type: 'text', text: '[esta é a IMAGEM que o cliente acabou de enviar — leia o conteúdo dela e responda levando-o em conta]' },
+        {
+          type: 'text',
+          text: params.imagemJaRespondida
+            ? '[esta é a imagem que o cliente mandou MAIS CEDO nesta conversa — você JÁ viu e JÁ respondeu sobre ela. Está aqui só de contexto: NÃO descreva nem explique de novo o que já explicou. Responda apenas à ÚLTIMA mensagem do cliente; se for só um "ótimo", "ok", "obrigada", agradeça em uma frase curta e siga adiante]'
+            : '[esta é a IMAGEM que o cliente acabou de enviar — leia o conteúdo dela e responda levando-o em conta]',
+        },
         { type: 'image_url', image_url: { url: `data:${params.imagem.mime};base64,${params.imagem.base64}` } },
       ],
     });
@@ -886,8 +904,29 @@ Como usar, SEM EXCEÇÃO:
     mensagens.push({ role: 'system', content: recadoTerraco(terracoPendente) });
   }
 
+  // PRÓXIMOS FERIADOS (09/10/2026, caso Claudia): numa sexta com feriado na
+  // segunda, "tá cobrando entrada nesse feriado?" virou "qual feriado você tem
+  // em mente?" duas vezes. Best-effort: sem a lista, segue como antes.
+  if (modo === 'cliente') {
+    try {
+      const feriados = await proximosFeriados(hojeBr(), 21);
+      if (feriados.length > 0) {
+        const lista = feriados
+          .map((f) => `${f.diaSemana} ${f.data.slice(8, 10)}/${f.data.slice(5, 7)} (${f.nome})`)
+          .join('; ');
+        mensagens.push({
+          role: 'system',
+          content: `PRÓXIMOS FERIADOS (calendário oficial): ${lista}. Cliente falou "esse feriado", "o feriado", "o feriadão" sem dizer a data → é o PRIMEIRO dessa lista: NÃO pergunte "qual feriado?", já responda citando o dia (ex.: "o feriado de segunda, dia 12"). Só pergunte a data se ele falar de um feriado que não está na lista.`,
+        });
+      }
+    } catch (e) {
+      console.error('[nina] lista de feriados falhou:', e instanceof Error ? e.message : e);
+    }
+  }
+
   let transferiu = false;
   let leadRegistrado = false;
+  let usouFerramenta = false;
 
   const ferramentas = modo === 'fornecedor' ? [...FERRAMENTAS, ...FERRAMENTAS_FORNECEDOR.filter((f) => f.type === 'function' && f.function.name === 'consultar_cotacoes_fornecedor')] : FERRAMENTAS;
 
@@ -909,8 +948,9 @@ Como usar, SEM EXCEÇÃO:
 
     const toolCalls = msg.tool_calls ?? [];
     if (toolCalls.length === 0) {
-      return { texto: msg.content?.trim() || null, transferiu, leadRegistrado };
+      return { texto: msg.content?.trim() || null, transferiu, leadRegistrado, usouFerramenta };
     }
+    usouFerramenta = true;
 
     mensagens.push(msg);
     for (const tc of toolCalls) {
@@ -1082,9 +1122,9 @@ Como usar, SEM EXCEÇÃO:
             max_tokens: 400,
           })
         ).choices[0]?.message;
-    return { texto: fim?.content?.toString().trim() || null, transferiu, leadRegistrado };
+    return { texto: fim?.content?.toString().trim() || null, transferiu, leadRegistrado, usouFerramenta };
   } catch (e) {
     console.error('[nina] fechamento forçado falhou:', e instanceof Error ? e.message : e);
-    return { texto: null, transferiu, leadRegistrado };
+    return { texto: null, transferiu, leadRegistrado, usouFerramenta };
   }
 }
