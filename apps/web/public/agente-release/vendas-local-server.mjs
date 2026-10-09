@@ -1360,6 +1360,12 @@ async function apiCaixaAtualizarAgora(quem) {
 
 async function loopEspelho() {
   try {
+    // Banco próprio não tem espelho, e era só o espelho() que marcava a loja
+    // como "ao vivo": o ultimoStatus nasce ok:false e só virava quando alguém
+    // lançava ou fechava uma conta. Depois de cada reinício a tela ficava em
+    // "offline" com tudo funcionando (Tabuará e Mar, 09/10/2026 — a equipe
+    // achou que a loja tinha caído). Aqui o servidor respondeu = está no ar.
+    if (nativo() && !ultimoStatus.ok) ultimoStatus = { ok: true, comandas: 0, itens: 0, nativo: true };
     if (nativo()) return; // comanda/comanda_item são o original aqui — nada a espelhar
     const r = await comTimeout(espelho(), 90000, 'espelho travou (>90s) — pulando ciclo');
     if (r) console.log(`[espelho] ok — ${r.comandas} comandas, ${r.itens} itens (${new Date().toLocaleTimeString('pt-BR')})`);
@@ -9422,6 +9428,16 @@ function pontoFacialEvento(x) {
 // diagnóstico da loja (loja_diagnostico.dados->vendasLocal->pontoFacial). Só
 // número/texto curto — nunca foto nem descritor. Nunca derruba a batida.
 const PONTO_FACIAL_TEMPOS = [];
+// Alguém abriu o Ponto e não conseguiu bater: o diagnóstico não espera a hora
+// cheia pra subir (09/10/2026 — a leitura das tentativas da Tabuará ficou na
+// memória e se perdeu num reinício antes de subir). No máximo uma subida extra
+// a cada 2 min, e a última tentativa nunca fica pra trás.
+let pontoDiagLogoT = null, pontoDiagLogoUlt = 0;
+function pontoDiagLogo() {
+  if (pontoDiagLogoT) return;
+  const espera = Math.max(8000, 120000 - (Date.now() - pontoDiagLogoUlt));
+  pontoDiagLogoT = setTimeout(() => { pontoDiagLogoT = null; pontoDiagLogoUlt = Date.now(); loopDiagNuvem().catch(() => {}); }, espera);
+}
 function pontoFacialTempos(diag, r) {
   try {
     if (!diag || typeof diag !== 'object' || Array.isArray(diag)) return;
@@ -9434,6 +9450,7 @@ function pontoFacialTempos(diag, r) {
     }
     PONTO_FACIAL_TEMPOS.push(x);
     if (PONTO_FACIAL_TEMPOS.length > 40) PONTO_FACIAL_TEMPOS.shift();
+    if (!x.ok && !x.cooldown) pontoDiagLogo();
     console.log(`[ponto] facial ${x.ok ? x.tipo : x.cooldown ? 'cooldown' : x.via === 'sem_batida' ? 'sem batida' : 'erro'}: motor ${x.motor ?? '?'}, ${x.quadros ?? '?'} quadro(s), detector ${x.ms_detector ?? '?'} ms, redes ${x.ms_redes ?? '?'} ms, rosto→batida ${x.ms_rosto_ate_bater ?? '?'} ms, abrir ${x.ms_abrir ?? '?'} ms`);
   } catch {}
 }
@@ -15195,6 +15212,10 @@ async function abrirPontoFacial(){
   PF_CADASTRANDO=null; PF_OCUPADO=false; PF_PROCESSANDO=false; PF_CAD_OK=null;
   PF_SEQ=null; PF_INCERTO=0; PF_AMOSTRAS=[]; clearTimeout(PF_FECHA_T);
   PF_TEMPOS={t0:performance.now(), modelosProntos:PF_MODELOS_OK};
+  // fase = onde o Ponto parou (seguro, modelos, camera, video). Sobe no
+  // diagnóstico de quem desistiu sem a câmera ver um rosto (pfSemRosto).
+  var tp=PF_TEMPOS, tCam=0; tp.fase='seguro';
+  setTimeout(function(){ pfSemRosto(tp,'parado'); }, 25000);
   // Em http://IP:8790 o navegador nem expoe navigator.mediaDevices — antes o
   // erro saia como "Cannot read properties of undefined". Leva pro https.
   if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -15209,6 +15230,7 @@ async function abrirPontoFacial(){
     // roster em paralelo com a preparacao (que normalmente ja terminou em 2o plano)
     var pRoster=fetch('/api/ponto/pessoas',{cache:'no-store'}).then(function(r){return r.json()});
     if (!PF_MODELOS_OK) document.getElementById('pfSub').textContent='só demora assim na primeira vez';
+    tp.fase='modelos';
     await pfPrepara();
     var d=await pRoster;
     var pessoas=d.pessoas||[];
@@ -15224,7 +15246,19 @@ async function abrirPontoFacial(){
     // — entao o ponto reaproveita o que ja esta aberto e NAO o desliga ao fechar.
     var reuso=CAM.pronta&&CAM.stream&&CAM.stream.getVideoTracks().some(function(t){return t.readyState==='live'});
     PF_STREAM_PROPRIO=!reuso;
+    // Navegador que PERGUNTA se pode usar a câmera segura o getUserMedia até
+    // alguém responder: a tela ficava em "Encaixe o rosto no molde" sem imagem
+    // e sem aviso. Passados 4 s sem câmera, diz onde olhar.
+    tp.fase='camera';
+    tCam=setTimeout(function(){
+      var m=document.getElementById('pfModal'), sb=document.getElementById('pfSub');
+      if (m&&sb&&m.classList.contains('on')&&tp===PF_TEMPOS&&tp.fase==='camera')
+        sb.textContent='abrindo a câmera… se o navegador perguntar no alto da tela, toque em PERMITIR';
+    },4000);
     PF_STREAM=reuso?CAM.stream:await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'}});
+    clearTimeout(tCam); tp.fase='video';
+    var sbc=document.getElementById('pfSub');
+    if (sbc&&tp===PF_TEMPOS&&sbc.textContent.indexOf('abrindo a câmera')===0) sbc.textContent=(PF_MOTOR==='cpu'?'modo lento (cpu)':'');
     var video=document.getElementById('pfVideo');
     video.srcObject=PF_STREAM;
     // WebView (Fully Kiosk) nem sempre respeita o autoplay: sem play() o video
@@ -15243,6 +15277,7 @@ async function abrirPontoFacial(){
     pfTick(); // 1a volta já, sem esperar o 1o tique de 250 ms
   } catch(e) {
     var nome=e&&e.name;
+    clearTimeout(tCam); tp.erro=String(nome||(e&&e.message)||e||'erro').slice(0,40);
     document.getElementById('pfStatus').textContent='Não consegui abrir a câmera';
     document.getElementById('pfSub').textContent=
       nome==='NotAllowedError'?'permissão da câmera negada — toque no cadeado da barra de endereço e permita a Câmera':
@@ -15634,7 +15669,32 @@ function pfPedeLiberacao(funcionarioId, pessoa){
   };
   setTimeout(function(){ var i=document.getElementById('pfLibL'); if(i) i.focus(); },50);
 }
+/* Ponto aberto sem a câmera chegar a ver um rosto (câmera que não abriu,
+   pergunta de permissão sem resposta, carregamento parado, escuro): não ficava
+   rastro nenhum — o "sem_batida" só sai quando houve rosto (09/10/2026,
+   Tabuará: "tentaram bater o ponto e não foi" e nada no diagnóstico). Manda
+   UMA vez por abertura, ao fechar ou aos 25 s parado; só texto curto e número,
+   nunca foto. Não decide nem muda nada no reconhecimento. */
+function pfSemRosto(tp, quando){
+  try {
+    if (!tp || tp!==PF_TEMPOS || tp.rosto || tp.bateu || tp.semRosto) return;
+    if (performance.now()-tp.t0 < 3000) return; // abriu e fechou sem querer
+    tp.semRosto=true;
+    var dg=pfDiag(), st=document.getElementById('pfStatus'), ua=String(navigator.userAgent||'');
+    dg.via='sem_rosto'; dg.quando=quando; dg.fase=tp.fase||null; dg.erro=tp.erro||null;
+    dg.texto=st?String(st.textContent||'').slice(0,40):null;
+    dg.seguro=!!window.isSecureContext; dg.toque=navigator.maxTouchPoints>0;
+    dg.cam_kds=!!(CAM&&CAM.pronta); dg.cam_kds_erro=(CAM&&CAM.erro)?String(CAM.erro).slice(0,40):null;
+    dg.endereco=String(location.protocol+'//'+location.host).slice(0,40);
+    dg.aparelho=((/Android/.test(ua)?'android':/Windows/.test(ua)?'windows':/Mac OS/.test(ua)?'mac':/Linux/.test(ua)?'linux':'outro')+
+      (/; wv/.test(ua)?' webview ':' chrome ')+((ua.match(/Chrome.([0-9]+)/)||[])[1]||'?')).slice(0,40);
+    for (var k in dg) if (dg[k]==null) delete dg[k]; // o servidor só lê as 30 primeiras
+    fetch('/api/ponto/facial-diag',{method:'POST',headers:{'content-type':'application/json'},keepalive:true,
+      body:JSON.stringify({diag:dg})}).catch(function(){});
+  } catch(x) {}
+}
 function fecharPontoFacial(){
+  pfSemRosto(PF_TEMPOS,'fechou');
   // teve rosto na frente e fechou sem bater: manda só o diagnóstico
   try {
     if (PF_TEMPOS && PF_TEMPOS.rosto && !PF_TEMPOS.bateu) {
