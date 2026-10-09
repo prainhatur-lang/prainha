@@ -539,6 +539,14 @@ async function initSchema() {
   await addCol('pix_cobranca', 'fid_nome text');
   await addCol('pix_cobranca', 'fid_aplicado_em timestamptz');
   await addCol('pix_cobranca', 'fid_confirmado_em timestamptz');
+  // CARTÃO PRAINHA NA MAQUININHA: o cartão/Pix da LIO não tem pix_cobranca, então
+  // a reserva mora aqui. aplicado_em = o desconto já entrou na conta (trava do
+  // reenvio da fila do app); pago_em = o recebimento chegou; confirmado_em = a
+  // nuvem contou a visita; liberado_em = o garçom desistiu / o cartão não passou.
+  await sql`CREATE TABLE IF NOT EXISTS lio_fidelidade (uso_id text PRIMARY KEY, numero integer, ped bigint,
+    desconto numeric, pct numeric, nome text, nivel text, garcom text, nsu text,
+    criado_em timestamptz DEFAULT now(), aplicado_em timestamptz, pago_em timestamptz,
+    confirmado_em timestamptz, liberado_em timestamptz)`;
   // ⚠️ PIX CONFIRMADO NUNCA FICA SEM BAIXA (07/09/2026, mesas 45 e 23: a Cielo
   // aprovou R$ 390,50 e R$ 75,00, o Firebird falhou na hora de achar/gravar a
   // conta e o Pix virou "órfão" pra sempre — sem retentativa e sem aviso no
@@ -18375,6 +18383,94 @@ async function loopFidelidade() {
   } catch (e) { console.error('[fidelidade] fila:', e.message); }
   setTimeout(loopFidelidade, 60_000);
 }
+// ---- CARTÃO PRAINHA NA MAQUININHA ----
+// O Pix da mesa segue como está (bloco acima). Aqui é o mesmo cartão quando o
+// cliente paga na LIO: o garçom digita o código de 4 letras no Receber, a loja
+// RESERVA na nuvem e devolve o desconto; a maquininha cobra o que falta menos
+// o desconto e manda `fid_uso` junto do recebimento. O desconto só entra na
+// conta quando o recebimento chega (cartão recusado = conta intacta).
+// Mesmas regras do Pix: conta inteira, sem dividir, serviço cheio.
+async function apiLioFidelidade(body, garcom) {
+  const acao = String(body.acao || 'reservar');
+  if (acao === 'liberar') {
+    const uso = String(body.uso_id || '');
+    const [x] = await sql`UPDATE lio_fidelidade SET liberado_em=now()
+      WHERE uso_id=${uso} AND aplicado_em IS NULL AND liberado_em IS NULL RETURNING uso_id`;
+    if (x) fidNuvem('liberar', { uso_id: uso }).catch((e) => console.error('[fidelidade] liberar ' + uso + ':', e.message));
+    return { ok: true, liberado: !!x };
+  }
+  const n = Number(body.numero);
+  if (!(n > 0)) return { ok: false, erro: 'número da conta inválido' };
+  const conta = await apiContaTexto(n);
+  if (!conta.ok) return { ok: false, erro: conta.erro || 'conta não encontrada' };
+  const ped = await fbAcharPedido(n);
+  if (!ped) return { ok: false, erro: 'não há conta aberta no número ' + n };
+  const cob = valorDaCobranca(conta, { gorjeta_pct: body.gorjeta_pct });
+  if (cob.erro) return { ok: false, erro: cob.erro };
+  // código digitado de novo na mesma conta: a reserva anterior não fica presa
+  const velhas = await sql`UPDATE lio_fidelidade SET liberado_em=now()
+    WHERE numero=${n} AND aplicado_em IS NULL AND liberado_em IS NULL RETURNING uso_id`;
+  for (const v of velhas) fidNuvem('liberar', { uso_id: v.uso_id }).catch(() => {});
+  const f = await fidReservarNaCobranca(conta, cob, { mesa: n, fidelidade: body.codigo });
+  if (!f.ok) return { ok: false, erro: f.erro, fidelidade_erro: true };
+  await sql`INSERT INTO lio_fidelidade (uso_id, numero, ped, desconto, pct, nome, nivel, garcom)
+    VALUES (${f.uso_id}, ${n}, ${Number(ped)}, ${f.desconto}, ${f.pct}, ${f.nome}, ${f.nivel}, ${garcom.login})
+    ON CONFLICT (uso_id) DO NOTHING`;
+  return { ok: true, uso_id: f.uso_id, nome: f.nome, nivel: f.nivel, pct: f.pct, pct_bonus: f.pct_bonus,
+    desconto: f.desconto };
+}
+/** Recebimento da LIO com `fid_uso`: põe o desconto na conta UMA vez, antes do
+ *  pagamento (senão a conta fica aberta com a diferença). Nunca derruba o
+ *  recebimento: se não der pra aplicar, registra no log e o pagamento segue. */
+async function lioFidAplicar(body) {
+  const uso = String(body.fid_uso || '');
+  const n = Number(body.numero);
+  if (!uso || !(n > 0)) return;
+  await naFilaDaMesa(n, async () => {
+    const [c] = await sql`UPDATE lio_fidelidade SET aplicado_em=now(), nsu=${String(body.nsu || body.autorizacao || '') || null}
+      WHERE uso_id=${uso} AND numero=${n} AND aplicado_em IS NULL AND liberado_em IS NULL AND COALESCE(desconto,0) > 0
+      RETURNING ped, desconto, nome, pct`;
+    if (!c) return;
+    try {
+      const ped = await fbAcharPedido(n);
+      if (!ped || Number(ped) !== Number(c.ped)) throw new Error('a conta ' + n + ' não é mais a da reserva (pedido ' + c.ped + ' → ' + (ped || 'nenhum') + ')');
+      const d = +Number(c.desconto).toFixed(2);
+      const p = await pedTotais(ped);
+      if (!p) throw new Error('pedido ' + ped + ' não encontrado');
+      const novoDesc = +(p.desconto + d).toFixed(2);
+      const novoTot = +(p.total - d).toFixed(2);
+      const pct = p.itens > 0 ? +(novoDesc / p.itens * 100).toFixed(2) : 0;
+      if (!(await pedGravarTotais(ped, { desconto: novoDesc, pctDesconto: pct, total: novoTot }))) throw new Error('não gravou o desconto');
+      console.log('[fidelidade] LIO ' + uso + ': desconto R$ ' + d.toFixed(2) + ' (' + c.nome + ', ' + c.pct + '%) na conta ' + ped + ' · mesa ' + n);
+    } catch (e) {
+      await sql`UPDATE lio_fidelidade SET aplicado_em=NULL WHERE uso_id=${uso}`.catch(() => {});
+      console.error('[fidelidade] LIO ' + uso + ' · mesa ' + n + ': DESCONTO NÃO APLICADO — ' + e.message + ' · o cartão foi cobrado com desconto; dar o desconto no caixa');
+    }
+  }).catch((e) => console.error('[fidelidade] LIO aplicar ' + uso + ':', e.message));
+}
+/** Recebimento com cartão registrado → a nuvem conta a visita e troca o código. */
+async function lioFidConfirmar(uso) {
+  const [c] = await sql`SELECT uso_id, nsu FROM lio_fidelidade WHERE uso_id=${uso} AND aplicado_em IS NOT NULL
+    AND pago_em IS NOT NULL AND confirmado_em IS NULL`;
+  if (!c) return;
+  const j = await fidNuvem('confirmar', { uso_id: c.uso_id, txid: 'LIO-' + (c.nsu || c.uso_id).slice(0, 40) });
+  if (j.ok) await sql`UPDATE lio_fidelidade SET confirmado_em=now() WHERE uso_id=${uso}`;
+  else console.error('[fidelidade] LIO confirmar ' + uso + ':', j.erro || j.error);
+}
+async function lioFidPago(body, rl) {
+  const uso = String(body.fid_uso || '');
+  if (!uso || !rl || !rl.ok) return;
+  await sql`UPDATE lio_fidelidade SET pago_em=COALESCE(pago_em, now()) WHERE uso_id=${uso} AND aplicado_em IS NOT NULL`;
+  await lioFidConfirmar(uso);
+}
+async function loopLioFidelidade() {
+  try {
+    const fila = await sql`SELECT uso_id FROM lio_fidelidade WHERE aplicado_em IS NOT NULL AND pago_em IS NOT NULL
+      AND confirmado_em IS NULL AND pago_em > now() - interval '3 days' ORDER BY pago_em LIMIT 20`;
+    for (const x of fila) await lioFidConfirmar(String(x.uso_id)).catch((e) => console.error('[fidelidade] LIO fila ' + x.uso_id + ':', e.message));
+  } catch (e) { console.error('[fidelidade] LIO fila:', e.message); }
+  setTimeout(loopLioFidelidade, 60_000);
+}
 // ---- QR DE SAÍDA (catraca) ----
 // Depois de pagar, o cliente diz quantas pessoas saem com ele e recebe um QR.
 // A catraca lê o mesmo QR a cada passagem e libera UMA por vez, até zerar.
@@ -29027,6 +29123,18 @@ const server = http.createServer(async (req, res) => {
       return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
     }
     // ---- LIO (app da maquininha): registra o pagamento que o terminal cobrou ----
+    // Cartão Prainha na maquininha: reservar o desconto (ou liberar a reserva)
+    if (req.method === 'POST' && p === '/api/lio/fidelidade') {
+      const g = await garcomDaRequisicao(req, u);
+      res.writeHead(g ? 200 : 401, { 'content-type': 'application/json' });
+      if (!g) return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true }));
+      const body = await readBody(req);
+      let rf;
+      try { rf = await apiLioFidelidade(body, g); }
+      catch (e) { console.error('[fidelidade] LIO:', e.message); rf = { ok: false, erro: 'Não consegui consultar o Cartão Prainha agora.' }; }
+      if (rf.ok && rf.uso_id) console.log('[fidelidade] LIO ' + g.login + ' · mesa ' + body.numero + ' · reservou ' + rf.uso_id);
+      return res.end(JSON.stringify(rf));
+    }
     if (req.method === 'POST' && p === '/api/lio/pagar') {
       const g = await garcomDaRequisicao(req, u);
       if (!g) {
@@ -29041,7 +29149,10 @@ const server = http.createServer(async (req, res) => {
       // forcar_conta pula a trava de hora: é decisão de gente no caixa olhando
       // o comprovante, nunca coisa que chega pela rede.
       delete body.forcar_conta;
+      // Cartão Prainha: o desconto entra na conta antes do recebimento (uma vez só)
+      if (body.fid_uso) await lioFidAplicar(body);
       const rl = await apiLioPagar(body, g);
+      if (body.fid_uso) lioFidPago(body, rl).catch((e) => console.error('[fidelidade] LIO pago:', e.message));
       console.log('[lio] ' + g.login + ' · mesa ' + body.numero + ' · ' + body.forma
         + ' R$ ' + body.valor + (body.nsu ? ' · NSU ' + body.nsu : ' · SEM NSU')
         + (body.terminal ? ' · term ' + body.terminal : '')
@@ -29694,6 +29805,7 @@ async function main() {
   loopPixPendente();
   loopPixSemBaixa();
   setTimeout(loopFidelidade, 90_000);
+  setTimeout(loopLioFidelidade, 95_000);
   setTimeout(loopFecharQuitadas, 30000);
   loopAutoUpdate();
   // polling do iFood: só sai da toca quando a loja estiver pareada E ligada.
