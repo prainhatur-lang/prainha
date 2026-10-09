@@ -896,6 +896,22 @@ class ContaActivity : AppCompatActivity() {
         var gorj = if (Session.taxaServico(this) >= 15.0) 15 else 10
         var partes = 1
         var valorDig: Double? = null
+        // CARTÃO PRAINHA (fidelidade): reserva feita no servidor da loja. Só
+        // vale na conta INTEIRA — dividindo ou com valor digitado, a cobrança
+        // sai como sempre, sem o desconto.
+        var fidUso: String? = null
+        var fidDesc = 0.0
+        var fidRot = ""
+        fun fidVale() = fidUso != null && partes == 1 && valorDig == null
+        fun fidSoltar() {
+            val uso = fidUso ?: return
+            fidUso = null
+            fidDesc = 0.0
+            val base = Session.servidor(this)
+            val tk = Session.token(this)
+            Thread { Api.lioFidelidadeLiberar(base, tk, uso) }.start()
+        }
+        val fidBtn = Button(this)
 
         val valorTxt = TextView(this)
         valorTxt.textSize = 34f
@@ -937,7 +953,8 @@ class ContaActivity : AppCompatActivity() {
             val svc = Math.round(itens * gorj) / 100.0
             // canônico do Consumer: itens + serviço − desconto + acréscimo − pago
             val resta = Math.max(0.0, Math.round((itens + svc - desconto + acrescimo - pago) * 100) / 100.0)
-            val cobrar = valorDig?.coerceAtMost(resta) ?: (Math.round(resta / partes * 100) / 100.0)
+            var cobrar = valorDig?.coerceAtMost(resta) ?: (Math.round(resta / partes * 100) / 100.0)
+            if (fidVale()) cobrar = Math.max(0.0, Math.round((resta - fidDesc) * 100) / 100.0)
             return Triple(svc, resta, cobrar)
         }
         fun pinta() {
@@ -951,7 +968,13 @@ class ContaActivity : AppCompatActivity() {
                 else -> "consumo ${Cupom.brl(itens)} + serviço ${Cupom.brl(svc)}" +
                     (if (desconto > 0) " − desconto ${Cupom.brl(desconto)}" else "") +
                     (if (acrescimo > 0) " + acréscimo ${Cupom.brl(acrescimo)}" else "") +
-                    (if (pago > 0) " − já pago ${Cupom.brl(pago)}" else "")
+                    (if (pago > 0) " − já pago ${Cupom.brl(pago)}" else "") +
+                    (if (fidVale()) " − Cartão Prainha ${Cupom.brl(fidDesc)}" else "")
+            }
+            fidBtn.text = when {
+                fidUso == null -> "🎟️ Cartão Prainha (código do cliente)"
+                fidVale() -> "🎟️ $fidRot · −${Cupom.brl(fidDesc)}  (toque pra tirar)"
+                else -> "🎟️ Cartão Prainha só vale na conta inteira (toque pra tirar)"
             }
             gorjBtns.forEach { (p, b) ->
                 b.setBackgroundColor(if (p == gorj) 0xFF0C7091.toInt() else 0xFFE5E7EB.toInt())
@@ -1001,6 +1024,70 @@ class ContaActivity : AppCompatActivity() {
         outroBtn.setBackgroundColor(0xFFE0F2FE.toInt())
         outroBtn.setTextColor(0xFF0C7091.toInt())
         outroBtn.minHeight = dp(52)
+
+        // CARTÃO PRAINHA: botão A MAIS, no fim do Receber — nada acima muda de
+        // lugar. O cliente mostra o código de 4 letras do cartão no celular.
+        fidBtn.textSize = 14f
+        fidBtn.isAllCaps = false
+        fidBtn.setBackgroundColor(0xFFFEF3C7.toInt())
+        fidBtn.setTextColor(0xFF92400E.toInt())
+        fidBtn.minHeight = dp(48)
+        fidBtn.setOnClickListener {
+            if (fidUso != null) { fidSoltar(); pinta(); return@setOnClickListener }
+            val codIn = campo("Código de 4 letras",
+                android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS or
+                    android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS)
+            codIn.filters = arrayOf(android.text.InputFilter.LengthFilter(4), android.text.InputFilter.AllCaps())
+            val cx = LinearLayout(this)
+            cx.orientation = LinearLayout.VERTICAL
+            cx.setPadding(dp(20), dp(8), dp(20), 0)
+            cx.addView(codIn)
+            AlertDialog.Builder(this)
+                .setTitle("Cartão Prainha")
+                .setMessage("Peça o código que aparece no cartão do cliente (4 letras). Vale pra conta inteira, sem dividir.")
+                .setView(cx)
+                .setPositiveButton("Aplicar") { _, _ ->
+                    val cod = codIn.text.toString().uppercase().filter { it in 'A'..'Z' }
+                    if (cod.length != 4) {
+                        Toast.makeText(this, "O código do cartão tem 4 letras", Toast.LENGTH_LONG).show()
+                        return@setPositiveButton
+                    }
+                    val base = Session.servidor(this)
+                    val tk = Session.token(this)
+                    val gorjAgora = gorj
+                    fidBtn.isEnabled = false
+                    fidBtn.text = "🎟️ Consultando o cartão…"
+                    Thread {
+                        var r: Api.FidRes? = null
+                        var erro: String? = null
+                        try {
+                            if (tk == null) throw Api.SemSessao()
+                            r = Api.lioFidelidade(base, tk, alvo, cod, gorjAgora)
+                        } catch (e: Exception) { erro = e.message ?: "Sem resposta do servidor" }
+                        runOnUiThread {
+                            fidBtn.isEnabled = true
+                            val res = r
+                            if (res != null && res.ok && res.usoId != null && res.desconto > 0) {
+                                if (dlg?.isShowing == true) {
+                                    fidUso = res.usoId
+                                    fidDesc = res.desconto
+                                    val pctTxt = if (res.pct % 1.0 == 0.0) res.pct.toInt().toString() else res.pct.toString()
+                                    fidRot = (res.nome.ifBlank { "Cartão Prainha" }) + " · $pctTxt%"
+                                } else {
+                                    // o Receber fechou enquanto consultava: não segura a reserva
+                                    val uso = res.usoId
+                                    Thread { Api.lioFidelidadeLiberar(base, tk, uso) }.start()
+                                }
+                            } else {
+                                Toast.makeText(this, erro ?: res?.erro ?: "Código não aceito", Toast.LENGTH_LONG).show()
+                            }
+                            pinta()
+                        }
+                    }.start()
+                }
+                .setNegativeButton("Cancelar", null)
+                .show()
+        }
 
         val gorjRow = chipRow()
         listOf(10, 15).forEach { p ->
@@ -1077,10 +1164,11 @@ class ContaActivity : AppCompatActivity() {
             rotulo("Serviço"), gorjRow,
             rotulo("Dividir por"), partesRow,
             digIn,
+            fidBtn,
         ))
         views.forEach {
             val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-            if (it === outroBtn) lp.topMargin = dp(8)
+            if (it === outroBtn || it === fidBtn) lp.topMargin = dp(8)
             box.addView(it, lp)
         }
         pinta()
@@ -1096,10 +1184,18 @@ class ContaActivity : AppCompatActivity() {
             .setPositiveButton("💳 Cobrar") { _, _ ->
                 val (_, _, cobrar) = calc()
                 if (cobrar <= 0.009) Toast.makeText(this, "Nada a cobrar", Toast.LENGTH_SHORT).show()
-                else cobrarNoTerminal(alvo, linhasDoAlvo(texto, cAlvo), Math.round(cobrar * 100))
+                else {
+                    // com Cartão Prainha valendo, a reserva segue com a cobrança;
+                    // senão (dividiu / digitou valor) ela é solta no fechar do diálogo
+                    val usa = if (fidVale()) fidUso else null
+                    if (usa != null) fidUso = null
+                    cobrarNoTerminal(alvo, linhasDoAlvo(texto, cAlvo), Math.round(cobrar * 100), usa)
+                }
             }
             .setNegativeButton("Cancelar", null)
             .create()
+        // fechou o Receber sem levar a reserva pra cobrança → solta o código
+        dlg?.setOnDismissListener { fidSoltar() }
         dlg?.show()
         pinta() // o botão só existe depois do show(): carimba o valor nele
     }
@@ -1465,7 +1561,7 @@ class ContaActivity : AppCompatActivity() {
     // estava nela (Tabuará 08/10: mesa 14 → 50, cartão passou na 14). Só barra
     // quando o servidor DIZ que não há conta; sem resposta, cobra como sempre —
     // o recebimento vai pra fila e o servidor resolve.
-    private fun cobrarNoTerminal(alvo: Int, linhas: List<Linha>, valorCentavos: Long) {
+    private fun cobrarNoTerminal(alvo: Int, linhas: List<Linha>, valorCentavos: Long, fidUso: String? = null) {
         cobrando = true
         atualizarBotoes()
         val base = Session.servidor(this)
@@ -1474,6 +1570,7 @@ class ContaActivity : AppCompatActivity() {
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 if (aberta == false) {
+                    fidLiberar(fidUso)
                     cobrando = false
                     carregar()
                     val rot = if (Session.ehComanda(this, alvo)) "A comanda $alvo" else "A mesa $alvo"
@@ -1483,13 +1580,21 @@ class ContaActivity : AppCompatActivity() {
                         .setPositiveButton("OK", null)
                         .show()
                 } else {
-                    cobrarNoTerminalJa(alvo, linhas, valorCentavos)
+                    cobrarNoTerminalJa(alvo, linhas, valorCentavos, fidUso)
                 }
             }
         }.start()
     }
 
-    private fun cobrarNoTerminalJa(alvo: Int, linhas: List<Linha>, valorCentavos: Long) {
+    /** Cartão Prainha: solta a reserva quando a cobrança não aconteceu. */
+    private fun fidLiberar(fidUso: String?) {
+        if (fidUso == null) return
+        val base = Session.servidor(this)
+        val tk = Session.token(this)
+        Thread { Api.lioFidelidadeLiberar(base, tk, fidUso) }.start()
+    }
+
+    private fun cobrarNoTerminalJa(alvo: Int, linhas: List<Linha>, valorCentavos: Long, fidUso: String? = null) {
         cobrando = true
         atualizarBotoes()
 
@@ -1499,8 +1604,9 @@ class ContaActivity : AppCompatActivity() {
             linhas = linhas,
             valorCentavos = valorCentavos,
             onInicio = { /* a UI de pagamento da Cielo assume a tela */ },
-            onPago = { _, pagamentos -> registrarPagamentos(alvo, pagamentos) },
+            onPago = { _, pagamentos -> registrarPagamentos(alvo, pagamentos, fidUso) },
             onCancelado = {
+                fidLiberar(fidUso)
                 runOnUiThread {
                     cobrando = false
                     atualizarBotoes()
@@ -1508,6 +1614,7 @@ class ContaActivity : AppCompatActivity() {
                 }
             },
             onErro = { msg ->
+                fidLiberar(fidUso)
                 runOnUiThread {
                     cobrando = false
                     atualizarBotoes()
@@ -1520,7 +1627,7 @@ class ContaActivity : AppCompatActivity() {
     // Aprovado no terminal → fila de pendentes ANTES, registro com retry, e só
     // então sai da fila. Rede caiu nesse meio tempo: fica pendente e a tela de
     // mesas reenvia — o pagamento nunca se perde.
-    private fun registrarPagamentos(alvo: Int, pagamentos: List<PagamentoLio>) {
+    private fun registrarPagamentos(alvo: Int, pagamentos: List<PagamentoLio>, fidUso: String? = null) {
         val tk = Session.token(this)
         val base = Session.servidor(this)
         Thread {
@@ -1529,6 +1636,9 @@ class ContaActivity : AppCompatActivity() {
             var ultimoErro: String? = null
             for (p in pagamentos) {
                 val body = Api.bodyPagamento(alvo, p)
+                // Cartão Prainha: vai no corpo ANTES da fila de pendentes — o
+                // reenvio leva junto e o servidor aplica o desconto uma vez só
+                if (fidUso != null) body.put("fid_uso", fidUso)
                 val id = Pendentes.adicionar(this, body)
                 var okEste = false
                 for (tentativa in 1..3) {

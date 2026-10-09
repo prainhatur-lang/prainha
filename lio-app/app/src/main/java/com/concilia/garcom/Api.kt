@@ -731,6 +731,42 @@ object Api {
         return postJson("$base/api/entregador/acao", token, b)
     }
 
+    // -------- Cartão Prainha (fidelidade) na maquininha --------
+    data class FidRes(val ok: Boolean, val usoId: String?, val nome: String, val nivel: String,
+                      val pct: Double, val desconto: Double, val erro: String?)
+
+    /** Reserva o desconto do Cartão Prainha pra conta INTEIRA do número. O
+     *  servidor da loja consulta a nuvem; o desconto só entra na conta quando
+     *  o recebimento chega com o `fid_uso` (ver registrarPagamentos). */
+    fun lioFidelidade(base: String, token: String, numero: Int, codigo: String, gorjetaPct: Int): FidRes {
+        val j = try {
+            postJson("$base/api/lio/fidelidade", token, JSONObject()
+                .put("numero", numero).put("codigo", codigo).put("gorjeta_pct", gorjetaPct))
+        } catch (e: IOException) {
+            if ((e.message ?: "").contains("404"))
+                throw IOException("Servidor da loja ainda sem o Cartão Prainha na maquininha — aguarde a atualização")
+            throw e
+        }
+        if (!j.optBoolean("ok") && j.optBoolean("sem_sessao")) throw SemSessao()
+        return FidRes(
+            ok = j.optBoolean("ok", false),
+            usoId = j.optStringOrNull("uso_id"),
+            nome = j.optString("nome", ""),
+            nivel = j.optString("nivel", ""),
+            pct = j.optDouble("pct", 0.0),
+            desconto = j.optDouble("desconto", 0.0),
+            erro = j.optStringOrNull("erro"),
+        )
+    }
+
+    /** Solta a reserva (garçom desistiu, cartão não passou). Falhou? A reserva
+     *  vence sozinha na nuvem — por isso é calado. */
+    fun lioFidelidadeLiberar(base: String, token: String?, usoId: String) {
+        try {
+            postJson("$base/api/lio/fidelidade", token, JSONObject().put("acao", "liberar").put("uso_id", usoId))
+        } catch (_: Exception) { }
+    }
+
     fun bodyPagamento(numero: Int, p: PagamentoLio): JSONObject = JSONObject()
         .put("numero", numero)
         .put("forma", p.forma)
