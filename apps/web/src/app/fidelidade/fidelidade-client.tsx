@@ -202,6 +202,22 @@ function Cartoes(p: Props & { api: Api; setMsg: (s: string) => void; refresh: ()
     }
   }
 
+  // quem já foi convidado e ainda não ativou nem recusou (e não leu a mensagem)
+  const semResposta = useMemo(
+    () => p.cartoes.filter((c) => c.status === 'ativo' && sit(c) === 'convidado' && c.conviteStatus !== 'lida' && ehCelularTel(c.telefone)),
+    [p.cartoes],
+  );
+  async function reenviarSemResposta() {
+    if (!confirm(`Mandar o convite DE NOVO pra ${semResposta.length} pessoa(s) que já foram convidadas e não ativaram? Quem já recebeu vai receber outra mensagem igual.`)) return;
+    setEnviando(true);
+    try {
+      p.setMsg(await enviarConvitesLote(p.api, semResposta.map((c) => c.id)));
+      p.refresh();
+    } finally {
+      setEnviando(false);
+    }
+  }
+
   const lista = useMemo(() => {
     const q = busca.trim().toLowerCase();
     const qd = q.replace(/\D/g, '');
@@ -283,6 +299,15 @@ function Cartoes(p: Props & { api: Api; setMsg: (s: string) => void; refresh: ()
             className="ml-auto rounded bg-emerald-600 px-3 py-1.5 text-sm text-white disabled:opacity-50"
           >
             {enviando ? 'Enviando…' : `Enviar convite a ${pendentes.length} não convidado(s)`}
+          </button>
+        )}
+        {p.podeCriar && p.zapTemplate && semResposta.length > 0 && (
+          <button
+            onClick={reenviarSemResposta}
+            disabled={enviando}
+            className={`${pendentes.length > 0 ? '' : 'ml-auto '}rounded border border-emerald-600 px-3 py-1.5 text-sm text-emerald-700 disabled:opacity-50`}
+          >
+            {enviando ? 'Enviando…' : `Reenviar a ${semResposta.length} que não ativaram`}
           </button>
         )}
         {p.podeCriar && !p.zapTemplate && (
