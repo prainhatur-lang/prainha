@@ -52,11 +52,14 @@ function nivelSugerido(cfg: FidelidadeConfig, visitasJanela: number) {
 function msgConvite(cfg: FidelidadeConfig, casa: string, nome: string, nivelCodigo: string, link: string) {
   const n = cfg.niveis.find((x) => x.codigo === nivelCodigo) ?? cfg.niveis[0];
   const primeiro = nome.trim().split(/\s+/)[0] || '';
-  const bonus = cfg.bonusDiaUtilPct ? ` (e ${n.pct + cfg.bonusDiaUtilPct}% de segunda a sexta)` : '';
+  const bonus = cfg.soDiaUtil
+    ? ' de segunda a sexta (fora feriado)'
+    : cfg.bonusDiaUtilPct ? ` (e ${n.pct + cfg.bonusDiaUtilPct}% de segunda a sexta)` : '';
+  const pctConvite = cfg.soDiaUtil ? n.pct + cfg.bonusDiaUtilPct : n.pct;
   return (
     `Oi, ${primeiro}! Aqui é do ${casa} 🏖️\n\n` +
     `Como você é de casa, você agora é *Cliente VIP ${casa} ${n.nome}*:\n` +
-    `• ${n.pct}% de desconto no consumo${bonus} pagando no Pix\n` +
+    `• ${pctConvite}% de desconto no consumo${bonus} pagando no Pix\n` +
     (n.prioridadeReserva ? `• prioridade nas reservas, mesmo com a casa cheia\n` : '') +
     (n.pctEspaco > 0 ? `• ${n.pctEspaco}% de desconto no aluguel de espaços pra eventos\n` : '') +
     `• cartão pessoal, no seu celular\n\n` +
@@ -935,6 +938,17 @@ function Regras(p: Props & { api: Api; setMsg: (s: string) => void; refresh: () 
           <input type="number" min={0} max={30} value={cfg.bonusDiaUtilPct} disabled={!pode}
             onChange={(e) => setCfg({ ...cfg, bonusDiaUtilPct: Number(e.target.value) })}
             className="mt-1 block w-24 rounded border border-slate-300 px-2 py-1" />
+        </label>
+        <label className="flex items-start gap-2 sm:col-span-2">
+          <input type="checkbox" className="mt-1" checked={!!cfg.soDiaUtil} disabled={!pode}
+            onChange={(e) => setCfg({ ...cfg, soDiaUtil: e.target.checked })} />
+          <span>
+            Desconto só de segunda a sexta, fora feriado
+            <span className="block text-xs text-slate-500">
+              Marcado: sábado, domingo e feriado o cartão não gera código nem dá desconto nesta casa. O desconto do dia
+              útil é o % do nível + o bônus seg–sex.
+            </span>
+          </span>
         </label>
         <label>
           Janela das visitas (dias)

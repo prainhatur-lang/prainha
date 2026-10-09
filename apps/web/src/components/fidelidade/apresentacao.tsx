@@ -6,6 +6,7 @@ import type { FidelidadeConfig } from '@/lib/fidelidade/config';
 
 export function ApresentacaoPrograma({ cfg, destaque, casa }: { cfg: FidelidadeConfig; destaque?: string; casa: string }) {
   const b = cfg.bonusDiaUtilPct;
+  const so = cfg.soDiaUtil;
   const topo = cfg.niveis[cfg.niveis.length - 1];
   const temPrioridade = cfg.niveis.some((n) => n.prioridadeReserva);
   const temEspaco = cfg.niveis.some((n) => n.pctEspaco > 0);
@@ -17,7 +18,9 @@ export function ApresentacaoPrograma({ cfg, destaque, casa }: { cfg: FidelidadeC
       <section className="grid gap-2">
         <Beneficio
           titulo={`Até ${topo.pct + b}% de desconto no consumo`}
-          texto={`Todo membro já entra com ${cfg.niveis[0].pct}% no Pix${b ? `, e de segunda a sexta ganha +${b}%` : ''}. Quanto mais você vem, maior a categoria.`}
+          texto={so
+            ? `Todo membro já entra com ${cfg.niveis[0].pct + b}% no Pix. No ${casa} o desconto vale de segunda a sexta, fora feriado. Quanto mais você vem, maior a categoria.`
+            : `Todo membro já entra com ${cfg.niveis[0].pct}% no Pix${b ? `, e de segunda a sexta ganha +${b}%` : ''}. Quanto mais você vem, maior a categoria.`}
         />
         {temPrioridade && (
           <Beneficio
@@ -57,8 +60,9 @@ export function ApresentacaoPrograma({ cfg, destaque, casa }: { cfg: FidelidadeC
                   </div>
                 </div>
                 <div className="text-right">
-                  <div className="text-2xl font-bold">{n.pct}%</div>
-                  {b ? <div className="text-[11px] opacity-80">{n.pct + b}% seg–sex</div> : null}
+                  <div className="text-2xl font-bold">{so ? n.pct + b : n.pct}%</div>
+                  {so ? <div className="text-[11px] opacity-80">seg–sex, fora feriado</div>
+                    : b ? <div className="text-[11px] opacity-80">{n.pct + b}% seg–sex</div> : null}
                 </div>
               </div>
               {(n.pctEspaco > 0 || n.prioridadeReserva) && (
@@ -90,6 +94,7 @@ export function ApresentacaoPrograma({ cfg, destaque, casa }: { cfg: FidelidadeC
           r={`Sobre o consumo. A taxa de serviço dos garçons continua sobre o valor cheio.${cfg.tetoDescontoReais ? ` Limite de R$ ${cfg.tetoDescontoReais.toFixed(2).replace('.', ',')} de desconto por conta.` : ''}`}
         />
         <Faq p="Quantas vezes posso usar?" r={`Uma vez por dia, no ${casa}.`} />
+        {so && <Faq p="Vale no fim de semana?" r={`Não. No ${casa} o desconto vale de segunda a sexta, fora feriado. Sábado, domingo e feriado o cartão não dá desconto.`} />}
         <Faq p="Vale nas outras casas do grupo?" r={`Não. Cada casa tem o seu Cliente VIP, com categorias e visitas separadas. Este é o do ${casa}.`} />
         <Faq p="Posso passar o cartão pra outra pessoa?" r="Não. O cartão é pessoal, ligado ao seu telefone: o código só é gerado no celular confirmado pelo WhatsApp do seu número. Mas ele vale pra conta da mesa inteira que você pagar." />
         <Faq p="Troquei de celular" r="Abra o link do cartão no celular novo e confirme com o código que chega no WhatsApp do seu número." />

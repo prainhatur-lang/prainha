@@ -15,7 +15,7 @@ import { eq } from 'drizzle-orm';
 import {
   COOKIE_DIAS, aparelhoConfirmado, confirmarAparelho, enviarConfirmacao, nomeCookie,
 } from '@/lib/fidelidade/aparelho';
-import { MSG_FUNCIONARIO, funcionarioDoCartao, gerarCodigoUso } from '@/lib/fidelidade/nucleo';
+import { MSG_FUNCIONARIO, MSG_SO_DIA_UTIL, descontoValeHoje, funcionarioDoCartao, gerarCodigoUso } from '@/lib/fidelidade/nucleo';
 import { linkAtivarPorZap } from '@/lib/fidelidade/zap-ativar';
 import { carregarPrograma } from '@/lib/fidelidade/config';
 
@@ -62,6 +62,7 @@ export async function POST(req: Request) {
       }
       const prog = await carregarPrograma(c.filialId);
       if (!prog.ativo) return NextResponse.json({ erro: `O ${prog.marca} está pausado no momento.` }, { status: 409 });
+      if (!(await descontoValeHoje(prog.config))) return NextResponse.json({ erro: MSG_SO_DIA_UTIL }, { status: 409 });
       const r = await gerarCodigoUso(c.id, aparelho);
       return NextResponse.json({ ok: true, codigo: r.codigo, expira_em: r.expiraEm.toISOString(), em_uso: r.emUso });
     }

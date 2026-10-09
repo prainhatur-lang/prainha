@@ -58,14 +58,14 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
             </h1>
             {evento && nasceuEmEvento(c) ? (
               <p className="mt-2 text-sm opacity-90">
-                {evento.saudacao} Ative o cartão e tenha {v.pct}% de desconto na conta
-                {v.bonusDiaUtil ? <> ({v.pct + v.bonusDiaUtil}% de segunda a sexta)</> : null} no {v.casa}. Ao chegar,
+                {evento.saudacao} Ative o cartão e tenha {v.soDiaUtil ? v.pct + v.bonusDiaUtil : v.pct}% de desconto na conta
+                {v.soDiaUtil ? <> (de segunda a sexta, fora feriado)</> : v.bonusDiaUtil ? <> ({v.pct + v.bonusDiaUtil}% de segunda a sexta)</> : null} no {v.casa}. Ao chegar,
                 avalie a casa pelo QR Code da mesa e escolha o seu drink de boas-vindas.
               </p>
             ) : (
               <p className="mt-2 text-sm opacity-90">
-                Você é cliente do {v.casa} e a gente quer te ver mais vezes. Ative e ganhe {v.pct}% de desconto no Pix
-                {v.bonusDiaUtil ? <> ({v.pct + v.bonusDiaUtil}% de segunda a sexta)</> : null} já na próxima visita.
+                Você é cliente do {v.casa} e a gente quer te ver mais vezes. Ative e ganhe {v.soDiaUtil ? v.pct + v.bonusDiaUtil : v.pct}% de desconto no Pix
+                {v.soDiaUtil ? <> de segunda a sexta (fora feriado)</> : v.bonusDiaUtil ? <> ({v.pct + v.bonusDiaUtil}% de segunda a sexta)</> : null} já na próxima visita.
               </p>
             )}
             {v.garantido && (
@@ -82,7 +82,7 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
     );
   }
 
-  const pctHoje = v.pct + v.bonusHoje;
+  const pctHoje = v.valeHoje ? v.pct + v.bonusHoje : 0;
   const progresso = v.proximo
     ? Math.min(100, Math.round((v.visitas / (v.visitas + v.faltam || 1)) * 100))
     : 100;
@@ -124,12 +124,25 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
         ) : (
           <>
             {evento && <DrinkEvento evento={evento.nome} />}
-            <VouPagar token={token} confirmado={confirmado} telefone={tel} pctHoje={pctHoje} />
-            <div className="rounded-xl bg-white p-4 text-sm shadow-sm">
-              <p>
-                Hoje seu desconto é de <b>{pctHoje}%</b> no consumo
-                {v.bonusHoje > 0 ? <> (inclui +{v.bonusHoje}% de dia de semana)</> : null}, pagando no <b>Pix</b>.
+            {v.valeHoje ? (
+              <VouPagar token={token} confirmado={confirmado} telefone={tel} pctHoje={pctHoje} />
+            ) : (
+              <p className="rounded-xl bg-amber-100 p-4 text-sm text-amber-900">
+                Hoje o cartão não dá desconto: no {v.casa} ele vale de <b>segunda a sexta, fora feriado</b>. No próximo
+                dia útil seu desconto é de <b>{v.pct + v.bonusDiaUtil}%</b>.
               </p>
+            )}
+            <div className="rounded-xl bg-white p-4 text-sm shadow-sm">
+              {v.valeHoje ? (
+                <p>
+                  Hoje seu desconto é de <b>{pctHoje}%</b> no consumo
+                  {v.soDiaUtil ? null : v.bonusHoje > 0 ? <> (inclui +{v.bonusHoje}% de dia de semana)</> : null}, pagando no <b>Pix</b>.
+                </p>
+              ) : (
+                <p>
+                  De segunda a sexta (fora feriado) seu desconto é de <b>{v.pct + v.bonusDiaUtil}%</b> no consumo, pagando no <b>Pix</b>.
+                </p>
+              )}
               <p className="mt-2 text-xs text-slate-500">
                 Na hora de pagar, toque em &quot;Vou pagar agora&quot; e digite o código na tela do Pix. Ele vale 10
                 minutos, uma vez só, e só é gerado no seu celular — o cartão é pessoal. 1 uso por dia, só no {v.casa}.
@@ -145,7 +158,7 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
               {v.prioridadeReserva && <li>✓ Prioridade nas reservas (reserve com este telefone)</li>}
               {v.pctEspaco > 0 && <li>✓ {v.pctEspaco}% de desconto no aluguel de espaço pra eventos</li>}
             </ul>
-            <a href="/cartao-prainha" className="mt-2 inline-block text-xs text-[#0F3A5F] underline">Ver o programa completo</a>
+            <a href={v.linkPrograma} className="mt-2 inline-block text-xs text-[#0F3A5F] underline">Ver o programa completo</a>
           </div>
         )}
 
@@ -191,7 +204,11 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
                   <span className="text-xs text-slate-400">{n.minVisitas === 0 ? 'entrada' : `${n.minVisitas}+ visitas`}</span>
                 </span>
                 <span className="font-medium">
-                  {n.pct}%{v.bonusDiaUtil ? <span className="text-xs text-slate-500"> · {n.pct + v.bonusDiaUtil}% seg–sex</span> : null}
+                  {v.soDiaUtil ? (
+                    <>{n.pct + v.bonusDiaUtil}%<span className="text-xs text-slate-500"> seg–sex</span></>
+                  ) : (
+                    <>{n.pct}%{v.bonusDiaUtil ? <span className="text-xs text-slate-500"> · {n.pct + v.bonusDiaUtil}% seg–sex</span> : null}</>
+                  )}
                 </span>
               </li>
             ))}
@@ -201,6 +218,7 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
         <p className="px-2 text-center text-xs text-slate-500">
           Vale só no {v.casa}, pagando no Pix (cada casa do grupo tem o seu Cliente VIP). O desconto é sobre o consumo; a taxa de serviço
           continua sobre o valor cheio. Dias úteis = segunda a sexta, fora feriado.
+          {v.soDiaUtil ? <> No {v.casa} o desconto só vale em dia útil.</> : null}
         </p>
       </div>
     </main>

@@ -66,16 +66,29 @@ export async function estadoCartao(cartao: Cartao, cfg: FidelidadeConfig): Promi
   };
 }
 
-/** Bônus de dia útil de HOJE (segunda a sexta, fora feriado/prolongado). */
-export async function bonusHoje(cfg: FidelidadeConfig): Promise<number> {
-  if (!cfg.bonusDiaUtilPct) return 0;
+/** HOJE é dia útil? (segunda a sexta, fora feriado/prolongado) */
+export async function ehDiaUtilHoje(): Promise<boolean> {
   const hoje = hojeBr();
   const [y, m, d] = hoje.split('-').map(Number);
   const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
-  if (dow === 0 || dow === 6) return 0;
-  if (await ehFeriadoOuProlongado(hoje)) return 0;
-  return cfg.bonusDiaUtilPct;
+  if (dow === 0 || dow === 6) return false;
+  return !(await ehFeriadoOuProlongado(hoje));
 }
+
+/** Bônus de dia útil de HOJE (segunda a sexta, fora feriado/prolongado). */
+export async function bonusHoje(cfg: FidelidadeConfig): Promise<number> {
+  if (!cfg.bonusDiaUtilPct) return 0;
+  return (await ehDiaUtilHoje()) ? cfg.bonusDiaUtilPct : 0;
+}
+
+/** O desconto no consumo vale HOJE nesta casa? Só é "não" na casa marcada
+ *  como `soDiaUtil` em fim de semana ou feriado. */
+export async function descontoValeHoje(cfg: FidelidadeConfig): Promise<boolean> {
+  if (!cfg.soDiaUtil) return true;
+  return ehDiaUtilHoje();
+}
+
+export const MSG_SO_DIA_UTIL = 'Nesta casa o desconto do Cliente VIP vale de segunda a sexta, fora feriado.';
 
 export function calcularDesconto(cfg: FidelidadeConfig, pct: number, consumo: number): number {
   let v = r2((consumo * pct) / 100);
@@ -273,7 +286,7 @@ export async function gerarCodigoUso(
 export type ErroUso =
   | 'programa_inativo' | 'codigo_invalido' | 'nao_encontrado' | 'bloqueado'
   | 'ja_usado_hoje' | 'em_uso' | 'consumo_minimo' | 'sem_desconto' | 'nao_aderido' | 'outra_casa'
-  | 'funcionario';
+  | 'funcionario' | 'so_dia_util';
 
 export const MSG_ERRO: Record<ErroUso, string> = {
   programa_inativo: 'O Cliente VIP não está ativo nesta casa.',
@@ -287,6 +300,7 @@ export const MSG_ERRO: Record<ErroUso, string> = {
   nao_aderido: 'Cartão ainda não ativado: abra o link do convite e toque em "Quero meu cartão".',
   outra_casa: 'Esse cartão é de outra casa. O Cliente VIP só vale na casa do cartão.',
   funcionario: MSG_FUNCIONARIO,
+  so_dia_util: MSG_SO_DIA_UTIL,
 };
 
 export interface Simulacao {
@@ -315,6 +329,7 @@ export async function simularUso(
   if (!codigo) return { ok: false, erro: 'codigo_invalido' };
   const { ativo, config: cfg } = await carregarPrograma(filialId);
   if (!ativo) return { ok: false, erro: 'programa_inativo' };
+  if (!(await descontoValeHoje(cfg))) return { ok: false, erro: 'so_dia_util' };
 
   // só código VIVO (gerado no celular do dono há menos de CODIGO_MIN, ou
   // segurado por um Pix em andamento)
@@ -534,5 +549,6 @@ export async function dadosDoCartao(cartao: Cartao) {
   const cfg = prog.config;
   const estado = await estadoCartao(cartao, cfg);
   const bonus = await bonusHoje(cfg);
-  return { cfg, estado, bonus, prog };
+  const valeHoje = await descontoValeHoje(cfg);
+  return { cfg, estado, bonus, prog, valeHoje };
 }

@@ -26,6 +26,12 @@ export interface VistaCartao {
   bonusDiaUtil: number;
   /** bônus vale hoje? */
   bonusHoje: number;
+  /** casa em que o desconto só vale de segunda a sexta, fora feriado */
+  soDiaUtil: boolean;
+  /** o desconto no consumo vale hoje? (false só em casa soDiaUtil, fds/feriado) */
+  valeHoje: boolean;
+  /** endereço da página pública do programa desta casa */
+  linkPrograma: string;
   visitas: number;
   janelaDias: number;
   garantido: boolean;
@@ -44,11 +50,13 @@ export interface VistaCartao {
 }
 
 export async function vistaCartao(cartao: Cartao): Promise<VistaCartao> {
-  const { cfg, estado, bonus, prog } = await dadosDoCartao(cartao);
+  const { cfg, estado, bonus, prog, valeHoje } = await dadosDoCartao(cartao);
   const pct = estado.nivel.pct;
-  const textoDesconto = cfg.bonusDiaUtilPct
-    ? `${pct}% · ${pct + cfg.bonusDiaUtilPct}% seg–sex`
-    : `${pct}%`;
+  const textoDesconto = cfg.soDiaUtil
+    ? `${pct + cfg.bonusDiaUtilPct}% seg–sex`
+    : cfg.bonusDiaUtilPct
+      ? `${pct}% · ${pct + cfg.bonusDiaUtilPct}% seg–sex`
+      : `${pct}%`;
   const textoProximo = estado.proximo
     ? `${estado.proximo.nome} em ${estado.faltam} visita${estado.faltam === 1 ? '' : 's'}`
     : 'Nível máximo';
@@ -65,6 +73,9 @@ export async function vistaCartao(cartao: Cartao): Promise<VistaCartao> {
     pct,
     bonusDiaUtil: cfg.bonusDiaUtilPct,
     bonusHoje: bonus,
+    soDiaUtil: cfg.soDiaUtil,
+    valeHoje,
+    linkPrograma: linkPrograma(cartao.filialId),
     visitas: estado.visitas,
     janelaDias: cfg.janelaDias,
     garantido: estado.garantido,
@@ -86,10 +97,26 @@ export async function vistaCartao(cartao: Cartao): Promise<VistaCartao> {
   };
 }
 
+/** Página pública do programa de cada casa. O Prainha Bar segue em
+ *  /cartao-prainha (o link que já está na rua). */
+const SLUG_PROGRAMA: Record<string, string> = {
+  'fde37b95-7c7e-4b41-a618-2aba1fbc0de7': 'tabuara',
+  'e899dae2-38bf-4f3f-9149-7effd059fab8': 'prainha-mar',
+};
+export const FILIAL_POR_SLUG: Record<string, string> = Object.fromEntries(
+  Object.entries(SLUG_PROGRAMA).map(([id, slug]) => [slug, id]),
+);
+export function linkPrograma(filialId: string): string {
+  const slug = SLUG_PROGRAMA[filialId];
+  return slug ? `/cartao/programa/${slug}` : '/cartao-prainha';
+}
+
 export const REGRAS_TEXTO = (v: VistaCartao) =>
   [
-    `Como usar: na hora de pagar a conta no Pix (QR da mesa ou no caixa), abra o seu cartão no celular e toque em "Vou pagar agora". Aparece um código de 4 letras que vale 1 minuto: digite na tela do Pix. O desconto de ${v.pct}% sai na hora sobre o consumo (a taxa de serviço continua sobre o valor cheio).`,
-    v.bonusDiaUtil ? `De segunda a sexta (fora feriado) você ganha +${v.bonusDiaUtil}% extra.` : '',
+    `Como usar: na hora de pagar a conta no Pix (QR da mesa ou no caixa), abra o seu cartão no celular e toque em "Vou pagar agora". Aparece um código de 4 letras que vale 1 minuto: digite na tela do Pix. O desconto de ${v.soDiaUtil ? v.pct + v.bonusDiaUtil : v.pct}% sai na hora sobre o consumo (a taxa de serviço continua sobre o valor cheio).`,
+    v.soDiaUtil
+      ? `No ${v.casa} o desconto vale de segunda a sexta, fora feriado. Sábado, domingo e feriado o cartão não dá desconto.`
+      : v.bonusDiaUtil ? `De segunda a sexta (fora feriado) você ganha +${v.bonusDiaUtil}% extra.` : '',
     'O cartão é pessoal: o código só é gerado no celular confirmado pelo WhatsApp do seu número, muda a cada pagamento e não serve pra outra pessoa.',
     `Vale 1 uso por dia, só no ${v.casa}, pagando no Pix. Cada casa do grupo tem o seu próprio Cliente VIP.`,
     v.prioridadeReserva ? `Prioridade nas reservas do ${v.casa}: quando as mesas reserváveis da área acabam, você ainda consegue reservar (se houver mesa livre).` : '',

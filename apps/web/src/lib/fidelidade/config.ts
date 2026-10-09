@@ -29,6 +29,9 @@ export interface FidelidadeConfig {
   tetoDescontoReais: number | null;
   /** consumo mínimo pra usar o cartão, em R$ */
   consumoMinimoReais: number;
+  /** o desconto no consumo SÓ vale de segunda a sexta, fora feriado (Prainha
+   *  Mar). Fim de semana e feriado o código não é gerado nem aceito. */
+  soDiaUtil: boolean;
 }
 
 export const CONFIG_PADRAO: FidelidadeConfig = {
@@ -43,6 +46,7 @@ export const CONFIG_PADRAO: FidelidadeConfig = {
   janelaDias: 90,
   tetoDescontoReais: null,
   consumoMinimoReais: 0,
+  soDiaUtil: false,
 };
 
 /** Normaliza o que veio do banco/formulário: níveis em ordem crescente de
@@ -69,6 +73,7 @@ export function normalizarConfig(c: Partial<FidelidadeConfig> | null | undefined
     tetoDescontoReais: base.tetoDescontoReais == null || !(Number(base.tetoDescontoReais) > 0)
       ? null : Number(base.tetoDescontoReais),
     consumoMinimoReais: Math.max(0, Number(base.consumoMinimoReais) || 0),
+    soDiaUtil: base.soDiaUtil === true,
   };
 }
 
