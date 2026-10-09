@@ -773,9 +773,15 @@ export async function processarEntrada(params: {
       texto &&
       // Inclui a promessa de "colega": "já chamei um colega, ele te responde"
       // saiu SEM transferir e a cliente esperou 2h no vácuo (hospedagem, 26/08).
-      /\bvou (verificar|confirmar|perguntar|checar|falar com|ver com)\b|j[aá] (te )?retorno|retorno (em breve|j[aá] j[aá])|\b(chamei|vou chamar|j[aá] chamo|pedi pra?)\s+(um colega|uma colega|algu[eé]m)\b/i.test(
+      (/\bvou (verificar|confirmar|perguntar|checar|falar com|ver com)\b|j[aá] (te )?retorno|retorno (em breve|j[aá] j[aá])|\b(chamei|vou chamar|j[aá] chamo|pedi pra?)\s+(um colega|uma colega|algu[eé]m)\b/i.test(
         texto,
-      )
+      ) ||
+        // "Assim que meu colega confirmar eu te aviso por aqui" (Claudia,
+        // 09/10/2026): a conversa foi devolvida pra Nina sem a resposta estar
+        // na base, ela prometeu de novo e ficou em 'bot' — ninguém avisado.
+        /\bassim que\b[^.!?\n]{0,60}\b(colega|equipe|time|algu[eé]m|pessoal|gerente)\b[^.!?\n]{0,40}\b(confirm|respond|retorn|verific|me pass|me diss)/i.test(
+          texto,
+        ))
     ) {
       await executores
         .transferir(
