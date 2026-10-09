@@ -68,6 +68,8 @@ interface CxConf {
   motivo: string | null;
   bloqueios?: Bloqueio[];
   extrato_ate?: string | null;
+  /** iFood Online lançado no caixa: fica fora da conferência com a Cielo (vem no repasse) */
+  canal?: { n: number; total: number } | null;
 }
 interface Veredito {
   ok: boolean;
@@ -467,6 +469,13 @@ export function ConferenciaCaixaClient({
             return (
               <div className="mt-1 text-xs font-semibold text-emerald-700">
                 🔓 bate — fecha sozinho na próxima passada
+                {(v.canal?.n ?? 0) > 0 && (
+                  <span className="font-normal text-slate-500">
+                    {' '}
+                    · {v.canal?.n} iFood Online ({brl(v.canal?.total ?? 0)}) fora da conferência: vem
+                    no repasse do iFood, não passa pela Cielo
+                  </span>
+                )}
               </div>
             );
           }

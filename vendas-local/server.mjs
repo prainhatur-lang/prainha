@@ -8499,6 +8499,7 @@ async function caixaMaquininhaConfere(cod, usados = new Set()) {
   // sem NUNCA ter olhado o extrato.
   const cielo = await cieloExtrato();
   const bloqueios = []; // `usados`: uma transação da Cielo casa com um pagamento só
+  const canal = { n: 0, total: 0 }; // iFood Online: fora da conferência (ver abaixo)
 
 
   for (const p of linhas) {
@@ -8510,6 +8511,19 @@ async function caixaMaquininhaConfere(cod, usados = new Set()) {
     if (Number(p.F) === FORMA.DINHEIRO) {
       bloqueios.push({ ...base, categoria: 'dinheiro_lancado',
         texto: `DINHEIRO de R$ ${valor.toFixed(2)} lançado — maquininha não recebe dinheiro` });
+      continue;
+    }
+
+    // iFood Online (pedido de canal) NÃO trava o fechamento — pedido do dono em
+    // 09/10/2026. O cliente pagou no aplicativo e o dinheiro vem no repasse do
+    // iFood: não passa pela maquininha, então nunca vai ter NSU nem par na
+    // Cielo. Como a baixa de canal entra sem caixa (fbCaixaAbertoOuSistema =
+    // o aberto de código mais alto, quase sempre o de maquininha de um garçom),
+    // o caixa ficava aberto pra sempre: Tabuará cx 1433, R$ 202,39 do pedido
+    // 10161 de 02/09, ainda aberto em 09/10. Sai da conferência e é contado à
+    // parte em `canal`, pra quem lê o fechamento saber que não foi por NSU.
+    if (Number(p.F) === FORMA.IFOOD_ONLINE) {
+      canal.n++; canal.total = Math.round((canal.total + valor) * 100) / 100;
       continue;
     }
 
@@ -8575,7 +8589,7 @@ async function caixaMaquininhaConfere(cod, usados = new Set()) {
 
   if (!bloqueios.length) {
     return { bate: true, n: linhas.length, total, categoria: null, motivo: null, bloqueios: [],
-      extrato_ate: cielo?.ate ?? null };
+      extrato_ate: cielo?.ate ?? null, canal };
   }
   // Quando a conferência NÃO PÔDE rodar (banco/extrato fora), o caixa é
   // INDETERMINADO — nunca "sem par". Não se acusa ninguém por central caída.
@@ -8584,8 +8598,16 @@ async function caixaMaquininhaConfere(cod, usados = new Set()) {
   const principal = bloqueios.find((b) => b.categoria === categoria);
   const sobra = bloqueios.length - 1;
   return { bate: false, n: linhas.length, total, categoria, bloqueios,
-    extrato_ate: cielo?.ate ?? null,
+    extrato_ate: cielo?.ate ?? null, canal,
     motivo: principal.texto + (sobra > 0 ? ` (e mais ${sobra} pendência${sobra > 1 ? 's' : ''} neste caixa)` : '') };
+}
+/** Texto do carimbo "BATEU" do fechamento. Sem iFood Online no caixa sai
+ *  igual ao de sempre; com ele, separa o que foi conferido por NSU do que veio
+ *  de canal (repasse), que não passa pela Cielo. */
+function textoBateu(conf) {
+  const cn = conf?.canal?.n || 0;
+  return `BATEU (${(conf.n || 0) - cn} pagamento(s) conferido(s) por NSU` +
+    (cn ? ` + ${cn} iFood Online de R$ ${Number(conf.canal.total).toFixed(2)}, repasse do iFood, fora da Cielo` : '') + ')';
 }
 /** Pagamentos de um caixa, nos dois bancos. Existia só o ramo Firebird: em
  *  BANCO=proprio a query falhava e TODO caixa voltava reprovado com "FB: ...". */
@@ -8680,7 +8702,8 @@ async function apiCaixaConferirTodos() {
     out.push({ codigo: c.codigo, quem: c.quem, tipo: 'maquininha', aberto_em: c.abriu,
       pagamentos: conf.n ?? 0, total: conf.total ?? 0, fecharia: !!conf.bate,
       categoria: conf.bate ? null : conf.categoria, bloqueios: conf.bloqueios ?? [],
-      extrato_ate: conf.extrato_ate ?? null, motivo: conf.bate ? null : conf.motivo });
+      extrato_ate: conf.extrato_ate ?? null, motivo: conf.bate ? null : conf.motivo,
+      canal: conf.canal ?? null });
   }
   return { ok: true, caixas: out, fecham: out.filter((x) => x.fecharia).length, ficam: out.filter((x) => !x.fecharia).length };
 }
@@ -8753,7 +8776,7 @@ async function apiLioFecharCaixa(garcom) {
   if (!up.ok) return { ok: false, erro: 'não deu pra fechar' + (up.err ? ': ' + up.err : '') };
   try { await sql`INSERT INTO caixa_fechamento (caixa_codigo, login, informado, esperado, dif_dinheiro, obs)
     VALUES (${cx.codigo}, ${garcom.login}, ${sql.json({ dinheiro: esperado })}, ${sql.json({ dinheiro: esperado })}, 0,
-      ${'Fechado na maquininha por ' + (garcom.nome || garcom.login) + ' — BATEU (' + c.n + ' pagamento(s) conferido(s) por NSU)'})`; } catch {}
+      ${'Fechado na maquininha por ' + (garcom.nome || garcom.login) + ' — ' + textoBateu(c)})`; } catch {}
   // Detalhamento pro COMPROVANTE impresso na própria maquininha (app ≥1.10.9):
   // por forma + período. O fechamento do turno merece papel.
   let formas = [];
@@ -8815,7 +8838,7 @@ async function loopFecharCaixasMaquininha() {
       if (up.ok) {
         n++;
         try { await sql`INSERT INTO caixa_fechamento (caixa_codigo, login, informado, esperado, dif_dinheiro, obs)
-          VALUES (${cod}, ${'sistema'}, ${sql.json({ dinheiro: esperado })}, ${sql.json({ dinheiro: esperado })}, 0, ${'Fechamento automático 04:00 — caixa da maquininha BATEU (' + conf.n + ' pagamento(s) conferido(s) por NSU)'})`; } catch {}
+          VALUES (${cod}, ${'sistema'}, ${sql.json({ dinheiro: esperado })}, ${sql.json({ dinheiro: esperado })}, 0, ${'Fechamento automático 04:00 — caixa da maquininha ' + textoBateu(conf)})`; } catch {}
       }
     }
     // O latch só fecha o dia quando a passada foi CONCLUSIVA. Antes ele
