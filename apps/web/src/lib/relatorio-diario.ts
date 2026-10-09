@@ -173,6 +173,20 @@ export interface GavetaDia {
   contado: number | null;
   /** contado − esperado */
   diferenca: number | null;
+  /** passagem de caixa: o fechamento anterior que este fundo deveria repetir (nulo = sem caixa anterior no trecho lido, ou abriu zerada) */
+  passagem?: PassagemGaveta | null;
+}
+
+/** "Quando um caixa fecha, o outro abre com o mesmo saldo." */
+export interface PassagemGaveta {
+  /** quem fechou o caixa anterior (dois nomes quando a gaveta juntou dois caixas) */
+  de: string;
+  /** "DD/MM HH:MM" (BRT) do fechamento anterior */
+  fechouEm: string;
+  /** saldo com que o anterior fechou (contado; sem contagem, o esperado) */
+  saldo: number;
+  /** fundo desta gaveta − saldo anterior: negativo = dinheiro saiu entre um caixa e outro sem registro */
+  diferenca: number;
 }
 
 export interface MaquininhaAberta {
@@ -1012,6 +1026,78 @@ function caixaSemResposta(erro: string): CaixaDia {
   };
 }
 
+/** Centavos de troco arredondado na abertura não viram alerta. */
+const FOLGA_PASSAGEM = 1;
+/** Quem entra costuma abrir o caixa antes de quem sai fechar o dele. */
+const FOLGA_TROCA_MS = 2 * 3600 * 1000;
+
+export interface CaixaNaFila {
+  codigo: number;
+  quem: string;
+  aberto: Date;
+  fechado: Date | null;
+  fundo: number;
+  /** saldo do fechamento (contado; sem contagem, o esperado) */
+  saldo: number | null;
+}
+
+/**
+ * Passagem de caixa: pra cada gaveta que abriu com fundo, acha o fechamento
+ * anterior que esse fundo deveria repetir. Cada fechamento serve a UMA abertura.
+ * Com mais de um fechamento esperando (a casa teve dois caixas), vale o que
+ * mais se aproxima do fundo — um deles sozinho ou a soma de todos (a Prainha
+ * Mar juntou dois caixas numa gaveta em 06/10). Gaveta que abre zerada é caixa
+ * de apoio: não compara nem gasta o fechamento de ninguém.
+ */
+export function passagensDeGaveta(
+  lista: CaixaNaFila[],
+): Map<number, { de: string; fechou: Date; saldo: number; diferenca: number }> {
+  const out = new Map<number, { de: string; fechou: Date; saldo: number; diferenca: number }>();
+  const usados = new Set<number>();
+  const fila = [...lista].sort((a, b) => a.aberto.getTime() - b.aberto.getTime() || a.codigo - b.codigo);
+  for (const o of fila) {
+    if (o.fundo < 0.01) continue;
+    const ab = o.aberto.getTime();
+    const espera = fila
+      .filter(
+        (c) =>
+          c.codigo !== o.codigo &&
+          !usados.has(c.codigo) &&
+          c.fechado != null &&
+          c.saldo != null &&
+          c.saldo >= 0.01 &&
+          c.aberto.getTime() < ab &&
+          c.fechado.getTime() <= ab + FOLGA_TROCA_MS,
+      )
+      .sort((a, b) => (b.fechado as Date).getTime() - (a.fechado as Date).getTime());
+    if (!espera.length) continue;
+    // O mais recente ganha o empate.
+    let melhor: CaixaNaFila[] = [espera[0]];
+    let dist = Math.abs(o.fundo - (espera[0].saldo as number));
+    for (const c of espera.slice(1)) {
+      const d = Math.abs(o.fundo - (c.saldo as number));
+      if (d < dist - 0.005) {
+        melhor = [c];
+        dist = d;
+      }
+    }
+    if (espera.length > 1) {
+      const soma = espera.reduce((t, c) => t + (c.saldo as number), 0);
+      if (Math.abs(o.fundo - soma) < dist - 0.005) melhor = espera;
+    }
+    const saldo = r2(melhor.reduce((t, c) => t + (c.saldo as number), 0));
+    for (const c of melhor) usados.add(c.codigo);
+    const nomes = [...new Set(melhor.map((c) => c.quem))];
+    out.set(o.codigo, {
+      de: nomes.join(' + '),
+      fechou: melhor[0].fechado as Date,
+      saldo,
+      diferenca: r2(o.fundo - saldo),
+    });
+  }
+  return out;
+}
+
 /** Gavetas, saídas de dinheiro e maquininhas abertas da casa no dia. Nunca lança. */
 async function caixaDaLoja(filialId: string, dia: string): Promise<CaixaDia> {
   try {
@@ -1021,11 +1107,19 @@ async function caixaDaLoja(filialId: string, dia: string): Promise<CaixaDia> {
       chamarLojaCaixa(filialId, `/relatorio?data=${somaDias(dia, 1)}`),
       chamarLojaCaixa(filialId, '/conferir'),
     ]);
+    // Só pra passagem de caixa: o fechamento anterior pode ser de 2 ou 3 dias
+    // atrás (casa que não abriu na véspera). Se não vier, o resto sai igual.
+    const leituraAntes = Promise.all([
+      chamarLojaCaixa(filialId, `/relatorio?data=${somaDias(dia, -3)}`),
+      chamarLojaCaixa(filialId, `/relatorio?data=${somaDias(dia, -2)}`),
+    ]).catch(() => null);
     let relogio: ReturnType<typeof setTimeout> | undefined;
     const prazo = new Promise<null>((res) => {
       relogio = setTimeout(() => res(null), PRAZO_CAIXA_MS);
     });
-    const lido = await Promise.race([leitura, prazo]).finally(() => clearTimeout(relogio));
+    const lido = await Promise.race([leitura, prazo]);
+    const lidoAntes = lido ? await Promise.race([leituraAntes, prazo]) : null;
+    clearTimeout(relogio);
     if (!lido) return caixaSemResposta('a loja não respondeu a tempo');
     const [antes, noDia, depois, conf] = lido;
     const dias = [antes, noDia, depois];
@@ -1140,6 +1234,39 @@ async function caixaDaLoja(filialId: string, dia: string): Promise<CaixaDia> {
     }
 
     const rotulo = (d: Date) => `${diaMesBr(d)} ${horaBr(d)}`;
+
+    // Passagem de caixa: a fila de gavetas do trecho lido (até 3 dias antes).
+    const filaCx = new Map<number, CaixaNaFila>();
+    for (const d of lidoAntes ?? []) {
+      if (!d?.ok) continue;
+      for (const c of (Array.isArray(d.caixas) ? d.caixas : []) as CxLoja[]) {
+        const cod = Number(c.codigo);
+        const aberto = instanteDaLoja(c.aberto_em);
+        if (!Number.isFinite(cod) || !aberto || String(c.tipo ?? '') === 'maquininha') continue;
+        const saldo = c.contado != null ? num(c.contado) : c.esperado != null ? num(c.esperado) : null;
+        filaCx.set(cod, {
+          codigo: cod,
+          quem: String(c.quem ?? '').trim() || `caixa ${cod}`,
+          aberto,
+          fechado: instanteDaLoja(c.fechado_em),
+          fundo: num(c.fundo),
+          saldo,
+        });
+      }
+    }
+    for (const c of cxs.values()) {
+      if (c.tipo === 'maquininha' || c.aberto == null) continue;
+      filaCx.set(c.codigo, {
+        codigo: c.codigo,
+        quem: c.quem || `caixa ${c.codigo}`,
+        aberto: c.aberto,
+        fechado: c.fechado,
+        fundo: c.fundo,
+        saldo: c.contado ?? c.esperado,
+      });
+    }
+    const passagens = passagensDeGaveta([...filaCx.values()]);
+
     const gavetas: GavetaDia[] = [...cxs.values()]
       .filter((c) => c.tipo !== 'maquininha' && c.aberto != null)
       .filter((c) => {
@@ -1172,6 +1299,10 @@ async function caixaDaLoja(filialId: string, dia: string): Promise<CaixaDia> {
           esperado,
           contado,
           diferenca: !aberta && esperado != null && contado != null ? r2(contado - esperado) : null,
+          passagem: (() => {
+            const p = passagens.get(c.codigo);
+            return p ? { de: p.de, fechouEm: rotulo(p.fechou), saldo: p.saldo, diferenca: p.diferenca } : null;
+          })(),
         };
       });
 
@@ -1232,6 +1363,16 @@ function atencaoDoCaixa(cx: CaixaDia): string[] {
     if (g.diferenca != null && Math.abs(g.diferenca) >= 1) {
       out.push(
         `Gaveta de ${g.quem} fechou com ${reais(Math.abs(g.diferenca))} ${g.diferenca < 0 ? 'a menos' : 'a mais'} que o esperado (esperado ${reais(g.esperado ?? 0)}, contado ${reais(g.contado ?? 0)})`,
+      );
+    }
+    // Dinheiro: o caixa que abre tem que abrir com o saldo do que fechou.
+    const p = g.passagem;
+    if (g.doDia && p && Math.abs(p.diferenca) >= FOLGA_PASSAGEM) {
+      out.push(
+        `Gaveta de ${g.quem} abriu (${g.abertoEm}) com ${reais(g.fundo)}, mas o caixa anterior (${p.de}) fechou ${p.fechouEm} com ${reais(p.saldo)} — ` +
+          (p.diferenca < 0
+            ? `${reais(Math.abs(p.diferenca))} a menos, sem saída registrada`
+            : `${reais(p.diferenca)} a mais, sem entrada registrada`),
       );
     }
     if (g.aberta && g.diasAberta >= 2) {
@@ -1335,6 +1476,14 @@ function linhasCaixa(c: RelatorioCasa): string[] {
       (g.entradas ? ` + entradas ${reais(g.entradas)}` : '') +
       (g.saidas ? ` − saídas ${reais(g.saidas)}` : '');
     L.push(`💵 Gaveta de ${g.quem}${g.doDia ? '' : ` (aberta em ${g.abertoEm.slice(0, 5)})`}: ${conta} · ${fim}`);
+    const p = g.passagem;
+    if (g.doDia && p) {
+      L.push(
+        Math.abs(p.diferenca) < FOLGA_PASSAGEM
+          ? `   ↪ abriu com o mesmo saldo do caixa anterior (${p.de}, ${reais(p.saldo)})`
+          : `   ⚠️ abriu com ${reais(Math.abs(p.diferenca))} ${p.diferenca < 0 ? 'a menos' : 'a mais'} que o caixa anterior (${p.de} fechou ${p.fechouEm} com ${reais(p.saldo)})`,
+      );
+    }
   }
   const linha = (x: MovGaveta) =>
     `• ${x.hora} ${reais(x.valor)} — ${x.levou ? `${x.levou}: ` : ''}${x.motivo}${x.lancou ? ` (lançou ${x.lancou})` : ''}`;

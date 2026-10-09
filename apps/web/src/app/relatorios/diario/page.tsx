@@ -92,19 +92,20 @@ function CaixaDoDia({ cx }: { cx: CaixaDia }) {
   return (
     <Bloco
       titulo="Caixa e saídas de dinheiro"
-      nota="Lido direto do servidor da loja. Maquininha não recebe dinheiro: gaveta é só o caixa do balcão. Entradas e saídas da gaveta contam o caixa inteiro, do abrir ao fechar; a lista de saídas abaixo é só a do dia."
+      nota="Lido direto do servidor da loja. Maquininha não recebe dinheiro: gaveta é só o caixa do balcão. Entradas e saídas da gaveta contam o caixa inteiro, do abrir ao fechar; a lista de saídas abaixo é só a do dia. Caixa anterior fechou: o fundo de quem abre tem que ser o saldo de quem fechou — diferença é dinheiro que saiu ou entrou entre um caixa e outro sem registro."
     >
       {cx.gavetas.length === 0 ? (
         <p className="text-slate-500">Nenhuma gaveta aberta nesse dia.</p>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[720px] text-left text-sm">
+          <table className="w-full min-w-[860px] text-left text-sm">
             <thead className="text-[11px] uppercase tracking-wide text-slate-400">
               <tr>
                 <th className="py-1 pr-3 font-medium">Gaveta</th>
                 <th className="py-1 pr-3 font-medium">Abriu</th>
                 <th className="py-1 pr-3 font-medium">Fechou</th>
                 <th className="py-1 pr-3 text-right font-medium">Fundo</th>
+                <th className="py-1 pr-3 text-right font-medium">Caixa anterior fechou</th>
                 <th className="py-1 pr-3 text-right font-medium">Dinheiro</th>
                 <th className="py-1 pr-3 text-right font-medium">Entradas</th>
                 <th className="py-1 pr-3 text-right font-medium">Saídas</th>
@@ -128,6 +129,20 @@ function CaixaDoDia({ cx }: { cx: CaixaDia }) {
                     )}
                   </td>
                   <td className="py-1.5 pr-3 text-right">{brl(g.fundo)}</td>
+                  <td className="py-1.5 pr-3 text-right">
+                    {!g.passagem ? (
+                      <span className="text-slate-400">—</span>
+                    ) : Math.abs(g.passagem.diferenca) < 1 ? (
+                      <span className="text-emerald-700" title={`${g.passagem.de} fechou ${g.passagem.fechouEm}`}>
+                        {brl(g.passagem.saldo)} · igual
+                      </span>
+                    ) : (
+                      <span className="font-medium text-rose-700" title={`${g.passagem.de} fechou ${g.passagem.fechouEm}`}>
+                        {brl(g.passagem.saldo)} · abriu com {g.passagem.diferenca < 0 ? '−' : '+'}
+                        {brl(Math.abs(g.passagem.diferenca))}
+                      </span>
+                    )}
+                  </td>
                   <td className="py-1.5 pr-3 text-right">{brl(g.dinheiro)}</td>
                   <td className="py-1.5 pr-3 text-right">{g.entradas ? brl(g.entradas) : '—'}</td>
                   <td className="py-1.5 pr-3 text-right">{g.saidas ? brl(g.saidas) : '—'}</td>
