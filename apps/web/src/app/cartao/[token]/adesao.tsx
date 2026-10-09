@@ -21,7 +21,8 @@ export function ConfirmarCelular({
 }: { token: string; telefone: string; rotulo: string; onCancelar?: () => void }) {
   const router = useRouter();
   const [etapa, setEtapa] = useState<'inicio' | 'codigo'>('inicio');
-  const [canal, setCanal] = useState<'whatsapp' | 'sms'>('whatsapp');
+  const [canal, setCanal] = useState<'whatsapp' | 'sms' | 'zap'>('whatsapp');
+  const [zap, setZap] = useState('');
   const [codigo, setCodigo] = useState('');
   const [ocupado, setOcupado] = useState(false);
   const [erro, setErro] = useState('');
@@ -31,7 +32,8 @@ export function ConfirmarCelular({
     setErro('');
     try {
       const j = await acao(token, 'enviar_sms');
-      setCanal(j.canal === 'sms' ? 'sms' : 'whatsapp');
+      setCanal(j.canal === 'sms' ? 'sms' : j.canal === 'zap' && j.zap ? 'zap' : 'whatsapp');
+      setZap(j.canal === 'zap' && j.zap ? String(j.zap) : '');
       setEtapa('codigo');
     } catch (e) {
       setErro((e as Error).message);
@@ -73,13 +75,31 @@ export function ConfirmarCelular({
   }
   return (
     <div className="space-y-3 rounded-2xl bg-white p-4 shadow-sm">
-      <p className="text-sm">
-        Digite o código que chegou {canal === 'sms' ? 'por SMS' : 'no WhatsApp'} do <b>{telefone}</b>:
-      </p>
+      {canal === 'zap' ? (
+        <>
+          <p className="text-sm">
+            Pra confirmar que o cartão é seu, peça o código pelo WhatsApp do <b>{telefone}</b>: toque no botão,
+            envie a mensagem que já vem pronta e a resposta traz o código.
+          </p>
+          <a
+            href={zap}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="block w-full rounded-xl bg-emerald-600 px-4 py-3 text-center font-semibold text-white"
+          >
+            Pedir meu código no WhatsApp
+          </a>
+          <p className="text-sm">Depois volte aqui e digite o código:</p>
+        </>
+      ) : (
+        <p className="text-sm">
+          Digite o código que chegou {canal === 'sms' ? 'por SMS' : 'no WhatsApp'} do <b>{telefone}</b>:
+        </p>
+      )}
       <input
         inputMode="numeric"
         autoComplete="one-time-code"
-        autoFocus
+        autoFocus={canal !== 'zap'}
         maxLength={8}
         value={codigo}
         onChange={(e) => setCodigo(e.target.value.replace(/\D/g, ''))}
@@ -93,9 +113,11 @@ export function ConfirmarCelular({
       >
         {ocupado ? 'Conferindo…' : 'Confirmar'}
       </button>
-      <button onClick={enviar} disabled={ocupado} className="w-full text-sm text-slate-500">
-        Não chegou? Mandar de novo
-      </button>
+      {canal !== 'zap' && (
+        <button onClick={enviar} disabled={ocupado} className="w-full text-sm text-slate-500">
+          Não chegou? Mandar de novo
+        </button>
+      )}
       {erro && <p className="text-center text-sm text-red-700">{erro}</p>}
     </div>
   );

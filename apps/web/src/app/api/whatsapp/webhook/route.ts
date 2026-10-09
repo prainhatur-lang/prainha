@@ -22,6 +22,7 @@ import { estornarReservaSePago } from '@/lib/reservas/estorno';
 import { dadosFaturamentoTexto, perguntaFaturamento } from '@/lib/dados-faturamento';
 import { enviarTexto } from '@/lib/atendimento/zap';
 import { tratarKids } from '@/lib/kids';
+import { tratarAtivarVip } from '@/lib/fidelidade/zap-ativar';
 import { textoErroStatus, type ErroStatusMeta } from '@/lib/whatsapp-erros';
 import {
   reconhecerPedidoRelatorio,
@@ -135,6 +136,8 @@ export async function POST(req: Request) {
           // Espaço Kids: mensagem do QR (confirma o zap) ou resposta de um
           // responsável com criança dentro — a Nina não vê essas.
           if (await tratarKids(msg, value?.metadata?.phone_number_id)) continue;
+          // Cliente VIP: pedido do código de ativação vindo do celular do cartão
+          if (await tratarAtivarVip(msg, value?.metadata?.phone_number_id)) continue;
           // Mensagem comum -> atendimento da Nina
           await tratarMensagemComum(msg, value?.metadata?.phone_number_id, value?.contacts);
         }

@@ -16,6 +16,7 @@ import {
   COOKIE_DIAS, aparelhoConfirmado, confirmarAparelho, enviarConfirmacao, nomeCookie,
 } from '@/lib/fidelidade/aparelho';
 import { gerarCodigoUso } from '@/lib/fidelidade/nucleo';
+import { linkAtivarPorZap } from '@/lib/fidelidade/zap-ativar';
 import { carregarPrograma } from '@/lib/fidelidade/config';
 
 export const dynamic = 'force-dynamic';
@@ -32,8 +33,17 @@ export async function POST(req: Request) {
 
   try {
     if (b?.acao === 'enviar_sms') {
-      const canal = await enviarConfirmacao(c);
-      return NextResponse.json({ ok: true, canal });
+      try {
+        const canal = await enviarConfirmacao(c);
+        return NextResponse.json({ ok: true, canal });
+      } catch (e) {
+        // o código não saiu (Meta sem template, Twilio recusou): o cliente pede
+        // o código mandando uma mensagem pro WhatsApp da casa
+        const zap = await linkAtivarPorZap(c).catch(() => null);
+        if (!zap) throw e;
+        console.error('[fidelidade] código não saiu, indo por mensagem do cliente:', (e as Error).message);
+        return NextResponse.json({ ok: true, canal: 'zap', zap });
+      }
     }
     if (b?.acao === 'confirmar') {
       const r = await confirmarAparelho(c, b.codigo, req.headers.get('user-agent'));
