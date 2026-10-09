@@ -17,10 +17,13 @@ async function acao(token: string, acao: string, extra: Record<string, unknown> 
 /** Confirma que o celular é do dono: código no WhatsApp do telefone do cartão. Certo → o
  *  navegador fica liberado (cookie) e a página recarrega. */
 export function ConfirmarCelular({
-  token, telefone, rotulo, onCancelar,
-}: { token: string; telefone: string; rotulo: string; onCancelar?: () => void }) {
+  token, telefone, rotulo, onCancelar, codigoPendente,
+}: { token: string; telefone: string; rotulo: string; onCancelar?: () => void; codigoPendente?: boolean }) {
   const router = useRouter();
-  const [etapa, setEtapa] = useState<'inicio' | 'codigo'>('inicio');
+  // codigoPendente: já existe um código vivo pra este cartão (o cliente pediu
+  // pelo WhatsApp e voltou — a página recarregou). Abre direto no campo, sem
+  // pedir de novo: pedir outro mata o código que acabou de chegar.
+  const [etapa, setEtapa] = useState<'inicio' | 'codigo'>(codigoPendente ? 'codigo' : 'inicio');
   const [canal, setCanal] = useState<'whatsapp' | 'sms' | 'zap'>('whatsapp');
   const [zap, setZap] = useState('');
   const [codigo, setCodigo] = useState('');
@@ -123,7 +126,7 @@ export function ConfirmarCelular({
   );
 }
 
-export function BotoesAdesao({ token, recusado, telefone }: { token: string; recusado: boolean; telefone: string }) {
+export function BotoesAdesao({ token, recusado, telefone, codigoPendente }: { token: string; recusado: boolean; telefone: string; codigoPendente?: boolean }) {
   const [enviando, setEnviando] = useState(false);
   const [recusou, setRecusou] = useState(recusado);
   const [erro, setErro] = useState('');
@@ -160,7 +163,7 @@ export function BotoesAdesao({ token, recusado, telefone }: { token: string; rec
 
   return (
     <div className="space-y-2">
-      <ConfirmarCelular token={token} telefone={telefone} rotulo="Quero meu cartão" />
+      <ConfirmarCelular token={token} telefone={telefone} rotulo="Quero meu cartão" codigoPendente={codigoPendente} />
       <button onClick={recusar} disabled={enviando} className="w-full rounded-xl px-4 py-2 text-sm text-slate-500">
         Não tenho interesse
       </button>
@@ -181,8 +184,8 @@ function mmss(ms: number): string {
  *  celular confirmado. Link encaminhado pra outra pessoa cai na confirmação
  *  no WhatsApp do número do dono. */
 export function VouPagar({
-  token, confirmado, telefone, pctHoje,
-}: { token: string; confirmado: boolean; telefone: string; pctHoje: number }) {
+  token, confirmado, telefone, pctHoje, codigoPendente,
+}: { token: string; confirmado: boolean; telefone: string; pctHoje: number; codigoPendente?: boolean }) {
   const [cod, setCod] = useState<{ codigo: string; expira: number } | null>(null);
   const [agora, setAgora] = useState(() => Date.now());
   const [ocupado, setOcupado] = useState(false);
@@ -217,7 +220,7 @@ export function VouPagar({
           Pra usar o cartão neste celular, confirme que ele é seu. O código de desconto só é gerado no celular do
           dono do cartão.
         </p>
-        <ConfirmarCelular token={token} telefone={telefone} rotulo="Confirmar meu celular" />
+        <ConfirmarCelular token={token} telefone={telefone} rotulo="Confirmar meu celular" codigoPendente={codigoPendente} />
       </div>
     );
   }

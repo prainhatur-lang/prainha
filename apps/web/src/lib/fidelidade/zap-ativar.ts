@@ -92,9 +92,11 @@ export async function tratarAtivarVip(
       })
       .where(eq(schema.fidelidadeCartao.id, cartao.id));
     const prog = await carregarPrograma(cartao.filialId);
+    const base = (process.env.NEXT_PUBLIC_APP_URL || 'https://app.prainhabar.com').trim().replace(/\/+$/, '');
     const r = await enviarTexto(
       phoneNumberId, msg.from,
-      `Seu código do ${prog.marca}: *${codigo}*\n\nVolte pra página do cartão e digite esse código. Ele vale por ${OTP_MIN} minutos.`,
+      `Seu código do ${prog.marca}: *${codigo}*\n\nVolte pra página do cartão e digite esse código. Ele vale por ${OTP_MIN} minutos.` +
+        `\n\nSe a página fechou, abra por aqui:\n${base}/cartao/${cartao.token}`,
     );
     if (r.erro) console.error('[fidelidade] ativar por zap: resposta não saiu', cartao.id, r.erro);
     else console.log('[fidelidade] ativar por zap: código enviado', cartao.id);
