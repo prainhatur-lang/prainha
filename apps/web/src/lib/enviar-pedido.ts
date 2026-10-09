@@ -81,34 +81,36 @@ export async function enviarPedidoAuto(pedidoId: string): Promise<EnvioPedidoRes
     )
     .join('; ');
 
-  // Versões mais curtas da lista, usadas SÓ se a Meta recusar por tamanho
-  // (#132005: corpo do modelo + parâmetros passa de 1024). Pedido 59 da Mega
-  // (12 itens com observação de estoque, 09/10) ficou GERADO sem sair por isso.
-  const itensSemObs = itens
-    .map((i) => `${i.produtoNome} ${Number(i.quantidade).toLocaleString('pt-BR')} ${i.unidade} = ${brl(Number(i.valorTotal))}`)
-    .join('; ');
-  const itensCurto = itens
-    .map((i) => `${(i.produtoNome ?? '').slice(0, 30).trim()} ${Number(i.quantidade).toLocaleString('pt-BR')} ${i.unidade}`)
-    .join('; ');
-
   // Dados de faturamento JUNTO com o pedido — o fornecedor não precisa
   // perguntar "qual CNPJ pra tirar o pedido?" (linha única: parâmetro de
   // template da Meta não aceita quebra de linha).
   const faturamento = await dadosFaturamentoLinha(p.filialId).catch(() => null);
 
-  const enviar = (lista: string) =>
+  // Link público com o pedido inteiro (itens, observações, valores e dados de
+  // faturamento). A mensagem de modelo da Meta tem teto de 1024 caracteres
+  // (#132005): o pedido 59 da Mega (12 itens com observação de estoque, 09/10)
+  // ficou GERADO sem sair por isso. Em vez de cortar item, a lista vai no link.
+  const link = `Pedido completo: https://app.prainhabar.com/cotacao/preencher/pedido/${pedidoId}`;
+  const lista = itensStr || '(itens no sistema)';
+  const fat = faturamento ? `; ${faturamento}` : '';
+  const resumo = `${itens.length} ${itens.length === 1 ? 'item' : 'itens'}, lista com quantidades e valores no link`;
+
+  const enviar = (itensTexto: string) =>
     enviarPedidoCompra(tel, {
       // Cumprimenta a PESSOA; o nome da empresa vai no corpo do pedido.
       fornecedor: (p.vendedorNome ?? p.fornecedorNome ?? '').split(/[\s(/-]/)[0] || 'tudo bem',
       filial: p.filialNome ?? 'Prainha',
       numero: String(p.numero),
-      itens: `${lista || '(itens no sistema)'}${faturamento ? `; ${faturamento}` : ''}`,
+      itens: itensTexto,
       total: p.valorTotal != null ? brl(Number(p.valorTotal)) : '—',
       pedidoId, // p/ o payload dos botões Confirmar/Não consigo
     });
   try {
-    // 1ª tentativa é a de sempre; as outras só entram no erro de tamanho.
-    const tentativas = [itensStr, itensSemObs, itensCurto];
+    // Só passa pra próxima quando a Meta recusa por TAMANHO:
+    // 1) a mensagem de sempre + o link; 2) a mensagem de sempre, sem o link
+    // (quando só o link fez estourar); 3) pedido grande: resumo + link;
+    // 4) o mesmo sem os dados de faturamento (estão na página do link).
+    const tentativas = [`${lista}${fat}; ${link}`, `${lista}${fat}`, `${resumo}. ${link}${fat}`, `${resumo}. ${link}`];
     for (let t = 0; t < tentativas.length; t++) {
       try {
         await enviar(tentativas[t]!);
