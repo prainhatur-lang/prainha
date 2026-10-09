@@ -70,6 +70,11 @@ export function AtendimentoClient(props: {
   const [texto, setTexto] = useState('');
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+  // Ensinar a Nina: ela não soube, a equipe dá a resposta e ela grava.
+  const [ensinando, setEnsinando] = useState(false);
+  const [ensinoPergunta, setEnsinoPergunta] = useState('');
+  const [ensinoResposta, setEnsinoResposta] = useState('');
+  const [gravandoEnsino, setGravandoEnsino] = useState(false);
   const fimRef = useRef<HTMLDivElement>(null);
   const ultimaMsgIdRef = useRef<string | null>(null);
 
@@ -134,6 +139,40 @@ export function AtendimentoClient(props: {
       return;
     }
     await Promise.all([carregarMensagens(selecionada), carregarConversas()]);
+  }
+
+  function abrirEnsino() {
+    // Sugere como pergunta as últimas falas escritas do cliente — dá pra editar.
+    const falas = mensagens
+      .filter((m) => m.direcao === 'entrada' && m.corpo && m.tipo !== 'reacao' && m.tipo !== 'figurinha')
+      .slice(-2)
+      .map((m) => (m.corpo ?? '').trim());
+    setEnsinoPergunta(falas.join(' / ').slice(0, 400));
+    setEnsinoResposta('');
+    setErro(null);
+    setEnsinando(true);
+  }
+
+  async function gravarEnsino() {
+    if (!selecionada || !ensinoPergunta.trim() || !ensinoResposta.trim() || gravandoEnsino) return;
+    setGravandoEnsino(true);
+    setErro(null);
+    try {
+      const r = await fetch(`/api/atendimento/conversas/${selecionada}/ensinar`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pergunta: ensinoPergunta.trim(), resposta: ensinoResposta.trim() }),
+      });
+      const d = await r.json().catch(() => null);
+      if (!r.ok) {
+        setErro(d?.error ?? 'falha ao gravar');
+        return;
+      }
+      setEnsinando(false);
+      await Promise.all([carregarMensagens(selecionada), carregarConversas()]);
+    } finally {
+      setGravandoEnsino(false);
+    }
   }
 
   async function responder() {
@@ -299,6 +338,11 @@ export function AtendimentoClient(props: {
                         Assumir
                       </button>
                     )}
+                    {props.podeConfig && conversaAberta.status === 'humano' && !ensinando && (
+                      <button onClick={abrirEnsino} className="rounded-md bg-violet-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-violet-700">
+                        Ensinar a Nina
+                      </button>
+                    )}
                     {conversaAberta.status !== 'bot' && (
                       <button onClick={() => mudarStatus('bot')} className="rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-700">
                         Devolver pra Nina
@@ -351,6 +395,43 @@ export function AtendimentoClient(props: {
               {props.podeResponder && (
                 <div className="border-t border-slate-200 p-3">
                   {erro && <p className="mb-2 text-xs text-red-600">{erro}</p>}
+                  {ensinando && (
+                    <div className="mb-3 rounded-md border border-violet-200 bg-violet-50 p-3">
+                      <p className="text-xs font-semibold text-violet-800">Ensinar a Nina</p>
+                      <p className="mb-2 text-[11px] text-violet-700">
+                        Ela guarda a resposta, responde este cliente agora e usa nas próximas conversas.
+                      </p>
+                      <label className="block text-[11px] font-medium text-slate-600">O que ela não soube responder</label>
+                      <textarea
+                        value={ensinoPergunta}
+                        onChange={(e) => setEnsinoPergunta(e.target.value)}
+                        rows={2}
+                        maxLength={400}
+                        className="mb-2 mt-0.5 w-full resize-none rounded-md border border-slate-300 px-2 py-1.5 text-sm focus:border-violet-500 focus:outline-none"
+                      />
+                      <label className="block text-[11px] font-medium text-slate-600">A resposta (escreva a regra — ela fala do jeito dela)</label>
+                      <textarea
+                        value={ensinoResposta}
+                        onChange={(e) => setEnsinoResposta(e.target.value)}
+                        rows={3}
+                        maxLength={1200}
+                        placeholder="Ex.: No feriado de 12/10 não cobramos entrada; só o couvert de R$ 20 quando tem música ao vivo."
+                        className="mt-0.5 w-full resize-none rounded-md border border-slate-300 px-2 py-1.5 text-sm focus:border-violet-500 focus:outline-none"
+                      />
+                      <div className="mt-2 flex justify-end gap-2">
+                        <button onClick={() => setEnsinando(false)} className="rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-600 hover:bg-white">
+                          Cancelar
+                        </button>
+                        <button
+                          onClick={gravarEnsino}
+                          disabled={gravandoEnsino || !ensinoPergunta.trim() || !ensinoResposta.trim()}
+                          className="rounded-md bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-700 disabled:opacity-50"
+                        >
+                          {gravandoEnsino ? 'Gravando…' : 'Gravar e mandar a Nina responder'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   {!dentroJanela24h ? (
                     <p className="rounded-md bg-slate-100 px-3 py-2 text-xs text-slate-500">
                       Fora da janela de 24h do WhatsApp — só dá pra mandar texto livre até 24h após a

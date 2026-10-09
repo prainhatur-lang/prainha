@@ -266,7 +266,13 @@ function normalizarPraComparar(texto: string): string {
 /** Ao DEVOLVER a conversa pra Nina com pergunta do cliente sem resposta
  *  (última mensagem é 'entrada'), ela responde o pendente na hora — sem
  *  esperar o cliente escrever de novo. Chamada pelo PATCH do painel. */
-export async function responderPendenteAposDevolucao(conversaId: string): Promise<void> {
+export async function responderPendenteAposDevolucao(
+  conversaId: string,
+  /** forcar: a equipe acabou de ENSINAR a resposta — a Nina responde a última
+   *  pergunta do cliente mesmo que depois dela já tenha saído a promessa de
+   *  retorno. Sem isso, segue igual: só responde se a última for do cliente. */
+  opcoes?: { forcar?: boolean },
+): Promise<void> {
   console.log('[nina] retomada iniciada', conversaId);
   try {
     const [conversa] = await db
@@ -276,12 +282,22 @@ export async function responderPendenteAposDevolucao(conversaId: string): Promis
       .limit(1);
     if (!conversa || conversa.status !== 'bot') return;
 
-    const [ultima] = await db
+    let [ultima] = await db
       .select()
       .from(schema.atendimentoMensagem)
       .where(eq(schema.atendimentoMensagem.conversaId, conversaId))
       .orderBy(desc(schema.atendimentoMensagem.criadoEm))
       .limit(1);
+    if (opcoes?.forcar && ultima && ultima.direcao !== 'entrada') {
+      const idPergunta = await ultimaEntradaQuePedeResposta(conversaId);
+      if (idPergunta) {
+        [ultima] = await db
+          .select()
+          .from(schema.atendimentoMensagem)
+          .where(eq(schema.atendimentoMensagem.id, idPergunta))
+          .limit(1);
+      }
+    }
     if (!ultima || ultima.direcao !== 'entrada') {
       console.log('[nina] retomada: nada pendente', conversaId);
       return;
