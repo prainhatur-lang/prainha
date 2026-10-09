@@ -23,7 +23,7 @@ const campo =
   'w-full rounded-xl border border-white/15 bg-white/[0.07] px-4 py-3.5 text-[16px] text-[#FBF3E4] placeholder:text-[#FBF3E4]/35 outline-none transition focus:border-[#F2C27A] focus:bg-white/10';
 const rotulo = 'mb-1.5 block text-[11px] font-medium uppercase tracking-[0.18em] text-[#F2C27A]/90';
 
-export function CadastroSoea({ nivel }: { nivel: string }) {
+export function CadastroEvento({ nivel, slug, doEvento }: { nivel: string; slug: string; doEvento: string }) {
   const [nome, setNome] = useState('');
   const [telefone, setTelefone] = useState('');
   const [cpf, setCpf] = useState('');
@@ -40,7 +40,7 @@ export function CadastroSoea({ nivel }: { nivel: string }) {
     setOcupado(true);
     setErro('');
     try {
-      const r = await fetch('/api/soea', {
+      const r = await fetch(`/api/${slug}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ cpf, telefone, aceite, site, ...(pedirNome ? { nome } : {}) }),
@@ -67,7 +67,7 @@ export function CadastroSoea({ nivel }: { nivel: string }) {
           Você já é da casa.
         </p>
         <p className="text-[15px] leading-relaxed text-[#FBF3E4]/80">
-          Este número já tem um Cliente VIP Prainha Bar, e o benefício da SOEA acaba de entrar nele.{' '}
+          Este número já tem um Cliente VIP Prainha Bar, e o benefício {doEvento} acaba de entrar nele.{' '}
           {existente.enviado
             ? 'Mandamos o link do seu cartão no seu WhatsApp.'
             : 'Abra o cartão pelo link que você recebeu no WhatsApp ou peça ao garçom para reenviar.'}
@@ -118,7 +118,7 @@ export function CadastroSoea({ nivel }: { nivel: string }) {
         />
         <span>
           Autorizo o Prainha Bar a consultar meus dados cadastrais pelo CPF (como nome e data de nascimento) e a
-          usá-los, com o meu celular, para emitir o cartão Cliente VIP e o benefício da 81ª SOEA, e a falar comigo
+          usá-los, com o meu celular, para emitir o cartão Cliente VIP e o benefício {doEvento}, e a falar comigo
           pelo WhatsApp sobre o cartão.
         </span>
       </label>

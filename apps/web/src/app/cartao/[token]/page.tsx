@@ -14,9 +14,8 @@ import { googleConfigurada } from '@/lib/fidelidade/google';
 import { carregarPrograma } from '@/lib/fidelidade/config';
 import { ApresentacaoPrograma } from '@/components/fidelidade/apresentacao';
 import { BotoesAdesao, VouPagar } from './adesao';
-import { DrinkSoea } from './drink-soea';
-import { SOEA, ehSoea } from '@/lib/soea';
-import { hojeBr } from '@/lib/datas';
+import { DrinkEvento } from './drink-evento';
+import { eventoDoCartao, nasceuEmEvento } from '@/lib/eventos';
 import { aparelhoConfirmado, nomeCookie, telefoneMascarado } from '@/lib/fidelidade/aparelho';
 
 export const dynamic = 'force-dynamic';
@@ -35,6 +34,7 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
     await db.update(schema.fidelidadeCartao).set({ abertoEm: new Date() }).where(eq(schema.fidelidadeCartao.id, c.id));
   }
   const v = await vistaCartao(c);
+  const evento = eventoDoCartao(c);
   const confirmado = !!aparelhoConfirmado(c, (await cookies()).get(nomeCookie(c))?.value);
   const tel = telefoneMascarado(c.telefone);
 
@@ -56,9 +56,9 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
             <h1 className="mt-1 text-2xl font-bold leading-tight">
               {primeiro ? `${primeiro}, ` : ''}você agora é {v.marca} {v.nivel}
             </h1>
-            {ehSoea(c) && c.origem === 'soea' ? (
+            {evento && nasceuEmEvento(c) ? (
               <p className="mt-2 text-sm opacity-90">
-                Boas-vindas a Aracaju! Ative o cartão e tenha {v.pct}% de desconto na conta
+                {evento.saudacao} Ative o cartão e tenha {v.pct}% de desconto na conta
                 {v.bonusDiaUtil ? <> ({v.pct + v.bonusDiaUtil}% de segunda a sexta)</> : null} no {v.casa}. Ao chegar,
                 avalie a casa pelo QR Code da mesa e escolha o seu drink de boas-vindas.
               </p>
@@ -123,7 +123,7 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
           <p className="rounded-lg bg-red-100 p-3 text-sm text-red-800">Este cartão está bloqueado. Fale com a gerência.</p>
         ) : (
           <>
-            {ehSoea(c) && hojeBr() <= SOEA.fim && <DrinkSoea />}
+            {evento && <DrinkEvento evento={evento.nome} />}
             <VouPagar token={token} confirmado={confirmado} telefone={tel} pctHoje={pctHoje} />
             <div className="rounded-xl bg-white p-4 text-sm shadow-sm">
               <p>

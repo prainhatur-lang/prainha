@@ -40,12 +40,19 @@ const PRAINHAMAR_REWRITES: Record<string, string> = {
 // cadastro do benefício dos participantes (/soea). É o destino do QR Code do
 // card. Requer o CNAME no DNS + domínio na Vercel.
 const SOEA_HOST = 'soea.prainhabar.com';
+// Idem pro 27º Jipe Show de Sergipe (até 12/10/2026): jipeshow.prainhabar.com → /jipeshow.
+const JIPESHOW_HOST = 'jipeshow.prainhabar.com';
 
 export async function proxy(request: NextRequest) {
   const hostname = (request.headers.get('host') ?? '').split(':')[0];
   if (hostname === SOEA_HOST && request.nextUrl.pathname === '/') {
     const url = request.nextUrl.clone();
     url.pathname = '/soea';
+    return NextResponse.rewrite(url);
+  }
+  if (hostname === JIPESHOW_HOST && request.nextUrl.pathname === '/') {
+    const url = request.nextUrl.clone();
+    url.pathname = '/jipeshow';
     return NextResponse.rewrite(url);
   }
   if (hostname === RESERVAS_HOST && request.nextUrl.pathname === '/') {
@@ -179,6 +186,7 @@ export async function proxy(request: NextRequest) {
     isCartaoPublico ||
     // /soea é o cadastro público do benefício da 81ª SOEA (soea.prainhabar.com).
     path === '/soea' ||
+    path === '/jipeshow' ||
     // /convite/[token] é o link do botão do convite de campanha (zap): registra
     // o toque e redireciona pro site da casa. O painel é /campanha (protegido).
     path.startsWith('/convite/');
