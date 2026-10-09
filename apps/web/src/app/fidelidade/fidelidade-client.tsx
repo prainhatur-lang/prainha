@@ -344,7 +344,13 @@ function Cartoes(p: Props & { api: Api; setMsg: (s: string) => void; refresh: ()
                     ) : c.aberto ? (
                       <span className="text-slate-700">abriu o link</span>
                     ) : c.convidadoEm ? (
-                      <span className="text-slate-500">convidado {dataBr(c.convidadoEm)}</span>
+                      <span className="text-slate-500">
+                        convidado {dataBr(c.convidadoEm)}
+                        {c.conviteStatus === 'lida' ? <span className="text-emerald-700"> · leu</span>
+                          : c.conviteStatus === 'entregue' ? <span className="text-emerald-700"> · entregue</span>
+                          : c.conviteStatus === 'enviada' ? <span> · saiu, sem recibo de entrega</span>
+                          : null}
+                      </span>
                     ) : (
                       <span className="text-amber-700">não convidado</span>
                     )}

@@ -55,6 +55,8 @@ export interface CartaoLinha {
   aderidoEm: string | null;
   recusadoEm: string | null;
   conviteErro: string | null;
+  /** recibo do convite no WhatsApp: enviada | entregue | lida | erro (null = sem recibo) */
+  conviteStatus: string | null;
   cidade: string | null;
   criadoEm: string;
 }
@@ -71,7 +73,7 @@ export async function listarCartoes(filialId: string, cfg: FidelidadeConfig): Pr
            EXISTS (SELECT 1 FROM fidelidade_apple_registro a WHERE a.cartao_id = c.id) AS apple,
            c.convidado_em::text AS convidado_em, c.criado_em::text AS criado_em,
            c.aderido_em::text AS aderido_em, c.recusado_em::text AS recusado_em,
-           c.convite_erro, c.cidade,
+           c.convite_erro, c.convite_status, c.cidade,
            (SELECT count(*)::int FROM fidelidade_visita v WHERE v.cartao_id = c.id AND v.data >= ${desde}::date) AS visitas,
            (SELECT count(*)::int FROM fidelidade_uso u WHERE u.cartao_id = c.id AND u.status = 'confirmado') AS usos,
            (SELECT max(u.confirmado_em)::text FROM fidelidade_uso u WHERE u.cartao_id = c.id AND u.status = 'confirmado') AS ultimo_uso
@@ -82,7 +84,7 @@ export async function listarCartoes(filialId: string, cfg: FidelidadeConfig): Pr
     id: string; nome: string; telefone: string; numero: string; codigo: string | null; aparelhos: number; token: string; status: string;
     nivel_minimo: string | null; nivel_minimo_ate: string | null; aberto: boolean; google: boolean; apple: boolean;
     convidado_em: string | null; criado_em: string; aderido_em: string | null; recusado_em: string | null;
-    convite_erro: string | null; cidade: string | null; visitas: number; usos: number; ultimo_uso: string | null;
+    convite_erro: string | null; convite_status: string | null; cidade: string | null; visitas: number; usos: number; ultimo_uso: string | null;
   }>;
   const hoje = hojeBr();
   return rows.map((r) => {
@@ -118,6 +120,7 @@ export async function listarCartoes(filialId: string, cfg: FidelidadeConfig): Pr
       aderidoEm: r.aderido_em,
       recusadoEm: r.recusado_em,
       conviteErro: r.convite_erro,
+      conviteStatus: r.convite_status,
       cidade: r.cidade,
       criadoEm: r.criado_em,
     };

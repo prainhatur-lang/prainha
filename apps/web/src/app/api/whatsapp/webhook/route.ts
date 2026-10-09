@@ -22,6 +22,7 @@ import { estornarReservaSePago } from '@/lib/reservas/estorno';
 import { dadosFaturamentoTexto, perguntaFaturamento } from '@/lib/dados-faturamento';
 import { enviarTexto } from '@/lib/atendimento/zap';
 import { tratarKids } from '@/lib/kids';
+import { registrarStatusConvite } from '@/lib/fidelidade/convite-status';
 import { tratarAtivarVip } from '@/lib/fidelidade/zap-ativar';
 import { textoErroStatus, type ErroStatusMeta } from '@/lib/whatsapp-erros';
 import {
@@ -87,6 +88,7 @@ export async function POST(req: Request) {
           // código na frente e sem repetir título/mensagem (a recusa por pagamento vinha 2x)
           const erro = st.errors?.[0] ? textoErroStatus(st.errors[0]) || null : null;
           await registrarStatusEnvio(st.id, st.status, erro).catch(() => {});
+          await registrarStatusConvite(st.id, st.status, erro).catch(() => {});
           // Relatório diário: texto que não entrou (janela de 24 h fechada sem
           // a gente saber) é trocado pelo modelo aprovado.
           if (st.status === 'failed') {

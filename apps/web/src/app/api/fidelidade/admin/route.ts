@@ -12,7 +12,7 @@ import { candidatosConvite, type Regiao } from '@/lib/fidelidade/candidatos';
 import { carregarPrograma, normalizarConfig, nivelPorCodigo, type FidelidadeConfig } from '@/lib/fidelidade/config';
 import { avisarWallet, criarCartao, invalidarCodigo, tocarPass } from '@/lib/fidelidade/nucleo';
 import { dadosDoCartao } from '@/lib/fidelidade/nucleo';
-import { conviteFidelidadeConfigurado, enviarConviteFidelidade } from '@/lib/whatsapp-otp';
+import { conviteFidelidadeConfigurado, enviarConviteFidelidadeId } from '@/lib/whatsapp-otp';
 import { brDateStart, hojeBr } from '@/lib/datas';
 
 /** Teto de convites por dia (template de marketing). Número novo na Meta
@@ -101,7 +101,7 @@ export async function POST(request: Request) {
       }
       try {
         const { estado } = await dadosDoCartao(c);
-        await enviarConviteFidelidade(`55${c.telefone}`, {
+        const env = await enviarConviteFidelidadeId(`55${c.telefone}`, {
           nome: c.nome.trim().split(/\s+/)[0] || 'cliente',
           // {{2}} do template: "Cliente VIP {{2}}" → "Prainha Bar Gold"
           nivel: `${casa} ${estado.nivel.nome}`,
@@ -110,7 +110,10 @@ export async function POST(request: Request) {
         });
         await db
           .update(schema.fidelidadeCartao)
-          .set({ convidadoEm: new Date(), conviteErro: null })
+          .set({
+            convidadoEm: new Date(), conviteErro: null,
+            conviteWamid: env.wamid, conviteStatus: env.wamid ? 'enviada' : null, conviteStatusEm: new Date(),
+          })
           .where(eq(schema.fidelidadeCartao.id, c.id));
         enviados.push(c.id);
         saldo--;

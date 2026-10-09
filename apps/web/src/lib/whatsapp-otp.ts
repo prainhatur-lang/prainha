@@ -198,7 +198,16 @@ export async function enviarConviteFidelidade(
   telefone: string,
   vars: { nome: string; nivel: string; pct: number; token: string },
 ): Promise<boolean> {
-  if (!conviteFidelidadeConfigurado()) return false;
+  return (await enviarConviteFidelidadeId(telefone, vars)).enviado;
+}
+
+/** O mesmo envio, devolvendo o id da mensagem na Meta — é por ele que o
+ *  webhook avisa depois se o convite foi entregue, lido ou recusado. */
+export async function enviarConviteFidelidadeId(
+  telefone: string,
+  vars: { nome: string; nivel: string; pct: number; token: string },
+): Promise<{ enviado: boolean; wamid: string | null }> {
+  if (!conviteFidelidadeConfigurado()) return { enviado: false, wamid: null };
   const ver = process.env.WHATSAPP_API_VERSION || 'v21.0';
   const token = (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META)!;
   const lang = process.env.WHATSAPP_FIDELIDADE_LANG || process.env.WHATSAPP_OTP_LANG || 'pt_BR';
@@ -227,7 +236,8 @@ export async function enviarConviteFidelidade(
     const txt = await resp.text().catch(() => '');
     throw new Error(`WhatsApp API ${resp.status}: ${txt.slice(0, 300)}`);
   }
-  return true;
+  const j = (await resp.json().catch(() => null)) as { messages?: Array<{ id?: string }> } | null;
+  return { enviado: true, wamid: j?.messages?.[0]?.id ?? null };
 }
 
 /** Envia um texto livre (so funciona dentro da janela de 24h apos o cliente

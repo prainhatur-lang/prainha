@@ -82,6 +82,10 @@ export const fidelidadeCartao = pgTable(
     recusadoEm: timestamp('recusado_em', { withTimezone: true }),
     /** erro do último envio do convite pelo WhatsApp (template da Meta) */
     conviteErro: text('convite_erro'),
+    /** recibo do convite: id da mensagem na Meta e o último status que o webhook trouxe */
+    conviteWamid: varchar('convite_wamid', { length: 200 }),
+    conviteStatus: varchar('convite_status', { length: 12 }),
+    conviteStatusEm: timestamp('convite_status_em', { withTimezone: true }),
     /** cidade/bairro do cadastro na hora do convite (campanha por região) */
     cidade: varchar('cidade', { length: 100 }),
     bairro: varchar('bairro', { length: 100 }),
