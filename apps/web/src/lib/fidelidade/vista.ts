@@ -29,6 +29,8 @@ export interface VistaCartao {
   visitas: number;
   janelaDias: number;
   garantido: boolean;
+  /** dd/mm/aaaa em que a categoria do convite deixa de valer ('' = sem data) */
+  garantidoAte: string;
   proximo: string | null;
   faltam: number;
   textoDesconto: string;
@@ -66,6 +68,9 @@ export async function vistaCartao(cartao: Cartao): Promise<VistaCartao> {
     visitas: estado.visitas,
     janelaDias: cfg.janelaDias,
     garantido: estado.garantido,
+    garantidoAte: estado.garantido && cartao.nivelMinimoAte
+      ? String(cartao.nivelMinimoAte).slice(0, 10).split('-').reverse().join('/')
+      : '',
     proximo: estado.proximo?.nome ?? null,
     faltam: estado.faltam,
     textoDesconto,

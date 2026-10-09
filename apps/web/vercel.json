@@ -43,6 +43,10 @@
     {
       "path": "/api/cron/relatorio-diario",
       "schedule": "0 10 * * *"
+    },
+    {
+      "path": "/api/cron/fidelidade-nivel",
+      "schedule": "20 3 * * *"
     }
   ]
 }

@@ -69,7 +69,10 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
               </p>
             )}
             {v.garantido && (
-              <p className="mt-2 text-xs opacity-80">Categoria {v.nivel} garantida pra você pelo convite.</p>
+              <p className="mt-2 text-xs opacity-80">
+                Categoria {v.nivel} garantida pra você pelo convite
+                {v.garantidoAte ? <> até {v.garantidoAte}. Depois, a categoria acompanha as suas visitas dos últimos {v.janelaDias} dias</> : null}.
+              </p>
             )}
           </div>
           <BotoesAdesao token={token} recusado={!!c.recusadoEm} telefone={tel} />
@@ -174,7 +177,10 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
             <div className="h-full rounded-full" style={{ width: `${progresso}%`, background: v.cor }} />
           </div>
           {v.garantido && (
-            <p className="mt-2 text-xs text-slate-500">Nível {v.nivel} garantido por convite.</p>
+            <p className="mt-2 text-xs text-slate-500">
+              Nível {v.nivel} garantido por convite
+              {v.garantidoAte ? <> até {v.garantidoAte}. Depois, o nível acompanha as suas visitas dos últimos {v.janelaDias} dias</> : null}.
+            </p>
           )}
           <ul className="mt-4 space-y-1.5 text-sm">
             {v.niveis.map((n) => (

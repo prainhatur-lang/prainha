@@ -486,7 +486,11 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
   const [regiao, setRegiao] = useState<'aracaju' | 'grande' | 'todos'>('aracaju');
   const [minimo, setMinimo] = useState(1);
   const [enviarJunto, setEnviarJunto] = useState(p.zapTemplate);
-  const [ate, setAte] = useState('');
+  // a categoria do convite vale por uma janela; depois o nível segue as visitas
+  const [ate, setAte] = useState(() => {
+    const d = new Date(Date.now() - 3 * 3600_000 + p.config.janelaDias * 86400_000);
+    return d.toISOString().slice(0, 10);
+  });
   const [criando, setCriando] = useState(false);
   const [filtro, setFiltro] = useState('');
   // cadastro avulso
@@ -706,7 +710,7 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
               Nível garantido até{' '}
               <input type="date" value={ate} onChange={(e) => setAte(e.target.value)} className="rounded border border-slate-300 px-2 py-1" />
             </label>
-            <span className="text-xs text-slate-500">{ate ? '' : '(sem data = garantido pra sempre)'}</span>
+            <span className="text-xs text-slate-500">{ate ? '(depois dessa data o nível segue as visitas)' : '(sem data = garantido pra sempre)'}</span>
             {p.zapTemplate && (
               <label className="flex items-center gap-1">
                 <input type="checkbox" checked={enviarJunto} onChange={(e) => setEnviarJunto(e.target.checked)} />
