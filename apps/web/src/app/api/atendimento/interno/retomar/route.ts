@@ -42,6 +42,7 @@ export async function POST(request: Request) {
   // Síncrono de propósito: quem chama é script de ops (sem pressa) e o
   // after() desta rota era encerrado antes de rodar (só o webhook e o PATCH
   // do painel usam after). maxDuration 60 cobre debounce + IA + envio.
-  await responderPendenteAposDevolucao(conversaId);
+  // forcar: a equipe ensinou a resposta — responde mesmo com promessa da Nina por último.
+  await responderPendenteAposDevolucao(conversaId, { forcar: b?.forcar === true });
   return NextResponse.json({ ok: true, executado: true });
 }

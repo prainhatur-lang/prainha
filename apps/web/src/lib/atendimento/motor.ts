@@ -288,7 +288,11 @@ export async function responderPendenteAposDevolucao(
       .where(eq(schema.atendimentoMensagem.conversaId, conversaId))
       .orderBy(desc(schema.atendimentoMensagem.criadoEm))
       .limit(1);
-    if (opcoes?.forcar && ultima && ultima.direcao !== 'entrada') {
+    // Reação/figurinha por último (a Claudia mandou 👍 esperando o retorno):
+    // quem pede resposta é a fala anterior dela — sem isso a retomada morria
+    // no debounce e ninguém respondia.
+    const soReacao = !!ultima && ultima.direcao === 'entrada' && (ultima.tipo === 'reacao' || ultima.tipo === 'figurinha');
+    if (ultima && (soReacao || (opcoes?.forcar && ultima.direcao !== 'entrada'))) {
       const idPergunta = await ultimaEntradaQuePedeResposta(conversaId);
       if (idPergunta) {
         [ultima] = await db
