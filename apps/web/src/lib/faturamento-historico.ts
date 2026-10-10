@@ -540,8 +540,11 @@ export function pendencias(h: Historico): Pendencia[] {
 
 // ---------- Banco: leitura ----------
 
+/** Evento vindo de /relatorios/evento: o id do lançamento é este prefixo + id do evento_ticket. */
+export const PREFIXO_EVENTO_TICKET = 'evento-ticket:';
+
 export async function carregarHistorico(orgId: string, hoje: string = hojeBr()): Promise<Historico> {
-  const [unidades, lancamentos, vivo, fotos] = await Promise.all([
+  const [unidades, lancamentos, vivo, fotos, tickets] = await Promise.all([
     db.execute(sql`
       SELECT id, nome, filial_id,
              to_char(sistema_desde, 'YYYY-MM') AS sistema_desde,
@@ -605,6 +608,25 @@ export async function carregarHistorico(orgId: string, hoje: string = hojeBr()):
          AND u.sistema_desde IS NOT NULL
          AND make_date(fm.ano, fm.mes, 1) >= u.sistema_desde
     `) as unknown as Promise<Array<{ unidade_id: string; mes: string; total: number | null }>>,
+    // Evento com prato de ticket (/relatorios/evento): o prato entra a R$ 0,01
+    // no PDV e a casa recebe o ticket por fora. Depois de ENCERRADO, o valor
+    // dos tickets conta como evento do mês do dia do evento — lido ao vivo,
+    // então reabrir, recontar ou apagar o cadastro já muda o mês. Evento ainda
+    // contando (ABERTO) não entra. Se a leitura falhar, o histórico sai sem.
+    (
+      db.execute(sql`
+        SELECT e.id, u.id AS unidade_id,
+               extract(year from e.dia)::int AS ano, extract(month from e.dia)::int AS mes,
+               e.valor_tickets::float8 AS valor, e.nome, to_char(e.dia, 'DD/MM') AS dia
+          FROM evento_ticket e
+          JOIN faturamento_unidade u ON u.filial_id = e.filial_id
+         WHERE u.organizacao_id = ${orgId}::uuid AND u.ativa
+           AND e.status <> 'ABERTO' AND coalesce(e.valor_tickets, 0) > 0
+         ORDER BY e.dia, e.criado_em
+      `) as unknown as Promise<
+        Array<{ id: string; unidade_id: string; ano: number; mes: number; valor: number; nome: string; dia: string }>
+      >
+    ).catch(() => []),
   ]);
 
   const pdv = new Map<string, { unidadeId: string; mes: string; total: number }>();
@@ -633,7 +655,7 @@ export async function carregarHistorico(orgId: string, hoje: string = hojeBr()):
       encerradaDesde: u.encerrada_desde,
       ordem: Number(u.ordem),
     })),
-    lancamentos: lancamentos.map((l) => ({
+    lancamentos: lancamentos.map((l): Lancamento => ({
       id: l.id,
       unidadeId: l.unidade_id,
       ano: Number(l.ano),
@@ -642,7 +664,18 @@ export async function carregarHistorico(orgId: string, hoje: string = hojeBr()):
       valor: Number(l.valor) || 0,
       observacao: l.observacao,
       origem: l.origem,
-    })),
+    })).concat(
+      tickets.map((t): Lancamento => ({
+        id: `${PREFIXO_EVENTO_TICKET}${t.id}`,
+        unidadeId: t.unidade_id,
+        ano: Number(t.ano),
+        mes: Number(t.mes),
+        tipo: 'EXTRA',
+        valor: Number(t.valor) || 0,
+        observacao: `${t.nome} (${t.dia}) — tickets do evento`,
+        origem: 'EVENTO_TICKET',
+      })),
+    ),
     pdv: [...pdv.values()],
     hoje,
   });

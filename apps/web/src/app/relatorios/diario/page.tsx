@@ -14,9 +14,11 @@ import { AppHeader } from '@/components/app-header';
 import { brl, int } from '@/lib/format';
 import { dateToBrYmd } from '@/lib/datas';
 import {
+  faturamentoDoDia,
   montarRelatorioFiliais,
   rotuloDia,
   somaDias,
+  ticketsDeEvento,
   ultimoDiaFechado,
   type CaixaDia,
   type RelatorioCasa,
@@ -275,7 +277,9 @@ function Casa({ c }: { c: RelatorioCasa }) {
   }
 
   const semana = c.semanaPassada.total;
-  const variacao = semana > 0 ? ((c.movimento.total - semana) / semana) * 100 : null;
+  const tickets = ticketsDeEvento(c);
+  const faturamento = faturamentoDoDia(c);
+  const variacao = semana > 0 ? ((faturamento - semana) / semana) * 100 : null;
   const maiorHora = Math.max(1, ...c.porHora.map((h) => h.total));
   const pracasComTempo = c.kds.cobertura >= 0.5;
 
@@ -295,8 +299,7 @@ function Casa({ c }: { c: RelatorioCasa }) {
           {e.status === 'RECEBIDO'
             ? ' (já recebido)'
             : ` (a receber${e.pagador ? ` de ${e.pagador}` : ''}${e.recebido > 0 ? `, ${brl(e.recebido)} já entrou` : ''}${e.status === 'ABERTO' ? ', ainda contando' : ''})`}
-          {e.convidados ? ` · combinado ${int(e.convidados)}` : ''} — por fora do PDV. Com o evento, o dia soma{' '}
-          <b>{brl(c.movimento.total + e.emTickets)}</b> ({brl(e.pdv)} das contas do evento já estão no faturamento abaixo).{' '}
+          {e.convidados ? ` · combinado ${int(e.convidados)}` : ''} — por fora do PDV, já somado no faturamento abaixo ({brl(e.pdv)} das contas do evento passaram pelo PDV).{' '}
           <Link href={`/relatorios/evento?evento=${e.id}`} className="underline">
             abrir o evento
           </Link>
@@ -306,11 +309,12 @@ function Casa({ c }: { c: RelatorioCasa }) {
       <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <KPI
           label="Faturamento"
-          valor={brl(c.movimento.total)}
+          valor={brl(faturamento)}
           sub={
-            variacao == null
+            (tickets > 0 ? `contas ${brl(c.movimento.total)} + evento ${brl(tickets)} · ` : '') +
+            (variacao == null
               ? 'sem movimento na semana passada'
-              : `${variacao >= 0 ? '+' : ''}${variacao.toFixed(0)}% × semana passada (${brl(semana)})`
+              : `${variacao >= 0 ? '+' : ''}${variacao.toFixed(0)}% × semana passada (${brl(semana)})`)
           }
           cor={variacao != null && variacao < -30 ? 'text-rose-700' : 'text-slate-900'}
         />
@@ -612,7 +616,9 @@ export default async function RelatorioDiarioPage(props: { searchParams: Promise
     ? await Promise.all([lerConfig(orgDono.id), ultimosEnvios(orgDono.id), estadoDoModelo()])
     : [null, [], null];
 
-  const total = casas.reduce((s, c) => s + c.movimento.total, 0);
+  const totalPdv = casas.reduce((s, c) => s + c.movimento.total, 0);
+  const ticketsEvento = casas.reduce((s, c) => s + ticketsDeEvento(c), 0);
+  const total = totalPdv + ticketsEvento;
   const contas = casas.reduce((s, c) => s + c.movimento.contas, 0);
   const semana = casas.reduce((s, c) => s + c.semanaPassada.total, 0);
   const demoraItens = casas.reduce((s, c) => s + c.cancelamentos.demora.itens, 0);
@@ -675,12 +681,15 @@ export default async function RelatorioDiarioPage(props: { searchParams: Promise
                 label="Faturamento das casas"
                 valor={brl(total)}
                 sub={
-                  variacao == null
-                    ? undefined
-                    : `${variacao >= 0 ? '+' : ''}${variacao.toFixed(0)}% × semana passada (${brl(semana)})`
+                  [
+                    ticketsEvento > 0 ? `contas ${brl(totalPdv)} + evento ${brl(ticketsEvento)}` : null,
+                    variacao == null ? null : `${variacao >= 0 ? '+' : ''}${variacao.toFixed(0)}% × semana passada (${brl(semana)})`,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ') || undefined
                 }
               />
-              <KPI label="Contas" valor={int(contas)} sub={contas ? `ticket ${brl(total / contas)}` : undefined} />
+              <KPI label="Contas" valor={int(contas)} sub={contas ? `ticket ${brl(totalPdv / contas)}` : undefined} />
               <KPI label="Equipe no ponto" valor={int(noPonto)} sub="quem bateu ponto no dia" />
               <KPI
                 label="Cancelado por demora"

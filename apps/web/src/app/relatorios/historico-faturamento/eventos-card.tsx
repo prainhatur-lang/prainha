@@ -17,6 +17,8 @@ export interface EventoItem {
   mes: string;
   valor: number;
   observacao: string | null;
+  /** Veio do cadastro de evento de ticket (/relatorios/evento): muda lá, não aqui. */
+  eventoTicketId?: string | null;
 }
 
 /** Os mesmos tetos da rota. */
@@ -162,9 +164,15 @@ export function EventosCard({
                   <td className="px-4 py-2 text-slate-600">{ev.observacao || '—'}</td>
                   <td className="whitespace-nowrap px-4 py-2 text-right tabular-nums text-slate-900">{brl(ev.valor)}</td>
                   <td className="whitespace-nowrap px-4 py-2 text-right">
-                    <button type="button" disabled={ocupado} onClick={() => excluir(ev)} className={LINK}>
-                      Excluir
-                    </button>
+                    {ev.eventoTicketId ? (
+                      <a href={`/relatorios/evento?evento=${ev.eventoTicketId}`} className={LINK}>
+                        Abrir o evento
+                      </a>
+                    ) : (
+                      <button type="button" disabled={ocupado} onClick={() => excluir(ev)} className={LINK}>
+                        Excluir
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}

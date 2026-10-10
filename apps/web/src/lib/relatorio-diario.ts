@@ -297,6 +297,16 @@ export interface EventoDia {
   recebido: number;
 }
 
+/** O que os eventos de ticket do dia somam por fora do PDV. */
+export function ticketsDeEvento(c: Pick<RelatorioCasa, 'eventos'>): number {
+  return Math.round((c.eventos ?? []).reduce((s, e) => s + e.emTickets, 0) * 100) / 100;
+}
+
+/** Faturamento do dia: contas do PDV + tickets de evento (que a casa recebe por fora). */
+export function faturamentoDoDia(c: Pick<RelatorioCasa, 'eventos' | 'movimento'>): number {
+  return Math.round((c.movimento.total + ticketsDeEvento(c)) * 100) / 100;
+}
+
 // ---------------------------------------------------------------------------
 // Apoio
 // ---------------------------------------------------------------------------
@@ -1475,6 +1485,22 @@ export async function montarRelatorioFiliais(
       ]);
       if (eventos.length) {
         casa.eventos = eventos;
+        // A queda contra a semana passada foi medida só com o PDV; com ticket de
+        // evento o dia vale mais — mede de novo com o evento dentro.
+        const tickets = ticketsDeEvento(casa);
+        if (tickets > 0) {
+          const sp = casa.semanaPassada.total;
+          const comEvento = faturamentoDoDia(casa);
+          const i = casa.atencao.findIndex((a) => a.startsWith('Faturamento ') && a.includes('abaixo do mesmo dia da semana passada'));
+          if (i >= 0) {
+            if (sp > 500 && comEvento < sp * 0.7) {
+              const queda = Math.round((1 - comEvento / sp) * 100);
+              casa.atencao[i] = `Faturamento ${queda}% abaixo do mesmo dia da semana passada (${reais(sp, false)}), já com o evento`;
+            } else {
+              casa.atencao.splice(i, 1);
+            }
+          }
+        }
         for (const e of eventos) {
           if (e.status === 'ABERTO' && e.pratos > 0) {
             casa.atencao.push(`Evento "${e.nome}" ainda não foi encerrado: ${e.pratos} pratos (${reais(e.emTickets)} em tickets) sem lançar a receber`);
@@ -1500,10 +1526,10 @@ export async function montarRelatorioFiliais(
 
 /** Uma linha, sem quebra — vai na variável do modelo da Meta. */
 export function resumoUmaLinha(casas: RelatorioCasa[]): string {
-  const total = casas.reduce((s, c) => s + c.movimento.total, 0);
+  const total = casas.reduce((s, c) => s + faturamentoDoDia(c), 0);
   const partes = casas.map((c) =>
     c.movimento.contas
-      ? `${c.nome} ${reais(c.movimento.total, false)} (${pl(c.movimento.contas, 'conta', 'contas')})`
+      ? `${c.nome} ${reais(faturamentoDoDia(c), false)} (${pl(c.movimento.contas, 'conta', 'contas')}${ticketsDeEvento(c) > 0 ? ', com evento' : ''})`
       : `${c.nome} sem movimento`,
   );
   return `${partes.join(' · ')} · Total ${reais(total, false)}`;
@@ -1589,12 +1615,16 @@ function textoCasa(c: RelatorioCasa): string {
   }
   const m = c.movimento;
   const comp = c.semanaPassada.total > 0 ? ` (semana passada: ${reais(c.semanaPassada.total, false)})` : '';
-  L.push(`💰 ${reais(m.total)} · ${pl(m.contas, 'conta', 'contas')} · ticket ${reais(m.ticket)}${comp}`);
+  const tk = ticketsDeEvento(c);
+  L.push(
+    tk > 0
+      ? `💰 ${reais(faturamentoDoDia(c))} (contas ${reais(m.total)} + evento ${reais(tk)}) · ${pl(m.contas, 'conta', 'contas')} · ticket ${reais(m.ticket)}${comp}`
+      : `💰 ${reais(m.total)} · ${pl(m.contas, 'conta', 'contas')} · ticket ${reais(m.ticket)}${comp}`,
+  );
   for (const e of c.eventos ?? []) {
     const sit = e.status === 'RECEBIDO' ? 'já recebido' : `a receber${e.pagador ? ` de ${e.pagador}` : ''}${e.status === 'ABERTO' ? ', ainda contando' : ''}`;
     L.push(
-      `🎟️ Evento ${e.nome}: ${pl(e.pratos, 'prato', 'pratos')} × ${reais(e.valorTicket)} = ${reais(e.emTickets)} em tickets (${sit}) — por fora do PDV. ` +
-        `Com o evento, o dia soma ${reais(m.total + e.emTickets)}.`,
+      `🎟️ Evento ${e.nome}: ${pl(e.pratos, 'prato', 'pratos')} × ${reais(e.valorTicket)} = ${reais(e.emTickets)} em tickets (${sit}) — por fora do PDV, já somado no faturamento acima.`,
     );
   }
   const pers = c.periodos
@@ -1644,7 +1674,7 @@ function textoCasa(c: RelatorioCasa): string {
 
 /** Mensagens prontas pro WhatsApp (cada uma abaixo do limite de 4096 caracteres). */
 export function textoRelatorio(casas: RelatorioCasa[], dia: string, link: string): string[] {
-  const total = casas.reduce((s, c) => s + c.movimento.total, 0);
+  const total = casas.reduce((s, c) => s + faturamentoDoDia(c), 0);
   const contas = casas.reduce((s, c) => s + c.movimento.contas, 0);
   const cabecalho = `📊 *Relatório de ${rotuloDia(dia)}*\n${pl(casas.length, 'casa', 'casas')} · ${reais(total)} em ${pl(contas, 'conta', 'contas')}`;
   const blocos = [cabecalho, ...casas.map(textoCasa), `Completo: ${link}`];

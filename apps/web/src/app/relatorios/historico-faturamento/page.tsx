@@ -15,7 +15,7 @@ import {
   organizacoesDoUsuario,
 } from '@/lib/faturamento-acesso';
 import { PERM_HISTORICO, sessaoAcesso } from '@/lib/faturamento-acesso-sessao';
-import { carregarHistorico, filiaisForaDoVgv, pendencias } from '@/lib/faturamento-historico';
+import { carregarHistorico, filiaisForaDoVgv, pendencias, PREFIXO_EVENTO_TICKET } from '@/lib/faturamento-historico';
 import { chaveMes, faixasDeMeses, partesMes, rotuloMes, rotuloPeriodo } from '@/lib/faturamento-meses';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { filiaisDoUsuario } from '@/lib/filiais';
@@ -144,6 +144,7 @@ export default async function HistoricoFaturamentoPage(props: {
       mes: chaveMes(l.ano, l.mes),
       valor: l.valor,
       observacao: l.observacao,
+      eventoTicketId: l.origem === 'EVENTO_TICKET' ? l.id.slice(PREFIXO_EVENTO_TICKET.length) : null,
     }))
     .sort((a, b) => (a.mes < b.mes ? 1 : a.mes > b.mes ? -1 : 0));
   const unidadesDoVgv: UnidadeItem[] = h.unidades.map((u) => ({
