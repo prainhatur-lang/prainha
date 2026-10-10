@@ -254,7 +254,19 @@ export default async function FolhaContadorPage(props: { searchParams: Promise<S
           <KPI label="Descontos" valor={brl(tot.descontos)} />
           <KPI label="Líquido" valor={brl(tot.liquido)} sub="fora o pago em rescisão" />
           <KPI label="FGTS" valor={brl(tot.fgts)} sub={tot.fgtsResc > 0 ? `+ ${brl(tot.fgtsResc)} rescisório` : undefined} />
-          <KPI label="INSS da empresa" valor={brl(tot.patronal)} sub="empresa + RAT + terceiros" />
+          {/* O extrato da E.B. não traz a linha de INSS da empresa: zero aqui
+              seria lido como "não paga", então mostra que o número não veio. */}
+          <KPI
+            label="INSS da empresa"
+            valor={tot.patronal > 0 ? brl(tot.patronal) : '—'}
+            sub={
+              tot.patronal <= 0
+                ? 'não vem no extrato desta empresa'
+                : resumos.some((r) => num(r.inssEmpresa) + num(r.inssRat) + num(r.inssTerceiros) <= 0)
+                  ? 'empresa + RAT + terceiros · só de quem traz no extrato'
+                  : 'empresa + RAT + terceiros'
+            }
+          />
         </div>
 
         <div className="space-y-5">
