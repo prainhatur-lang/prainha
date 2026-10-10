@@ -39,11 +39,50 @@ function linkWhats(numero: string, nome: string | null, filial: string | undefin
   return `https://wa.me/${comDdi}?text=${encodeURIComponent(msg)}`;
 }
 
+/** Mesmo destino do linkWhats, com o texto que a IA sugeriu (e a pessoa ajustou). */
+function linkWhatsTexto(numero: string, texto: string): string {
+  const num = numero.replace(/\D/g, '');
+  const comDdi = num.length <= 11 ? `55${num}` : num;
+  return `https://wa.me/${comDdi}?text=${encodeURIComponent(texto)}`;
+}
+
 function Card({ item, podeAtualizar }: { item: AvaliacaoItem; podeAtualizar: boolean }) {
   const [status, setStatus] = useState(item.status);
   const [obs, setObs] = useState(item.observacaoInterna ?? '');
   const [salvando, setSalvando] = useState(false);
   const [editObs, setEditObs] = useState(false);
+  // mensagem sugerida pela IA (rascunho: a pessoa ajusta e envia pelo WhatsApp)
+  const [msgIa, setMsgIa] = useState('');
+  const [conferirIa, setConferirIa] = useState<string[]>([]);
+  const [gerandoIa, setGerandoIa] = useState(false);
+  const [erroIa, setErroIa] = useState('');
+  const [copiadoIa, setCopiadoIa] = useState(false);
+
+  async function sugerirMensagem() {
+    setGerandoIa(true);
+    setErroIa('');
+    setCopiadoIa(false);
+    try {
+      const r = await fetch('/api/avaliacoes/sugerir-resposta', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ avaliacaoId: item.id, orientacao: obs }),
+      });
+      const j = (await r.json().catch(() => null)) as
+        | { resposta?: string; conferir?: string[]; error?: string }
+        | null;
+      if (!r.ok || !j?.resposta) {
+        setErroIa(j?.error || 'Não consegui escrever agora. Tente de novo.');
+        return;
+      }
+      setMsgIa(j.resposta);
+      setConferirIa(Array.isArray(j.conferir) ? j.conferir : []);
+    } catch {
+      setErroIa('Sem conexão com o servidor. Tente de novo.');
+    } finally {
+      setGerandoIa(false);
+    }
+  }
 
   async function atualizar(patch: { status?: string; observacaoInterna?: string }) {
     setSalvando(true);
@@ -139,6 +178,15 @@ function Card({ item, podeAtualizar }: { item: AvaliacaoItem; podeAtualizar: boo
             >
               {obs ? '📝 Editar nota' : '+ Nota interna'}
             </button>
+          ) : null}
+          {!editObs ? (
+            <button
+              onClick={sugerirMensagem}
+              disabled={gerandoIa}
+              className="rounded-md border border-sky-300 px-2 py-1 text-[11px] text-sky-700 hover:bg-sky-50 disabled:opacity-50"
+            >
+              {gerandoIa ? 'Escrevendo…' : msgIa ? '✨ Escrever de novo' : '✨ Sugerir mensagem'}
+            </button>
           ) : (
             <div className="flex w-full items-center gap-2">
               <input
@@ -160,6 +208,55 @@ function Card({ item, podeAtualizar }: { item: AvaliacaoItem; podeAtualizar: boo
       )}
       {obs && !editObs && (
         <p className="mt-2 rounded-md bg-slate-50 px-2 py-1 text-[11px] text-slate-500">📝 {obs}</p>
+      )}
+      {erroIa && <p className="mt-2 text-[11px] text-rose-700">{erroIa}</p>}
+      {msgIa && (
+        <div className="mt-3 rounded-lg border border-sky-200 bg-sky-50 p-3">
+          <p className="text-[11px] font-semibold text-sky-900">
+            Mensagem sugerida pela IA — leia e ajuste antes de enviar
+          </p>
+          <textarea
+            value={msgIa}
+            onChange={(e) => {
+              setMsgIa(e.target.value);
+              setCopiadoIa(false);
+            }}
+            rows={5}
+            className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-1 text-xs focus:border-sky-500 focus:outline-none"
+          />
+          {conferirIa.length > 0 && (
+            <ul className="mt-1 list-disc space-y-0.5 pl-4 text-[11px] text-amber-800">
+              {conferirIa.map((c, i) => (
+                <li key={i}>{c}</li>
+              ))}
+            </ul>
+          )}
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            {item.whatsapp && (
+              <a
+                href={linkWhatsTexto(item.whatsapp, msgIa)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="rounded-md bg-emerald-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-emerald-700"
+              >
+                💬 Abrir no WhatsApp com este texto
+              </a>
+            )}
+            <button
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(msgIa);
+                  setCopiadoIa(true);
+                } catch {
+                  setErroIa('Não deu pra copiar sozinho — selecione o texto e copie.');
+                }
+              }}
+              className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-700 hover:bg-slate-50"
+            >
+              {copiadoIa ? '✓ Copiado' : 'Copiar'}
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
