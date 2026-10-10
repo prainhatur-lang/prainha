@@ -17,8 +17,8 @@ async function acao(token: string, acao: string, extra: Record<string, unknown> 
 /** Confirma que o celular é do dono: código no WhatsApp do telefone do cartão. Certo → o
  *  navegador fica liberado (cookie) e a página recarrega. */
 export function ConfirmarCelular({
-  token, telefone, rotulo, onCancelar, codigoPendente, semAparelho,
-}: { token: string; telefone: string; rotulo: string; onCancelar?: () => void; codigoPendente?: boolean; semAparelho?: boolean }) {
+  token, telefone, rotulo, onCancelar, codigoPendente, semAparelho, codigoLink,
+}: { token: string; telefone: string; rotulo: string; onCancelar?: () => void; codigoPendente?: boolean; semAparelho?: boolean; codigoLink?: string }) {
   const router = useRouter();
   // codigoPendente: já existe um código vivo pra este cartão (o cliente pediu
   // pelo WhatsApp e voltou — a página recarregou). Abre direto no campo, sem
@@ -61,6 +61,28 @@ export function ConfirmarCelular({
       setOcupado(false);
     }
   }
+
+  // codigoLink: o cliente tocou no link que veio na resposta do WhatsApp
+  // (/cartao/<token>?c=123456) — confere sozinho, sem ele digitar. É feito
+  // aqui no navegador (e não no servidor ao abrir) pra prévia de link de
+  // mensageiro não gastar o código.
+  useEffect(() => {
+    if (!codigoLink) return;
+    let vivo = true;
+    (async () => {
+      setEtapa('codigo');
+      setCodigo(codigoLink);
+      setOcupado(true);
+      try {
+        await acao(token, 'confirmar', { codigo: codigoLink });
+        if (vivo) router.replace(window.location.pathname);
+      } catch (e) {
+        if (vivo) { setErro((e as Error).message); setOcupado(false); }
+      }
+    })();
+    return () => { vivo = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (etapa === 'inicio') {
     return (
@@ -134,7 +156,7 @@ export function ConfirmarCelular({
   );
 }
 
-export function BotoesAdesao({ token, recusado, telefone, codigoPendente, semAparelho }: { token: string; recusado: boolean; telefone: string; codigoPendente?: boolean; semAparelho?: boolean }) {
+export function BotoesAdesao({ token, recusado, telefone, codigoPendente, semAparelho, codigoLink }: { token: string; recusado: boolean; telefone: string; codigoPendente?: boolean; semAparelho?: boolean; codigoLink?: string }) {
   const [enviando, setEnviando] = useState(false);
   const [recusou, setRecusou] = useState(recusado);
   const [erro, setErro] = useState('');
@@ -171,7 +193,7 @@ export function BotoesAdesao({ token, recusado, telefone, codigoPendente, semApa
 
   return (
     <div className="space-y-2">
-      <ConfirmarCelular token={token} telefone={telefone} rotulo="Quero meu cartão" codigoPendente={codigoPendente} semAparelho={semAparelho} />
+      <ConfirmarCelular token={token} telefone={telefone} rotulo="Quero meu cartão" codigoPendente={codigoPendente} semAparelho={semAparelho} codigoLink={codigoLink} />
       <button onClick={recusar} disabled={enviando} className="w-full rounded-xl px-4 py-2 text-sm text-slate-500">
         Não tenho interesse
       </button>
@@ -192,8 +214,8 @@ function mmss(ms: number): string {
  *  celular confirmado. Link encaminhado pra outra pessoa cai na confirmação
  *  no WhatsApp do número do dono. */
 export function VouPagar({
-  token, confirmado, telefone, pctHoje, codigoPendente, semAparelho,
-}: { token: string; confirmado: boolean; telefone: string; pctHoje: number; codigoPendente?: boolean; semAparelho?: boolean }) {
+  token, confirmado, telefone, pctHoje, codigoPendente, semAparelho, codigoLink,
+}: { token: string; confirmado: boolean; telefone: string; pctHoje: number; codigoPendente?: boolean; semAparelho?: boolean; codigoLink?: string }) {
   const [cod, setCod] = useState<{ codigo: string; expira: number } | null>(null);
   const [agora, setAgora] = useState(() => Date.now());
   const [ocupado, setOcupado] = useState(false);
@@ -228,7 +250,7 @@ export function VouPagar({
           Pra usar o cartão neste celular, confirme que ele é seu. O código de desconto só é gerado no celular do
           dono do cartão.
         </p>
-        <ConfirmarCelular token={token} telefone={telefone} rotulo="Confirmar meu celular" codigoPendente={codigoPendente} semAparelho={semAparelho} />
+        <ConfirmarCelular token={token} telefone={telefone} rotulo="Confirmar meu celular" codigoPendente={codigoPendente} semAparelho={semAparelho} codigoLink={codigoLink} />
       </div>
     );
   }

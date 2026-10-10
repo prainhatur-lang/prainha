@@ -25,8 +25,11 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
-export default async function CartaoPage(props: { params: Promise<{ token: string }> }) {
+export default async function CartaoPage(props: { params: Promise<{ token: string }>; searchParams?: Promise<{ c?: string }> }) {
   const { token } = await props.params;
+  // ?c=<código>: link da resposta do WhatsApp, confere sozinho no navegador
+  const cLink = String((await props.searchParams)?.c ?? '').replace(/\D/g, '').slice(0, 8);
+  const codigoLink = cLink.length >= 4 ? cLink : undefined;
   if (!token || token.length < 16) notFound();
   const [c] = await db.select().from(schema.fidelidadeCartao).where(eq(schema.fidelidadeCartao.token, token)).limit(1);
   if (!c) notFound();
@@ -79,7 +82,7 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
               </p>
             )}
           </div>
-          <BotoesAdesao token={token} recusado={!!c.recusadoEm} telefone={tel} codigoPendente={codigoPendente} semAparelho={semAparelho} />
+          <BotoesAdesao token={token} recusado={!!c.recusadoEm} telefone={tel} codigoPendente={codigoPendente} semAparelho={semAparelho} codigoLink={codigoLink} />
           <ApresentacaoPrograma cfg={cfg} destaque={v.nivelCodigo} casa={v.casa} />
         </div>
       </main>
@@ -129,7 +132,7 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
           <>
             {evento && <DrinkEvento evento={evento.nome} daCasa={evento.casa.da} />}
             {v.valeHoje ? (
-              <VouPagar token={token} confirmado={confirmado} telefone={tel} pctHoje={pctHoje} codigoPendente={codigoPendente} semAparelho={semAparelho} />
+              <VouPagar token={token} confirmado={confirmado} telefone={tel} pctHoje={pctHoje} codigoPendente={codigoPendente} semAparelho={semAparelho} codigoLink={codigoLink} />
             ) : (
               <p className="rounded-xl bg-amber-100 p-4 text-sm text-amber-900">
                 Hoje o cartão não dá desconto: no {v.casa} ele vale de <b>segunda a sexta, fora feriado</b>. No próximo
