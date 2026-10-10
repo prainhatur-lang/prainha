@@ -21,6 +21,12 @@ const Body = z.object({
   dataAdmissao: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
   regimeSalarial: z.enum(['clt_mensal', 'intermitente_hora']).nullable().optional(),
   salarioBase: z.string().regex(/^\d+(\.\d{1,2})?$/).nullable().optional(),
+  /** Registro em carteira (folha do contador): quem registra, cargo e CBO. */
+  empresaRegistro: z.string().max(120).nullable().optional(),
+  cnpjRegistro: z.string().regex(/^\d{14}$/).nullable().optional(),
+  cargoRegistro: z.string().max(80).nullable().optional(),
+  cbo: z.string().max(10).nullable().optional(),
+  matriculaFolha: z.string().max(20).nullable().optional(),
   precisaRevisao: z.boolean().optional(),
   dataDesligamento: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
   motivoDesligamento: z.string().max(200).nullable().optional(),
@@ -80,6 +86,11 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (d.dataAdmissao !== undefined) set.dataAdmissao = d.dataAdmissao;
   if (d.regimeSalarial !== undefined) set.regimeSalarial = d.regimeSalarial;
   if (d.salarioBase !== undefined) set.salarioBase = d.salarioBase;
+  if (d.empresaRegistro !== undefined) set.empresaRegistro = d.empresaRegistro;
+  if (d.cnpjRegistro !== undefined) set.cnpjRegistro = d.cnpjRegistro;
+  if (d.cargoRegistro !== undefined) set.cargoRegistro = d.cargoRegistro;
+  if (d.cbo !== undefined) set.cbo = d.cbo;
+  if (d.matriculaFolha !== undefined) set.matriculaFolha = d.matriculaFolha;
   if (d.precisaRevisao !== undefined) set.precisaRevisao = d.precisaRevisao;
   if (d.dataDesligamento !== undefined) set.dataDesligamento = d.dataDesligamento;
   if (d.motivoDesligamento !== undefined) set.motivoDesligamento = d.motivoDesligamento;

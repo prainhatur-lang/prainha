@@ -88,6 +88,21 @@ export const funcionario = pgTable(
      *  (intermitente_hora — multiplicado pelas horas reais de folha_horas). */
     salarioBase: numeric('salario_base', { precision: 10, scale: 2 }),
 
+    /** Registro em carteira, como está na folha do contador (ver
+     *  schema/folha-contador.ts). Quem assina a carteira NÃO é sempre a
+     *  mesma empresa: E.B. Serviços, Prainha Turismo ou Lelis. O script
+     *  `importar:folha-contador` preenche a partir da folha mais recente;
+     *  também dá pra editar em /rh/funcionarios. */
+    empresaRegistro: varchar('empresa_registro', { length: 120 }),
+    /** Só dígitos. */
+    cnpjRegistro: varchar('cnpj_registro', { length: 14 }),
+    /** Cargo que está na carteira — texto do contador, não é FUNCOES_TALENTO
+     *  (`cargo` continua sendo a função que a pessoa exerce na casa). */
+    cargoRegistro: varchar('cargo_registro', { length: 80 }),
+    cbo: varchar('cbo', { length: 10 }),
+    /** Código do empregado na folha do contador. */
+    matriculaFolha: varchar('matricula_folha', { length: 20 }),
+
     /** Login do Consumer/usuario_operacao, quando a pessoa também vende —
      *  usado como fallback de PIN no bater ponto (ver PONTO_HTML). */
     loginLocal: varchar('login_local', { length: 60 }),

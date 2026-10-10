@@ -72,6 +72,12 @@ const PostBody = z.object({
   dataAdmissao: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
   regimeSalarial: z.enum(['clt_mensal', 'intermitente_hora']).optional().nullable(),
   salarioBase: z.string().regex(/^\d+(\.\d{1,2})?$/).optional().nullable(),
+  /** Registro em carteira (folha do contador): quem registra, cargo e CBO. */
+  empresaRegistro: z.string().max(120).optional().nullable(),
+  cnpjRegistro: z.string().regex(/^\d{14}$/).optional().nullable(),
+  cargoRegistro: z.string().max(80).optional().nullable(),
+  cbo: z.string().max(10).optional().nullable(),
+  matriculaFolha: z.string().max(20).optional().nullable(),
   /** Quando veio do banco de talentos: marca o talento como contratado. */
   talentoId: z.string().uuid().optional(),
   /** Marcar a pessoa também como cliente (consumo/fiado) — opcional. */
@@ -112,6 +118,11 @@ export async function POST(req: Request) {
           dataAdmissao: campos.dataAdmissao ?? null,
           regimeSalarial: campos.regimeSalarial ?? null,
           salarioBase: campos.salarioBase ?? null,
+          empresaRegistro: campos.empresaRegistro ?? null,
+          cnpjRegistro: campos.cnpjRegistro ?? null,
+          cargoRegistro: campos.cargoRegistro ?? null,
+          cbo: campos.cbo ?? null,
+          matriculaFolha: campos.matriculaFolha ?? null,
           talentoId: talentoId ?? null,
         })
         .returning();

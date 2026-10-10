@@ -367,6 +367,7 @@ export const MENU_AREAS: MenuArea[] = [
             href: '/folha-equipe/folhas',
             perm: 'folha_equipe.read',
           },
+          { label: 'Folha do contador', href: '/rh/folha-contador', perm: 'folha_equipe.read' },
           { label: 'Metas e premiação', href: '/rh/metas', perm: 'meta.read' },
           {
             label: 'Configuração da folha',

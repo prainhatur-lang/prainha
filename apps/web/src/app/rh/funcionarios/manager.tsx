@@ -37,6 +37,12 @@ interface Funcionario {
   ativo: boolean;
   regimeSalarial: string | null;
   salarioBase: string | null;
+  /** Registro em carteira (vem da folha do contador; dá pra corrigir à mão). */
+  empresaRegistro: string | null;
+  cnpjRegistro: string | null;
+  cargoRegistro: string | null;
+  cbo: string | null;
+  matriculaFolha: string | null;
   precisaRevisao: boolean;
   observacao: string | null;
   /** Lotação principal (pode ser OUTRA loja — a pessoa aparece aqui por circular). */
@@ -89,6 +95,12 @@ const MOTIVOS_DESLIGAMENTO = [
 function fmtCpf(cpf: string | null): string {
   if (!cpf) return '—';
   return `${cpf.slice(0, 3)}.${cpf.slice(3, 6)}.${cpf.slice(6, 9)}-${cpf.slice(9)}`;
+}
+
+function fmtCnpj(cnpj: string): string {
+  const d = cnpj.replace(/\D/g, '');
+  if (d.length !== 14) return cnpj;
+  return `${d.slice(0, 2)}.${d.slice(2, 5)}.${d.slice(5, 8)}/${d.slice(8, 12)}-${d.slice(12)}`;
 }
 
 function fmtData(iso: string | null): string {
@@ -423,6 +435,11 @@ function FuncionarioForm({
   const [dataAdmissao, setDataAdmissao] = useState(funcionario?.dataAdmissao ?? '');
   const [regimeSalarial, setRegimeSalarial] = useState(funcionario?.regimeSalarial ?? '');
   const [salarioBase, setSalarioBase] = useState(funcionario?.salarioBase ?? '');
+  const [empresaRegistro, setEmpresaRegistro] = useState(funcionario?.empresaRegistro ?? '');
+  const [cnpjRegistro, setCnpjRegistro] = useState(fmtCnpj(funcionario?.cnpjRegistro ?? ''));
+  const [cargoRegistro, setCargoRegistro] = useState(funcionario?.cargoRegistro ?? '');
+  const [cbo, setCbo] = useState(funcionario?.cbo ?? '');
+  const [matriculaFolha, setMatriculaFolha] = useState(funcionario?.matriculaFolha ?? '');
   const [filiaisExtras, setFiliaisExtras] = useState<string[]>(funcionario?.filiaisExtras ?? []);
   // --- Pagamento (folha) — unificado no cadastro ---
   const pg = funcionario?.pagamento ?? null;
@@ -459,6 +476,11 @@ function FuncionarioForm({
       onError('CPF precisa ter 11 dígitos (ou deixe em branco).');
       return;
     }
+    const cnpjDigits = cnpjRegistro.replace(/\D/g, '');
+    if (cnpjDigits && cnpjDigits.length !== 14) {
+      onError('CNPJ da empresa que registra precisa ter 14 dígitos (ou deixe em branco).');
+      return;
+    }
     setSalvando(true);
     try {
       const body = {
@@ -471,6 +493,11 @@ function FuncionarioForm({
         dataAdmissao: dataAdmissao || null,
         regimeSalarial: regimeSalarial || null,
         salarioBase: regimeSalarial ? salarioBase || null : null,
+        empresaRegistro: empresaRegistro.trim() || null,
+        cnpjRegistro: cnpjDigits || null,
+        cargoRegistro: cargoRegistro.trim() || null,
+        cbo: cbo.trim() || null,
+        matriculaFolha: matriculaFolha.trim() || null,
         ...(editar ? { precisaRevisao: false, filiaisExtras } : { tambemCliente }),
       };
       const res = await fetch(editar ? `/api/rh/funcionario/${funcionario.id}` : '/api/rh/funcionario', {
@@ -676,6 +703,59 @@ function FuncionarioForm({
             Pago pela empresa de folha registrada; o intermitente usa as horas batidas no
             ponto. Entra como custo no fechamento.
           </p>
+        </div>
+        {/* Registro em carteira: o que a folha do contador traz. A importação
+            da folha preenche sozinha; aqui dá pra conferir e corrigir. */}
+        <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <label className="col-span-2 text-xs text-slate-500">
+            Empresa que registra
+            <input
+              value={empresaRegistro}
+              onChange={(e) => setEmpresaRegistro(e.target.value)}
+              maxLength={120}
+              placeholder="razão social que assina a carteira"
+              className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            />
+          </label>
+          <label className="text-xs text-slate-500">
+            CNPJ da empresa
+            <input
+              value={cnpjRegistro}
+              onChange={(e) => setCnpjRegistro(e.target.value)}
+              inputMode="numeric"
+              maxLength={18}
+              placeholder="00.000.000/0000-00"
+              className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            />
+          </label>
+          <label className="text-xs text-slate-500">
+            Cargo na carteira
+            <input
+              value={cargoRegistro}
+              onChange={(e) => setCargoRegistro(e.target.value)}
+              maxLength={80}
+              className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            />
+          </label>
+          <label className="text-xs text-slate-500">
+            CBO
+            <input
+              value={cbo}
+              onChange={(e) => setCbo(e.target.value)}
+              inputMode="numeric"
+              maxLength={10}
+              className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            />
+          </label>
+          <label className="text-xs text-slate-500">
+            Código na folha
+            <input
+              value={matriculaFolha}
+              onChange={(e) => setMatriculaFolha(e.target.value)}
+              maxLength={20}
+              className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            />
+          </label>
         </div>
 
         <p className="mt-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">

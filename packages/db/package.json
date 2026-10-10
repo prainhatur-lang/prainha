@@ -133,6 +133,8 @@
     "migrate:funcionario-filial-extra": "tsx scripts/migrate-funcionario-filial-extra.ts",
     "migrate:rh-escala": "tsx scripts/migrate-rh-escala.ts",
     "importar:stelanto": "tsx scripts/importar-stelanto.ts",
+    "migrate:folha-contador": "tsx scripts/migrate-folha-contador.ts",
+    "importar:folha-contador": "tsx scripts/importar-folha-contador.ts",
     "migrate:custo-clt": "tsx scripts/migrate-custo-clt.ts",
     "migrate:metas": "tsx scripts/migrate-metas.ts",
     "migrate:escuta": "tsx scripts/migrate-escuta.ts",
