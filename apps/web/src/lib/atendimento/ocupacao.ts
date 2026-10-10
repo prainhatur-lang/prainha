@@ -167,7 +167,7 @@ export async function medirOcupacaoHoje(
   const pct = Math.round(taxa * 100);
   const medida = `${comandasAbertas} ${fonte === 'loja' ? 'mesas com conta aberta' : 'comandas abertas'} + ${reservasFuturasHoje} reservas a chegar, ~${pct}% de ${capacidadeMesas} mesas`;
   const resumo = esperaRecepcao > 0
-    ? `Tem FILA NA RECEPÇÃO agora: ${esperaRecepcao} grupo(s) esperando mesa (${medida}). Hoje NÃO dá pra reservar e é PROIBIDO dizer que "tem mesa sobrando" ou "pode vir tranquila". A casa segue recebendo por ordem de chegada: seja honesta que tem espera e ofereça colocar o nome na lista de espera.`
+    ? `Tem FILA NA RECEPÇÃO agora: ${esperaRecepcao} grupo(s) esperando mesa (${medida}). Hoje NÃO dá pra reservar e é PROIBIDO dizer que "tem mesa sobrando" ou "pode vir tranquila". A casa segue recebendo por ordem de chegada: seja honesta que tem espera e DIGA quantos grupos estão na fila agora (${esperaRecepcao}); chegando, é só procurar a recepção. Só avise — não ofereça anotar nome em lista nem prometa posição.`
     : corteEstendido
     ? `Casa com espaço agora (${medida}) — HOJE a reserva está liberada só pra horário PRÓXIMO: chegada até ${corteEstendido}. Esse limite acompanha o movimento (quanto mais mesa ocupada, mais curto) — não ofereça horário depois dele; quem quer vir mais tarde vem por ordem de chegada ou chama de novo mais perto da hora.`
     : casaTranquila

@@ -1053,6 +1053,8 @@ export async function remarcarReservaWhatsApp(p: {
   return `RESERVA REMARCADA: era ${dataBr(String(alvo.data))} às ${horaAtual} (${alvo.area}), agora é ${dataBr(data)} às ${hora}, ${pessoas} pessoa(s), ${slot.areaCfg.nome}${mesaTxt}, em nome de ${nome}. É a MESMA reserva — não precisa criar outra. ${fecho}`;
 }
 
+const LISTA_ESPERA_PELA_NINA: boolean = false;
+
 /** LISTA DE ESPERA pela Nina (pedido do Elison 06/09: "estamos recebendo por
  *  ordem de chegada — tem fila de espera?"): quando a reserva de hoje não é
  *  possível, o cliente entra na fila da recepção direto pelo WhatsApp e o
@@ -1065,6 +1067,13 @@ export async function entrarListaEsperaWhatsApp(p: {
   pessoas: number;
   area?: string | null;
 }): Promise<string> {
+  // Desligada em 10/10/2026 por decisão do dono ("melhor não colocar"): a Nina
+  // pôs um grupo de 30 na lista, disse "posição 3" e a recepção nem usa essa
+  // lista — a casa estava cheia e o cliente veio contando com lugar na fila.
+  // O código abaixo fica pra religar se a recepção passar a usar o painel.
+  if (!LISTA_ESPERA_PELA_NINA) {
+    return 'NÃO COLOQUEI em lista nenhuma: a Nina não põe mais nome em lista de espera. NÃO diga que anotou nem cite posição. Diga que hoje é por ordem de chegada: chegando, é só procurar a recepção, que acomoda conforme as mesas forem vagando — sem mesa garantida e sem hora garantida.';
+  }
   const nome = nomeReal(p.nome);
   if (!nome) return 'Preciso do NOME de quem vai chegar — pergunte ao cliente e chame de novo.';
   const pessoas = p.pessoas > 0 ? Math.min(Math.round(p.pessoas), 99) : 0;
