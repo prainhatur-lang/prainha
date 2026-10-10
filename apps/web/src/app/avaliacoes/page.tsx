@@ -16,6 +16,8 @@ import { normalizarDestino } from '@/lib/avaliacao-destino';
 import { ListaAvaliacoes, type AvaliacaoItem } from './lista';
 import { BlocoTripadvisor } from './tripadvisor';
 import { ResponderComIA } from './responder-ia';
+import { Suspense } from 'react';
+import { BlocoGoogle } from './google';
 
 export const dynamic = 'force-dynamic';
 
@@ -152,6 +154,16 @@ export default async function AvaliacoesPage() {
 
         {/* TripAdvisor: nota e últimas avaliações de cada casa (leitura diária) */}
         <BlocoTripadvisor filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))} />
+
+        {/* Google: avaliações lidas ao vivo e resposta da casa publicada daqui. Fica em
+            Suspense porque fala com o Google na hora — o resto da tela não espera por ele */}
+        <Suspense fallback={null}>
+          <BlocoGoogle
+            filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
+            podeConfigurar={podeConfigurar}
+            podeAtualizar={podeAtualizar}
+          />
+        </Suspense>
 
         {/* IA escreve o rascunho da resposta da casa (TripAdvisor / Google) — quem publica é a pessoa */}
         {podeAtualizar && <ResponderComIA filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))} />}
