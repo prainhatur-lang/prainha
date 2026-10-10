@@ -138,6 +138,35 @@ export function FuncionariosManager({ filialId, filialNome, funcionarios, cargos
   // Busca: a filial tem ~60 pessoas e rolar a tabela inteira pra achar alguém
   // (ex: o gerente que também trabalha na outra loja) é um saco.
   const [busca, setBusca] = useState('');
+  const [religando, setReligando] = useState<string | null>(null);
+
+  // Desfaz o desligamento: a pessoa volta pros ativos com o mesmo cadastro
+  // (recadastrar não passa — o CPF é único).
+  async function religar(f: Funcionario) {
+    if (!confirm(`Religar ${f.nome}? Volta pros ativos com o mesmo cadastro.`)) return;
+    setReligando(f.id);
+    try {
+      const res = await fetch(`/api/rh/funcionario/${f.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ religar: true }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMsg({ tipo: 'erro', texto: json.error ?? 'Erro ao religar' });
+        return;
+      }
+      setMsg({
+        tipo: 'ok',
+        texto: f.pagamento?.ativo
+          ? `${f.nome} religado — voltou pros ativos e segue na folha semanal desta loja.`
+          : `${f.nome} religado — voltou pros ativos. Está fora da folha semanal desta loja: abra o cadastro pra colocar.`,
+      });
+      router.refresh();
+    } finally {
+      setReligando(null);
+    }
+  }
 
   const termo = normalizaBusca(busca);
   const termoDigitos = termo.replace(/\D/g, '');
@@ -264,9 +293,19 @@ export function FuncionariosManager({ filialId, filialNome, funcionarios, cargos
           </summary>
           <ul className="divide-y divide-slate-100 border-t border-slate-200">
             {desligados.map((f) => (
-              <li key={f.id} className="px-5 py-2 text-sm text-slate-500">
-                {f.nome} — desligado em {fmtData(f.dataDesligamento)}
-                {f.observacao ? ` · ${f.observacao}` : ''}
+              <li key={f.id} className="flex items-center justify-between gap-3 px-5 py-2 text-sm text-slate-500">
+                <span>
+                  {f.nome} — desligado em {fmtData(f.dataDesligamento)}
+                  {f.observacao ? ` · ${f.observacao}` : ''}
+                </span>
+                <button
+                  type="button"
+                  disabled={religando === f.id}
+                  onClick={() => religar(f)}
+                  className="shrink-0 rounded-md border border-emerald-200 px-3 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+                >
+                  {religando === f.id ? 'Religando…' : 'Religar'}
+                </button>
               </li>
             ))}
           </ul>

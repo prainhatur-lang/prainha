@@ -1,4 +1,5 @@
 // PATCH /api/rh/funcionario/[id] — edita cadastro; ativo:false/dataDesligamento exige funcionario.desligar
+// religar:true desfaz o desligamento (mesma permissão de quem desliga).
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -7,6 +8,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq, inArray } from 'drizzle-orm';
 import { negarSemPerm } from '@/lib/exigir-perm';
 import { garantirVinculoFolhaNasFiliais } from '@/lib/rh/vincular-folha-extras';
+import { hojeBr } from '@/lib/datas';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -31,6 +33,10 @@ const Body = z.object({
   dataDesligamento: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
   motivoDesligamento: z.string().max(200).nullable().optional(),
   ativo: z.boolean().optional(),
+  /** Desfaz o desligamento: volta pros ativos com o MESMO cadastro (o CPF é
+   *  único, recadastrar a pessoa não passa). Limpa data e motivo e deixa o
+   *  rastro na observação. */
+  religar: z.boolean().optional(),
   /** Filiais ADICIONAIS (além da lotação principal) onde a pessoa também
    *  bate ponto — quem circula entre lojas. Substitui a lista inteira. */
   filiaisExtras: z.array(z.string().uuid()).max(10).optional(),
@@ -72,7 +78,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   }
   const d = parsed.data;
 
-  const ehDesligamento = d.ativo === false || d.dataDesligamento !== undefined;
+  const ehDesligamento = d.ativo === false || d.dataDesligamento !== undefined || d.religar === true;
   const semPerm = await negarSemPerm(user.id, ehDesligamento ? 'funcionario.desligar' : 'funcionario.update');
   if (semPerm) return semPerm;
 
@@ -95,6 +101,24 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (d.dataDesligamento !== undefined) set.dataDesligamento = d.dataDesligamento;
   if (d.motivoDesligamento !== undefined) set.motivoDesligamento = d.motivoDesligamento;
   if (d.ativo !== undefined) set.ativo = d.ativo;
+
+  if (d.religar) {
+    if (check.fn.ativo) {
+      return NextResponse.json({ error: 'esse funcionário já está ativo' }, { status: 400 });
+    }
+    // Data e motivo saem juntos: custo CLT e Cliente VIP tratam data de
+    // desligamento preenchida como "já saiu", mesmo com ativo = true.
+    set.ativo = true;
+    set.dataDesligamento = null;
+    set.motivoDesligamento = null;
+    const dmy = (iso: string) => iso.split('-').reverse().join('/');
+    const antes = check.fn.dataDesligamento
+      ? ` (estava desligado desde ${dmy(check.fn.dataDesligamento)}${
+          check.fn.motivoDesligamento ? `: ${check.fn.motivoDesligamento}` : ''
+        })`
+      : '';
+    set.observacao = [check.fn.observacao, `religado em ${dmy(hojeBr())}${antes}`].filter(Boolean).join(' · ');
+  }
 
   if (Object.keys(set).length === 1 && d.filiaisExtras === undefined) {
     return NextResponse.json({ error: 'nada pra atualizar' }, { status: 400 });
