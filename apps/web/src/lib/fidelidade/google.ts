@@ -10,6 +10,7 @@ import { createSign } from 'node:crypto';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { baseUrl, REGRAS_TEXTO, vistaCartao } from './vista';
+import { codigoDaCarteira } from './nucleo';
 
 type Cartao = typeof schema.fidelidadeCartao.$inferSelect;
 
@@ -74,6 +75,9 @@ function classe() {
 
 async function objeto(c: Cartao) {
   const v = await vistaCartao(c);
+  // código na frente do cartão: é o que o cliente digita no Pix. Troca sozinho
+  // depois de cada pagamento (atualizarGoogle regrava o objeto).
+  const codigo = v.bloqueado ? '' : await codigoDaCarteira(c);
   return {
     id: objectId(c),
     classId: classId(),
@@ -81,9 +85,9 @@ async function objeto(c: Cartao) {
     hexBackgroundColor: v.cor,
     logo: { sourceUri: { uri: `${baseUrl()}/fidelidade/logo-google.png` }, contentDescription: txt(v.casa) },
     cardTitle: txt(`${v.marca} · ${v.nivel}`),
-    // sem código no cartão da Wallet: ele nasce no celular do dono, na hora de pagar
-    subheader: txt('Desconto no Pix'),
-    header: txt(v.bloqueado ? 'Bloqueado' : v.textoDesconto),
+    // o desconto continua na linha de baixo (textModulesData 'desconto')
+    subheader: txt(v.bloqueado ? 'Desconto no Pix' : 'Código pra pagar no Pix'),
+    header: txt(v.bloqueado ? 'Bloqueado' : codigo),
     textModulesData: [
       { id: 'desconto', header: 'Desconto', body: v.textoDesconto },
       { id: 'visitas', header: `Visitas (${v.janelaDias} dias)`, body: String(v.visitas) },
@@ -91,7 +95,7 @@ async function objeto(c: Cartao) {
       { id: 'membro', header: 'Cliente VIP', body: `${v.nome} · nº ${v.numero}` },
       { id: 'regras', header: 'Como funciona', body: REGRAS_TEXTO(v) },
     ],
-    linksModuleData: { uris: [{ uri: v.link, description: 'Vou pagar agora (gerar código)', id: 'site' }] },
+    linksModuleData: { uris: [{ uri: v.link, description: 'O código não passou? Gere outro aqui', id: 'site' }] },
     heroImage: { sourceUri: { uri: `${baseUrl()}/fidelidade/sereia-branca.png` }, contentDescription: txt('Prainha') },
   };
 }

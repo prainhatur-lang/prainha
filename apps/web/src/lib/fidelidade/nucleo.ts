@@ -12,9 +12,16 @@
 //   2. o Pix (já com o desconto) cai → `confirmarUso`: conta a visita do dia
 //      e mata o código;
 //   3. Pix abandonado → `liberarUso` (ou a reserva expira sozinha).
+//
+// Caminho curto (10/10/2026, pedido do dono — "como cartão de embarque"): o
+// cartão salvo na Apple/Google Wallet mostra NA FRENTE um código de 4 letras
+// (`codigo_carteira`). Ele não tem prazo: vale até ser usado uma vez; o Pix
+// caiu → `trocarCodigoCarteira` sorteia outro e a carteira é avisada. A loja
+// digita do mesmo jeito (4 letras) — quem distingue os dois é `simularUso`.
+// O "Vou pagar agora" continua igual, como reserva.
 
 import { db, schema } from '@concilia/db';
-import { and, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull, sql } from 'drizzle-orm';
 import { brDateStart, diasAtrasBr, hojeBr } from '@/lib/datas';
 import { ehFeriadoOuProlongado } from '@/lib/reservas/feriados';
 import {
@@ -269,16 +276,82 @@ export async function gerarCodigoUso(
   for (let t = 0; t < 10; t++) {
     const codigo = gerarCodigo();
     try {
-      await db
+      // não pode sair igual ao código da frente do cartão da carteira de
+      // ninguém (os dois são digitados no mesmo campo da loja)
+      const gravou = await db
         .update(schema.fidelidadeCartao)
         .set({ codigo, codigoGeradoEm: agora, codigoExpiraEm: expiraEm, codigoAparelho: aparelhoId.slice(0, 16) })
-        .where(eq(schema.fidelidadeCartao.id, cartaoId));
-      return { codigo, expiraEm, emUso: false };
+        .where(and(
+          eq(schema.fidelidadeCartao.id, cartaoId),
+          sql`NOT EXISTS (SELECT 1 FROM fidelidade_cartao o WHERE o.codigo_carteira = ${codigo})`,
+        ))
+        .returning({ id: schema.fidelidadeCartao.id });
+      if (gravou.length) return { codigo, expiraEm, emUso: false };
     } catch (e) {
       if (!/unique|duplicate/i.test(String((e as Error)?.message))) throw e;
     }
   }
   throw new Error('não consegui gerar um código único');
+}
+
+// ------------------------------------------------- código da frente do cartão
+
+/** Sorteia e grava o código da carteira. `soSeVazio`: só cria se o cartão
+ *  ainda não tem (dois pedidos ao mesmo tempo não se atropelam). Devolve o
+ *  código que ficou valendo, ou null se não deu. */
+async function gravarCodigoCarteira(cartaoId: string, soSeVazio: boolean): Promise<string | null> {
+  for (let t = 0; t < 12; t++) {
+    const codigo = gerarCodigo();
+    try {
+      const gravou = await db
+        .update(schema.fidelidadeCartao)
+        .set({ codigoCarteira: codigo, passAtualizadoEm: new Date() })
+        .where(and(
+          eq(schema.fidelidadeCartao.id, cartaoId),
+          soSeVazio ? isNull(schema.fidelidadeCartao.codigoCarteira) : undefined,
+          // nem igual a um código VIVO do "Vou pagar agora" de outro cartão
+          sql`NOT EXISTS (SELECT 1 FROM fidelidade_cartao o WHERE o.codigo = ${codigo} AND o.codigo_expira_em > now())`,
+        ))
+        .returning({ codigo: schema.fidelidadeCartao.codigoCarteira });
+      if (gravou[0]?.codigo) return gravou[0].codigo;
+      if (soSeVazio) {
+        // outro pedido criou primeiro: fica com o dele
+        const [c] = await db
+          .select({ codigo: schema.fidelidadeCartao.codigoCarteira })
+          .from(schema.fidelidadeCartao)
+          .where(eq(schema.fidelidadeCartao.id, cartaoId))
+          .limit(1);
+        if (!c) return null;
+        if (c.codigo) return c.codigo;
+      }
+    } catch (e) {
+      if (!/unique|duplicate/i.test(String((e as Error)?.message))) throw e;
+    }
+  }
+  return null;
+}
+
+/** Código que aparece na frente do cartão da carteira. Nasce na primeira vez
+ *  que o cartão vai pra Apple/Google Wallet — quem nunca salvou não tem código
+ *  parado esperando alguém adivinhar. Só os passes chamam isto (a página
+ *  pública do cartão NÃO mostra este código). */
+export async function codigoDaCarteira(cartao: Pick<Cartao, 'id' | 'codigoCarteira'>): Promise<string> {
+  if (cartao.codigoCarteira) return cartao.codigoCarteira;
+  const codigo = await gravarCodigoCarteira(cartao.id, true);
+  if (!codigo) throw new Error('não consegui gerar o código da carteira');
+  return codigo;
+}
+
+/** Troca o código da carteira (pagou, bloqueio, pedido do painel). Cartão que
+ *  nunca foi pra carteira fica como está. Quem chama avisa a Wallet. */
+export async function trocarCodigoCarteira(cartaoId: string): Promise<void> {
+  const [c] = await db
+    .select({ codigo: schema.fidelidadeCartao.codigoCarteira })
+    .from(schema.fidelidadeCartao)
+    .where(eq(schema.fidelidadeCartao.id, cartaoId))
+    .limit(1);
+  if (!c?.codigo) return;
+  if (!(await gravarCodigoCarteira(cartaoId, false))) throw new Error('não consegui trocar o código da carteira');
 }
 
 // ---------------------------------------------------------------- uso na loja
@@ -291,7 +364,7 @@ export type ErroUso =
 export const MSG_ERRO: Record<ErroUso, string> = {
   programa_inativo: 'O Cliente VIP não está ativo nesta casa.',
   codigo_invalido: 'Código inválido — são 4 letras.',
-  nao_encontrado: 'Código não encontrado ou vencido. Abra o seu cartão e toque em "Vou pagar agora" pra gerar um novo (vale 1 minuto).',
+  nao_encontrado: 'Código não encontrado ou vencido. Confira o código que está na frente do seu cartão, na carteira do celular (ele muda depois de cada pagamento). Ou abra o seu cartão e toque em "Vou pagar agora" pra gerar um novo (vale 1 minuto).',
   bloqueado: 'Este cartão está bloqueado. Fale com a gerência.',
   ja_usado_hoje: 'Este cartão já foi usado hoje. Volte amanhã!',
   em_uso: 'Este código já está sendo usado em outra conta agora.',
@@ -310,6 +383,10 @@ export interface Simulacao {
   pctBonus: number;
   pct: number;
   desconto: number;
+  /** o código que foi digitado (o do "Vou pagar agora" ou o da carteira) */
+  codigoUsado: string;
+  /** true = veio da frente do cartão da carteira (codigo_carteira) */
+  pelaCarteira: boolean;
 }
 
 async function orgDaFilial(filialId: string): Promise<string | null> {
@@ -334,18 +411,36 @@ export async function simularUso(
   // só código VIVO (gerado no celular do dono há menos de CODIGO_MIN, ou
   // segurado por um Pix em andamento)
   const vivo = sql`${schema.fidelidadeCartao.codigoExpiraEm} > now()`;
-  const [cartao] = await db
+  const [cartaoVivo] = await db
     .select()
     .from(schema.fidelidadeCartao)
     .where(and(eq(schema.fidelidadeCartao.filialId, filialId), eq(schema.fidelidadeCartao.codigo, codigo), vivo))
     .limit(1);
+  // não é código vivo: pode ser o da frente do cartão da carteira (sem prazo,
+  // vale até ser usado uma vez)
+  const cartaoCarteira = cartaoVivo
+    ? undefined
+    : (await db
+        .select()
+        .from(schema.fidelidadeCartao)
+        .where(and(eq(schema.fidelidadeCartao.filialId, filialId), eq(schema.fidelidadeCartao.codigoCarteira, codigo)))
+        .limit(1))[0];
+  const cartao = cartaoVivo ?? cartaoCarteira;
+  const pelaCarteira = !cartaoVivo && !!cartaoCarteira;
   if (!cartao) {
     const [outra] = await db
       .select({ id: schema.fidelidadeCartao.id })
       .from(schema.fidelidadeCartao)
       .where(and(eq(schema.fidelidadeCartao.codigo, codigo), vivo))
       .limit(1);
-    return { ok: false, erro: outra ? 'outra_casa' : 'nao_encontrado' };
+    const outraCarteira = outra
+      ? undefined
+      : (await db
+          .select({ id: schema.fidelidadeCartao.id })
+          .from(schema.fidelidadeCartao)
+          .where(eq(schema.fidelidadeCartao.codigoCarteira, codigo))
+          .limit(1))[0];
+    return { ok: false, erro: outra || outraCarteira ? 'outra_casa' : 'nao_encontrado' };
   }
   if (cartao.status !== 'ativo') return { ok: false, erro: 'bloqueado' };
   if (!cartao.aderidoEm) return { ok: false, erro: 'nao_aderido' };
@@ -373,7 +468,7 @@ export async function simularUso(
   const pct = pctNivel + pctBonus;
   const desconto = calcularDesconto(cfg, pct, base);
   if (desconto <= 0) return { ok: false, erro: 'sem_desconto' };
-  return { ok: true, sim: { cartao, estado, pctNivel, pctBonus, pct, desconto } };
+  return { ok: true, sim: { cartao, estado, pctNivel, pctBonus, pct, desconto, codigoUsado: codigo, pelaCarteira } };
 }
 
 export interface UsoReservado {
@@ -427,21 +522,25 @@ export async function reservarUso(
         cartaoId: sim.cartao.id,
         filialId,
         mesa,
-        codigo: sim.cartao.codigo,
+        codigo: sim.codigoUsado,
         nivel: sim.estado.nivel.codigo,
         pctNivel: String(sim.pctNivel),
         pctBonus: String(sim.pctBonus),
         valorBase: String(r2(consumo)),
         valorDesconto: String(sim.desconto),
         expiraEm: expira,
-        aparelho: sim.cartao.codigoAparelho,
+        aparelho: sim.pelaCarteira ? 'carteira' : sim.cartao.codigoAparelho,
       })
       .returning({ id: schema.fidelidadeUso.id });
-    // o código vive enquanto o Pix estiver aberto (mesmo depois do 1 min)
-    await tx
-      .update(schema.fidelidadeCartao)
-      .set({ codigoExpiraEm: expira })
-      .where(eq(schema.fidelidadeCartao.id, sim.cartao.id));
+    // o código vive enquanto o Pix estiver aberto (mesmo depois do 1 min).
+    // O da carteira não tem prazo — e o `codigo` do cartão, nesse caso, é um
+    // sorteado que não vale: não pode ganhar validade aqui.
+    if (!sim.pelaCarteira) {
+      await tx
+        .update(schema.fidelidadeCartao)
+        .set({ codigoExpiraEm: expira })
+        .where(eq(schema.fidelidadeCartao.id, sim.cartao.id));
+    }
     return u;
   });
   if (!r) return { ok: false, erro: 'em_uso' };
@@ -495,12 +594,23 @@ export async function confirmarUso(
     .where(and(eq(schema.fidelidadeUso.cartaoId, uso.cartaoId), eq(schema.fidelidadeUso.status, 'reservado')));
 
   const [cartao] = await db
-    .select({ codigo: schema.fidelidadeCartao.codigo })
+    .select({ codigo: schema.fidelidadeCartao.codigo, codigoCarteira: schema.fidelidadeCartao.codigoCarteira })
     .from(schema.fidelidadeCartao)
     .where(eq(schema.fidelidadeCartao.id, uso.cartaoId))
     .limit(1);
   if (cartao && cartao.codigo === uso.codigo) await invalidarCodigo(uso.cartaoId);
   else await tocarPass(uso.cartaoId);
+
+  // pagou: o código da frente do cartão da carteira troca (qualquer que tenha
+  // sido o código digitado) e o aviso logo abaixo leva o novo pro celular.
+  // Falha aqui não derruba a confirmação — o Pix já caiu.
+  if (cartao?.codigoCarteira) {
+    try {
+      await trocarCodigoCarteira(uso.cartaoId);
+    } catch (e) {
+      console.error('[fidelidade] troca do código da carteira', uso.cartaoId, (e as Error)?.message);
+    }
+  }
 
   await avisarWallet(uso.cartaoId);
   return { ok: true };

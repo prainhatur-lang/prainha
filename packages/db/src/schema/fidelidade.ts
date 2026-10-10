@@ -51,6 +51,11 @@ export const fidelidadeCartao = pgTable(
     codigoExpiraEm: timestamp('codigo_expira_em', { withTimezone: true }),
     /** aparelho (id curto) que gerou o código atual */
     codigoAparelho: varchar('codigo_aparelho', { length: 16 }),
+    /** código que aparece na FRENTE do cartão da carteira (Apple/Google Wallet),
+     *  4 letras. Não tem prazo: vale até ser usado uma vez — pagou, troca sozinho
+     *  e a carteira é avisada (como cartão de embarque). null = o cartão nunca
+     *  foi pra carteira. */
+    codigoCarteira: varchar('codigo_carteira', { length: 4 }),
     /** celulares confirmados por SMS/WhatsApp: [{ id, h (sha256 do segredo do cookie), em, ua }] */
     aparelhos: jsonb('aparelhos').$type<Array<{ id: string; h: string; em: string; ua?: string }>>().notNull().default(sql`'[]'::jsonb`),
     /** confirmação pelo WhatsApp da Meta (quando não há Twilio) */
@@ -101,6 +106,12 @@ export const fidelidadeCartao = pgTable(
     uqCodigoAtivo: uniqueIndex('uq_fidelidade_cartao_filial_codigo')
       .on(t.filialId, t.codigo)
       .where(sql`status = 'ativo'`),
+    // código da carteira não tem prazo, então é único entre TODAS as casas (o
+    // de uma casa digitado na outra tem que dar "cartão de outra casa", nunca
+    // cair no cartão de outro cliente) e não depende do status
+    uqCodigoCarteira: uniqueIndex('uq_fidelidade_cartao_codigo_carteira')
+      .on(t.codigoCarteira)
+      .where(sql`codigo_carteira IS NOT NULL`),
   }),
 );
 

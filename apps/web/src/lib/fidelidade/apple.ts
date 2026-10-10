@@ -18,6 +18,7 @@ import { eq } from 'drizzle-orm';
 import { PASS_IMAGENS } from './assets';
 import { zipStore } from './zip';
 import { REGRAS_TEXTO, baseUrl, vistaCartao } from './vista';
+import { codigoDaCarteira } from './nucleo';
 
 type Cartao = typeof schema.fidelidadeCartao.$inferSelect;
 
@@ -112,6 +113,9 @@ function assinar(manifest: Buffer, c: Credencial): Buffer {
 export async function gerarPkpass(cartao: Cartao): Promise<Buffer> {
   const c = await credencial();
   const v = await vistaCartao(cartao);
+  // código na frente do cartão: é o que o cliente digita no Pix. Troca sozinho
+  // depois de cada pagamento (o push traz o pass novo). Bloqueado não mostra.
+  const codigo = v.bloqueado ? '' : await codigoDaCarteira(cartao);
   const fg = 'rgb(255,255,255)';
   const pass = {
     formatVersion: 1,
@@ -132,22 +136,23 @@ export async function gerarPkpass(cartao: Cartao): Promise<Buffer> {
       headerFields: [
         { key: 'nivel', label: 'NÍVEL', value: v.nivel, changeMessage: 'Seu cartão agora é %@!' },
       ],
-      // sem código no pass: ele nasce no celular do dono, na hora de pagar
+      // o código de pagar fica na frente, grande (sem changeMessage: trocar o
+      // código não pode virar notificação na tela bloqueada)
       primaryFields: [
-        { key: 'desconto', label: 'DESCONTO NO PIX', value: v.bloqueado ? 'BLOQUEADO' : v.textoDesconto },
+        { key: 'codigo', label: 'CÓDIGO PRA PAGAR NO PIX', value: v.bloqueado ? 'BLOQUEADO' : codigo },
       ],
       secondaryFields: [
         { key: 'nome', label: 'CLIENTE VIP', value: v.nomeCurto },
-        { key: 'pagar', label: 'NA HORA DE PAGAR', value: 'Toque ••• › Detalhes › Gerar código', textAlignment: 'PKTextAlignmentRight' },
+        { key: 'desconto', label: 'DESCONTO NO PIX', value: v.textoDesconto, textAlignment: 'PKTextAlignmentRight' },
       ],
       auxiliaryFields: [
         { key: 'visitas', label: `VISITAS (${v.janelaDias} DIAS)`, value: v.visitas },
         { key: 'proximo', label: 'PRÓXIMO NÍVEL', value: v.textoProximo, textAlignment: 'PKTextAlignmentRight' },
       ],
       backFields: [
-        // primeiro da lista: a Apple não deixa pôr botão na frente do cartão, então
-        // o caminho pro código é este link — tem que ser a 1ª coisa dos detalhes
-        { key: 'link', label: 'Gerar o código pra pagar', value: v.link, attributedValue: `<a href="${v.link}">Abrir o cartão — Vou pagar agora</a>` },
+        // reserva: se o código da frente não passar, este link gera um na hora
+        // (o "Vou pagar agora" de sempre). Segue como 1ª coisa dos detalhes.
+        { key: 'link', label: 'O código não passou? Gere outro aqui', value: v.link, attributedValue: `<a href="${v.link}">Abrir o cartão — Vou pagar agora</a>` },
         { key: 'regras', label: 'Como funciona', value: REGRAS_TEXTO(v) },
         { key: 'numero', label: 'Número do cartão', value: v.numero },
       ],

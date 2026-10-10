@@ -45,6 +45,20 @@ export async function GET(req: Request) {
       ));
     for (const c of cartoes) ids.add(c.id);
   }
+  // cartão que já está na carteira (Apple registrada ou salvo no Google) e
+  // ainda não ganhou o código da frente: o aviso faz o celular buscar o pass
+  // novo, que já vem com o código. Roda uma vez por cartão — depois que o
+  // código nasce, ele sai desta lista.
+  const semCodigo = (await db.execute(sql`
+    SELECT c.id
+      FROM fidelidade_cartao c
+     WHERE c.status = 'ativo'
+       AND c.codigo_carteira IS NULL
+       AND c.aderido_em IS NOT NULL
+       AND (c.google_salvo_em IS NOT NULL
+            OR EXISTS (SELECT 1 FROM fidelidade_apple_registro r WHERE r.cartao_id = c.id))
+  `)) as unknown as Array<{ id: string }>;
+  for (const c of semCodigo) ids.add(c.id);
   for (const id of ids) {
     await tocarPass(id);
     await avisarWallet(id);

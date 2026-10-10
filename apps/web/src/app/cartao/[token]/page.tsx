@@ -13,7 +13,7 @@ import { appleConfigurada } from '@/lib/fidelidade/apple';
 import { googleConfigurada } from '@/lib/fidelidade/google';
 import { carregarPrograma } from '@/lib/fidelidade/config';
 import { ApresentacaoPrograma } from '@/components/fidelidade/apresentacao';
-import { BotoesAdesao, VouPagar } from './adesao';
+import { BotoesAdesao, ConfirmarCelular, VouPagar } from './adesao';
 import { DrinkEvento } from './drink-evento';
 import { eventoDoCartao, nasceuEmEvento } from '@/lib/eventos';
 import { aparelhoConfirmado, nomeCookie, telefoneMascarado } from '@/lib/fidelidade/aparelho';
@@ -25,10 +25,13 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
-export default async function CartaoPage(props: { params: Promise<{ token: string }>; searchParams?: Promise<{ c?: string }> }) {
+export default async function CartaoPage(props: { params: Promise<{ token: string }>; searchParams?: Promise<{ c?: string; carteira?: string }> }) {
   const { token } = await props.params;
+  const sp = await props.searchParams;
+  // ?carteira=1: tentou salvar na carteira num celular ainda não confirmado
+  const pedeCarteira = sp?.carteira === '1';
   // ?c=<código>: link da resposta do WhatsApp, confere sozinho no navegador
-  const cLink = String((await props.searchParams)?.c ?? '').replace(/\D/g, '').slice(0, 8);
+  const cLink = String(sp?.c ?? '').replace(/\D/g, '').slice(0, 8);
   const codigoLink = cLink.length >= 4 ? cLink : undefined;
   if (!token || token.length < 16) notFound();
   const [c] = await db.select().from(schema.fidelidadeCartao).where(eq(schema.fidelidadeCartao.token, token)).limit(1);
@@ -151,8 +154,10 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
                 </p>
               )}
               <p className="mt-2 text-xs text-slate-500">
-                Na hora de pagar, toque em &quot;Vou pagar agora&quot; e digite o código na tela do Pix. Ele vale 10
-                minutos, uma vez só, e só é gerado no seu celular — o cartão é pessoal. 1 uso por dia, só no {v.casa}.
+                Na hora de pagar, digite na tela do Pix o <b>código de 4 letras</b>. Salvando o cartão na carteira do
+                celular, o código fica na frente dele e troca sozinho depois de cada pagamento. Sem a carteira, toque em
+                &quot;Vou pagar agora&quot;: sai um código que vale 1 minuto, uma vez só. O cartão é pessoal — 1 uso por
+                dia, só no {v.casa}.
               </p>
             </div>
           </>
@@ -169,7 +174,27 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
           </div>
         )}
 
+        {/* a carteira mostra o código de pagar: só salva no celular confirmado.
+            Dia sem desconto não tem o "Vou pagar agora" (que traz a confirmação),
+            então ela aparece aqui. */}
+        {!v.bloqueado && !confirmado && !v.valeHoje && (
+          <div className="space-y-2 rounded-2xl bg-white p-4 shadow-sm">
+            <p className="text-sm">Pra salvar o cartão na carteira deste celular, confirme que ele é seu.</p>
+            <ConfirmarCelular token={token} telefone={tel} rotulo="Confirmar meu celular" codigoPendente={codigoPendente} semAparelho={semAparelho} codigoLink={codigoLink} />
+          </div>
+        )}
+        {!v.bloqueado && !confirmado && pedeCarteira && v.valeHoje && (
+          <p className="rounded-xl bg-amber-100 p-3 text-sm text-amber-900">
+            Pra salvar o cartão na carteira, confirme antes o seu celular ali em cima. Depois é só tocar de novo no botão
+            da carteira.
+          </p>
+        )}
         <div className="grid gap-2">
+          {!v.bloqueado && (appleConfigurada() || googleConfigurada()) && (
+            <p className="px-1 text-center text-xs text-slate-500">
+              Na carteira do celular o código de pagar fica na frente do cartão e troca sozinho depois de cada pagamento.
+            </p>
+          )}
           {appleConfigurada() && (
             <a
               href={`/api/wallet/apple/pass/${token}`}

@@ -146,6 +146,7 @@
     "migrate:fidelidade-convite-status": "tsx scripts/migrate-fidelidade-convite-status.ts",
     "migrate:fidelidade-funcionario-liberado": "tsx scripts/migrate-fidelidade-funcionario-liberado.ts",
     "migrate:fidelidade-por-casa": "tsx scripts/migrate-fidelidade-por-casa.ts",
+    "migrate:fidelidade-codigo-carteira": "tsx scripts/migrate-fidelidade-codigo-carteira.ts",
     "migrate:campanha-convite": "tsx scripts/migrate-campanha-convite.ts",
     "migrate:ifood-nuvem": "tsx scripts/migrate-ifood-nuvem.ts",
     "migrate:ifood-conciliacao": "tsx scripts/migrate-ifood-conciliacao.ts",

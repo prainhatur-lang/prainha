@@ -10,7 +10,7 @@ import { podeUsuario } from '@/lib/permissoes-runtime';
 import { casaDoUsuario } from '@/lib/fidelidade/admin';
 import { candidatosConvite, type Regiao } from '@/lib/fidelidade/candidatos';
 import { carregarPrograma, normalizarConfig, nivelPorCodigo, type FidelidadeConfig } from '@/lib/fidelidade/config';
-import { avisarWallet, criarCartao, invalidarCodigo, tocarPass } from '@/lib/fidelidade/nucleo';
+import { avisarWallet, criarCartao, invalidarCodigo, tocarPass, trocarCodigoCarteira } from '@/lib/fidelidade/nucleo';
 import { dadosDoCartao } from '@/lib/fidelidade/nucleo';
 import { conviteFidelidadeConfigurado, enviarConviteFidelidadeId } from '@/lib/whatsapp-otp';
 import { brDateStart, hojeBr } from '@/lib/datas';
@@ -194,6 +194,11 @@ export async function POST(request: Request) {
     if (c.status !== 'ativo') return erro('cartão bloqueado');
     // derruba o código em aberto (o cliente gera outro no celular)
     await invalidarCodigo(c.id);
+    // e o da frente do cartão da carteira troca junto (a carteira recebe o novo)
+    if (c.codigoCarteira) {
+      await trocarCodigoCarteira(c.id);
+      await avisarWallet(c.id);
+    }
     return NextResponse.json({ ok: true });
   }
 
@@ -202,6 +207,11 @@ export async function POST(request: Request) {
     // cai; o dono confirma de novo pelo WhatsApp
     await db.update(schema.fidelidadeCartao).set({ aparelhos: [] }).where(eq(schema.fidelidadeCartao.id, c.id));
     await invalidarCodigo(c.id);
+    // o código da frente do cartão da carteira também troca
+    if (c.codigoCarteira) {
+      await trocarCodigoCarteira(c.id);
+      await avisarWallet(c.id);
+    }
     return NextResponse.json({ ok: true });
   }
 
@@ -210,6 +220,8 @@ export async function POST(request: Request) {
     // bloquear ou desbloquear: o código em aberto cai (sorteia um aleatório
     // vencido — também evita colisão no índice único ao voltar a 'ativo')
     await invalidarCodigo(c.id);
+    // o da carteira também (bloqueado, o cartão da carteira nem mostra código)
+    if (c.codigoCarteira) await trocarCodigoCarteira(c.id);
     await db
       .update(schema.fidelidadeCartao)
       .set({ status, passAtualizadoEm: new Date() })

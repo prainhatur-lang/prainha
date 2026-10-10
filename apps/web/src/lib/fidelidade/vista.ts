@@ -113,11 +113,12 @@ export function linkPrograma(filialId: string): string {
 
 export const REGRAS_TEXTO = (v: VistaCartao) =>
   [
-    `Como usar: na hora de pagar a conta no Pix (QR da mesa ou no caixa), abra o seu cartão no celular e toque em "Vou pagar agora". Aparece um código de 4 letras que vale 1 minuto: digite na tela do Pix. O desconto de ${v.soDiaUtil ? v.pct + v.bonusDiaUtil : v.pct}% sai na hora sobre o consumo (a taxa de serviço continua sobre o valor cheio).`,
+    `Como usar: na hora de pagar a conta no Pix (QR da mesa ou no caixa), digite na tela do Pix o código de 4 letras que aparece na frente deste cartão. Ele troca sozinho depois de cada pagamento. O desconto de ${v.soDiaUtil ? v.pct + v.bonusDiaUtil : v.pct}% sai na hora sobre o consumo (a taxa de serviço continua sobre o valor cheio).`,
+    'Se o código não passar, abra o seu cartão pelo link e toque em "Vou pagar agora": sai um código novo, que vale 1 minuto.',
     v.soDiaUtil
       ? `No ${v.casa} o desconto vale de segunda a sexta, fora feriado. Sábado, domingo e feriado o cartão não dá desconto.`
       : v.bonusDiaUtil ? `De segunda a sexta (fora feriado) você ganha +${v.bonusDiaUtil}% extra.` : '',
-    'O cartão é pessoal: o código só é gerado no celular confirmado pelo WhatsApp do seu número, muda a cada pagamento e não serve pra outra pessoa.',
+    'O cartão é pessoal: só o celular confirmado pelo WhatsApp do seu número salva o cartão na carteira e gera código. O código muda a cada pagamento e não serve pra outra pessoa.',
     `Vale 1 uso por dia, só no ${v.casa}, pagando no Pix. Cada casa do grupo tem o seu próprio Cliente VIP.`,
     v.prioridadeReserva ? `Prioridade nas reservas do ${v.casa}: quando as mesas reserváveis da área acabam, você ainda consegue reservar (se houver mesa livre).` : '',
     v.pctEspaco ? `Aniversário, confraternização ou evento no ${v.casa}: ${v.pctEspaco}% de desconto no aluguel do espaço. Peça o orçamento pelo WhatsApp com o mesmo telefone do cartão.` : '',

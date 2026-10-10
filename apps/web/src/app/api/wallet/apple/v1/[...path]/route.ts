@@ -81,12 +81,16 @@ export async function GET(req: Request, { params }: Ctx) {
     if (!c) return new Response(null, { status: 401 });
     const ims = req.headers.get('if-modified-since');
     const mod = Math.floor(c.passAtualizadoEm.getTime() / 1000) * 1000;
-    if (ims && Date.parse(ims) >= mod) return new Response(null, { status: 304 });
+    // cartão que ainda não tem o código da frente: o pass que está no iPhone é
+    // de antes — nunca responde "não mudou", senão ele fica sem o código. Gerar
+    // o pass cria o código e marca a mudança agora.
+    const semCodigo = !c.codigoCarteira;
+    if (!semCodigo && ims && Date.parse(ims) >= mod) return new Response(null, { status: 304 });
     const pk = await gerarPkpass(c);
     return new Response(new Uint8Array(pk), {
       headers: {
         'content-type': 'application/vnd.apple.pkpass',
-        'last-modified': new Date(mod).toUTCString(),
+        'last-modified': new Date(semCodigo ? Date.now() : mod).toUTCString(),
         'cache-control': 'no-store',
       },
     });
