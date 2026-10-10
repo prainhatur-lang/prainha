@@ -34,6 +34,7 @@ export * from './talento';
 export * from './delivery-online';
 export * from './cancelamento';
 export * from './rh';
+export * from './rh-escala';
 export * from './escuta';
 export * from './vendedor';
 export * from './kids';
