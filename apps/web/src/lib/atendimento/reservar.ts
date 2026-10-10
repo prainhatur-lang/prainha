@@ -72,7 +72,13 @@ function diaDeAltaProcura(ymd: string): string | null {
   const amanha = new Date(y, m - 1, d + 1);
   const amanhaYmd = `${amanha.getFullYear()}-${String(amanha.getMonth() + 1).padStart(2, '0')}-${String(amanha.getDate()).padStart(2, '0')}`;
   const fAmanha = FERIADOS[amanhaYmd] ?? FERIADOS[amanhaYmd.slice(5)];
-  if (fAmanha) return `véspera de ${fAmanha}`;
+  if (fAmanha) {
+    // Diz o dia da semana dos dois: "véspera de Nossa Senhora Aparecida" solto
+    // foi lido como se o feriado fosse o próprio dia (Livia, 10/10).
+    const DIAS = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'];
+    const hojeDia = DIAS[new Date(y, m - 1, d).getDay()];
+    return `${hojeDia} ${dataBr(ymd).slice(0, 5)}, véspera de ${fAmanha} (o feriado é ${DIAS[amanha.getDay()]}, ${dataBr(amanhaYmd).slice(0, 5)}) — ao falar com o cliente diga o dia da semana e a data do feriado, não só "véspera"`;
+  }
   if (m === 12 || m === 1 || m === 2) return 'alta temporada de verão';
   return null;
 }
