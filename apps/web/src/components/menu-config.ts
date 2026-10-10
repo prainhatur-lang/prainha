@@ -352,6 +352,8 @@ export const MENU_AREAS: MenuArea[] = [
         links: [
           { label: 'Funcionários', href: '/rh/funcionarios', perm: 'funcionario.read' },
           { label: 'Ponto', href: '/rh/ponto', perm: 'ponto.read' },
+          { label: 'Banco de horas', href: '/rh/banco-horas', perm: 'ponto.read' },
+          { label: 'Histórico do ponto', href: '/rh/historico-ponto', perm: 'ponto.read' },
           { label: 'Turnover', href: '/rh/turnover', perm: 'funcionario.read' },
           { label: 'Cozinheiros', href: '/cadastros/colaboradores', perm: 'folha_equipe.read' },
           { label: 'Banco de talentos', href: '/talentos', perm: 'folha_equipe.read' },
