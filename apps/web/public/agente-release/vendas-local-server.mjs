@@ -904,6 +904,9 @@ async function initSchema() {
   // (loopFaceSync); sync_pendente marca quem ainda não subiu.
   await addCol('ponto_funcionario', 'face_descriptor jsonb');
   await addCol('ponto_funcionario', 'face_sync_pendente boolean NOT NULL DEFAULT false');
+  // Gêmeo(a) que trabalha na casa, marcado no /rh/ponto da nuvem (10/10/2026):
+  // a câmera não separa gêmeos idênticos — o tablet pergunta "Quem é você?".
+  await addCol('ponto_funcionario', 'gemeo_de uuid');
   // Batida anulada ("Não sou eu" no tablet, ou excluída pelo RH na nuvem) não
   // conta pra nada local (entrada/saída, cooldown, horas). A linha fica — a fila
   // da nuvem é por cursor de id — e anulada_sync_pendente leva a anulação pra lá.
@@ -9521,6 +9524,21 @@ async function apiPontoPessoas(marcaCliente) {
       tem_rosto: !!p.face_descriptor, face_descriptor: p.face_descriptor || null };
   });
   const marca = createHash('md5').update(JSON.stringify(out.map((p) => [p.funcionario_id, p.nome, p.face_descriptor]))).digest('hex');
+  // Gêmeos marcados no /rh/ponto (10/10/2026): cada pessoa do par sai com
+  // `gemeo_de` e a marca passa a mudar quando o par muda — o tablet usa isso
+  // pra perguntar "Quem é você?" em vez de bater direto. Loja sem gêmeo marcado
+  // não entra aqui: resposta e marca idênticas às de sempre.
+  try {
+    const gem = await sql`SELECT funcionario_id, gemeo_de FROM ponto_funcionario
+      WHERE ativo AND gemeo_de IS NOT NULL ORDER BY funcionario_id`;
+    if (gem.length) {
+      const de = new Map(gem.map((g) => [String(g.funcionario_id), String(g.gemeo_de)]));
+      for (const p of out) p.gemeo_de = de.get(String(p.funcionario_id)) || null;
+      const marcaG = createHash('md5').update(marca + JSON.stringify([...de])).digest('hex');
+      if (marcaCliente && marcaCliente === marcaG) return { ok: true, igual: true, marca: marcaG };
+      return { ok: true, pessoas: out, marca: marcaG };
+    }
+  } catch {}
   if (marcaCliente && marcaCliente === marca) return { ok: true, igual: true, marca };
   return { ok: true, pessoas: out, marca };
 }
@@ -9550,6 +9568,24 @@ async function apiPontoCadastrarRosto(body) {
       if (dist != null && (!vizinho || dist < vizinho.dist)) vizinho = { dist, nome: o.nome };
     }
   } catch {}
+  // Gêmeos marcados no /rh/ponto (10/10/2026): o rosto de um SEMPRE sai colado
+  // no do outro, então o irmão não conta como "rosto parecido" — senão o
+  // segundo gêmeo nunca consegue cadastrar o próprio rosto. Contra o resto da
+  // equipe a regra é a mesma. Quem não tem gêmeo marcado não entra aqui.
+  try {
+    const irmaos = await pontoGemeosDe(funcionarioId);
+    if (irmaos.size) {
+      const outros = await sql`SELECT funcionario_id, nome, face_descriptor FROM ponto_funcionario
+        WHERE ativo AND face_descriptor IS NOT NULL AND funcionario_id <> ${funcionarioId}`;
+      let semIrmao = null;
+      for (const o of outros) {
+        if (irmaos.has(String(o.funcionario_id).toLowerCase())) continue;
+        const dist = pontoDistRosto(descriptor, o.face_descriptor);
+        if (dist != null && (!semIrmao || dist < semIrmao.dist)) semIrmao = { dist, nome: o.nome };
+      }
+      vizinho = semIrmao;
+    }
+  } catch {}
   const primeiro = (n) => String(n || '').trim().split(/\s+/)[0].slice(0, 20);
   if (body.confere === true && vizinho && vizinho.dist < PONTO_ROSTO_PARECIDO) {
     pontoFacialEvento({ via: 'cadastro_recusado', quem: primeiro(pessoa.nome), parecido: primeiro(vizinho.nome), dist_c: Math.round(vizinho.dist * 100) });
@@ -9573,6 +9609,24 @@ function pontoDistRosto(a, b) {
   let s = 0;
   for (let i = 0; i < 128; i++) { const d = Number(a[i]) - Number(b[i]); s += d * d; }
   return Number.isFinite(s) ? Math.sqrt(s) : null;
+}
+// Irmãos gêmeos de uma pessoa (ids em minúscula, sem ela mesma), pelo vínculo
+// gemeo_de que vem do /rh/ponto. Segue o vínculo nos dois sentidos, então vale
+// mesmo se só um lado chegou marcado (e pra trigêmeos, um apontando pro outro).
+async function pontoGemeosDe(funcionarioId) {
+  const eu = String(funcionarioId).toLowerCase();
+  const linhas = await sql`SELECT funcionario_id, gemeo_de FROM ponto_funcionario WHERE ativo AND gemeo_de IS NOT NULL`;
+  const liga = new Map();
+  const junta = (a, b) => { if (!liga.has(a)) liga.set(a, new Set()); liga.get(a).add(b); };
+  for (const l of linhas) {
+    const a = String(l.funcionario_id).toLowerCase(), b = String(l.gemeo_de).toLowerCase();
+    if (a === b) continue;
+    junta(a, b); junta(b, a);
+  }
+  const grupo = new Set([eu]), fila = [eu];
+  while (fila.length) for (const v of liga.get(fila.pop()) || []) if (!grupo.has(v)) { grupo.add(v); fila.push(v); }
+  grupo.delete(eu);
+  return grupo;
 }
 // Cadastro de rosto (aceito ou recusado) na mesma fila do diagnóstico das
 // batidas — só primeiro nome e número, nunca foto nem descritor.
@@ -9859,6 +9913,14 @@ async function loopPontoRoster() {
     const r = await fetch(`${PAGAR_MESA_URL}/api/loja/ponto?${qs}`, { signal: AbortSignal.timeout(10000) });
     const j = await r.json().catch(() => null);
     if (!j?.ok || !Array.isArray(j.pessoas)) return;
+    // Gêmeos (10/10/2026): a nuvem manda `gemeo_de` de quem foi marcado no
+    // /rh/ponto. Guarda o que a loja tem hoje pra só gravar quando mudar; a
+    // gravação é à parte, depois do upsert de sempre, e nunca derruba o pull.
+    let gemeoAtual = null;
+    try {
+      gemeoAtual = new Map((await sql`SELECT funcionario_id, gemeo_de FROM ponto_funcionario WHERE gemeo_de IS NOT NULL`)
+        .map((x) => [String(x.funcionario_id).toLowerCase(), String(x.gemeo_de).toLowerCase()]));
+    } catch (err) { console.error('[ponto] gêmeos (leitura):', err.message); }
     for (const p of j.pessoas) {
       const eraPendente = jaPendentes.has(String(p.funcionario_id).toLowerCase());
       // face_descriptor: a nuvem manda. Rosto nulo lá = apagado no /rh/ponto
@@ -9872,6 +9934,16 @@ async function loopPontoRoster() {
           face_descriptor=CASE WHEN EXCLUDED.face_descriptor IS NULL AND (ponto_funcionario.face_sync_pendente
               OR ${eraPendente}::boolean OR ponto_funcionario.atualizado_em > ${inicioDb}::timestamptz)
             THEN ponto_funcionario.face_descriptor ELSE EXCLUDED.face_descriptor END, atualizado_em=now()`;
+      // campo ausente (nuvem sem a novidade) não mexe em nada
+      if (gemeoAtual && 'gemeo_de' in p) {
+        const g = /^[0-9a-f-]{36}$/i.test(String(p.gemeo_de || '')) ? String(p.gemeo_de).toLowerCase() : null;
+        if ((gemeoAtual.get(String(p.funcionario_id).toLowerCase()) || null) !== g) {
+          try {
+            await sql`UPDATE ponto_funcionario SET gemeo_de=${g}::uuid WHERE funcionario_id=${p.funcionario_id}`;
+            console.log(`[ponto] gêmeos: ${p.nome} ${g ? 'marcado(a) com ' + g.slice(0, 8) : 'desmarcado(a)'}`);
+          } catch (err) { console.error('[ponto] gêmeos (gravação):', err.message); }
+        }
+      }
     }
     const ids = j.pessoas.map((p) => p.funcionario_id);
     if (ids.length) await sql`UPDATE ponto_funcionario SET ativo=false WHERE NOT (funcionario_id = ANY(${ids})) AND ativo`;
@@ -15041,6 +15113,16 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 .pfconfirm .pfbig{font-size:44px;letter-spacing:1px}.pfconfirm .pfhora{font-size:18px;font-weight:600;opacity:.85;margin-top:4px}
 .pfconfirm.saida{color:#b45309}.pfconfirm.entrada{color:#15803d}
 .pfbusca{width:min(88vw,460px);padding:13px;border-radius:10px;border:1px solid #b4b4be;background:#fff;color:#111;font-size:15px;margin-top:14px}
+/* gêmeos: "Quem é você?" — molde pequeno e um botão grande por irmão */
+#pfModal.pfgemeo .pfoval{width:min(18vh,30vw,130px);height:min(24vh,40vw,172px);border-width:5px}
+#pfModal.pfgemeo .pfstatus{font-size:30px;font-weight:800}
+#pfModal.pfgemeo .pfsub{font-size:16px}
+.pfgem{margin-top:16px;width:min(92vw,600px);display:grid;gap:12px}
+.pfgem button{background:#1b1b20;color:#fff;border:none;border-radius:16px;padding:16px 14px;cursor:pointer;text-align:center;font-size:17px;font-weight:700;line-height:1.15}
+.pfgem button b{display:block;font-size:36px;font-weight:800;letter-spacing:.5px}
+.pfgem button small{display:block;font-size:13px;font-weight:600;opacity:.7;margin-top:3px}
+.pfgem button.pfgnao{background:#f1f1f4;color:#1b1b20;border:1px solid #d4d4dc;font-size:15px;font-weight:600;padding:12px}
+@media (orientation:landscape){.pfgem{grid-template-columns:1fr 1fr}.pfgem button.pfgnao{grid-column:1/-1}}
 .menubtn{font-size:20px;padding:5px 12px;font-weight:700}
 #menuCasa{display:none;position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.25)}
 #menuCasa.on{display:block}
@@ -15467,6 +15549,7 @@ async function abrirPontoFacial(){
     });
     PF_SEM_ROSTO=pessoas.filter(function(p){return !p.tem_rosto});
     PF_MARCA=d.marca||'';
+    PF_GEMEOS=pfGemeosMonta(pessoas);
     pfSt('Encaixe o rosto no molde');
     document.getElementById('pfSub').textContent=(PF_MOTOR==='cpu'?'modo lento (cpu)':'');
     // O KDS ja deixa a camera ligada pra foto da baixa (CAM). Pedir um segundo
@@ -15585,6 +15668,31 @@ async function pfTick(){
     if (tm.melhorC==null||dC<tm.melhorC) { tm.melhorC=dC; tm.folgaC=Math.round(folga*100); }
     if (melhor.dist<PF_LIMIAR && folga>=PF_FOLGA) { tm.nOk=(tm.nOk||0)+1; tm.sDist=(tm.sDist||0)+dC; }
     else if (melhor.dist<PF_LIMIAR) tm.amb=(tm.amb||0)+1; else tm.longe=(tm.longe||0)+1;
+    // Gêmeos marcados no /rh/ponto: a câmera não separa os dois, então o
+    // rosto vale pelo PAR — a folga é medida contra o mais parecido que NÃO é
+    // irmão, os quadros seguidos contam pro par (podem alternar entre um e
+    // outro) e, em vez de bater, a tela pergunta "Quem é você?". Limiar, folga
+    // e quadros seguidos são os mesmos. Quem não é gêmeo marcado não entra aqui.
+    var gem=PF_GEMEOS[melhor.pessoa.funcionario_id];
+    if (gem) {
+      var fora=null;
+      for (var j=0;j<PF_ROSTOS.length;j++){
+        if (PF_GEMEOS[PF_ROSTOS[j].funcionario_id]===gem) continue;
+        var dj=faceapi.euclideanDistance(det.descriptor, PF_ROSTOS[j].descriptor);
+        if (fora==null||dj<fora) fora=dj;
+      }
+      if (melhor.dist<PF_LIMIAR && (fora==null?1:fora-melhor.dist)>=PF_FOLGA) {
+        PF_INCERTO=0;
+        if (PF_SEQ && PF_SEQ.fid===gem.chave) PF_SEQ.n++;
+        else PF_SEQ={fid:gem.chave, n:1};
+        if (PF_SEQ.n>=PF_SEGUIDOS) {
+          PF_SEQ=null;
+          try { pfPerguntaGemeo(gem); } catch(x) { pfGemeoSai(); PF_OCUPADO=false; }
+        }
+        else { pfSt('Reconhecendo… fique parado'); pressa=true; }
+        return;
+      }
+    }
     if (melhor.dist<PF_LIMIAR && folga>=PF_FOLGA) {
       PF_INCERTO=0;
       if (PF_SEQ && PF_SEQ.fid===melhor.pessoa.funcionario_id) PF_SEQ.n++;
@@ -15647,6 +15755,147 @@ async function pfBater(pessoa){
   }
   clearTimeout(PF_FECHA_T);
   PF_FECHA_T=setTimeout(fecharPontoFacial, r.ok&&r.batida_id?8000:4500);
+  return r; // só a escolha entre gêmeos lê (pfGemeoEscolhe)
+}
+/* GÊMEOS (10/10/2026, Prainha Bar: "temos gêmeos trabalhando na casa; quando um
+   bate, reconhece a outra pessoa"). O número do rosto de gêmeos idênticos sai
+   praticamente igual: o tablet batia no cadastro de um só e o outro nem
+   conseguia cadastrar o próprio rosto. Com o par marcado no /rh/ponto, a lista
+   de pessoas traz gemeo_de e o reconhecimento vale pelo PAR: reconheceu
+   qualquer um dos dois, a tela pergunta "Quem é você?" com um botão grande por
+   irmão, sempre na mesma ordem (alfabética), sem destacar nenhum — a câmera não
+   sabe qual é. O toque é que decide de quem é a batida; entrada/saída continua
+   sendo decidida pelo servidor. Errou o nome: o "Não sou ... — desfazer" volta
+   pra pergunta. Sem toque em PF_GEMEO_MS, volta a olhar a câmera.
+   PF_GEMEOS: funcionario_id -> {chave, membros:[{funcionario_id, nome}]}, só de
+   par com as duas pessoas no roster desta loja (o segundo pode não ter rosto). */
+var PF_GEMEOS={}, PF_GEMEO_T=null, PF_GEMEO_SEQ=0, PF_GEMEO_MS=20000;
+function pfGemeosMonta(pessoas){
+  var mapa={}, liga={}, porId={}, i, p;
+  try {
+    for (i=0;i<pessoas.length;i++) porId[pessoas[i].funcionario_id]=pessoas[i];
+    for (i=0;i<pessoas.length;i++) {
+      p=pessoas[i];
+      if (!p.gemeo_de||p.gemeo_de===p.funcionario_id||!porId[p.gemeo_de]) continue;
+      (liga[p.funcionario_id]=liga[p.funcionario_id]||{})[p.gemeo_de]=1;
+      (liga[p.gemeo_de]=liga[p.gemeo_de]||{})[p.funcionario_id]=1;
+    }
+    for (var id in liga) {
+      if (mapa[id]) continue;
+      var fila=[id], visto={}; visto[id]=1;
+      while (fila.length) { var a=fila.pop(); for (var b in liga[a]) if (!visto[b]) { visto[b]=1; fila.push(b); } }
+      var ids=Object.keys(visto).sort();
+      var membros=ids.map(function(k){ return {funcionario_id:k, nome:String(porId[k].nome||'')}; });
+      membros.sort(function(x,y){ return x.nome<y.nome?-1:x.nome>y.nome?1:(x.funcionario_id<y.funcionario_id?-1:1); });
+      var g={chave:'gemeos:'+ids.join(','), membros:membros};
+      for (i=0;i<ids.length;i++) mapa[ids[i]]=g;
+    }
+  } catch(x) { return {}; }
+  return mapa;
+}
+// Nomes de gêmeos costumam diferir numa palavra só (ANA LAIZA × ANA LUIZA): o
+// botão põe em letra grande a primeira palavra que muda de um pro outro.
+function pfGemeoPartes(membros){
+  var ws=membros.map(function(m){ return String(m.nome||'').trim().split(' ').filter(function(w){ return w; }); });
+  var k=0;
+  for (;;) {
+    var igual=true;
+    for (var i=0;i<ws.length;i++) if (k>=ws[i].length||ws[i][k]!==ws[0][k]) igual=false;
+    if (!igual) break;
+    k++;
+  }
+  return ws.map(function(w, i){
+    if (k>=w.length) return {antes:'', forte:w.join(' ')||String(membros[i].nome||'?'), resto:'', curto:w.join(' ')||'você'};
+    return {antes:w.slice(0,k).join(' '), forte:w[k], resto:w.slice(k+1).join(' '), curto:w.slice(0,k+1).join(' ')};
+  });
+}
+function pfGemeoSai(){
+  clearTimeout(PF_GEMEO_T); PF_GEMEO_T=null; PF_GEMEO_SEQ++;
+  var m=document.getElementById('pfModal'); if (m) m.classList.remove('pfgemeo');
+}
+function pfPerguntaGemeo(gem, aviso){
+  pfGemeoSai();
+  PF_OCUPADO=true; // segura o pfTick enquanto a pessoa escolhe
+  clearTimeout(PF_FECHA_T);
+  var seq=PF_GEMEO_SEQ, partes=pfGemeoPartes(gem.membros);
+  document.getElementById('pfModal').classList.add('pfgemeo');
+  var o=document.getElementById('pfOval'); if (o) o.className='pfoval ok';
+  document.getElementById('pfStatus').textContent='Quem é você?';
+  document.getElementById('pfSub').textContent=aviso||'toque no SEU nome pra bater o ponto';
+  var h='<div class="pfgem" id="pfGem">';
+  for (var i=0;i<gem.membros.length;i++)
+    h+='<button data-i="'+i+'">'+esc(partes[i].antes)+'<b>'+esc(partes[i].forte)+'</b>'+
+      (partes[i].resto?'<small>'+esc(partes[i].resto)+'</small>':'')+'</button>';
+  h+='<button class="pfgnao" data-i="-1">Meu nome não está aqui</button></div>';
+  document.getElementById('pfExtra').innerHTML=h;
+  // toque que já vinha a caminho quando a pergunta apareceu não escolhe ninguém
+  var liberaEm=performance.now()+600;
+  document.getElementById('pfGem').querySelectorAll('button').forEach(function(btn){
+    btn.onclick=function(){
+      if (seq!==PF_GEMEO_SEQ||performance.now()<liberaEm) return;
+      var n=Number(btn.getAttribute('data-i'));
+      if (n<0) pfGemeoNenhum(); else pfGemeoEscolhe(gem, gem.membros[n], partes[n].curto);
+    };
+  });
+  PF_GEMEO_T=setTimeout(function(){ if (seq===PF_GEMEO_SEQ) pfGemeoVolta(); }, PF_GEMEO_MS);
+}
+// ninguém tocou: volta a olhar a câmera, como se a pergunta não tivesse aparecido
+function pfGemeoVolta(){
+  pfGemeoSai();
+  var m=document.getElementById('pfModal'); if (!m||!m.classList.contains('on')) return;
+  document.getElementById('pfExtra').innerHTML='';
+  document.getElementById('pfSub').textContent='';
+  PF_OCUPADO=false; PF_SEQ=null; PF_INCERTO=0;
+  pfSt('Encaixe o rosto no molde');
+  if (!PF_LOOP) PF_LOOP=setInterval(pfTick,250);
+}
+// quem está na câmera não é nenhum dos irmãos: mesmo caminho do "Não sou eu"
+// (lista de quem ainda não tem rosto, com a média dos quadros lidos)
+function pfGemeoNenhum(){
+  pfGemeoSai();
+  document.getElementById('pfExtra').innerHTML='';
+  PF_OCUPADO=false; PF_SEQ=null; PF_INCERTO=0;
+  if (PF_AMOSTRAS.length) { pfMostraListaCadastro(pfMedia(PF_AMOSTRAS)); return; }
+  document.getElementById('pfSub').textContent='';
+  pfSt('Olhe para a câmera de novo');
+  if (!PF_LOOP) PF_LOOP=setInterval(pfTick,250);
+}
+async function pfGemeoEscolhe(gem, membro, curto){
+  pfGemeoSai();
+  document.getElementById('pfExtra').innerHTML='';
+  document.getElementById('pfSub').textContent=''; // senão o "toque no SEU nome" fica embaixo do aviso de espera
+  var tm=PF_TEMPOS||(PF_TEMPOS={});
+  tm.via='gemeos';
+  var r=null;
+  try { r=await pfBater({funcionario_id:membro.funcionario_id, nome:membro.nome}); } catch(x) {}
+  PF_OCUPADO=false;
+  if (!r||!r.ok) { if (tm.via==='gemeos') tm.via=null; return; }
+  // o "desfazer" de quem tocou no nome do irmão mostra o nome que separa os
+  // dois e volta pra pergunta (o de sempre mostra só o primeiro nome e abre a
+  // lista de cadastro)
+  var b=document.getElementById('pfNaoSou');
+  if (b&&r.batida_id) {
+    b.textContent='✋ Não sou '+curto+' — desfazer';
+    b.onclick=function(){ pfGemeoDesfaz(r.batida_id, gem); };
+  }
+}
+async function pfGemeoDesfaz(batidaId, gem){
+  clearTimeout(PF_FECHA_T);
+  document.getElementById('pfExtra').innerHTML='';
+  document.getElementById('pfSub').textContent='';
+  document.getElementById('pfStatus').textContent='Desfazendo…';
+  var r;
+  try {
+    r=await (await fetch('/api/ponto/anular',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({batida_id:batidaId})})).json();
+  } catch(e){ r={ok:false,erro:'sem conexão com o servidor da loja'}; }
+  if (!r.ok) {
+    document.getElementById('pfStatus').textContent=r.erro||'Não consegui desfazer';
+    PF_FECHA_T=setTimeout(fecharPontoFacial, 6000);
+    return;
+  }
+  var m=document.getElementById('pfModal'); if (!m||!m.classList.contains('on')) return;
+  pfPerguntaGemeo(gem, 'Desfeito ✓ — nada foi registrado. Toque no SEU nome');
 }
 async function pfNaoSouEu(batidaId){
   clearTimeout(PF_FECHA_T);
@@ -15932,6 +16181,7 @@ function fecharPontoFacial(){
     }
   } catch(x) {}
   PF_CAD_OK=null;
+  pfGemeoSai(); // pergunta "Quem é você?" na tela: solta o relógio e o molde pequeno
   clearInterval(PF_LOOP); PF_LOOP=null; PF_OCUPADO=false; PF_PROCESSANDO=false; PF_CADASTRANDO=null;
   clearTimeout(PF_FECHA_T); PF_SEQ=null; PF_INCERTO=0; PF_AMOSTRAS=[];
   clearTimeout(PF_LISTA_T);
