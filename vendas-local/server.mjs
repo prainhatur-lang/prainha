@@ -8892,7 +8892,8 @@ async function apiLioFecharCaixa(garcom) {
 // Separação do dono: caixa da MAQUININHA (nasce sozinho ao receber no terminal,
 // só cartão/Pix, sem gaveta) fecha SOZINHO de madrugada — não há o que contar.
 // Caixa do SISTEMA (aberto por gente no /caixa, tem dinheiro) fecha com
-// conferência humana — o loop NÃO toca nele. Desligar: app_config
+// conferência humana — o loop NÃO toca nele (exceção: o que não tem dinheiro
+// nenhum, ver dentro do loop). Desligar: app_config
 // caixa_autofechar='0'. Marca o dia em caixa_autofechar_dia (não repete).
 let cxAutoRodando = false;
 async function loopFecharCaixasMaquininha() {
@@ -8913,7 +8914,29 @@ async function loopFecharCaixasMaquininha() {
     const categorias = [];
     const usados = new Set(); // ver caixaMaquininhaConfere: par da Cielo é único na passada
     for (const c of abertos) {
-      if (!String(c.obs || '').startsWith('Aberto automaticamente')) continue; // sistema: não toca
+      if (!String(c.obs || '').startsWith('Aberto automaticamente')) {
+        // Caixa do SISTEMA segue fechando no balcão, com conferência — MENOS o
+        // que não tem dinheiro nenhum (pedido do dono, 10/10): abriu sem fundo,
+        // não recebeu em dinheiro e não teve sangria/despesa/suprimento. Não há
+        // gaveta pra contar, e aberto ele ficava dias engolindo o cartão do
+        // login (Mar: "isabel leandro", 01–10/10). Qualquer centavo de dinheiro
+        // ou leitura que falhe = não toca, como antes.
+        try {
+          const nasceuSis = new Date(c.abriu).getTime();
+          if (!Number.isFinite(nasceuSis) || Date.now() - nasceuSis < 6 * 3600 * 1000) continue; // caixa do expediente
+          if (Math.abs(Number(c.fundo) || 0) >= 0.005) continue;
+          const r = await fbResumoCaixa(c.codigo);
+          if (r.dinheiro >= 0.005 || r.entradas >= 0.005 || r.saidas >= 0.005) continue;
+          const upSis = await caixaFecharNoBanco(c.codigo, 0, 0);
+          if (upSis.ok) {
+            n++;
+            console.log(`[caixa] autofechar: caixa ${c.codigo} (sistema, ${c.quem || '?'}) sem dinheiro — fechado`);
+            try { await sql`INSERT INTO caixa_fechamento (caixa_codigo, login, informado, esperado, dif_dinheiro, obs)
+              VALUES (${c.codigo}, ${'sistema'}, ${sql.json({ dinheiro: 0 })}, ${sql.json({ dinheiro: 0 })}, 0, ${'Fechamento automático — caixa de gaveta sem dinheiro (sem fundo, sem recebimento em dinheiro, sem sangria/despesa/suprimento)'})`; } catch {}
+          }
+        } catch (e) { console.error(`[caixa] autofechar: caixa ${c.codigo} (sistema) não conferido — fica aberto:`, e.message); }
+        continue;
+      }
       const cod = c.codigo;
       // Caixa com menos de 2h não se toca: fbCaixaMaquininha ABRE o caixa antes
       // de inserir o pagamento, então um caixa recém-nascido pode estar vazio só
