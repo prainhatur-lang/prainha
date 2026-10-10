@@ -124,6 +124,12 @@ export async function BlocoTripadvisor({ filiais }: { filiais: Array<{ id: strin
               </li>
             ))}
           </ul>
+          {/* o "sem resposta" vem da leitura do TripAdvisor e atrasa: em 10/10 a 1★ da
+              Tabuará já tinha resposta da gerência na página havia 4 dias e aqui seguia sem */}
+          <p className="mt-2 text-xs text-rose-800/80">
+            Este aviso pode estar atrasado: o TripAdvisor demora dias pra informar que a casa já
+            respondeu. Antes de escrever outra resposta, abra a avaliação e confira na página.
+          </p>
         </div>
       )}
 
