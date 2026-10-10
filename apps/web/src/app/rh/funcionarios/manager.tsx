@@ -72,6 +72,8 @@ interface Props {
   cargos: string[];
   /** Todas as filiais do usuário (pra "também trabalha em" e pra nomear a lotação). */
   filiais: { id: string; nome: string }[];
+  /** Vindo da ficha (?editar=<id>): já abre com o cadastro dessa pessoa em edição. */
+  editarInicial?: string | null;
 }
 
 const PAPEL_LABEL: Record<string, string> = {
@@ -130,10 +132,10 @@ function resumoAcordo(pg: Pagamento): string {
   return partes.join(' · ');
 }
 
-export function FuncionariosManager({ filialId, filialNome, funcionarios, cargos, filiais }: Props) {
+export function FuncionariosManager({ filialId, filialNome, funcionarios, cargos, filiais, editarInicial }: Props) {
   const router = useRouter();
   const [criando, setCriando] = useState(false);
-  const [editando, setEditando] = useState<string | null>(null);
+  const [editando, setEditando] = useState<string | null>(editarInicial ?? null);
   const [msg, setMsg] = useState<{ tipo: 'ok' | 'erro'; texto: string } | null>(null);
   // Busca: a filial tem ~60 pessoas e rolar a tabela inteira pra achar alguém
   // (ex: o gerente que também trabalha na outra loja) é um saco.
@@ -295,7 +297,10 @@ export function FuncionariosManager({ filialId, filialNome, funcionarios, cargos
             {desligados.map((f) => (
               <li key={f.id} className="flex items-center justify-between gap-3 px-5 py-2 text-sm text-slate-500">
                 <span>
-                  {f.nome} — desligado em {fmtData(f.dataDesligamento)}
+                  <a href={`/rh/funcionarios/${f.id}`} className="hover:text-blue-700 hover:underline" title="Abrir a ficha">
+                    {f.nome}
+                  </a>{' '}
+                  — desligado em {fmtData(f.dataDesligamento)}
                   {f.observacao ? ` · ${f.observacao}` : ''}
                 </span>
                 <button
@@ -377,9 +382,15 @@ function FuncionarioRow({
   const pg = f.pagamento;
   return (
     <>
-      <tr className={`hover:bg-slate-50 ${f.precisaRevisao ? 'bg-amber-50/50' : ''}`}>
+      <tr id={`f-${f.id}`} className={`scroll-mt-24 hover:bg-slate-50 ${f.precisaRevisao ? 'bg-amber-50/50' : ''}`}>
         <td className="px-4 py-2 font-medium text-slate-900">
-          {f.nome}
+          <a
+            href={`/rh/funcionarios/${f.id}`}
+            className="hover:text-blue-700 hover:underline"
+            title="Abrir a ficha: cadastro, folha, ponto e banco de horas"
+          >
+            {f.nome}
+          </a>
           {f.setor && <span className="ml-1 text-[10px] font-normal text-slate-400">{f.setor}</span>}
         </td>
         <td className="px-4 py-2 text-slate-600">{fmtCpf(f.cpf)}</td>

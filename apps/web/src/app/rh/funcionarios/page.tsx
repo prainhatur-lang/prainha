@@ -21,6 +21,8 @@ export const dynamic = 'force-dynamic';
 
 interface SP {
   filialId?: string;
+  /** Vindo da ficha da pessoa: abre a lista com o cadastro dela em edição. */
+  editar?: string;
 }
 
 export default async function FuncionariosPage(props: { searchParams: Promise<SP> }) {
@@ -229,6 +231,7 @@ export default async function FuncionariosPage(props: { searchParams: Promise<SP
         )}
 
         <FuncionariosManager
+          editarInicial={sp.editar ?? null}
           filialId={filialId}
           filialNome={filialSelecionada.nome}
           funcionarios={funcionarios.map((f) => {
