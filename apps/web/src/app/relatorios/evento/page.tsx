@@ -2,20 +2,23 @@
 // na mesa e cada um vale um ticket que a casa recebe por fora (ex.: R$ 70). Aqui
 // o dono vê quantos pratos saíram no dia, quanto isso dá em tickets e quanto as
 // mesmas contas pagaram de bebida e do resto no PDV — o faturamento do evento.
-// Só leitura: nada é gravado, a escolha dos pratos e o valor moram na URL.
+// A contagem é só leitura do PDV. O cadastro do evento (evento_ticket) guarda
+// casa, dia, nome, quem paga, ticket, convidados combinados e os pratos; ao
+// encerrar vira conta a receber. Sem cadastro, a escolha continua morando na URL.
 
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
-import { db } from '@concilia/db';
-import { sql, type SQL } from 'drizzle-orm';
+import { db, schema } from '@concilia/db';
+import { desc, inArray, sql, type SQL } from 'drizzle-orm';
 import { createClient } from '@/lib/supabase/server';
 import { exigirPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { AppHeader } from '@/components/app-header';
 import { brl, int, parseValorBr } from '@/lib/format';
-import { dateToBrYmd } from '@/lib/datas';
+import { dateToBrYmd, hojeBr } from '@/lib/datas';
 import { rotuloDia, somaDias } from '@/lib/relatorio-diario';
+import { EventoCard, type EventoNaTela } from './evento-card';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,6 +30,8 @@ interface SP {
   p?: string | string[];
   /** veio do formulário: sem isso, vale a escolha automática */
   sel?: string;
+  /** evento cadastrado (evento_ticket.id): traz casa, dia, ticket e pratos */
+  evento?: string;
 }
 
 /** Prato "de ticket" é o lançado por até um centavo. */
@@ -54,18 +59,44 @@ export default async function RelatorioEventoPage(props: { searchParams: Promise
 
   const sp = await props.searchParams;
   const filiais = await filiaisDoUsuario(user.id);
-  const escolhida = await escolherFilial(filiais, sp.filialId);
+  const veioDoForm = sp.sel === '1';
+
+  // Eventos cadastrados nas casas de quem está vendo (lista + o que está aberto).
+  const idsFiliais = filiais.map((f) => f.id);
+  const eventos = idsFiliais.length
+    ? await db
+        .select()
+        .from(schema.eventoTicket)
+        .where(inArray(schema.eventoTicket.filialId, idsFiliais))
+        .orderBy(desc(schema.eventoTicket.dia), desc(schema.eventoTicket.criadoEm))
+        .limit(80)
+    : [];
+  let eventoSel = sp.evento ? (eventos.find((e) => e.id === sp.evento) ?? null) : null;
+  // Mudou a casa ou o dia no formulário: já não é mais aquele evento.
+  if (eventoSel && veioDoForm && ((sp.dia && sp.dia !== eventoSel.dia) || (sp.filialId && sp.filialId !== eventoSel.filialId))) {
+    eventoSel = null;
+  }
+
+  const escolhida = await escolherFilial(filiais, eventoSel?.filialId ?? sp.filialId);
   if (!escolhida) redirect('/');
   const filial = escolhida;
 
   // dia operacional em andamento (vira às 05:00)
   const emAndamento = dateToBrYmd(new Date(Date.now() - 5 * 3600 * 1000));
-  const pedido = sp.dia && /^\d{4}-\d{2}-\d{2}$/.test(sp.dia) ? sp.dia : emAndamento;
+  const pedido = eventoSel ? eventoSel.dia : sp.dia && /^\d{4}-\d{2}-\d{2}$/.test(sp.dia) ? sp.dia : emAndamento;
   const dia = pedido > emAndamento ? emAndamento : pedido;
+  // Sem escolha na URL e um só evento cadastrado nesse dia da casa: abre ele.
+  if (!eventoSel && !sp.evento && !veioDoForm && !sp.p && !sp.valor) {
+    const doDiaCasa = eventos.filter((e) => e.filialId === filial.id && e.dia === dia);
+    if (doDiaCasa.length === 1) eventoSel = doDiaCasa[0];
+  }
+  const evento = eventoSel;
+  // Evento aberto aceita a prévia do formulário; encerrado vale o cadastro.
+  const valeCadastro = !!evento && (!veioDoForm || evento.status !== 'ABERTO');
   const ini = `${dia}T05:00:00-03:00`;
   const fim = `${somaDias(dia, 1)}T05:00:00-03:00`;
   const valorLido = parseValorBr(sp.valor ?? '');
-  const valorTicket = valorLido != null && valorLido > 0 ? valorLido : 70;
+  const valorTicket = valeCadastro && evento ? Number(evento.valorTicket) : valorLido != null && valorLido > 0 ? valorLido : 70;
 
   const doDia = sql`pi.filial_id = ${filial.id} AND pi.data_delete IS NULL
     AND pi.data_hora_cadastro >= ${ini}::timestamptz AND pi.data_hora_cadastro < ${fim}::timestamptz`;
@@ -95,13 +126,16 @@ export default async function RelatorioEventoPage(props: { searchParams: Promise
     `),
   ]);
 
-  const veioDoForm = sp.sel === '1';
   const pedidos = (Array.isArray(sp.p) ? sp.p : sp.p ? [sp.p] : [])
     .map((x) => Number(x))
     .filter((n) => Number.isInteger(n) && n > 0);
   // Sem escolha feita: valem todos os pratos de 1 centavo que saíram no dia.
   const marcados = new Set<number>(
-    veioDoForm || pedidos.length ? pedidos : vendidos.map((v) => Number(v.cod)),
+    valeCadastro && evento
+      ? (evento.produtos ?? []).map(Number)
+      : veioDoForm || pedidos.length
+        ? pedidos
+        : vendidos.map((v) => Number(v.cod)),
   );
 
   const opcoes = new Map<number, { cod: number; nome: string; qtd: number; contas: number; primeiro: string | null; ultimo: string | null }>();
@@ -157,6 +191,30 @@ export default async function RelatorioEventoPage(props: { searchParams: Promise
   const maiorHora = Math.max(1, ...porHora.map((h) => h.pratos));
 
   const base = `/relatorios/evento?filialId=${filial.id}&valor=${valorTicket}${veioDoForm || pedidos.length ? `&sel=1${codigos.map((c) => `&p=${c}`).join('')}` : ''}`;
+  const atualizar = evento
+    ? `/relatorios/evento?evento=${evento.id}${veioDoForm && !valeCadastro ? `&sel=1&valor=${valorTicket}${codigos.map((c) => `&p=${c}`).join('')}` : ''}`
+    : `${base}&dia=${dia}`;
+
+  const eventoNaTela: EventoNaTela | null = evento
+    ? {
+        id: evento.id,
+        nome: evento.nome,
+        pagador: evento.pagador,
+        convidados: evento.convidados,
+        observacao: evento.observacao,
+        status: evento.status,
+        valorTicket: Number(evento.valorTicket),
+        pratos: evento.pratos != null ? Number(evento.pratos) : null,
+        valorTickets: evento.valorTickets != null ? Number(evento.valorTickets) : null,
+        valorPdv: evento.valorPdv != null ? Number(evento.valorPdv) : null,
+        valorRecebido: Number(evento.valorRecebido ?? 0),
+        recebimentos: (evento.recebimentos ?? []).map((r) => ({ data: r.data, valor: Number(r.valor), forma: r.forma, observacao: r.observacao })),
+      }
+    : null;
+  const nomeCasa = new Map(filiais.map((f) => [f.id, f.nome]));
+  const aReceber = eventos
+    .filter((e) => e.status === 'ENCERRADO')
+    .reduce((s, e) => s + Number(e.valorTickets ?? 0) - Number(e.valorRecebido ?? 0), 0);
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -186,7 +244,7 @@ export default async function RelatorioEventoPage(props: { searchParams: Promise
               </Link>
             )}
             <Link
-              href={`${base}&dia=${dia}`}
+              href={atualizar}
               className="rounded-lg bg-slate-900 px-3 py-2 font-medium text-white hover:bg-slate-700"
             >
               Atualizar
@@ -210,8 +268,22 @@ export default async function RelatorioEventoPage(props: { searchParams: Promise
           <KPI label="Faturamento do evento" valor={brl(emTickets + noPdv)} sub="tickets + contas no PDV" />
         </div>
 
+        <EventoCard
+          key={`${evento?.id ?? 'novo'}-${evento?.status ?? ''}-${evento?.recebimentos?.length ?? 0}-${filial.id}-${dia}`}
+          evento={eventoNaTela}
+          filialId={filial.id}
+          filialNome={filial.nome}
+          dia={dia}
+          diaRotulo={rotuloDia(dia)}
+          hoje={hojeBr()}
+          valorTicket={valorTicket}
+          codigos={codigos}
+          vivo={{ pratos, emTickets, noPdv, abertas }}
+        />
+
         <form action="/relatorios/evento" className="rounded-lg border border-slate-200 bg-white p-4 text-sm">
           <input type="hidden" name="sel" value="1" />
+          {evento && <input type="hidden" name="evento" value={evento.id} />}
           <div className="flex flex-wrap items-end gap-3">
             <label className="flex flex-col gap-1">
               <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">Casa</span>
@@ -344,6 +416,70 @@ export default async function RelatorioEventoPage(props: { searchParams: Promise
             <p className="mt-2 text-[11px] text-slate-400">
               Conta no PDV é o total da conta (bebidas, outros itens e serviço), que o convidado paga na casa. O centavo
               de cada prato está dentro dele.
+            </p>
+          </div>
+        )}
+
+        {eventos.length > 0 && (
+          <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Eventos cadastrados</h3>
+              <p className="text-slate-700">
+                A receber de eventos: <b className={aReceber > 0.005 ? 'text-amber-700' : 'text-slate-400'}>{brl(aReceber)}</b>
+              </p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="mt-2 w-full min-w-[760px] text-left">
+                <thead className="text-[11px] uppercase tracking-wide text-slate-400">
+                  <tr>
+                    <th className="py-1 pr-3 font-medium">Evento</th>
+                    <th className="py-1 pr-3 font-medium">Casa · dia</th>
+                    <th className="py-1 pr-3 font-medium">Quem paga</th>
+                    <th className="py-1 pr-3 text-right font-medium">Pratos</th>
+                    <th className="py-1 pr-3 text-right font-medium">Tickets</th>
+                    <th className="py-1 pr-3 text-right font-medium">Recebido</th>
+                    <th className="py-1 text-right font-medium">Falta</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {eventos.map((e) => {
+                    const devido = Number(e.valorTickets ?? 0);
+                    const recebido = Number(e.valorRecebido ?? 0);
+                    const contando = e.status === 'ABERTO';
+                    return (
+                      <tr key={e.id} className={evento?.id === e.id ? 'bg-slate-50' : ''}>
+                        <td className="py-1.5 pr-3">
+                          <Link href={`/relatorios/evento?evento=${e.id}`} className="font-medium text-slate-900 underline decoration-slate-300">
+                            {e.nome}
+                          </Link>
+                          <span
+                            className={`ml-2 text-xs ${
+                              e.status === 'RECEBIDO' ? 'text-emerald-700' : contando ? 'text-sky-700' : 'text-amber-700'
+                            }`}
+                          >
+                            {e.status === 'RECEBIDO' ? 'recebido' : contando ? 'contando' : 'a receber'}
+                          </span>
+                        </td>
+                        <td className="py-1.5 pr-3 text-slate-500">
+                          {nomeCasa.get(e.filialId) ?? '—'} · {e.dia.split('-').reverse().join('/')}
+                        </td>
+                        <td className="py-1.5 pr-3 text-slate-700">{e.pagador ?? '—'}</td>
+                        <td className="py-1.5 pr-3 text-right">
+                          {contando ? '—' : int(Number(e.pratos ?? 0))}
+                          {e.convidados ? <span className="text-slate-400"> / {int(e.convidados)}</span> : null}
+                        </td>
+                        <td className="py-1.5 pr-3 text-right">{contando ? `× ${brl(Number(e.valorTicket))}` : brl(devido)}</td>
+                        <td className="py-1.5 pr-3 text-right">{contando ? '—' : brl(recebido)}</td>
+                        <td className="py-1.5 text-right font-medium">{contando ? '—' : brl(Math.max(0, devido - recebido))}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="mt-2 text-[11px] text-slate-400">
+              Pratos / combinado. "Contando" ainda soma no PDV; ao encerrar, a conta fica travada e entra no a receber até o
+              dinheiro ser registrado.
             </p>
           </div>
         )}

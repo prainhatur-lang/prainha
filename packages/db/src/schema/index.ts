@@ -48,3 +48,4 @@ export * from './transferencia';
 export * from './nfe';
 export * from './relatorio-diario';
 export * from './faturamento-historico';
+export * from './evento-ticket';

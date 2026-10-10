@@ -163,7 +163,8 @@
     "migrate:cancelamento-lancado": "tsx scripts/migrate-cancelamento-lancado.ts",
     "migrate:nfe-cupom": "tsx scripts/migrate-nfe-cupom.ts",
     "migrate:nfe-destinatario": "tsx scripts/migrate-nfe-destinatario.ts",
-    "migrate:faturamento-historico": "tsx scripts/migrate-faturamento-historico.ts"
+    "migrate:faturamento-historico": "tsx scripts/migrate-faturamento-historico.ts",
+    "migrate:evento-ticket": "tsx scripts/migrate-evento-ticket.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",
