@@ -138,6 +138,10 @@ export async function medirOcupacaoHoje(
     WHERE filial_id = ${filialId}
       AND status IN ('aguardando', 'chamado')
       AND (criado_em AT TIME ZONE 'America/Maceio')::date = ${hoje}::date
+      -- Nome que a própria Nina anota ("cliente a caminho") só pesa por 2 h:
+      -- ninguém dá baixa nele, e em 10/10 um nome das 13:22 ainda contava
+      -- como fila no fim da tarde. O que a recepção lança vale até dar baixa.
+      AND (coalesce(observacao, '') NOT ILIKE 'Entrou pela Nina%' OR criado_em > now() - interval '2 hours')
   `)) as unknown as Array<{ n: number }>;
   const esperaRecepcao = esp?.n ?? 0;
   const reservasFuturasHoje = res?.futuras ?? 0;
