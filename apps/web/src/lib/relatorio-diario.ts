@@ -13,6 +13,7 @@ import { db } from '@concilia/db';
 import { sql, type SQL } from 'drizzle-orm';
 import { dateToBrYmd } from './datas';
 import { chamarLojaCaixa } from './caixa-loja';
+import { contarEvento } from './evento-ticket';
 
 const TZ = 'America/Sao_Paulo';
 const DIA_MS = 24 * 3600 * 1000;
@@ -275,7 +276,25 @@ export interface RelatorioCasa {
   jornadasLongas: Array<{ nome: string; minutos: number }>;
   /** gavetas, saídas de dinheiro e maquininhas sem fechar — nulo se a casa não tem a loja ligada */
   caixa: CaixaDia | null;
+  /** eventos com prato "de ticket" cadastrados no dia (evento_ticket) — receita que não passa pelo PDV */
+  eventos?: EventoDia[];
   atencao: string[];
+}
+
+/** Evento com prato de ticket: o prato entra a R$ 0,01 e a casa recebe o ticket por fora. */
+export interface EventoDia {
+  id: string;
+  nome: string;
+  pagador: string | null;
+  valorTicket: number;
+  convidados: number | null;
+  /** 'ABERTO' (contagem ao vivo) | 'ENCERRADO' (a receber) | 'RECEBIDO' */
+  status: string;
+  pratos: number;
+  emTickets: number;
+  /** o que as contas com prato do evento somam no PDV (já está no faturamento do dia) */
+  pdv: number;
+  recebido: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -1417,6 +1436,30 @@ export async function montarRelatorioOrganizacao(organizacaoId: string, dia: str
   return montarRelatorioFiliais(filiais, dia);
 }
 
+/** Eventos de ticket cadastrados na casa nesse dia: encerrado vale a foto, aberto conta ao vivo. */
+async function eventosDoDia(filialId: string, dia: string): Promise<EventoDia[]> {
+  const linhas = await q<{
+    id: string; nome: string; pagador: string | null; valor_ticket: string; convidados: number | null; status: string;
+    produtos: number[] | null; pratos: string | null; valor_tickets: string | null; valor_pdv: string | null; valor_recebido: string | null;
+  }>(sql`
+    SELECT id, nome, pagador, valor_ticket, convidados, status, produtos, pratos, valor_tickets, valor_pdv, valor_recebido
+      FROM evento_ticket
+     WHERE filial_id = ${filialId} AND dia = ${dia}::date
+     ORDER BY criado_em
+  `);
+  return Promise.all(
+    linhas.map(async (e) => {
+      const valorTicket = Number(e.valor_ticket);
+      const base = { id: e.id, nome: e.nome, pagador: e.pagador, valorTicket, convidados: e.convidados, status: e.status, recebido: Number(e.valor_recebido ?? 0) };
+      if (e.status !== 'ABERTO') {
+        return { ...base, pratos: Number(e.pratos ?? 0), emTickets: Number(e.valor_tickets ?? 0), pdv: Number(e.valor_pdv ?? 0) };
+      }
+      const c = await contarEvento(filialId, dia, (e.produtos ?? []).map(Number));
+      return { ...base, pratos: c.pratos, emTickets: Math.round(c.pratos * valorTicket * 100) / 100, pdv: c.pdv };
+    }),
+  );
+}
+
 export async function montarRelatorioFiliais(
   filiais: Array<{ id: string; nome: string; caixa_url?: string | null }>,
   dia: string,
@@ -1424,10 +1467,23 @@ export async function montarRelatorioFiliais(
   const casas = await Promise.all(
     filiais.map(async (f) => {
       // O caixa vem da loja em paralelo com o resto; casa sem loja ligada fica sem.
-      const [casa, caixa] = await Promise.all([
+      const [casa, caixa, eventos] = await Promise.all([
         (async () => montarRelatorioCasa(f, dia, await metasDaLoja(f.caixa_url ?? null)))(),
         f.caixa_url?.trim() ? caixaDaLoja(f.id, dia) : Promise.resolve(null),
+        // Evento de ticket é extra: se a leitura falhar, o relatório sai sem ele.
+        eventosDoDia(f.id, dia).catch(() => [] as EventoDia[]),
       ]);
+      if (eventos.length) {
+        casa.eventos = eventos;
+        for (const e of eventos) {
+          if (e.status === 'ABERTO' && e.pratos > 0) {
+            casa.atencao.push(`Evento "${e.nome}" ainda não foi encerrado: ${e.pratos} pratos (${reais(e.emTickets)} em tickets) sem lançar a receber`);
+          }
+          if (e.convidados && e.pratos > e.convidados) {
+            casa.atencao.push(`Evento "${e.nome}": saíram ${e.pratos} pratos e o combinado era ${e.convidados} — ${e.pratos - e.convidados} a mais`);
+          }
+        }
+      }
       if (caixa) {
         casa.caixa = caixa;
         casa.atencao.push(...atencaoDoCaixa(caixa));
@@ -1534,6 +1590,13 @@ function textoCasa(c: RelatorioCasa): string {
   const m = c.movimento;
   const comp = c.semanaPassada.total > 0 ? ` (semana passada: ${reais(c.semanaPassada.total, false)})` : '';
   L.push(`💰 ${reais(m.total)} · ${pl(m.contas, 'conta', 'contas')} · ticket ${reais(m.ticket)}${comp}`);
+  for (const e of c.eventos ?? []) {
+    const sit = e.status === 'RECEBIDO' ? 'já recebido' : `a receber${e.pagador ? ` de ${e.pagador}` : ''}${e.status === 'ABERTO' ? ', ainda contando' : ''}`;
+    L.push(
+      `🎟️ Evento ${e.nome}: ${pl(e.pratos, 'prato', 'pratos')} × ${reais(e.valorTicket)} = ${reais(e.emTickets)} em tickets (${sit}) — por fora do PDV. ` +
+        `Com o evento, o dia soma ${reais(m.total + e.emTickets)}.`,
+    );
+  }
   const pers = c.periodos
     .map(
       (p) =>

@@ -289,6 +289,20 @@ function Casa({ c }: { c: RelatorioCasa }) {
         </p>
       </div>
 
+      {(c.eventos ?? []).map((e) => (
+        <div key={e.id} className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+          🎟️ <b>Evento {e.nome}</b>: {int(e.pratos)} pratos × {brl(e.valorTicket)} = <b>{brl(e.emTickets)}</b> em tickets
+          {e.status === 'RECEBIDO'
+            ? ' (já recebido)'
+            : ` (a receber${e.pagador ? ` de ${e.pagador}` : ''}${e.recebido > 0 ? `, ${brl(e.recebido)} já entrou` : ''}${e.status === 'ABERTO' ? ', ainda contando' : ''})`}
+          {e.convidados ? ` · combinado ${int(e.convidados)}` : ''} — por fora do PDV. Com o evento, o dia soma{' '}
+          <b>{brl(c.movimento.total + e.emTickets)}</b> ({brl(e.pdv)} das contas do evento já estão no faturamento abaixo).{' '}
+          <Link href={`/relatorios/evento?evento=${e.id}`} className="underline">
+            abrir o evento
+          </Link>
+        </div>
+      ))}
+
       <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <KPI
           label="Faturamento"
