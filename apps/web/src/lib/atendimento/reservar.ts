@@ -13,9 +13,11 @@
 
 import { db, schema } from '@concilia/db';
 import type { AreaReserva, ReservaConfig } from '@concilia/db/schema';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, gte, sql } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
 import { hojeBr, horaAgoraBr } from '@/lib/datas';
+import { hashCpf, spcConfigurado } from '@/lib/spc';
+import { identificarPorCpf } from '@/lib/identificar-cpf';
 import { registrarAlteracoesReserva } from '@/lib/reservas/alteracoes';
 import { medirOcupacaoHoje } from './ocupacao';
 import { estornarReservaSePago } from '@/lib/reservas/estorno';
@@ -708,6 +710,39 @@ export interface DadosCriarReserva {
   observacao?: string | null;
 }
 
+/** Consultas PAGAS ao SPC que a Nina pode disparar por filial em 1 hora —
+ *  mesmo teto da reserva pelo site. CPF já consultado sai do cache, de graça. */
+const TETO_SPC_HORA_NINA = 40;
+
+/** Nome completo de quem é o CPF, pela cascata de @/lib/identificar-cpf.
+ *  '' quando ninguém conhece (ou a consulta falhou) — a reserva segue. */
+async function nomePeloCpf(cpf: string, filialId: string): Promise<string> {
+  try {
+    let permitirSpc = spcConfigurado();
+    if (permitirSpc) {
+      const [jaTem] = await db
+        .select({ cpfHash: schema.spcConsulta.cpfHash })
+        .from(schema.spcConsulta)
+        .where(eq(schema.spcConsulta.cpfHash, hashCpf(cpf)))
+        .limit(1);
+      if (!jaTem) {
+        const [{ n }] = await db
+          .select({ n: sql<number>`count(*)::int` })
+          .from(schema.spcConsulta)
+          .where(and(eq(schema.spcConsulta.filialId, filialId), gte(schema.spcConsulta.consultadoEm, sql`now() - interval '1 hour'`)));
+        if (n >= TETO_SPC_HORA_NINA) permitirSpc = false;
+      }
+    }
+    const r = await identificarPorCpf(cpf, filialId, { permitirSpc });
+    const nome = nomeReal(r.dados.nome);
+    console.log(`[nina] ferramenta nome pelo CPF: fonte=${r.fonte} achou=${nome ? 'sim' : 'não'}${r.erroSpc ? ` erroSpc=${r.erroSpc}` : ''}`);
+    return nome;
+  } catch (e) {
+    console.warn('[nina] nome pelo CPF falhou —', e instanceof Error ? e.message : e);
+    return '';
+  }
+}
+
 /** Cria a reserva com as MESMAS validações do site. Retorna texto pro modelo
  *  (sucesso com resumo, ou o motivo do bloqueio pra oferecer alternativa). */
 export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string> {
@@ -720,6 +755,7 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
   const cpfDigitos = (p.cpf ?? '').replace(/\D/g, '');
   let clienteCpf: string | null = null;
   let nome = nomeReal(p.nome);
+  let nomeVeioDoCpf = false;
   if (cpfDigitos) {
     if (!cpfValido(cpfDigitos)) {
       return 'CPF inválido (dígito verificador não bate) — peça pro cliente conferir os 11 dígitos.';
@@ -734,6 +770,17 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
         LIMIT 1
       `)) as unknown as Array<{ nome: string | null }>;
       if (cli?.nome?.trim()) nome = nomeReal(cli.nome);
+    }
+    // Não achou no cadastro desta casa: mesmo caminho da reserva pelo site
+    // (casas irmãs → base do grupo → cache do SPC → SPC). Em 09/10 um cliente
+    // mandou só o CPF e a reserva saiu como "Cliente WhatsApp" — o dono cobrou:
+    // o caminho já existia no site e a Nina não usava.
+    if (!nome) {
+      const achado = await nomePeloCpf(cpfDigitos, p.filialId);
+      if (achado) {
+        nome = achado;
+        nomeVeioDoCpf = true;
+      }
     }
   }
   // Sem nome dito: usa o nome do perfil do WhatsApp (é de quem está falando).
@@ -863,7 +910,7 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
       ? ` (mesa ${mesaAlocada})`
       : '';
   const cpfTxt = clienteCpf ? ` (CPF final ${clienteCpf.slice(-3)})` : '';
-  return `RESERVA CRIADA: ${dataBr(p.data)} às ${p.hora}, ${pessoas} pessoa(s), ${areaCfg.nome}${mesaTxt}, em nome de ${nome}${cpfTxt}. Gratuita. Confirme ao cliente em uma frase (cite o nome; do CPF, no máximo os 3 últimos dígitos) e avise que a mesa fica guardada por 15 minutos após o horário.`;
+  return `RESERVA CRIADA: ${dataBr(p.data)} às ${p.hora}, ${pessoas} pessoa(s), ${areaCfg.nome}${mesaTxt}, em nome de ${nomeVeioDoCpf ? nome.split(' ')[0] : nome}${cpfTxt}. Gratuita. Confirme ao cliente em uma frase (cite o nome${nomeVeioDoCpf ? ' — só esse primeiro nome, que saiu do cadastro do CPF; não peça nem invente sobrenome' : ''}; do CPF, no máximo os 3 últimos dígitos) e avise que a mesa fica guardada por 15 minutos após o horário.`;
 }
 
 /** Remarca a reserva EXISTENTE (hora, dia, pessoas e/ou área) — a mesma
