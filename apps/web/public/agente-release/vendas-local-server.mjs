@@ -512,6 +512,12 @@ async function initSchema() {
   // colada nela depois do fechamento, e podia lancar na conta do proximo.
   await sql`CREATE TABLE IF NOT EXISTS mesa_estado (numero integer PRIMARY KEY,
     conta_codigo bigint, fechada_em timestamptz)`;
+  // QUANTAS PESSOAS NA MESA: a resposta da tela de abrir a mesa. A conta só
+  // nasce no primeiro lançamento, então a resposta de uma mesa ainda vazia
+  // espera aqui (conta_codigo NULL) e entra na conta quando ela nasce; depois
+  // fica marcada com a conta, que é como a tela sabe que alguém já informou.
+  await sql`CREATE TABLE IF NOT EXISTS mesa_pessoas (numero integer PRIMARY KEY,
+    pessoas integer NOT NULL, origem text, quem text, conta_codigo bigint, em timestamptz DEFAULT now())`;
   // ASSUNTO da reclamacao: demora, errado, frio, limpeza, outro. Sem isto o
   // chamado chegava como texto solto e a equipe nao sabia se corria pra
   // cozinha ou pro salao.
@@ -4553,6 +4559,131 @@ async function apiVendaMesa(mesa) {
   return { mesa: m, comandas: comandas.map((x) => x.comanda), nomes, cliente: nomes[m] || null, abertos,
     conta_pedida: !!cp[0]?.pedida };
 }
+// ---- QUANTAS PESSOAS NA MESA (10/10/2026) ----
+// A conta nascia sempre com 1 pessoa: ninguém perguntava. Agora quem abre a
+// mesa (garçom no celular, caixa, maquininha ou o próprio cliente no QR)
+// responde numa tela só disso, logo depois do número da mesa. Mesa que já tem
+// conta: grava nela na hora. Mesa ainda vazia: a resposta espera em
+// mesa_pessoas e entra na conta que nasce no primeiro lançamento
+// (apiVendaEnviar). Comanda fica de fora — é o cartão de UMA pessoa.
+const PESSOAS_MAX = 99;
+const PESSOAS_MAX_CLIENTE = 40; // o que o cliente pode dizer pelo QR, sem ninguém da casa conferir
+function pessoasValida(v, max = PESSOAS_MAX) {
+  const n = Math.trunc(Number(v));
+  return n >= 1 && n <= max ? n : null;
+}
+/** A resposta que ESPERA a conta nascer. Vale 1 hora e morre se a mesa fechou
+ *  uma conta depois dela (era de quem sentou antes). `recente` = acabou de
+ *  ser respondida, não precisa perguntar de novo. */
+async function pessoasEmEspera(numero) {
+  const r = (await sql`SELECT p.pessoas, p.origem, (p.em > now() - interval '10 minutes') AS recente
+    FROM mesa_pessoas p LEFT JOIN mesa_estado e ON e.numero = p.numero
+    WHERE p.numero=${Number(numero)} AND p.conta_codigo IS NULL AND p.em > now() - interval '1 hour'
+      AND (e.fechada_em IS NULL OR e.fechada_em < p.em)
+      AND NOT EXISTS (SELECT 1 FROM comanda c WHERE c.numero = p.numero AND c.fechada_em > p.em)`)[0];
+  return r ? { pessoas: Number(r.pessoas), origem: r.origem, recente: !!r.recente } : null;
+}
+// Só pra LER (decidir se pergunta): a conta aberta sai do Postgres — na casa
+// com Consumer é o espelho, que pode estar alguns segundos atrás. Errar aqui
+// custa no máximo uma pergunta a mais; ir ao Firebird custaria esperar atrás
+// do ciclo do espelho bem na hora de abrir a mesa.
+async function contaAbertaRapida(numero) {
+  if (nativo()) return pgAcharPedido(numero);
+  const c = (await sql`SELECT codigo FROM comanda WHERE numero=${Number(numero)}
+    AND fechada_em IS NULL AND cancelada_em IS NULL ORDER BY codigo DESC LIMIT 1`)[0];
+  return c ? Number(c.codigo) : null;
+}
+// Pra GRAVAR vale o original, e pela via das telas (qi): a mesma busca do
+// fbAcharPedido, sem ficar na fila do espelho.
+async function contaAbertaAgora(numero) {
+  if (nativo()) return pgAcharPedido(numero);
+  const r = await qi(`SELECT FIRST 1 p.CODIGO,
+      (SELECT COUNT(*) FROM ITENSPEDIDO i WHERE i.CODIGOPEDIDO = p.CODIGO AND i.DATADELETE IS NULL) N
+    FROM PEDIDOS p WHERE p.NUMERO=${Number(numero)} AND p.DATAFECHAMENTO IS NULL AND p.DATADELETE IS NULL
+    ORDER BY 2 DESC, 1 DESC`);
+  if (!r.ok) throw new Error('FB achar pedido: ' + r.err);
+  return r.rows.length ? Number(r.rows[0].CODIGO) : null;
+}
+async function gravarPessoasNaConta(ped, n) {
+  if (!nativo()) {
+    const r = await qi(`UPDATE PEDIDOS SET QUANTIDADEPESSOAS=${Number(n)} WHERE CODIGO=${Number(ped)}`);
+    if (!r.ok) throw new Error('FB pessoas: ' + r.err);
+  }
+  // no banco próprio é a conta; com Consumer é o espelho, de onde o KDS e o painel leem
+  await sql`UPDATE comanda SET qtd_pessoas=${Number(n)} WHERE codigo=${Number(ped)}`;
+}
+/** Conta que NASCE agora: entra com a quantidade que já foi respondida. */
+async function aplicarPessoasEmEspera(numero, ped) {
+  const n = Number(numero);
+  if (!(n >= 1 && n <= MESA_MAX) || !ped) return;
+  const e = await pessoasEmEspera(n);
+  if (!e) return;
+  await gravarPessoasNaConta(ped, e.pessoas);
+  await sql`UPDATE mesa_pessoas SET conta_codigo=${Number(ped)} WHERE numero=${n}`;
+}
+/** O que a tela precisa saber: a mesa tem conta? com quantas pessoas? alguém
+ *  já informou? é pra perguntar agora? `cliente` = a página do QR. Qualquer
+ *  falha aqui responde ok:false e a tela segue sem perguntar — a pergunta
+ *  nunca pode travar um lançamento. */
+async function apiPessoasVer(numero, cliente = false) {
+  const n = Number(numero);
+  if (!(n >= 1 && n <= MESA_MAX)) return { ok: false, erro: 'mesa inválida' };
+  try {
+    const ped = await contaAbertaRapida(n);
+    const temComanda = (await sql`SELECT 1 FROM mesa_comanda WHERE mesa=${n} AND fechada_em IS NULL LIMIT 1`).length > 0;
+    if (ped) {
+      const c = (await sql`SELECT qtd_pessoas FROM comanda WHERE codigo=${Number(ped)}`)[0];
+      const inf = (await sql`SELECT pessoas, conta_codigo FROM mesa_pessoas WHERE numero=${n}`)[0];
+      const informado = !!inf && Number(inf.conta_codigo) === Number(ped);
+      // conta recém-nascida no Consumer pode ainda não ter chegado no espelho
+      const pessoas = Number(c?.qtd_pessoas) || (informado ? Number(inf.pessoas) : 1);
+      return { ok: true, numero: n, aberta: true, pessoas, informado, comandas: temComanda, perguntar: false };
+    }
+    const e = await pessoasEmEspera(n);
+    // mesa só de comandas: cada comanda já é uma pessoa, não há o que perguntar.
+    // Equipe: pergunta de novo se quem respondeu foi o cliente (confere num
+    // toque) ou se a resposta já tem mais de 10 min sem a conta nascer.
+    // Cliente: não pergunta de novo o que ele mesmo já disse.
+    const jaTem = !!e && (cliente ? (e.origem === 'cliente' || e.recente) : (e.recente && e.origem !== 'cliente'));
+    return { ok: true, numero: n, aberta: false, pessoas: e ? e.pessoas : null, informado: !!e,
+      origem: e ? e.origem : null, comandas: temComanda, perguntar: !temComanda && !jaTem };
+  } catch (e) {
+    console.error('[pessoas] ver mesa ' + n + ':', e.message);
+    return { ok: false, erro: e.message };
+  }
+}
+/** Grava a quantidade. Equipe (garçom/caixa/maquininha) grava sempre; o
+ *  cliente só responde por mesa SEM conta e nunca passa por cima do que a
+ *  equipe acabou de informar. */
+async function apiPessoasGravar(body) {
+  const numero = Number(body.numero ?? body.mesa);
+  if (!(numero >= 1 && numero <= MESA_MAX)) return { ok: false, erro: 'mesa inválida (1–' + MESA_MAX + ')' };
+  const cliente = !!body._cliente;
+  const max = cliente ? PESSOAS_MAX_CLIENTE : PESSOAS_MAX;
+  const n = pessoasValida(body.pessoas, max);
+  if (!n) return { ok: false, erro: 'Informe de 1 a ' + max + ' pessoas.' };
+  try {
+    // mesma fila do achar-ou-criar: a resposta nunca cruza com a conta nascendo
+    return await naFilaDaMesa(numero, async () => {
+      const ped = await contaAbertaAgora(numero);
+      if (cliente) {
+        if (ped) return { ok: true, numero, aberta: true, ignorado: true };
+        const e = await pessoasEmEspera(numero);
+        if (e && e.origem !== 'cliente' && e.recente) return { ok: true, numero, aberta: false, pessoas: e.pessoas, ignorado: true };
+      }
+      if (ped) await gravarPessoasNaConta(ped, n);
+      await sql`INSERT INTO mesa_pessoas (numero, pessoas, origem, quem, conta_codigo, em)
+        VALUES (${numero}, ${n}, ${cliente ? 'cliente' : 'equipe'}, ${body._garcom || null}, ${ped ? Number(ped) : null}, now())
+        ON CONFLICT (numero) DO UPDATE SET pessoas=EXCLUDED.pessoas, origem=EXCLUDED.origem, quem=EXCLUDED.quem,
+          conta_codigo=EXCLUDED.conta_codigo, em=now()`;
+      if (ped) espelho().catch(() => {}); // KDS e painel do gerente já enxergam
+      return { ok: true, numero, pessoas: n, aberta: !!ped };
+    });
+  } catch (e) {
+    console.error('[pessoas] gravar mesa ' + numero + ':', e.message);
+    return { ok: false, erro: 'Não consegui gravar agora: ' + e.message };
+  }
+}
 /** A comanda tem dono? Vale o cadastro novo (identificacao) ou o antigo
  *  (mesa_comanda, preenchido na hora de abrir). Basta CPF OU telefone — um
  *  nome solto não identifica ninguém e não serve pra cobrar depois. */
@@ -4995,6 +5126,9 @@ async function apiVendaEnviar(body) {
           await fbIdentificarPedido(ped, { nome: id.nome_curto, cpf: id.cpf, contatoFb: id.contato_fb });
         }
       } catch (e) { console.error('[identificar] amarrar na conta nova falhou:', e.message); }
+      // Quantas pessoas: a tela de abrir a mesa já perguntou, com a mesa ainda
+      // sem conta. A conta nasceu agora — entra com o número respondido.
+      await aplicarPessoasEmEspera(numero, ped).catch((e) => console.error('[pessoas] conta nova:', e.message));
     }
     const grupo = parear ? 'G' + Date.now().toString(36) + Math.floor(Math.random() * 1e4).toString(36) : null;
     const paresGrupo = [];
@@ -16649,6 +16783,31 @@ input:focus{border-color:var(--gold2)}
 .kp button{padding:14px 0;font:inherit;font-size:22px;font-weight:800;border:1.5px solid var(--line);border-radius:12px;background:#fff;cursor:pointer}
 .kp button:active{background:#f0f0f4}
 input.kalvo{border-color:var(--gold2)}
+/* QUANTAS PESSOAS NA MESA: tela inteira, numero grande, um toque so */
+.pes{position:fixed;inset:0;z-index:60;background:var(--bg);overflow:auto;-webkit-overflow-scrolling:touch}
+.pes.indo{pointer-events:none;opacity:.6}
+.pes-in{max-width:640px;min-height:100%;margin:0 auto;padding:12px 14px 18px;display:flex;flex-direction:column}
+.pes-top{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.pes-mesa{font-size:17px;font-weight:800;background:#fff;border:1px solid var(--line);border-radius:999px;padding:6px 14px}
+.pes-tit{font-size:clamp(30px,8.5vw,46px);font-weight:900;line-height:1.05;text-align:center;margin:16px 0 4px;letter-spacing:-.5px}
+.pes-dica{text-align:center;color:var(--mut);font-size:15px;min-height:20px;margin-bottom:12px}
+.pes-grade{flex:1;display:grid;grid-template-columns:repeat(3,1fr);grid-auto-rows:minmax(74px,1fr);gap:10px}
+.pes-grade button{font:inherit;font-size:clamp(34px,10vw,54px);font-weight:900;color:var(--ink);background:#fff;border:2px solid var(--line);border-radius:18px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.pes-grade button:active,.pes-kp button:active{background:var(--gold2);border-color:var(--gold2);color:#fff;transform:scale(.97)}
+.pes-grade button.on{border-color:var(--gold2);background:rgba(224,101,26,.1);color:var(--gold2)}
+.pes-mais{margin-top:12px;font:inherit;font-size:17px;font-weight:700;padding:16px;border-radius:14px;border:2px dashed #c9c9d4;background:#fff;color:var(--ink);cursor:pointer}
+.pes-visor{font-size:clamp(64px,22vw,104px);font-weight:900;text-align:center;line-height:1;background:#fff;border:2px solid var(--gold2);border-radius:18px;padding:14px 0;margin-bottom:12px;min-height:1.3em}
+.pes-visor span{color:#c9c9d4}
+.pes-kp{flex:1;display:grid;grid-template-columns:repeat(3,1fr);grid-auto-rows:minmax(58px,1fr);gap:10px}
+.pes-kp button{font:inherit;font-size:30px;font-weight:800;color:var(--ink);background:#fff;border:2px solid var(--line);border-radius:16px;cursor:pointer;-webkit-tap-highlight-color:transparent}
+.pes-kp button.ok{background:var(--green);border-color:var(--green);color:#fff}
+.pes-kp button.ok[disabled]{opacity:.4}
+@media (min-aspect-ratio:5/4){.pes-grade{grid-template-columns:repeat(4,1fr)}}
+.pesbar{display:flex;align-items:center;gap:10px;background:#fff;border:1px solid var(--line);border-radius:13px;padding:11px 13px;margin-top:8px;cursor:pointer;font-size:15px}
+.pesbar .ic{width:32px;flex:none;text-align:center;font-size:20px}
+.pesbar .mut{font-size:12.5px}.pesbar .seta{margin-left:auto;color:var(--mut);font-size:13px;white-space:nowrap}
+.pesbar.falta{border:2px solid var(--gold2);background:rgba(224,101,26,.07)}
+.pesbar.falta .seta{font-size:20px;color:var(--gold2)}
 .mini{background:none;border:0;color:var(--mut);font:inherit;font-size:13.5px;text-decoration:underline;
   cursor:pointer;padding:10px 0;width:100%;text-align:center}
 .praca{background:#fff;border:1px solid var(--line);border-radius:12px;margin-top:10px;overflow:hidden}
@@ -16780,9 +16939,11 @@ function verConta(){location.href='/conta/ver?n='+(ALVO||MESA)}
 async function abrirMesa(){
   var n=Number(document.getElementById('nmesa').value);
   if(!(n>=1&&n<=${MESA_MAX})){alert('Mesa de 1 a ${MESA_MAX}');return}
+  PES_CHECAR=n; // digitou o numero: se a mesa esta vazia, pergunta quantas pessoas
   MESA=n;ALVO=n;await carregarMesa();
 }
 async function carregarMesa(){
+  if(await pesAntesDeAbrir())return; // mesa vazia que acabou de ser aberta: antes, quantas pessoas
   renderCart(); // a revisão esconde o carrinho fixo; voltando, ele reaparece
   INFO=await jget('/api/venda/mesa?n='+MESA);
   var chips='<button class="chip'+(ALVO===MESA?' on':'')+'" onclick="setAlvo('+MESA+')">Mesa '+MESA+
@@ -16804,6 +16965,7 @@ async function carregarMesa(){
       (quemMesa?'<span class="av">'+esc(quemMesa.charAt(0))+'</span><b>'+esc(quemMesa)+'</b><span class="mut">na mesa '+MESA+'</span>'
                :'<span class="av vazio">+</span><b>Identificar o cliente</b><span class="mut">CPF ou WhatsApp</span>')+
       '<span class="seta">›</span></div>'+
+    '<div id="pesbar"></div>'+
     '<div class="tit" style="margin-top:12px">Lançar em</div><div class="chips">'+chips+'</div>'+
     (INFO.conta_pedida
       ? '<div class="avisoc">🔒 Conta pedida — não entra mais lançamento nesta mesa.</div>'+
@@ -16827,6 +16989,7 @@ async function carregarMesa(){
     '<button class="big" style="background:#17803d;margin-top:9px" onclick="telaReceber(null)">💳 Receber a conta <span style="font-weight:400">· Pix</span></button>'+
     '<div class="mut" style="margin-top:8px">Cartão é na maquininha. O cliente também paga sozinho por Pix na tela da mesa dele.</div>');
   pintaConsumo();
+  pintaPessoas();
 }
 // O QUE A MESA JA CONSUMIU, com o estado de cada item.
 // Mesma leitura que o cliente ve no celular (/api/ja-pedido), pra garcom e
@@ -17173,6 +17336,125 @@ function cpfOk(v){
   }
   return true;
 }
+/* ---- QUANTAS PESSOAS NA MESA ----
+   Abrir uma mesa pergunta, numa tela so disso, quantas pessoas sentaram: um
+   toque no numero grava e segue. Vale pro garcom no celular e pro caixa, que
+   abre a mesa por esta mesma pagina (?mesa=N&volta=caixa). So pergunta em
+   mesa SEM conta; mesa ja aberta mostra a faixa "N pessoas · alterar". Se o
+   servidor nao responder, segue sem perguntar — nunca trava o lancamento. */
+var PES_CHECAR=null,PES=null;
+async function pesAntesDeAbrir(){
+  if(PES_CHECAR==null)return false;
+  var meu=Number(PES_CHECAR);PES_CHECAR=null;
+  if(meu!==Number(MESA))return false;
+  var d=null;
+  try{d=await Promise.race([jget('/api/venda/pessoas?n='+meu),new Promise(function(ok){setTimeout(function(){ok(null)},2500)})])}catch(e){d=null}
+  if(!d||!d.ok||!d.perguntar||meu!==Number(MESA))return false;
+  telaQtdPessoas({mesa:meu,atual:d.pessoas,origem:d.origem,abrindo:true});
+  return true;
+}
+function telaQtdPessoas(o){
+  PES={mesa:Number(o.mesa),atual:o.atual?Number(o.atual):null,origem:o.origem||null,abrindo:!!o.abrindo,modo:'grade',digitado:'',ocupado:false};
+  if(PES.atual>12){PES.modo='digitar';PES.digitado=String(PES.atual)}
+  if(!document.getElementById('pesov')){var el=document.createElement('div');el.id='pesov';el.className='pes';document.body.appendChild(el)}
+  pesPinta();
+}
+function pesPinta(){
+  var el=document.getElementById('pesov');if(!el||!PES)return;
+  var dica=PES.atual?(PES.origem==='cliente'?'O cliente informou '+PES.atual+' — toque pra confirmar ou corrigir'
+      :(PES.abrindo?'Última resposta: '+PES.atual+' — toque pra confirmar ou corrigir':'Agora: '+PES.atual+(PES.atual>1?' pessoas':' pessoa')+' — toque no número certo'))
+    :'Toque no número';
+  var h='<div class="pes-in">'+
+    '<div class="pes-top"><button type="button" class="back" onclick="pesVoltar()">◂ voltar</button><span class="pes-mesa">Mesa '+PES.mesa+'</span></div>'+
+    '<div class="pes-tit">Quantas pessoas?</div>'+
+    '<div class="pes-dica" id="pesdica">'+esc(dica)+'</div>';
+  if(PES.modo==='grade'){
+    h+='<div class="pes-grade">';
+    for(var i=1;i<=12;i++)h+='<button type="button"'+(PES.atual===i?' class="on"':'')+' onclick="pesEscolher('+i+')">'+i+'</button>';
+    h+='</div><button type="button" class="pes-mais" onclick="pesMais(\\'\\')">Mais de 12 — digitar o número</button>';
+  } else {
+    h+='<div class="pes-visor" id="pesvisor"></div><div class="pes-kp">'+
+      ['7','8','9','4','5','6','1','2','3','back','0','ok'].map(function(k){
+        return '<button type="button"'+(k==='ok'?' class="ok" id="pesok"':'')+' onclick="pesT(\\''+k+'\\')">'+(k==='back'?'⌫':k==='ok'?'OK':k)+'</button>'}).join('')+
+      '</div><button type="button" class="pes-mais" onclick="pesGrade()">◂ números grandes (1 a 12)</button>';
+  }
+  h+='<div id="peserr"></div></div>';
+  el.innerHTML=h;
+  el.scrollTop=0;
+  pesVisor();
+}
+function pesVisor(){
+  var v=document.getElementById('pesvisor');if(!v||!PES)return;
+  v.innerHTML=PES.digitado?PES.digitado:'<span>—</span>';
+  var ok=document.getElementById('pesok');if(ok)ok.disabled=!(Number(PES.digitado)>=1);
+}
+function pesMais(d){if(!PES||PES.ocupado)return;PES.modo='digitar';PES.digitado=String(d||'');pesPinta()}
+function pesGrade(){if(!PES||PES.ocupado)return;PES.modo='grade';PES.digitado='';pesPinta()}
+function pesT(k){
+  if(!PES||PES.ocupado||PES.modo!=='digitar')return;
+  if(k==='ok'){if(Number(PES.digitado)>=1)pesEscolher(Number(PES.digitado));return}
+  if(k==='back')PES.digitado=PES.digitado.slice(0,-1);
+  else if(PES.digitado.length<2&&!(k==='0'&&!PES.digitado))PES.digitado+=k;
+  pesVisor();
+}
+function pesErro(msg){
+  var e=document.getElementById('peserr');if(!e||!PES)return;
+  e.innerHTML='<div class="err" style="margin-top:12px">'+esc(msg)+'</div>'+
+    (PES.abrindo?'<button type="button" class="big" style="background:#6e6e78" onclick="pesSeguir()">Seguir sem informar</button>':'');
+  var el=document.getElementById('pesov');if(el)el.scrollTop=el.scrollHeight;
+}
+function pesFechar(){var el=document.getElementById('pesov');if(el)el.remove();PES=null}
+function pesSeguir(){var ab=PES&&PES.abrindo;pesFechar();if(ab)carregarMesa();else pintaPessoas()}
+function pesVoltar(){if(PES&&PES.ocupado)return;var ab=PES&&PES.abrindo;pesFechar();if(ab)outraMesa()}
+async function pesEscolher(n){
+  if(!PES||PES.ocupado)return;
+  n=Number(n);
+  if(!(n>=1&&n<=99)){pesErro('Informe de 1 a 99 pessoas.');return}
+  PES.ocupado=true;
+  var el=document.getElementById('pesov');if(el)el.classList.add('indo');
+  var dica=document.getElementById('pesdica');if(dica)dica.textContent='Gravando '+n+(n>1?' pessoas…':' pessoa…');
+  var r=null;
+  try{r=await jpost('/api/venda/pessoas',{numero:PES.mesa,pessoas:n})}catch(e){r={ok:false,erro:'Sem resposta do servidor — tente de novo.'}}
+  if(!PES)return;
+  PES.ocupado=false;if(el)el.classList.remove('indo');
+  if(r&&r.sem_sessao){pesFechar();telaLogin();return}
+  if(!r||!r.ok){if(dica)dica.textContent='Toque no número';pesErro((r&&r.erro)||'Não consegui gravar agora.');return}
+  pesSeguir();
+}
+/* a faixa "N pessoas" dentro da mesa: mostra o que esta gravado e reabre a tela grande */
+async function pintaPessoas(){
+  if(!document.getElementById('pesbar'))return;
+  var m=Number(MESA),d=null;
+  try{d=await jget('/api/venda/pessoas?n='+m)}catch(e){d=null}
+  var el=document.getElementById('pesbar');
+  if(!el||m!==Number(MESA))return;
+  if(!d||!d.ok||(d.comandas&&!d.informado)){el.innerHTML='';return}
+  var sabe=!!d.informado||(d.aberta&&Number(d.pessoas)>1);
+  var q=Number(d.pessoas)||0;
+  el.innerHTML='<div class="pesbar'+(sabe?'':' falta')+'" onclick="telaQtdPessoas({mesa:'+m+',atual:'+(sabe&&q?q:'null')+',origem:null,abrindo:false})">'+
+    '<span class="ic">👥</span>'+
+    (sabe?'<b>'+q+(q>1?' pessoas':' pessoa')+'</b><span class="mut">na mesa '+m+'</span><span class="seta">alterar ›</span>'
+         :'<b>Quantas pessoas na mesa?</b><span class="mut">toque pra informar</span><span class="seta">›</span>')+'</div>';
+}
+/* teclado de verdade (o PC do caixa): com a tela aberta, digito + Enter responde.
+   Roda na captura pra tecla nao cair no campo da mesa que ficou embaixo. */
+document.addEventListener('keydown',function(ev){
+  if(!PES||!document.getElementById('pesov'))return;
+  if(ev.ctrlKey||ev.metaKey||ev.altKey)return;
+  var k=ev.key,usou=true;
+  if(k==='Escape')pesVoltar();
+  else if(PES.modo==='grade'){
+    if(/^[1-9]$/.test(k))pesMais(k);
+    else if(k==='Enter'){if(PES.atual)pesEscolher(PES.atual)}
+    else usou=(k==='0'||k==='Backspace');
+  } else {
+    if(/^[0-9]$/.test(k))pesT(k);
+    else if(k==='Backspace')pesT('back');
+    else if(k==='Enter')pesT('ok');
+    else usou=false;
+  }
+  if(usou){ev.preventDefault();ev.stopPropagation()}
+},true);
 /* teclado numérico próprio: campo readonly, o do Android nem abre. */
 var KP_ALVO=null;
 function kpAlvo(el){KP_ALVO=el.id;document.querySelectorAll('input.kalvo').forEach(function(x){x.classList.remove('kalvo')});el.classList.add('kalvo')}
@@ -17520,6 +17802,7 @@ function entrarNoApp(nome){
   var q=new URLSearchParams(location.search);
   if(q.get('volta')==='caixa'&&w)w.innerHTML='<a href="/caixa" style="color:var(--gold2);font-weight:700">◂ caixa</a> · '+w.innerHTML;
   var pm=Number(q.get('mesa')||0);
+  if(pm>0)PES_CHECAR=pm; // o caixa abriu a mesa por aqui: mesa vazia pergunta quantas pessoas
   if(pm>0)irPara(pm,pm); else telaMesa();
 }
 function sairGarcom(){
@@ -22055,6 +22338,11 @@ const I18N_UI = {
   'número inválido': ['invalid number', 'numéro invalide', 'número inválido', 'numero non valido'],
   'informe o nome': ['enter the name', 'indiquez le nom', 'indica el nombre', 'inserisci il nome'],
   'produto inválido': ['invalid product', 'produit invalide', 'producto inválido', 'prodotto non valido'],
+  // quantas pessoas na mesa (tela cheia ao escanear a mesa vazia)
+  'Quantas pessoas na mesa?': ['How many people at the table?', 'Combien de personnes à table ?', '¿Cuántas personas en la mesa?', 'Quante persone al tavolo?'],
+  'Toque no número': ['Tap the number', 'Touchez le nombre', 'Toca el número', 'Tocca il numero'],
+  'Mais de # pessoas': ['More than # people', 'Plus de # personnes', 'Más de # personas', 'Più di # persone'],
+  '◂ Menos pessoas': ['◂ Fewer people', '◂ Moins de personnes', '◂ Menos personas', '◂ Meno persone'],
 };
 // Frases com NOME no meio (produto, cliente). Regex sobre o texto em português;
 // na saída, $n repete o trecho como veio e %n passa o trecho pelo dicionário.
@@ -22727,6 +23015,21 @@ textarea{width:100%;font:inherit;font-size:16px;padding:14px;border:1px solid va
 .festa .em{font-size:64px}
 .festa h1{font-size:25px;margin:10px 0 8px}
 
+/* quantas pessoas na mesa: tela cheia logo que o cliente escaneia a mesa vazia */
+.qts{position:fixed;inset:0;z-index:120;background:var(--bg);overflow:auto}
+.qts-in{max-width:460px;margin:0 auto;min-height:100%;display:flex;flex-direction:column;padding:22px 18px 14px}
+.qts-mesa{align-self:flex-start;background:#fff;border:1px solid var(--line);border-radius:999px;padding:7px 14px;font-size:15px;font-weight:700}
+.qts-tit{font-size:clamp(28px,8.6vw,40px);font-weight:800;line-height:1.1;margin:20px 0 6px}
+.qts-dica{color:var(--mut);font-size:16px;margin-bottom:16px}
+.qts-grade{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;flex:1;grid-auto-rows:minmax(72px,1fr)}
+.qts-grade button{border:1px solid var(--line);background:#fff;border-radius:18px;font:inherit;font-size:clamp(32px,10vw,48px);
+  font-weight:800;color:var(--ink);cursor:pointer;padding:0;-webkit-tap-highlight-color:transparent}
+.qts-grade button:active{background:var(--gold2);border-color:var(--gold2);color:#fff}
+.qts.indo .qts-grade button,.qts.indo .qts-mais{opacity:.4}
+.qts-mais{display:block;width:100%;margin-top:12px;border:1px solid var(--line);background:#fff;border-radius:16px;font:inherit;
+  font-size:17px;font-weight:700;color:var(--ink);padding:17px;cursor:pointer}
+.qts-pular{display:block;width:100%;margin-top:4px;border:0;background:none;font:inherit;font-size:15px;color:var(--mut);
+  padding:14px;cursor:pointer;text-decoration:underline}
 </style></head><body><div class="wrap" id="app"></div>
 <script src="/mesa/i18n.js?v=${VERSAO}"></script>
 <script>
@@ -22818,6 +23121,7 @@ function jaAvaliouAqui(){ try{return localStorage.getItem('prainha_aval')===mesA
 async function inicio(){
   NOINICIO=true; // daqui, o proximo "voltar" do Android sai mesmo
   if(MESA&&!(await sessaoOk()))return;
+  if(MESA)await quantosAntes(Number(MESA)); // mesa vazia: tela cheia "quantas pessoas" por cima da capa
   var n=MESA?Number(MESA):null;
   if(n)EU=await (await fetch('/api/cliente/historico?n='+n,{cache:'no-store'})).json();
   if(n&&!BRINDE){ try{BRINDE=await (await fetch('/api/mesa/brinde?n='+n,{cache:'no-store'})).json()}catch(e){BRINDE={ativo:false}} }
@@ -24202,6 +24506,53 @@ function copiar(){
     selecionaNaTela(el);
     if(btn)btn.textContent='segure no código acima e escolha Copiar';
   });
+}
+// ---- QUANTAS PESSOAS NA MESA (10/10/2026) ----
+// Mesa vazia que o cliente acabou de escanear: antes de qualquer coisa, uma
+// tela so disso, com os numeros grandes. A resposta espera no servidor ate a
+// conta nascer (primeiro pedido) e o garcom ve o que o cliente informou.
+// Pergunta uma vez por carregamento e NUNCA segura o cliente: servidor mudo,
+// erro ou "Agora nao" -> a tela sai e o cardapio segue igual.
+var QTS_VISTO=false,QTS=null;
+function qtsRespondeu(n){ try{return sessionStorage.getItem('prainha_qts')===String(n)}catch(e){return false} }
+function qtsMarca(n){ try{sessionStorage.setItem('prainha_qts',String(n))}catch(e){} }
+async function quantosAntes(n){
+  if(QTS_VISTO)return;
+  QTS_VISTO=true;
+  if(!(n>=1)||qtsRespondeu(n))return;
+  var d=null;
+  try{d=await Promise.race([
+    fetch('/api/mesa/pessoas?n='+n,{cache:'no-store'}).then(function(r){return r.json()}),
+    new Promise(function(ok){setTimeout(function(){ok(null)},2500)})])}catch(e){d=null}
+  if(!d||!d.ok||!d.perguntar)return;
+  telaQuantos(n);
+}
+function telaQuantos(n){
+  QTS={mesa:Number(n),pag:0,indo:false};
+  if(!document.getElementById('qtsov')){var el=document.createElement('div');el.id='qtsov';el.className='qts';document.body.appendChild(el)}
+  qtsPinta();
+}
+function qtsPinta(){
+  var el=document.getElementById('qtsov');if(!el||!QTS)return;
+  var de=QTS.pag?13:1;
+  var h='<div class="qts-in"><span class="qts-mesa">📍 Mesa '+QTS.mesa+'</span>'+
+    '<div class="qts-tit">Quantas pessoas na mesa?</div><div class="qts-dica">Toque no número</div><div class="qts-grade">';
+  for(var i=de;i<de+12;i++)h+='<button type="button" onclick="qtsEscolher('+i+')">'+i+'</button>';
+  h+='</div><button type="button" class="qts-mais" onclick="qtsPag('+(QTS.pag?0:1)+')">'+(QTS.pag?'◂ Menos pessoas':'Mais de 12 pessoas')+'</button>'+
+    '<button type="button" class="qts-pular" onclick="qtsPular()">Agora não</button></div>';
+  el.innerHTML=h;el.scrollTop=0;
+}
+function qtsPag(p){if(!QTS||QTS.indo)return;QTS.pag=p?1:0;qtsPinta()}
+function qtsFechar(){var el=document.getElementById('qtsov');if(el)el.remove();QTS=null}
+function qtsPular(){if(!QTS||QTS.indo)return;qtsMarca(QTS.mesa);qtsFechar()}
+async function qtsEscolher(q){
+  if(!QTS||QTS.indo)return;
+  QTS.indo=true;
+  var m=QTS.mesa,el=document.getElementById('qtsov');if(el)el.classList.add('indo');
+  // 4 s de teto: passou disso a tela sai e o pedido segue do mesmo jeito
+  try{await Promise.race([post('/api/mesa/pessoas',{mesa:m,pessoas:Number(q)}),new Promise(function(ok){setTimeout(ok,4000)})])}catch(e){}
+  qtsMarca(m);
+  qtsFechar();
 }
 function mesaAtual(){
   if(MESA)return Number(MESA);
@@ -29578,6 +29929,25 @@ const server = http.createServer(async (req, res) => {
         : p === '/api/venda/comanda-baixa' ? apiComandaBaixa : apiVendaEnviar;
       res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await fn(body)));
     }
+    // QUANTAS PESSOAS NA MESA — a tela de abrir a mesa (garçom, caixa e
+    // maquininha). Ler é aberto, como o resto da leitura da mesa; gravar pede
+    // sessão, como tudo que mexe na conta.
+    if (req.method === 'POST' && p === '/api/venda/pessoas') {
+      const g = await garcomDaRequisicao(req, u);
+      if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
+      const body = await readBody(req);
+      body._garcom = g.login; body._cliente = false;
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPessoasGravar(body)));
+    }
+    if (p === '/api/venda/pessoas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPessoasVer(u.searchParams.get('n') || 0, false))); }
+    // …e a do cliente no QR da mesa: só vale pra mesa ainda sem conta e não
+    // passa por cima do que a equipe acabou de informar.
+    if (req.method === 'POST' && p === '/api/mesa/pessoas') {
+      const body = await readBody(req);
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(await apiPessoasGravar({ numero: body.mesa ?? body.numero, pessoas: body.pessoas, _cliente: true })));
+    }
+    if (p === '/api/mesa/pessoas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPessoasVer(u.searchParams.get('n') || 0, true))); }
     if (p === '/api/venda/transferencias') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTransferencias())); }
     if (p === '/conta') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CONTA_HTML); }
     if (p === '/caixa') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CAIXA_HTML); }
