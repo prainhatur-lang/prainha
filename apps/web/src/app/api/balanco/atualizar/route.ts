@@ -20,7 +20,8 @@ export async function POST(request: Request) {
 
   const resultados = await Promise.all(
     alvo.map(async (f) => {
-      const r = await chamarLojaCaixa(f.id, '/api/central/caixa/balanco');
+      // chamarLojaCaixa já põe o prefixo /api/central/caixa
+      const r = await chamarLojaCaixa(f.id, '/balanco');
       if (!r.ok) return { filialId: f.id, nome: f.nome, ok: false, erro: r.erro ?? 'loja não respondeu' };
       if (!pareceBalanco(r.balanco)) {
         return { filialId: f.id, nome: f.nome, ok: false, erro: 'a loja ainda não tem o balanço (precisa atualizar o vendas-local)' };
