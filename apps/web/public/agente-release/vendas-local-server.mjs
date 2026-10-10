@@ -328,6 +328,11 @@ async function initSchemaNativo() {
   await addCol('caixa_local', 'saldo_informado numeric');
   await sql`CREATE TABLE IF NOT EXISTS caixa_operacao_local (id bigserial PRIMARY KEY, caixa_codigo bigint,
     tipo text, valor numeric, forma_codigo integer, obs text, login text, quando timestamptz DEFAULT now())`;
+  // despesa da gaveta sobe pro contas a pagar da nuvem (ver caixaSaidasSubir)
+  await addCol('caixa_operacao_local', 'recebedor text');
+  await addCol('caixa_operacao_local', 'fornecedor_nuvem text');
+  await addCol('caixa_operacao_local', 'nuvem_em timestamptz');
+  await addCol('caixa_operacao_local', 'nuvem_erro text');
   await sql`CREATE TABLE IF NOT EXISTS conta_corrente_local (codigo bigint PRIMARY KEY, cliente_codigo integer,
     pedido bigint, credito numeric, debito numeric, saldo_inicial numeric, saldo_final numeric,
     observacao text, pagamento_codigo bigint, login text, quando timestamptz DEFAULT now())`;
@@ -11889,10 +11894,18 @@ async function apiCaixaMovimento(body, quem) {
   if (nativo()) {
     // A despesa vira lançamento do caixa e sobe pro Financeiro pela nuvem —
     // aqui não existe CONTASPAGAR (esse módulo é do Concilia, não da loja).
-    await sql`INSERT INTO caixa_operacao_local (caixa_codigo, tipo, valor, forma_codigo, obs, login, quando)
+    // Despesa: guarda QUEM recebeu (nome, e o cadastro da nuvem quando foi
+    // escolhido na busca) — é o que vira a conta a pagar já paga no Financeiro.
+    const recebedor = body.tipo === 'despesa' ? (String(body.fornecedor_nome || '').trim().slice(0, 200) || null) : null;
+    if (body.tipo === 'despesa' && !recebedor) return { ok: false, erro: 'diga QUEM está recebendo' };
+    const fornNuvem = body.tipo === 'despesa' && /^[0-9a-f-]{36}$/i.test(String(body.fornecedor_codigo || ''))
+      ? String(body.fornecedor_codigo) : null;
+    await sql`INSERT INTO caixa_operacao_local (caixa_codigo, tipo, valor, forma_codigo, obs, login, quando, recebedor, fornecedor_nuvem)
       VALUES (${Number(cx.codigo)}, ${String(body.tipo)}, ${Number(valor)}, ${FORMA.DINHEIRO},
-        ${obs}, ${quem.login || null}, now())`;
+        ${obs}, ${quem.login || null}, now(), ${recebedor}, ${fornNuvem})`;
     const cp = await comprovanteGaveta(cx, quem, body, valor, motivo, leva);
+    // sobe já; se a nuvem não responder, o laço de 5 min reenvia
+    if (body.tipo === 'despesa') caixaSaidasSubir().catch((e) => console.error('[caixa-saida] subir:', e.message));
     return { ok: true, tipo: body.tipo, valor, contas_pagar: null, ...cp };
   }
   const campos = ['CODIGOCAIXA', 'CODIGOFORMAPAGAMENTO', 'DATAOPERACAO', m.campo, 'OBSERVACAO', 'TIPO'];
@@ -11921,10 +11934,68 @@ async function comprovanteGaveta(cx, quem, body, valor, motivo, leva) {
   } catch (e) { console.error('[gaveta] comprovante: ' + e.message); return { comprovante: null, impresso: false }; }
 }
 /** Busca de fornecedor pra despesa da gaveta (funcionário também é fornecedor). */
+/** Canal assinado loja→nuvem da despesa de gaveta (escopo 'caixa-saida'). */
+async function caixaSaidaNuvem(metodo, dados) {
+  if (!PAGAR_MESA_SECRET || PAGAR_MESA_SECRET.length < 16 || !FILIAL_ID) throw new Error('sem FILIAL_ID/PAGAR_MESA_SECRET');
+  const e = Math.floor(Date.now() / 1000) + 120;
+  const s = createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, 'caixa-saida', String(e)].join('|')).digest('hex');
+  const url = `${PAGAR_MESA_URL}/api/loja/caixa-saida`;
+  const r = metodo === 'GET'
+    ? await fetch(url + '?' + new URLSearchParams({ f: FILIAL_ID, e: String(e), s, ...dados }), { signal: AbortSignal.timeout(8000) })
+    : await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' },
+        signal: AbortSignal.timeout(15000), body: JSON.stringify({ f: FILIAL_ID, e, s, ...dados }) });
+  if (!r.ok) throw new Error('caixa-saida HTTP ' + r.status);
+  return r.json();
+}
+/** Despesa paga da gaveta vira conta a pagar JÁ PAGA no Financeiro da nuvem
+ *  (no Consumer nascia em CONTASPAGAR; em banco próprio tinha ficado só aqui).
+ *  Só DESPESA com recebedor — sangria é dinheiro indo pro cofre, não gasto, e
+ *  as linhas trazidas do Consumer (login migrar-consumer) já subiram pelo sync.
+ *  A nuvem é idempotente pelo id da linha: reenviar não duplica. */
+let caixaSaidasSubindo = false;
+async function caixaSaidasSubir() {
+  if (!nativo() || caixaSaidasSubindo) return;
+  caixaSaidasSubindo = true;
+  try {
+    const pend = await sql`SELECT id, caixa_codigo, valor, obs, login, quando, recebedor, fornecedor_nuvem
+      FROM caixa_operacao_local
+      WHERE tipo='despesa' AND nuvem_em IS NULL AND recebedor IS NOT NULL
+        AND COALESCE(login,'') <> 'migrar-consumer'
+      ORDER BY id LIMIT 40`;
+    if (!pend.length) return;
+    const saidas = pend.map((x) => {
+      const partes = String(x.obs || '').split(' · ');
+      const lancou = partes.length > 1 ? partes[partes.length - 1] : (x.login || '');
+      const motivo = partes.length > 1 ? partes.slice(0, -1).join(' · ') : String(x.obs || '');
+      return { ref: String(x.id), valor: Number(x.valor), quando: new Date(x.quando).toISOString(), motivo,
+        recebedor: x.recebedor, fornecedor_id: x.fornecedor_nuvem || undefined, lancou, caixa: String(x.caixa_codigo) };
+    });
+    const d = await caixaSaidaNuvem('POST', { saidas });
+    const feitas = (d.feitas || []).map((r) => Number(r)).filter((n) => Number.isFinite(n));
+    if (feitas.length) await sql`UPDATE caixa_operacao_local SET nuvem_em=now(), nuvem_erro=NULL WHERE id = ANY(${feitas})`;
+    for (const er of d.erros || []) {
+      await sql`UPDATE caixa_operacao_local SET nuvem_erro=${String(er.erro || '').slice(0, 200)} WHERE id=${Number(er.ref)}`;
+    }
+    if (feitas.length) console.log('[caixa-saida] ' + feitas.length + ' despesa(s) no contas a pagar');
+  } finally { caixaSaidasSubindo = false; }
+}
+setInterval(() => { caixaSaidasSubir().catch((e) => console.error('[caixa-saida] laço:', e.message)); }, 5 * 60 * 1000).unref();
 async function apiCaixaFornecedores(qRaw) {
   const t = String(qRaw || '').trim().toUpperCase();
   if (t.length < 2) return { ok: true, fornecedores: [] };
-  if (nativo()) return { ok: true, fornecedores: [] }; // cadastro de fornecedor mora na nuvem; a saída aceita nome livre
+  if (nativo()) {
+    // Cadastro de fornecedor mora na nuvem: a busca vai lá. `livre` avisa a
+    // tela que dá pra usar o nome digitado (a nuvem cadastra ao lançar) — e
+    // nuvem fora do ar não trava a despesa, só fica sem a lista.
+    try {
+      const d = await caixaSaidaNuvem('GET', { q: String(qRaw || '').trim() });
+      return { ok: true, livre: true, fornecedores: (d.fornecedores || []).map((x) => ({
+        codigo: String(x.id), nome: T(x.nome), doc: T(x.doc || '') + (x.casa ? (x.doc ? ' · ' : '') + 'cadastro da ' + T(x.casa) : '') })) };
+    } catch (e) {
+      console.error('[caixa-saida] busca:', e.message);
+      return { ok: true, livre: true, fornecedores: [], aviso: 'sem a lista da nuvem agora' };
+    }
+  }
   const r = await qi(`SELECT FIRST 12 CODIGO, TRIM(NOME) NOME, TRIM(COALESCE(CNPJOUCPF,'')) DOC FROM FORNECEDORES
     WHERE DATADELETE IS NULL AND UPPER(NOME) LIKE '%${fbEsc(t)}%' ORDER BY NOME`);
   if (!r.ok) return { ok: false, erro: r.err };
@@ -26389,7 +26460,7 @@ function setMov(t){
     '<div id="mvfl"></div><div id="mvfsel" class="mut" style="margin-top:4px"></div>';
   else x.innerHTML='';
 }
-var _fT=null;
+var _fT=null,FORNQ='';
 function buscaForn(){
   clearTimeout(_fT);
   _fT=setTimeout(async function(){
@@ -26400,8 +26471,15 @@ function buscaForn(){
     if(!r.ok){l.innerHTML='<div class="err">'+esc(r.erro||'busca falhou')+'</div>';return}
     l.innerHTML=r.fornecedores.length
       ? '<div class="lst" style="grid-template-columns:1fr;margin-top:6px">'+r.fornecedores.map(function(f){
-          return '<button class="mchip" onclick="escolheForn('+f.codigo+',\\''+esc(f.nome).replace(/'/g,'')+'\\')"><b>'+esc(f.nome)+'</b>'+(f.doc?'<small>'+esc(f.doc)+'</small>':'')+'</button>'}).join('')+'</div>'
-      : '<div class="mut" style="margin-top:6px">ninguém com esse nome — cadastre o fornecedor no Consumer primeiro</div>';
+          return '<button class="mchip" onclick="escolheForn(\\''+f.codigo+'\\',\\''+esc(f.nome).replace(/'/g,'')+'\\')"><b>'+esc(f.nome)+'</b>'+(f.doc?'<small>'+esc(f.doc)+'</small>':'')+'</button>'}).join('')+'</div>'
+      : (r.livre?'':'<div class="mut" style="margin-top:6px">ninguém com esse nome — cadastre o fornecedor no Consumer primeiro</div>');
+    /* Sem Consumer o cadastro é na nuvem: dá pra lançar com o nome digitado,
+       e a nuvem cadastra a pessoa ao criar a conta a pagar. */
+    if(r.livre){
+      FORNQ=q;
+      l.innerHTML+='<div class="lst" style="grid-template-columns:1fr;margin-top:6px"><button class="mchip" onclick="escolheForn(\\'\\',FORNQ)">'+
+        '<b>➕ usar "'+esc(q)+'"</b><small>'+(r.fornecedores.length?'não é nenhum dos de cima — ':'ninguém com esse nome ainda — ')+'cadastra agora</small></button></div>';
+    }
   },300);
 }
 function escolheForn(c,n){
