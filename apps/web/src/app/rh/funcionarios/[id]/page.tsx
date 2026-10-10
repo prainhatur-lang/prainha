@@ -24,7 +24,7 @@ import { brl, formatFone } from '@/lib/format';
 import { diasAtrasBr, hojeBr } from '@/lib/datas';
 import { calcularDia } from '@/lib/rh/calcular-ponto';
 import { pontoProprioDesde } from '@/lib/rh/ponto-vigencia';
-import { horaMinutoBr, somarDias } from '@/lib/rh/dia-operacional';
+import { horaDeMadrugada, horaMinutoBr, somarDias } from '@/lib/rh/dia-operacional';
 import {
   fmtHoras,
   fmtSaldo,
@@ -461,7 +461,10 @@ export default async function FichaFuncionarioPage(props: { params: Promise<{ id
   const recentes = diasPonto.filter((d) => d.dia >= desde30).sort((a, b) => (a.dia < b.dia ? 1 : -1));
   const min30 = recentes.reduce((t, d) => t + d.min, 0);
   const dias30 = new Set(recentes.map((d) => d.dia)).size;
-  const incompletos30 = recentes.filter((d) => d.incompleto).length;
+  // O dia do ponto vira às 05:00: de madrugada, o turno que ainda está aberto é o de ontem.
+  // Esse dia está em andamento — entrada sem saída ali não é dia incompleto.
+  const diaEmAndamento = horaDeMadrugada(horaMinutoBr(new Date())) ? somarDias(hoje, -1) : hoje;
+  const incompletos30 = recentes.filter((d) => d.incompleto && d.dia !== diaEmAndamento).length;
 
   const vigencias: VigenciaJornada[] = vigRows.map((v) => ({ ...v }));
   const jornadaAtual = jornadaNoDia(vigencias, hoje);
@@ -841,7 +844,7 @@ export default async function FichaFuncionarioPage(props: { params: Promise<{ id
                           <td className="py-1.5 text-slate-500">{casa(d.filialId)}</td>
                           <td className="py-1.5 text-slate-700">
                             {d.batidas}
-                            {d.incompleto && d.dia !== hoje && (
+                            {d.incompleto && d.dia !== diaEmAndamento && (
                               <span className="ml-1.5">
                                 <Selo cor="amber">incompleto</Selo>
                               </span>
@@ -955,7 +958,11 @@ function TabelaSemanas({
               </td>
               <td className="py-1.5 text-right font-medium tabular-nums text-slate-900">{brl(s.total)}</td>
               <td className="whitespace-nowrap py-1.5 text-right text-slate-500">
-                {s.semBaixa > 0 ? 'em aberto' : fmtData(s.baixadaEm).slice(0, 5)}
+                {s.semBaixa === 0
+                  ? fmtData(s.baixadaEm).slice(0, 5)
+                  : s.semBaixa < s.itens.length
+                    ? 'parte sem baixa'
+                    : 'sem baixa'}
               </td>
             </tr>
           ))}
