@@ -241,8 +241,9 @@ function Cartoes(p: Props & { api: Api; setMsg: (s: string) => void; refresh: ()
   async function acao(c: CartaoLinha, body: Record<string, unknown>, ok: string) {
     setOcupado(c.id);
     try {
-      await p.api({ ...body, cartaoId: c.id });
-      p.setMsg(ok);
+      const r = await p.api({ ...body, cartaoId: c.id });
+      // ação que devolve o próprio relato (ex.: atualizar na carteira) mostra ele
+      p.setMsg(typeof r?.msg === 'string' && r.msg ? r.msg : ok);
       p.refresh();
     } catch (e) {
       p.setMsg(`Erro: ${(e as Error).message}`);
@@ -451,6 +452,16 @@ function MaisAcoes(props: {
             className="rounded border border-slate-300 bg-white px-2 py-1"
           >
             Cancelar código em aberto
+          </button>
+        )}
+        {props.podeCriar && (
+          <button
+            disabled={props.ocupado}
+            onClick={() => props.acao({ acao: 'atualizar_carteira' }, 'Aviso enviado pra carteira do cliente.')}
+            className="rounded border border-slate-300 bg-white px-2 py-1"
+            title="Manda o cartão salvo na Apple/Google Wallet buscar a versão de agora"
+          >
+            Atualizar na carteira
           </button>
         )}
         {props.podeConfigurar && c.aparelhos > 0 && (

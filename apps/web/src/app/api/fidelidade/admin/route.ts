@@ -12,6 +12,8 @@ import { candidatosConvite, type Regiao } from '@/lib/fidelidade/candidatos';
 import { carregarPrograma, normalizarConfig, nivelPorCodigo, type FidelidadeConfig } from '@/lib/fidelidade/config';
 import { avisarWallet, criarCartao, invalidarCodigo, tocarPass, trocarCodigoCarteira } from '@/lib/fidelidade/nucleo';
 import { dadosDoCartao } from '@/lib/fidelidade/nucleo';
+import { pushApple } from '@/lib/fidelidade/apple';
+import { atualizarGoogle } from '@/lib/fidelidade/google';
 import { conviteFidelidadeConfigurado, enviarConviteFidelidadeId } from '@/lib/whatsapp-otp';
 import { brDateStart, hojeBr } from '@/lib/datas';
 
@@ -29,6 +31,7 @@ const PERM: Record<string, string> = {
   convidado: 'fidelidade.create',
   enviar_convites: 'fidelidade.create',
   novo_codigo: 'fidelidade.create',
+  atualizar_carteira: 'fidelidade.create',
   desconectar: 'fidelidade.configurar',
   config: 'fidelidade.configurar',
   bloquear: 'fidelidade.configurar',
@@ -200,6 +203,49 @@ export async function POST(request: Request) {
       await avisarWallet(c.id);
     }
     return NextResponse.json({ ok: true });
+  }
+
+  if (acao === 'atualizar_carteira') {
+    // manda o cartão já salvo na carteira (Apple/Google) buscar a versão de
+    // agora. Serve pro cartão salvo antes de o código ir pra frente e pra
+    // queixa de "meu cartão não atualizou". Não troca código nenhum: só marca
+    // o cartão como alterado (sem isso o iPhone pergunta "o que mudou?" e
+    // ouve "nada") e avisa. Devolve o que cada carteira respondeu.
+    const [{ n: iphones }] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(schema.fidelidadeAppleRegistro)
+      .where(eq(schema.fidelidadeAppleRegistro.cartaoId, c.id));
+    if (!iphones && !c.googleSalvoEm) {
+      return NextResponse.json({
+        ok: true, apple: 0, iphones: 0, google: false,
+        msg: 'Este cartão não está salvo em nenhuma carteira. O cliente salva pelo link do cartão, no celular dele.',
+      });
+    }
+    await tocarPass(c.id);
+    const partes: string[] = [];
+    let apple = 0;
+    let google = false;
+    if (iphones) {
+      try {
+        apple = await pushApple(c.id);
+        partes.push(apple
+          ? `Apple: aviso aceito pra ${apple} de ${iphones} iPhone${iphones > 1 ? 's' : ''} — o cartão se atualiza em instantes (com internet).`
+          : `Apple: o aviso não foi aceito pra nenhum dos ${iphones} iPhone${iphones > 1 ? 's' : ''}.`);
+      } catch (e) {
+        console.error('[fidelidade] atualizar carteira (apple)', c.id, (e as Error)?.message);
+        partes.push(`Apple: falhou (${(e as Error)?.message?.slice(0, 120) || 'erro'}).`);
+      }
+    }
+    if (c.googleSalvoEm) {
+      try {
+        google = await atualizarGoogle(c.id);
+        partes.push(google ? 'Google: cartão atualizado.' : 'Google: o cliente tocou em salvar mas não concluiu.');
+      } catch (e) {
+        console.error('[fidelidade] atualizar carteira (google)', c.id, (e as Error)?.message);
+        partes.push(`Google: falhou (${(e as Error)?.message?.slice(0, 120) || 'erro'}).`);
+      }
+    }
+    return NextResponse.json({ ok: true, apple, iphones, google, msg: partes.join(' ') });
   }
 
   if (acao === 'desconectar') {
