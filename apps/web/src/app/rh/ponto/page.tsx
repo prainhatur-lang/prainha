@@ -8,6 +8,7 @@ import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
 import { and, eq, exists, gte, isNull, lte, or, sql } from 'drizzle-orm';
+import { inArray } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { semanaAtual, semanaContemDia, diasDaSemana, labelSemana, nomeDia, toIsoDate } from '@/lib/folha/semana';
 import { calcularDia } from '@/lib/rh/calcular-ponto';
@@ -49,6 +50,7 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
       id: schema.funcionario.id,
       nome: schema.funcionario.nome,
       temRosto: sql<boolean>`${schema.funcionario.faceDescriptor} IS NOT NULL`,
+      gemeoDeId: schema.funcionario.gemeoDeId,
     })
     .from(schema.funcionario)
     .where(
@@ -71,6 +73,24 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
       ),
     )
     .orderBy(schema.funcionario.nome);
+
+  // Gêmeos marcados (a câmera do ponto não separa os dois; o tablet pergunta
+  // "Quem é você?"). O nome do par vem numa consulta à parte porque ele pode
+  // ser de outra casa e não estar na lista acima.
+  const idsGemeos = [...new Set(funcionarios.map((f) => f.gemeoDeId).filter((x): x is string => !!x))];
+  const nomesGemeos = idsGemeos.length
+    ? await db
+        .select({ id: schema.funcionario.id, nome: schema.funcionario.nome })
+        .from(schema.funcionario)
+        .where(inArray(schema.funcionario.id, idsGemeos))
+    : [];
+  const gemeos = funcionarios
+    .filter((f) => !!f.gemeoDeId)
+    .map((f) => ({
+      id: f.id,
+      gemeoDeId: f.gemeoDeId as string,
+      gemeoNome: nomesGemeos.find((n) => n.id === f.gemeoDeId)?.nome ?? 'outra pessoa',
+    }));
 
   const batidas = await db
     .select({
@@ -173,6 +193,7 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
           filialId={filialSelecionada.id}
           dias={dias.map((d) => ({ iso: d, label: nomeDia(d) }))}
           funcionarios={funcionarios}
+          gemeos={gemeos}
           grade={[...grade.entries()].map(([chave, v]) => ({ chave, ...v }))}
         />
       </section>

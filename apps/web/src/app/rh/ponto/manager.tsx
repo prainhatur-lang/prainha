@@ -28,6 +28,9 @@ interface Props {
   dias: { iso: string; label: string }[];
   funcionarios: { id: string; nome: string; temRosto: boolean }[];
   grade: Celula[];
+  /** Quem está marcado como gêmeo(a) de alguém (a câmera do ponto não separa
+   *  gêmeos idênticos; o tablet pergunta "Quem é você?" pra esse par). */
+  gemeos?: { id: string; gemeoDeId: string; gemeoNome: string }[];
 }
 
 // O horário digitado é o da loja (BRT, sem horário de verão). Vai com o fuso
@@ -41,8 +44,12 @@ function fmtHora(iso: string): string {
   const d = new Date(iso);
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
+// Dois primeiros nomes: gêmeos costumam dividir o primeiro (Ana Laiza × Ana Luiza).
+function nomeCurto(nome: string): string {
+  return nome.trim().split(/\s+/).slice(0, 2).join(' ');
+}
 
-export function PontoManager({ filialId, dias, funcionarios, grade }: Props) {
+export function PontoManager({ filialId, dias, funcionarios, grade, gemeos = [] }: Props) {
   const router = useRouter();
   const [modal, setModal] = useState<{ funcionarioId: string; funcionarioNome: string; dia: string } | null>(null);
   const byChave = new Map(grade.map((c) => [c.chave, c]));
@@ -53,6 +60,38 @@ export function PontoManager({ filialId, dias, funcionarios, grade }: Props) {
     nome: string;
     lojas: { nome: string; avisada: boolean; atualizada: boolean }[];
   } | null>(null);
+
+  // Gêmeos: marcar/desmarcar o par (api/rh/ponto/gemeo) + o que cada loja
+  // respondeu ao aviso, igual ao apagar rosto.
+  const gemeoDe = new Map(gemeos.map((g) => [g.id, g]));
+  const [modalGemeos, setModalGemeos] = useState(false);
+  const [marcandoGemeo, setMarcandoGemeo] = useState(false);
+  const [avisoGemeo, setAvisoGemeo] = useState<{
+    texto: string;
+    marcou: boolean;
+    lojas: { nome: string; avisada: boolean; atualizada: boolean }[];
+  } | null>(null);
+
+  async function marcarGemeo(funcionarioId: string, gemeoDeId: string | null, texto: string): Promise<boolean> {
+    setMarcandoGemeo(true);
+    try {
+      const res = await fetch('/api/rh/ponto/gemeo', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ funcionarioId, gemeoDeId }),
+      });
+      const j = await res.json().catch(() => null);
+      if (!res.ok) {
+        alert(j?.error ?? 'Erro ao gravar os gêmeos');
+        return false;
+      }
+      setAvisoGemeo({ texto, marcou: !!gemeoDeId, lojas: Array.isArray(j?.lojas) ? j.lojas : [] });
+      router.refresh();
+      return true;
+    } finally {
+      setMarcandoGemeo(false);
+    }
+  }
 
   async function apagarRosto(funcionarioId: string, nome: string) {
     if (!confirm(`Apagar o rosto cadastrado de ${nome}?\n\nA câmera do ponto deixa de reconhecer essa pessoa; na próxima vez ela escolhe o nome e cadastra de novo.`)) return;
@@ -115,6 +154,52 @@ export function PontoManager({ filialId, dias, funcionarios, grade }: Props) {
           </button>
         </div>
       )}
+      {avisoGemeo && (
+        <div className="flex items-start justify-between gap-3 border-b border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+          <div>
+            <p className="font-medium">{avisoGemeo.texto}</p>
+            {avisoGemeo.marcou && (
+              <p className="mt-0.5 text-xs text-emerald-800">
+                No tablet do Ponto: quando a câmera reconhecer qualquer um dos dois, aparece “Quem é você?” com os dois
+                nomes — cada um toca no seu. Quem ainda não tem rosto cadastrado não precisa cadastrar.
+              </p>
+            )}
+            {avisoGemeo.lojas.length === 0 ? (
+              <p className="mt-1.5 text-xs text-amber-800">As lojas pegam a mudança sozinhas em até 3 min.</p>
+            ) : (
+              <ul className="mt-1.5 space-y-0.5 text-xs">
+                {avisoGemeo.lojas.map((l) => (
+                  <li key={l.nome} className={l.atualizada ? 'text-emerald-800' : 'text-amber-800'}>
+                    {l.atualizada
+                      ? `✓ ${l.nome}: já atualizou`
+                      : l.avisada
+                        ? `… ${l.nome}: avisada, atualiza em instantes`
+                        : `⏳ ${l.nome}: não respondeu agora — pega sozinha em até 3 min`}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => setAvisoGemeo(null)}
+            aria-label="Fechar aviso"
+            className="rounded px-1.5 text-base leading-none text-emerald-700 hover:bg-emerald-100"
+          >
+            ×
+          </button>
+        </div>
+      )}
+      <div className="flex items-center justify-end gap-2 border-b border-slate-100 px-4 py-2 text-xs text-slate-500">
+        <span>Tem gêmeos na equipe? A câmera não separa os dois.</span>
+        <button
+          type="button"
+          onClick={() => setModalGemeos(true)}
+          className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:border-blue-300 hover:text-blue-700"
+        >
+          👯 marcar gêmeos
+        </button>
+      </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-xs text-slate-500">
@@ -145,6 +230,27 @@ export function PontoManager({ filialId, dias, funcionarios, grade }: Props) {
                       >
                         {apagando === f.id ? 'apagando…' : '🙂 apagar rosto'}
                       </button>
+                    )}
+                    {gemeoDe.has(f.id) && (
+                      <span
+                        title="Gêmeos: no tablet do ponto, reconhecer qualquer um dos dois abre “Quem é você?” com os dois nomes"
+                        className="ml-2 inline-flex items-center gap-1 rounded border border-violet-200 bg-violet-50 px-1.5 py-0.5 text-[10px] font-normal text-violet-700"
+                      >
+                        👯 gêmeo(a) de {nomeCurto(gemeoDe.get(f.id)!.gemeoNome)}
+                        <button
+                          type="button"
+                          disabled={marcandoGemeo}
+                          title="Desmarcar: os dois voltam a bater o ponto direto pela câmera"
+                          onClick={() => {
+                            const outro = gemeoDe.get(f.id)!.gemeoNome;
+                            if (!confirm(`Desmarcar ${nomeCurto(f.nome)} e ${nomeCurto(outro)} como gêmeos?\n\nO tablet volta a bater o ponto direto pelo rosto, sem perguntar quem é.`)) return;
+                            void marcarGemeo(f.id, null, `${nomeCurto(f.nome)} e ${nomeCurto(outro)} não estão mais marcados como gêmeos.`);
+                          }}
+                          className="leading-none text-violet-500 hover:text-red-600 disabled:opacity-50"
+                        >
+                          ×
+                        </button>
+                      </span>
                     )}
                   </td>
                   {dias.map((d) => {
@@ -198,6 +304,98 @@ export function PontoManager({ filialId, dias, funcionarios, grade }: Props) {
           }}
         />
       )}
+
+      {modalGemeos && (
+        <ModalGemeos
+          funcionarios={funcionarios}
+          salvando={marcandoGemeo}
+          onClose={() => setModalGemeos(false)}
+          onMarcar={async (a, b) => {
+            const ok = await marcarGemeo(a.id, b.id, `${nomeCurto(a.nome)} e ${nomeCurto(b.nome)} marcados como gêmeos.`);
+            if (ok) setModalGemeos(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Escolhe as duas pessoas que são gêmeas. O vínculo vale pros dois lados.
+function ModalGemeos({
+  funcionarios,
+  salvando,
+  onClose,
+  onMarcar,
+}: {
+  funcionarios: { id: string; nome: string; temRosto: boolean }[];
+  salvando: boolean;
+  onClose: () => void;
+  onMarcar: (a: { id: string; nome: string }, b: { id: string; nome: string }) => void;
+}) {
+  const [aId, setAId] = useState('');
+  const [bId, setBId] = useState('');
+  const a = funcionarios.find((f) => f.id === aId);
+  const b = funcionarios.find((f) => f.id === bId);
+  const pronto = !!a && !!b && a.id !== b.id;
+  return (
+    <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
+      <div className="w-full max-w-md rounded-xl bg-white p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <h2 className="text-base font-semibold text-slate-900">👯 Marcar gêmeos</h2>
+        <p className="mt-1 text-xs text-slate-600">
+          A câmera do ponto não consegue separar gêmeos idênticos: um bate e ela registra o outro. Com o par marcado,
+          quando o tablet reconhecer qualquer um dos dois ele pergunta <strong>“Quem é você?”</strong> e mostra os dois
+          nomes — cada um toca no seu. O resto da equipe continua batendo direto, como hoje.
+        </p>
+        <label className="mt-4 block text-xs font-medium text-slate-600">
+          Pessoa 1
+          <select
+            value={aId}
+            onChange={(e) => setAId(e.target.value)}
+            className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+          >
+            <option value="">Escolha…</option>
+            {funcionarios.map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.nome}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="mt-3 block text-xs font-medium text-slate-600">
+          Pessoa 2
+          <select
+            value={bId}
+            onChange={(e) => setBId(e.target.value)}
+            className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+          >
+            <option value="">Escolha…</option>
+            {funcionarios
+              .filter((f) => f.id !== aId)
+              .map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.nome}
+                </option>
+              ))}
+          </select>
+        </label>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-md border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            disabled={!pronto || salvando}
+            onClick={() => pronto && onMarcar(a!, b!)}
+            className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          >
+            {salvando ? 'Gravando…' : 'Marcar como gêmeos'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

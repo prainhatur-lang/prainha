@@ -70,6 +70,13 @@ export const funcionario = pgTable(
      *  — nunca a foto em si, só a "impressão" numérica. Cadastrado sozinho na
      *  loja na primeira vez que a pessoa aparece na câmera do ponto. */
     faceDescriptor: jsonb('face_descriptor'),
+    /** Gêmeo(a) — ou parente de rosto igual — que trabalha na casa (10/10/2026,
+     *  Ana Laiza × Ana Luiza no Prainha Bar: a câmera do ponto não separa as
+     *  duas, uma batia o ponto da outra). Marcado dos DOIS lados em /rh/ponto;
+     *  no tablet, reconhecer qualquer um dos dois abre "Quem é você?" com os
+     *  nomes em vez de bater direto. A FK fica só no banco (ON DELETE SET
+     *  NULL, scripts/migrate-funcionario-gemeo.ts). */
+    gemeoDeId: uuid('gemeo_de_id'),
 
     /** Valor de FUNCOES_TALENTO (schema/talento.ts). */
     cargo: varchar('cargo', { length: 60 }),

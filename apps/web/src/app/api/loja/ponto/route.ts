@@ -49,6 +49,9 @@ export async function GET(request: Request) {
       cargo: schema.funcionario.cargo,
       loginLocal: schema.funcionario.loginLocal,
       faceDescriptor: schema.funcionario.faceDescriptor,
+      // gêmeo(a) marcado no /rh/ponto: o tablet pergunta "Quem é você?" em vez
+      // de bater direto (loja antiga ignora o campo)
+      gemeoDeId: schema.funcionario.gemeoDeId,
     })
     .from(schema.funcionario)
     .where(
@@ -122,6 +125,7 @@ export async function GET(request: Request) {
       setor: p.setor,
       cargo: p.cargo,
       login_local: p.loginLocal,
+      gemeo_de: p.gemeoDeId,
     })),
   });
 }
