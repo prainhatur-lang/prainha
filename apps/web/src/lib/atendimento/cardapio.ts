@@ -117,6 +117,10 @@ export async function buscarItensCardapio(
       AND (pv.menu_dino OR pv.comanda_mobile OR pv.desktop OR pv.cardapio_digital)
       AND pv.data_delete IS NULL
       AND (p.descontinuado IS NOT TRUE)
+      -- Itens "T ..." são o cardápio do restaurante do Terraço, que fechou
+      -- (dono, 10/10/2026): a Nina não enxerga — o "T Mix De Mini Pastel"
+      -- pausado fez ela dizer que o Mix de Mini Pastéis estava em falta.
+      AND p.nome !~ '^T '
       AND pv.preco_venda > 0
       AND ${where}
     ORDER BY (pv.data_pausado IS NOT NULL OR p.data_pausado IS NOT NULL) ASC, pv.menu_dino DESC, p.nome, pv.preco_venda
