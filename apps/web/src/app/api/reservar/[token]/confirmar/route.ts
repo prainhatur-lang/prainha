@@ -14,6 +14,8 @@ import { createPixPayment } from '@/lib/pagamento-online';
 import { randomBytes } from 'node:crypto';
 import { membroPorTelefone } from '@/lib/fidelidade/membro';
 import { ligacaoDaReserva } from '@/lib/cliente-unico';
+import { cpfValido } from '@/lib/spc';
+import { identificarPorCpf } from '@/lib/identificar-cpf';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -239,13 +241,42 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
   const taxaEspaco = areaCfg.taxaReserva;
   const valorTaxa = taxaEspaco ? (ehFimDeSemana(data) ? taxaEspaco.sabDom : taxaEspaco.diasUteis) : null;
 
+  // CPF informado na reserva fica NA RESERVA e completa o nome (dono,
+  // 10/10/2026: "pega o cpf e completa o cadastro sempre"). O site já pedia o
+  // CPF, mas ele era jogado fora aqui e a agenda mostrava só "Emmanuel",
+  // "Tania" como "novo cliente". O nome completo sai da mesma cascata do
+  // passo de identificação (nossas bases + cache; sem consulta paga aqui — a
+  // paga já foi feita, com teto, no /identificar). Só troca o nome quando o
+  // primeiro nome bate com o que veio do formulário: se a pessoa digitou outro
+  // nome, vale o que ela digitou.
+  const clienteCpf = cpfDigitos.length === 11 && cpfValido(cpfDigitos) ? cpfDigitos : null;
+  let nomeReserva: string = nome;
+  if (clienteCpf) {
+    try {
+      const r = await identificarPorCpf(clienteCpf, filial.id, { permitirSpc: false });
+      const completo = (r.dados.nome ?? '').trim().replace(/\s+/g, ' ');
+      const dobra = (x: string) => x.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      const p1 = (x: string) => dobra(x).split(' ')[0] ?? '';
+      if (completo.includes(' ') && p1(completo) === p1(nome.trim()) && completo.length > nome.trim().length) {
+        nomeReserva = completo
+          .toLowerCase()
+          .replace(/(^|\s)(\S)/g, (_m, a: string, b: string) => a + b.toUpperCase())
+          .replace(/\s(Da|De|Do|Das|Dos|E)(?=\s)/g, (m) => m.toLowerCase())
+          .slice(0, 200);
+      }
+    } catch (e) {
+      console.error('Erro completando o nome da reserva pelo CPF:', (e as Error).message);
+    }
+  }
+
   const [nova] = await db
     .insert(schema.reserva)
     .values({
       filialId: filial.id,
-      clienteNome: nome,
+      clienteNome: nomeReserva,
       clienteTelefone: telefone,
-      ...(await ligacaoDaReserva(filial.id, { telefone })),
+      ...(clienteCpf ? { clienteCpf } : {}),
+      ...(await ligacaoDaReserva(filial.id, { telefone, cpf: clienteCpf })),
       pessoas,
       data,
       hora,
