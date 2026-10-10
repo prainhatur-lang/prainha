@@ -47,6 +47,10 @@
     {
       "path": "/api/cron/fidelidade-nivel",
       "schedule": "20 3 * * *"
+    },
+    {
+      "path": "/api/cron/tripadvisor",
+      "schedule": "45 9 * * *"
     }
   ]
 }

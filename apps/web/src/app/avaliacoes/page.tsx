@@ -14,6 +14,7 @@ import { AppHeader } from '@/components/app-header';
 import { ConfigFilial } from './config-filial';
 import { normalizarDestino } from '@/lib/avaliacao-destino';
 import { ListaAvaliacoes, type AvaliacaoItem } from './lista';
+import { BlocoTripadvisor } from './tripadvisor';
 
 export const dynamic = 'force-dynamic';
 
@@ -147,6 +148,9 @@ export default async function AvaliacoesPage() {
             );
           })}
         </div>
+
+        {/* TripAdvisor: nota e últimas avaliações de cada casa (leitura diária) */}
+        <BlocoTripadvisor filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))} />
 
         {/* Lista de feedbacks pra resolver */}
         <h2 className="mt-10 text-lg font-semibold text-slate-900">
