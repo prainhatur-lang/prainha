@@ -77,9 +77,11 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
       minSab: schema.rhJornada.minSab,
       minDom: schema.rhJornada.minDom,
       origem: schema.rhJornada.origem,
+      // "rh_jornada"."id" por extenso: em select de uma tabela só o drizzle
+      // escreve a coluna sem o nome da tabela, e "id" solto é ambíguo aqui dentro.
       pessoas: sql<number>`(SELECT count(DISTINCT fj.funcionario_id)::int FROM funcionario_jornada fj
         JOIN funcionario f ON f.id = fj.funcionario_id AND f.ativo
-        WHERE fj.jornada_id = ${schema.rhJornada.id}
+        WHERE fj.jornada_id = "rh_jornada"."id"
           AND fj.vigente_desde = (SELECT max(x.vigente_desde) FROM funcionario_jornada x
             WHERE x.funcionario_id = fj.funcionario_id AND x.vigente_desde <= ${hoje}::date))`,
     })
