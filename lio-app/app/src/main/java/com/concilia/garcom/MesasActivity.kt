@@ -124,7 +124,46 @@ class MesasActivity : AppCompatActivity() {
             return
         }
         numeroIn.text.clear()
+        // Mesa vazia: antes da conta, a tela grande "Quantas pessoas?".
+        if (perguntarPessoasAntes(n)) return
         abrirConta(n)
+    }
+
+    private var checandoPessoas = false
+
+    /** Mesa SEM conta: pergunta "Quantas pessoas?" em tela cheia antes de
+     *  abrir (PessoasActivity). Devolve true se assumiu a abertura. Nunca
+     *  segura a mesa: comanda, servidor antigo (sem a rota), rede lenta
+     *  (2,5 s) ou qualquer erro → abre a conta direto, como sempre abriu.
+     *  Mesa que já tem conta não é interrompida — o servidor diz perguntar=false. */
+    private fun perguntarPessoasAntes(n: Int): Boolean {
+        if (Session.ehComanda(this, n)) return false
+        if (checandoPessoas) return true
+        checandoPessoas = true
+        val base = Session.servidor(this)
+        val abrirBtn = findViewById<Button>(R.id.abrir)
+        abrirBtn.isEnabled = false
+        val decidido = java.util.concurrent.atomic.AtomicBoolean(false)
+        val decidir = { info: Api.PessoasInfo? ->
+            if (decidido.compareAndSet(false, true)) runOnUiThread {
+                checandoPessoas = false
+                abrirBtn.isEnabled = true
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (info != null && info.perguntar) {
+                    val i = Intent(this, PessoasActivity::class.java)
+                    i.putExtra("numero", n)
+                    // o cliente já respondeu no QR: vai destacado pra confirmar num toque
+                    if (info.pessoas != null) {
+                        i.putExtra("atual", info.pessoas)
+                        i.putExtra("do_cliente", info.origem == "cliente")
+                    }
+                    startActivity(i)
+                } else abrirConta(n)
+            }
+        }
+        handler.postDelayed({ decidir(null) }, 2500)
+        Thread { decidir(Api.pessoasVer(base, n)) }.start()
+        return true
     }
 
     private fun abrirConta(numero: Int) {

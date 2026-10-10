@@ -258,6 +258,51 @@ object Api {
         }
     } catch (_: Exception) { null }
 
+    /** Quantas pessoas na mesa — o que o servidor sabe (GET /api/venda/pessoas).
+     *  `perguntar` = mesa SEM conta e ninguém da equipe informou ainda;
+     *  `pessoas` = o número que já está valendo (na conta, ou informado e
+     *  esperando a conta nascer); `origem` "cliente" = quem disse foi o QR. */
+    data class PessoasInfo(
+        val perguntar: Boolean,
+        val aberta: Boolean,
+        val pessoas: Int?,
+        val informado: Boolean,
+        val origem: String?,
+    )
+
+    /** É pra perguntar "Quantas pessoas?" nesta mesa? Rápida e nunca lança:
+     *  null = não deu pra saber (rede, servidor antigo sem a rota) e a mesa
+     *  abre direto, como sempre abriu — a pergunta nunca segura a abertura. */
+    fun pessoasVer(base: String, numero: Int, timeoutMs: Int = 2500): PessoasInfo? = try {
+        val (code, resp) = http("GET", "$base/api/venda/pessoas?n=$numero", readTimeoutMs = timeoutMs, connectTimeoutMs = timeoutMs)
+        if (code !in 200..299) null else {
+            val j = JSONObject(resp)
+            if (!j.optBoolean("ok")) null else PessoasInfo(
+                perguntar = j.optBoolean("perguntar"),
+                aberta = j.optBoolean("aberta"),
+                pessoas = if (j.isNull("pessoas")) null else j.optInt("pessoas").takeIf { it > 0 },
+                informado = j.optBoolean("informado"),
+                origem = j.optStringOrNull("origem"),
+            )
+        }
+    } catch (_: Exception) { null }
+
+    /** Grava a quantidade de pessoas da mesa (POST /api/venda/pessoas). Mesa
+     *  com conta grava na hora; sem conta, a resposta espera a conta nascer.
+     *  Devolve { ok, pessoas, aberta } ou { ok:false, erro }. Timeout curto:
+     *  quem está com a mesa na frente não espera 15 s por isto. */
+    @Throws(IOException::class)
+    fun pessoasGravar(base: String, token: String, numero: Int, pessoas: Int, timeoutMs: Int = 6000): JSONObject {
+        val (code, resp) = http(
+            "POST", "$base/api/venda/pessoas", token,
+            JSONObject().put("numero", numero).put("pessoas", pessoas),
+            readTimeoutMs = timeoutMs, connectTimeoutMs = timeoutMs,
+        )
+        if (code == 401) throw SemSessao()
+        if (code !in 200..299) throw IOException("Servidor respondeu $code")
+        return JSONObject(resp)
+    }
+
     /** Diagnóstico (toque no nome, nas mesas): quanto `base` leva pra responder. */
     fun tempoResposta(base: String): String {
         val t0 = SystemClock.elapsedRealtime()

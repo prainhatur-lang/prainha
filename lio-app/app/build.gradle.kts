@@ -156,8 +156,13 @@ android {
         // tinha trocado o campo pelo botão, e o que já funciona não sai. O
         // "✏️ Outro valor" fica só como atalho a mais; a rolagem garante que o
         // campo aparece mesmo com "Receber de" e o teclado aberto.
-        versionCode = 54
-        versionName = "1.10.30"
+        // 1.10.31: "Quantas pessoas?" em tela cheia ao abrir a mesa pelo número
+        // (PessoasActivity: 1 a 12 bem grandes, "Mais de 12" com teclado
+        // próprio). Só pra mesa SEM conta; comanda, mesa já aberta, servidor
+        // antigo ou rede lenta (2,5 s) abrem direto como antes. No ⋯ da conta
+        // entrou "👥 Quantas pessoas na mesa" pra corrigir. Nada saiu.
+        versionCode = 55
+        versionName = "1.10.31"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CONCILIA_BASE", "\"$conciliaBase\"")
     }

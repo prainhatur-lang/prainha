@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- "Quantas pessoas?" — tela só disto, logo depois do número da mesa. Os
+     botões da grade (1 a 12, ou o teclado do "Mais de 12") são montados pela
+     PessoasActivity e dividem a altura que sobrar: quanto maior a tela,
+     maior o botão. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#F3F4F6">
+
+    <!-- Cabeçalho: voltar + a mesa -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="#0C7091"
+        android:padding="10dp">
+
+        <Button
+            android:id="@+id/voltar"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:text="‹ Voltar"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/mesa"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginStart="12dp"
+            android:textSize="22sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/titulo"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:paddingTop="12dp"
+        android:text="👥 Quantas pessoas?"
+        android:textSize="30sp"
+        android:textStyle="bold"
+        android:textColor="#111827" />
+
+    <TextView
+        android:id="@+id/dica"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="2dp"
+        android:paddingBottom="4dp"
+        android:textSize="15sp"
+        android:textColor="#4B5563" />
+
+    <!-- "Mais de 12": o número que está sendo digitado -->
+    <TextView
+        android:id="@+id/visor"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:textSize="56sp"
+        android:textStyle="bold"
+        android:textColor="#0C7091"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:id="@+id/grade"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="vertical"
+        android:paddingStart="6dp"
+        android:paddingEnd="6dp" />
+
+    <TextView
+        android:id="@+id/erro"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#FEE2E2"
+        android:textColor="#991B1B"
+        android:textSize="14sp"
+        android:gravity="center"
+        android:padding="10dp"
+        android:visibility="gone" />
+
+    <Button
+        android:id="@+id/maisDe12"
+        android:layout_width="match_parent"
+        android:layout_height="58dp"
+        android:layout_marginStart="10dp"
+        android:layout_marginEnd="10dp"
+        android:layout_marginTop="4dp"
+        android:layout_marginBottom="8dp"
+        android:textSize="17sp"
+        android:textStyle="bold"
+        android:textAllCaps="false" />
+
+    <!-- Só aparece se a gravação falhar: a pergunta nunca prende a mesa -->
+    <Button
+        android:id="@+id/semInformar"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:layout_marginStart="10dp"
+        android:layout_marginEnd="10dp"
+        android:layout_marginBottom="8dp"
+        android:textSize="14sp"
+        android:textAllCaps="false"
+        android:visibility="gone" />
+</LinearLayout>

@@ -51,6 +51,13 @@
             android:exported="false"
             android:configChanges="orientation|screenSize|keyboardHidden" />
 
+        <!-- "Quantas pessoas?" em tela cheia: abre depois do número da mesa
+             (mesa sem conta) e pelo ⋯ da conta, pra corrigir. -->
+        <activity
+            android:name=".PessoasActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
+
         <!-- Entregas: rota (saí/cheguei/entregue) e receber na porta pela maquininha. -->
         <activity
             android:name=".EntregasActivity"

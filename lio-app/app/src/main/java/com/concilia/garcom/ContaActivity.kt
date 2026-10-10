@@ -402,6 +402,11 @@ class ContaActivity : AppCompatActivity() {
             acoes.add(Acao("🧾 Vincular comanda a esta mesa") { dialogVincular() })
         }
         acoes.add(Acao(if (ehComanda) "🔁 Mudar a comanda de mesa" else "🔁 Transferir/juntar em outra mesa") { dialogTransferir() })
+        // Quantas pessoas na mesa: a mesma tela grande que abre com a mesa,
+        // aqui pra conferir ou corrigir depois (comanda já é uma pessoa).
+        if (!ehComanda) acoes.add(Acao("👥 Quantas pessoas na mesa") {
+            startActivity(Intent(this, PessoasActivity::class.java).putExtra("numero", numero).putExtra("corrigir", true))
+        })
         // Conta QUITADA: fechar = ato final do caixa (some da grade, libera).
         if (conta != null && (conta?.saldo ?: 1.0) <= 0.009) {
             acoes.add(Acao("✔ Fechar conta (quitada)") { dialogFechar() })
