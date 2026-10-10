@@ -8,7 +8,7 @@
 // agora". Até MAX_APARELHOS por cartão (celular novo derruba o mais antigo).
 
 import { db, schema } from '@concilia/db';
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import { twilioCheck, twilioConfigurado, twilioStart } from '@/lib/twilio-verify';
 import { enviarOtpWhatsApp, whatsappConfigurado } from '@/lib/whatsapp-otp';
@@ -127,4 +127,35 @@ export async function confirmarAparelho(
     })
     .where(eq(schema.fidelidadeCartao.id, cartao.id));
   return { ok: true, cookie: `${aparelhoId}.${segredo}`, aparelhoId };
+}
+
+/** Primeiro aparelho do cartão entra SEM código: o link chegou no WhatsApp do
+ *  próprio telefone do cartão, então quem abre primeiro é o dono — pedir o
+ *  código ali era mandar o cliente de volta pro WhatsApp à toa. Só vale
+ *  enquanto o cartão não tem NENHUM aparelho confirmado (o update confere isso
+ *  no banco); depois disso, link encaminhado continua pedindo o código.
+ *  Devolve null quando o cartão já tem aparelho. */
+export async function ativarPrimeiroAparelho(
+  cartao: Cartao, userAgent: string | null,
+): Promise<{ cookie: string; aparelhoId: string } | null> {
+  if ((cartao.aparelhos ?? []).length > 0) return null;
+  const aparelhoId = randomBytes(6).toString('hex');
+  const segredo = randomBytes(24).toString('base64url');
+  const lista = [{ id: aparelhoId, h: sha(segredo), em: new Date().toISOString(), ua: (userAgent ?? '').slice(0, 120) }];
+  const gravou = await db
+    .update(schema.fidelidadeCartao)
+    .set({
+      aparelhos: lista,
+      otpHash: null,
+      otpExpiraEm: null,
+      otpTentativas: 0,
+      ...(cartao.aderidoEm ? {} : { aderidoEm: new Date(), recusadoEm: null }),
+    })
+    .where(and(
+      eq(schema.fidelidadeCartao.id, cartao.id),
+      sql`jsonb_array_length(${schema.fidelidadeCartao.aparelhos}) = 0`,
+    ))
+    .returning({ id: schema.fidelidadeCartao.id });
+  if (!gravou.length) return null;
+  return { cookie: `${aparelhoId}.${segredo}`, aparelhoId };
 }

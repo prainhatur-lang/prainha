@@ -38,7 +38,9 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
   const confirmado = !!aparelhoConfirmado(c, (await cookies()).get(nomeCookie(c))?.value);
   const tel = telefoneMascarado(c.telefone);
   // código de confirmação ainda vivo (pedido pelo WhatsApp): a página já abre no campo
-  const codigoPendente = !!c.otpHash && !!c.otpExpiraEm && c.otpExpiraEm > new Date();
+  // nenhum aparelho confirmado ainda: o primeiro entra sem código
+  const semAparelho = (c.aparelhos ?? []).length === 0;
+  const codigoPendente = !semAparelho && !!c.otpHash && !!c.otpExpiraEm && c.otpExpiraEm > new Date();
 
   // Convite ainda não aceito: apresenta o programa e pede a adesão. O código
   // e a Wallet só aparecem depois do "Quero meu cartão".
@@ -77,7 +79,7 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
               </p>
             )}
           </div>
-          <BotoesAdesao token={token} recusado={!!c.recusadoEm} telefone={tel} codigoPendente={codigoPendente} />
+          <BotoesAdesao token={token} recusado={!!c.recusadoEm} telefone={tel} codigoPendente={codigoPendente} semAparelho={semAparelho} />
           <ApresentacaoPrograma cfg={cfg} destaque={v.nivelCodigo} casa={v.casa} />
         </div>
       </main>
@@ -127,7 +129,7 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
           <>
             {evento && <DrinkEvento evento={evento.nome} daCasa={evento.casa.da} />}
             {v.valeHoje ? (
-              <VouPagar token={token} confirmado={confirmado} telefone={tel} pctHoje={pctHoje} codigoPendente={codigoPendente} />
+              <VouPagar token={token} confirmado={confirmado} telefone={tel} pctHoje={pctHoje} codigoPendente={codigoPendente} semAparelho={semAparelho} />
             ) : (
               <p className="rounded-xl bg-amber-100 p-4 text-sm text-amber-900">
                 Hoje o cartão não dá desconto: no {v.casa} ele vale de <b>segunda a sexta, fora feriado</b>. No próximo

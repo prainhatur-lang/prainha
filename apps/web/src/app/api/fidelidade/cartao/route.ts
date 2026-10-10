@@ -5,6 +5,9 @@
 //   'enviar_sms'            → manda o código de confirmação pro WhatsApp do cartão
 //                             (Meta; SMS pelo Twilio só se a Meta falhar)
 //   'confirmar' { codigo }  → confere; certo = aparelho liberado (cookie) e cartão ativado
+//   'ativar_direto'         → primeiro aparelho do cartão entra sem código (o link
+//                             chegou no WhatsApp do próprio dono); cartão que já tem
+//                             aparelho responde direto:false e segue pelo código
 //   'gerar_codigo'          → "Vou pagar agora": código de 4 letras, vale 1 min.
 //                             Só de aparelho confirmado — link encaminhado não gera.
 
@@ -13,7 +16,7 @@ import { cookies } from 'next/headers';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import {
-  COOKIE_DIAS, aparelhoConfirmado, confirmarAparelho, enviarConfirmacao, nomeCookie,
+  COOKIE_DIAS, aparelhoConfirmado, ativarPrimeiroAparelho, confirmarAparelho, enviarConfirmacao, nomeCookie,
 } from '@/lib/fidelidade/aparelho';
 import { MSG_FUNCIONARIO, MSG_SO_DIA_UTIL, descontoValeHoje, funcionarioDoCartao, gerarCodigoUso } from '@/lib/fidelidade/nucleo';
 import { linkAtivarPorZap } from '@/lib/fidelidade/zap-ativar';
@@ -32,6 +35,14 @@ export async function POST(req: Request) {
   const jar = await cookies();
 
   try {
+    if (b?.acao === 'ativar_direto') {
+      const r = await ativarPrimeiroAparelho(c, req.headers.get('user-agent'));
+      if (!r) return NextResponse.json({ ok: true, direto: false });
+      jar.set(nomeCookie(c), r.cookie, {
+        httpOnly: true, secure: true, sameSite: 'lax', path: '/', maxAge: COOKIE_DIAS * 86400,
+      });
+      return NextResponse.json({ ok: true, direto: true });
+    }
     if (b?.acao === 'enviar_sms') {
       try {
         const canal = await enviarConfirmacao(c);
