@@ -138,16 +138,18 @@ export async function gerarPkpass(cartao: Cartao): Promise<Buffer> {
       ],
       secondaryFields: [
         { key: 'nome', label: 'CLIENTE VIP', value: v.nomeCurto },
-        { key: 'pagar', label: 'NA HORA DE PAGAR', value: 'Toque ⓘ › Abrir o cartão', textAlignment: 'PKTextAlignmentRight' },
+        { key: 'pagar', label: 'NA HORA DE PAGAR', value: 'Toque ••• › Detalhes › Gerar código', textAlignment: 'PKTextAlignmentRight' },
       ],
       auxiliaryFields: [
         { key: 'visitas', label: `VISITAS (${v.janelaDias} DIAS)`, value: v.visitas },
         { key: 'proximo', label: 'PRÓXIMO NÍVEL', value: v.textoProximo, textAlignment: 'PKTextAlignmentRight' },
       ],
       backFields: [
+        // primeiro da lista: a Apple não deixa pôr botão na frente do cartão, então
+        // o caminho pro código é este link — tem que ser a 1ª coisa dos detalhes
+        { key: 'link', label: 'Gerar o código pra pagar', value: v.link, attributedValue: `<a href="${v.link}">Abrir o cartão — Vou pagar agora</a>` },
         { key: 'regras', label: 'Como funciona', value: REGRAS_TEXTO(v) },
         { key: 'numero', label: 'Número do cartão', value: v.numero },
-        { key: 'link', label: 'Gerar o código pra pagar', value: v.link, attributedValue: `<a href="${v.link}">Abrir o cartão — Vou pagar agora</a>` },
       ],
     },
   };
