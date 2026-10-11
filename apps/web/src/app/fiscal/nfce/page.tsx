@@ -270,6 +270,13 @@ export default async function NfcePage({
             🧾 NF-e de venda de bem
           </a>
           <a
+            href="/fiscal/mapa-icms"
+            className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+            title="Crédito das notas de entrada × débito das notas de saída, mês a mês"
+          >
+            📊 Mapa mensal do ICMS
+          </a>
+          <a
             href="/configuracoes/fiscal"
             className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
           >
