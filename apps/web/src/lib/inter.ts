@@ -77,6 +77,22 @@ export function resolverCredenciaisInterPagamentos(filialId: string): InterCrede
   return null;
 }
 
+/**
+ * Credencial de extrato de uma EMPRESA que não é filial (hoje só a E.B.
+ * Serviços, sigla 'EB' → `INTER_EB_CLIENT_ID`, `_CLIENT_SECRET`, `_CERT_B64`,
+ * `_KEY_B64`). Não entra em `contasConfiguradas()` de propósito: o extrato dela
+ * vai pra `extrato_empresa`, fora da conciliação das casas.
+ */
+export function credenciaisInterEmpresa(sigla: string): InterCredenciais | null {
+  const p = `INTER_${sigla.toUpperCase()}`;
+  const clientId = process.env[`${p}_CLIENT_ID`]?.trim();
+  const clientSecret = process.env[`${p}_CLIENT_SECRET`]?.trim();
+  const certB64 = process.env[`${p}_CERT_B64`]?.trim();
+  const keyB64 = process.env[`${p}_KEY_B64`]?.trim();
+  if (clientId && clientSecret && certB64 && keyB64) return { clientId, clientSecret, certB64, keyB64 };
+  return null;
+}
+
 function certAgente(cred: InterCredenciais): https.Agent {
   return new https.Agent({
     cert: Buffer.from(cred.certB64, 'base64'),

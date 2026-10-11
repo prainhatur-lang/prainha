@@ -17,6 +17,7 @@ import { processarExtratoInterApi } from '@/lib/processadores';
 import { contasConfiguradas } from '@/lib/inter';
 import { rodarConciliacaoBanco } from '@/lib/conciliacao-banco';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
+import { extratoEmpresaConfigurado, sincronizarExtratoEmpresa } from '@/lib/extrato-empresa';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -52,5 +53,16 @@ export async function GET(req: Request) {
     resultados.push({ filialId, extrato, conciliacao });
   }
 
-  return NextResponse.json({ ok: true, executadoEm: new Date().toISOString(), resultados });
+  // Extrato da E.B. Serviços (terceirizada que paga a folha registrada): vai pra
+  // extrato_empresa, fora da conciliação das casas. Sem a credencial, não faz nada.
+  let empresaEb;
+  if (extratoEmpresaConfigurado('EB')) {
+    try {
+      empresaEb = { ok: true as const, resumo: await sincronizarExtratoEmpresa('EB', inicio, fim) };
+    } catch (e) {
+      empresaEb = { ok: false as const, erro: (e as Error).message };
+    }
+  }
+
+  return NextResponse.json({ ok: true, executadoEm: new Date().toISOString(), resultados, empresaEb });
 }

@@ -136,6 +136,7 @@
     "importar:stelanto": "tsx scripts/importar-stelanto.ts",
     "migrate:folha-contador": "tsx scripts/migrate-folha-contador.ts",
     "importar:folha-contador": "tsx scripts/importar-folha-contador.ts",
+    "migrate:extrato-empresa": "tsx scripts/migrate-extrato-empresa.ts",
     "migrate:custo-clt": "tsx scripts/migrate-custo-clt.ts",
     "migrate:metas": "tsx scripts/migrate-metas.ts",
     "migrate:escuta": "tsx scripts/migrate-escuta.ts",

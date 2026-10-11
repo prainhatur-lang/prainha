@@ -36,6 +36,7 @@ export * from './cancelamento';
 export * from './rh';
 export * from './rh-escala';
 export * from './folha-contador';
+export * from './extrato-empresa';
 export * from './escuta';
 export * from './vendedor';
 export * from './kids';
