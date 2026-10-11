@@ -71,6 +71,11 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
   const totalFolha = comLiquido.reduce((s, l) => s + l.liquido, 0);
   const conta = (s: SituacaoPagamento) => linhas.filter((l) => l.situacao === s);
   const somaLiq = (s: SituacaoPagamento) => conta(s).reduce((t, l) => t + l.liquido, 0);
+  const lotes = conf?.lotes ?? [];
+  const totalLote = lotes.reduce((s, d) => s + d.valor, 0);
+  const semNome = conta('nao_achou');
+  const somaSemNome = somaLiq('nao_achou');
+  const faltaNoLote = somaSemNome - totalLote;
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -155,6 +160,34 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
               ))}
             </div>
 
+            {lotes.length > 0 && (
+              <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-700">
+                <p className="font-medium text-slate-900">A folha saiu da conta em lote, sem o nome de cada pessoa</p>
+                <ul className="mt-2 space-y-0.5 text-xs">
+                  {lotes.map((d) => (
+                    <li key={d.id}>
+                      {fmtDia(d.dia)} · <b>{brl(d.valor)}</b> · {d.texto}
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-2 text-xs">
+                  Líquido das {semNome.length} pessoas sem débito no nome: <b>{brl(somaSemNome)}</b>. Lote debitado:{' '}
+                  <b>{brl(totalLote)}</b>.{' '}
+                  {Math.abs(faltaNoLote) < 0.005 ? (
+                    <span className="text-emerald-700">Bate com o lote.</span>
+                  ) : (
+                    <span className="text-amber-700">
+                      {faltaNoLote > 0 ? 'Faltam' : 'Sobram'} <b>{brl(Math.abs(faltaNoLote))}</b> no lote.
+                    </span>
+                  )}
+                </p>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  O extrato não diz quem está dentro do lote. Pessoa por pessoa, só com o comprovante da folha de pagamento
+                  que o Inter gera.
+                </p>
+              </div>
+            )}
+
             <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
               <table className="w-full text-sm">
                 <thead className="border-b border-slate-200 bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500">
@@ -195,7 +228,7 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
                       </td>
                       <td className="px-3 py-2">
                         <span className={`inline-block rounded border px-1.5 py-0.5 text-[11px] ${SITUACAO[l.situacao].classe}`}>
-                          {SITUACAO[l.situacao].rotulo}
+                          {l.situacao === 'nao_achou' && lotes.length > 0 ? 'sem nome no extrato (ver lote)' : SITUACAO[l.situacao].rotulo}
                         </span>
                       </td>
                     </tr>

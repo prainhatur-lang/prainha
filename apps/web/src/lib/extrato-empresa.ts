@@ -145,7 +145,13 @@ export async function conferirFolhaComExtrato(
   sigla: SiglaEmpresa,
   competencia: string,
   filialIds: string[],
-): Promise<{ linhas: LinhaConferencia[]; debitosSemPessoa: DebitoExtrato[]; janela: { de: string; ate: string } }> {
+): Promise<{
+  linhas: LinhaConferencia[];
+  debitosSemPessoa: DebitoExtrato[];
+  janela: { de: string; ate: string };
+  /** Débitos "Folha de pagamento": o banco paga todo mundo num lote só, sem nome. */
+  lotes: DebitoExtrato[];
+}> {
   const janela = janelaDaCompetencia(competencia);
   const folha = (
     await db
@@ -230,5 +236,10 @@ export async function conferirFolhaComExtrato(
     }
   }
 
-  return { linhas, debitosSemPessoa: debitos.filter((d) => !usados.has(d.id)), janela };
+  // A folha sai da conta num débito só ("DEB REF FOLHA DE PAGAMENTO"), sem o nome
+  // de ninguém. Fica separado dos "outros débitos" pra tela comparar com o total.
+  const lotes = debitos.filter((d) => !usados.has(d.id) && normalizarNome(d.texto).includes('FOLHA DE PAGAMENTO'));
+  const idsLote = new Set(lotes.map((d) => d.id));
+
+  return { linhas, debitosSemPessoa: debitos.filter((d) => !usados.has(d.id) && !idsLote.has(d.id)), janela, lotes };
 }
