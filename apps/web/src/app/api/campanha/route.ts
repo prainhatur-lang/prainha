@@ -8,6 +8,7 @@ import { podeUsuario } from '@/lib/permissoes-runtime';
 import { casaDoUsuario } from '@/lib/fidelidade/admin';
 import { campanhaWhatsAppConfigurada } from '@/lib/whatsapp-otp';
 import { CAMPANHAS, carregarLista, enviarLote, enviarTeste, recolocarFalhas, resumoCampanha } from '@/lib/campanha';
+import { foraDosEnviosCampanha } from '@/lib/campanha';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -15,6 +16,7 @@ export const maxDuration = 60;
 
 const PERM: Record<string, string> = {
   resumo: 'fidelidade.read',
+  fora: 'fidelidade.read',
   carregar: 'fidelidade.create',
   teste: 'fidelidade.create',
   enviar: 'fidelidade.create',
@@ -40,6 +42,9 @@ export async function POST(request: Request) {
   if (!org || !org.filiais.some((f) => f.id === c.filialId)) return erro('sem acesso a essa casa', 403);
 
   if (acao === 'resumo') return NextResponse.json({ ok: true, ...(await resumoCampanha(c)) });
+
+  // quem a regra de "não enviar mais" segura na fila + recibos de entrega
+  if (acao === 'fora') return NextResponse.json({ ok: true, ...(await foraDosEnviosCampanha(c)) });
 
   if (acao === 'carregar') {
     const novos = await carregarLista(c);

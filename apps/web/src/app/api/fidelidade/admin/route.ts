@@ -16,6 +16,7 @@ import { pushApple } from '@/lib/fidelidade/apple';
 import { atualizarGoogle } from '@/lib/fidelidade/google';
 import { conviteFidelidadeConfigurado, enviarConviteFidelidadeId } from '@/lib/whatsapp-otp';
 import { brDateStart, hojeBr } from '@/lib/datas';
+import { celular11, rotuloMotivoFora, telefonesForaDosEnvios } from '@/lib/whatsapp-nao-enviar';
 
 /** Teto de convites por dia (template de marketing). Número novo na Meta
  *  começa em 250 conversas iniciadas/24h; mandar demais derruba a qualidade. */
@@ -94,8 +95,16 @@ export async function POST(request: Request) {
     const enviados: string[] = [];
     const falhas: Array<{ id: string; nome: string; erro: string }> = [];
     let pulados = ids.length - cartoes.length;
+    const foraDosEnvios = await telefonesForaDosEnvios(cartoes.map((c) => c.telefone));
     for (const c of cartoes) {
       if (saldo <= 0) { pulados++; continue; }
+      // fora dos envios: recusou qualquer convite (de qualquer casa), desligou
+      // as promoções, pediu pra parar ou a mensagem não chega (quem bloqueou)
+      const motivoFora = foraDosEnvios.get(celular11(c.telefone) ?? '');
+      if (motivoFora) {
+        falhas.push({ id: c.id, nome: c.nome, erro: `não vai mais receber convite — ${rotuloMotivoFora(motivoFora)}` });
+        continue;
+      }
       // só celular (11 dígitos com o 9) recebe WhatsApp
       if (!/^\d{2}9\d{8}$/.test(c.telefone)) {
         falhas.push({ id: c.id, nome: c.nome, erro: 'não é celular' });

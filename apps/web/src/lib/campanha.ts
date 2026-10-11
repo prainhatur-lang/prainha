@@ -9,6 +9,7 @@ import { db } from '@concilia/db';
 import { sql } from 'drizzle-orm';
 import { brDateStart, hojeBr } from '@/lib/datas';
 import { enviarConviteCampanha } from '@/lib/whatsapp-otp';
+import { rotuloMotivoFora, sqlForaDosEnvios, sqlMotivoFora } from '@/lib/whatsapp-nao-enviar';
 
 export interface Campanha {
   slug: string;
@@ -179,6 +180,7 @@ export async function enviarLote(c: Campanha, qtd: number, grupo?: string | null
         ${filtroGrupo}
         AND NOT EXISTS (SELECT 1 FROM campanha_convite r WHERE r.telefone = cc.telefone AND r.recusado_em IS NOT NULL)
         AND NOT EXISTS (SELECT 1 FROM fidelidade_cartao fc WHERE right(regexp_replace(fc.telefone, '\\D', '', 'g'), 11) = cc.telefone AND fc.recusado_em IS NOT NULL)
+        AND NOT ${sqlForaDosEnvios(sql`cc.telefone`)}
       ORDER BY cc.ultima_compra DESC NULLS LAST, cc.criado_em
       LIMIT ${n}
       FOR UPDATE SKIP LOCKED
@@ -245,4 +247,45 @@ export async function enviarTeste(c: Campanha, telefone: string, nome: string): 
   return enviarConviteCampanha(`55${d}`, {
     template: c.template, nome: primeiroNome(nome), token: 'teste', imagemUrl: c.imagemUrl,
   });
+}
+
+export interface ForaDosEnvios {
+  /** quantos da fila não vão receber, e por quê */
+  fora: number;
+  porMotivo: Array<{ motivo: string; rotulo: string; n: number }>;
+  /** recibos dos convites já enviados (só existem de 11/10/2026 em diante) */
+  comRecibo: number;
+  entregues: number;
+  lidos: number;
+  naoChegaram: number;
+}
+
+/** O que a regra de "não enviar mais" (lib/whatsapp-nao-enviar.ts) segura na
+ *  fila desta campanha, e o recibo de entrega dos convites que já saíram. */
+export async function foraDosEnviosCampanha(c: Campanha): Promise<ForaDosEnvios> {
+  const porMotivo = await linhas<{ motivo: string; n: number }>(sql`
+    SELECT m.motivo, count(*)::int AS n
+    FROM (
+      SELECT ${sqlMotivoFora(sql`cc.telefone`)} AS motivo
+      FROM campanha_convite cc
+      WHERE cc.campanha = ${c.slug} AND cc.enviado_em IS NULL AND cc.erro IS NULL AND cc.recusado_em IS NULL
+    ) m
+    WHERE m.motivo IS NOT NULL
+    GROUP BY 1 ORDER BY 2 DESC
+  `);
+  const [r] = await linhas<{ com_recibo: number; entregues: number; lidos: number; nao_chegaram: number }>(sql`
+    SELECT count(entrega_status)::int AS com_recibo,
+      count(*) FILTER (WHERE entrega_status IN ('entregue', 'lida'))::int AS entregues,
+      count(*) FILTER (WHERE entrega_status = 'lida')::int AS lidos,
+      count(*) FILTER (WHERE entrega_status = 'erro')::int AS nao_chegaram
+    FROM campanha_convite WHERE campanha = ${c.slug} AND enviado_em IS NOT NULL
+  `);
+  return {
+    fora: porMotivo.reduce((a, m) => a + (Number(m.n) || 0), 0),
+    porMotivo: porMotivo.map((m) => ({ motivo: m.motivo, rotulo: rotuloMotivoFora(m.motivo), n: Number(m.n) || 0 })),
+    comRecibo: Number(r?.com_recibo) || 0,
+    entregues: Number(r?.entregues) || 0,
+    lidos: Number(r?.lidos) || 0,
+    naoChegaram: Number(r?.nao_chegaram) || 0,
+  };
 }

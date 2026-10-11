@@ -26,6 +26,11 @@ import { registrarStatusConvite } from '@/lib/fidelidade/convite-status';
 import { tratarAtivarVip } from '@/lib/fidelidade/zap-ativar';
 import { textoErroStatus, type ErroStatusMeta } from '@/lib/whatsapp-erros';
 import {
+  registrarStatusMarketing,
+  registrarPreferenciaMarketing,
+  registrarPedidoDeParar,
+} from '@/lib/whatsapp-nao-enviar';
+import {
   reconhecerPedidoRelatorio,
   responderPedidoRelatorio,
   registrarFalhaRelatorio,
@@ -79,6 +84,7 @@ export async function POST(req: Request) {
             contacts?: Array<{ wa_id?: string; profile?: { name?: string } }>;
             messages?: unknown[];
             statuses?: Array<{ id?: string; status?: string; errors?: ErroStatusMeta[] }>;
+            user_preferences?: Array<{ wa_id?: string; detail?: string; category?: string; value?: string }>;
           };
         })?.value;
 
@@ -89,12 +95,23 @@ export async function POST(req: Request) {
           const erro = st.errors?.[0] ? textoErroStatus(st.errors[0]) || null : null;
           await registrarStatusEnvio(st.id, st.status, erro).catch(() => {});
           await registrarStatusConvite(st.id, st.status, erro).catch(() => {});
+          // recibo do convite de campanha + "não entregue"/"parou promoções"
+          // tiram o número dos próximos envios de divulgação
+          await registrarStatusMarketing(st.id, st.status, erro).catch(() => {});
           // Relatório diário: texto que não entrou (janela de 24 h fechada sem
           // a gente saber) é trocado pelo modelo aprovado.
           if (st.status === 'failed') {
             const idFalho = st.id;
             after(() => registrarFalhaRelatorio(idFalho, erro).catch(() => {}));
           }
+        }
+
+        // A pessoa desligou (stop) ou religou (resume) as promoções deste
+        // número no próprio WhatsApp — só chega com o campo user_preferences
+        // assinado no app da Meta.
+        for (const pref of value?.user_preferences ?? []) {
+          if (pref.category && pref.category !== 'marketing_messages') continue;
+          await registrarPreferenciaMarketing(pref.wa_id, pref.value, pref.detail ?? null).catch(() => {});
         }
 
         const mensagens = value?.messages ?? [];
@@ -135,6 +152,9 @@ export async function POST(req: Request) {
             await tratarPayload(payload, msg.from ?? null);
             continue;
           }
+          // "pare" escrito por quem recebeu convite: sai dos envios de divulgação.
+          // Só anota — a mensagem segue o caminho de sempre.
+          if (msg.type === 'text') await registrarPedidoDeParar(msg.from, msg.text?.body).catch(() => {});
           // Espaço Kids: mensagem do QR (confirma o zap) ou resposta de um
           // responsável com criança dentro — a Nina não vê essas.
           if (await tratarKids(msg, value?.metadata?.phone_number_id)) continue;

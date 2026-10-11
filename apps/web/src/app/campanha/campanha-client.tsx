@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 interface Grupo {
   grupo: string;
@@ -15,6 +15,16 @@ interface Resumo {
   grupos: Grupo[];
   enviadosHoje: number;
   tetoDia: number;
+}
+// Quem a regra de "não enviar mais" segura na fila (recusou, pediu pra parar,
+// desligou as promoções ou a mensagem não chega) e o recibo dos enviados.
+interface Fora {
+  fora: number;
+  porMotivo: Array<{ motivo: string; rotulo: string; n: number }>;
+  comRecibo: number;
+  entregues: number;
+  lidos: number;
+  naoChegaram: number;
 }
 interface Props {
   campanha: { slug: string; titulo: string; template: string; imagemUrl: string; texto: string };
@@ -32,6 +42,26 @@ export function CampanhaClient({ campanha, inicial, podeEnviar, whatsapp }: Prop
   const [nomeTeste, setNomeTeste] = useState('');
   const [qtd, setQtd] = useState(50);
   const [grupo, setGrupo] = useState('');
+  const [fora, setFora] = useState<Fora | null>(null);
+
+  // leitura à parte do resumo: não mexe no "ocupado" nem no aviso da tela
+  const lerFora = useCallback(async () => {
+    try {
+      const r = await fetch('/api/campanha', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ acao: 'fora', campanha: campanha.slug }),
+      });
+      const j = await r.json().catch(() => null);
+      if (j?.ok && Array.isArray(j.porMotivo)) setFora(j as Fora);
+    } catch {
+      // sem a leitura a tela segue como sempre
+    }
+  }, [campanha.slug]);
+
+  useEffect(() => {
+    lerFora();
+  }, [lerFora]);
 
   const tot = resumo.grupos.reduce(
     (a, g) => ({
@@ -61,6 +91,7 @@ export function CampanhaClient({ campanha, inicial, podeEnviar, whatsapp }: Prop
         return null;
       }
       if (Array.isArray(j.grupos)) setResumo({ grupos: j.grupos, enviadosHoje: j.enviadosHoje, tetoDia: j.tetoDia });
+      void lerFora();
       return j as Record<string, unknown>;
     } catch (e) {
       setAviso({ tipo: 'erro', texto: (e as Error).message });
@@ -132,6 +163,24 @@ export function CampanhaClient({ campanha, inicial, podeEnviar, whatsapp }: Prop
           </div>
         ))}
       </div>
+
+      {fora && (fora.fora > 0 || fora.comRecibo > 0) && (
+        <div className="space-y-1 rounded-lg border border-slate-200 bg-white px-4 py-3 text-xs text-slate-600">
+          {fora.fora > 0 && (
+            <p>
+              <b className="text-slate-900">{fora.fora}</b> da fila não {fora.fora === 1 ? 'vai' : 'vão'} receber o convite:{' '}
+              {fora.porMotivo.map((m) => `${m.n} — ${m.rotulo}`).join('; ')}.
+            </p>
+          )}
+          {fora.comRecibo > 0 && (
+            <p>
+              Recibo da Meta de {fora.comRecibo} convite{fora.comRecibo === 1 ? '' : 's'}: {fora.entregues} entregue
+              {fora.entregues === 1 ? '' : 's'}, {fora.lidos} lido{fora.lidos === 1 ? '' : 's'}, {fora.naoChegaram} não{' '}
+              {fora.naoChegaram === 1 ? 'chegou' : 'chegaram'}.
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
         <table className="w-full text-sm">
@@ -251,6 +300,11 @@ export function CampanhaClient({ campanha, inicial, podeEnviar, whatsapp }: Prop
             <p className="mt-2 text-xs text-slate-500">
               Hoje: {resumo.enviadosHoje} de {resumo.tetoDia} convites. Vai primeiro quem comprou há menos tempo. Quem tocou em
               &quot;Não quero receber&quot; fica de fora.
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Também fica de fora, sozinho: quem recusou o convite do Cliente VIP, quem escreveu &quot;pare&quot;, quem desligou as
+              promoções deste número no WhatsApp e o número em que a mensagem não chega — é onde cai quem bloqueou (a Meta não
+              diz quem bloqueou, só que não entregou).
             </p>
           </div>
 
