@@ -8,7 +8,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
-import { and, asc, desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, int } from '@/lib/format';
 
@@ -18,6 +18,17 @@ interface SP {
   filialId?: string;
   ano?: string;
   mes?: string;
+}
+
+// Formato comum às linhas do snapshot e às calculadas na hora (meses sem snapshot).
+interface FormaLinha { id: string; formaPagamento: string; qtd: number; valorTotal: string }
+interface ProdutoLinha {
+  id: string; posicao: number; nomeProduto: string | null; codigoProdutoExterno: number | null;
+  qtd: string; valorTotal: string;
+}
+interface ColabLinha {
+  id: string; nomeColaborador: string | null; codigoColaborador: number | null;
+  qtdPedidos: number; valorTotal: string;
 }
 
 const MESES_LABEL = [
@@ -49,7 +60,7 @@ export default async function FechamentoMensalPage(props: { searchParams: Promis
   }
 
   // Lista todos os meses snapshotados pra esta filial
-  const meses = await db
+  const mesesSnap = await db
     .select({
       ano: schema.fechamentoMensal.ano,
       mes: schema.fechamentoMensal.mes,
@@ -66,13 +77,72 @@ export default async function FechamentoMensalPage(props: { searchParams: Promis
     .where(eq(schema.fechamentoMensal.filialId, filialSelecionada.id))
     .orderBy(desc(schema.fechamentoMensal.ano), desc(schema.fechamentoMensal.mes));
 
+  // Meses SEM snapshot (de out/2025 pra cá, e a Prainha Mar inteira): o
+  // snapshot só cobre o que veio antes do corte de 2025-10-01, então a casa que
+  // abriu depois caía em "Nenhum fechamento gerado ainda". Esses meses saem na
+  // hora dos pedidos e pagamentos, com o mês contado no fuso de Brasília.
+  const comSnap = new Set(mesesSnap.map((m) => `${m.ano}-${m.mes}`));
+  const [pedVivo, pagVivo] = await Promise.all([
+    db.execute(sql`
+      SELECT EXTRACT(YEAR FROM data_fechamento AT TIME ZONE 'America/Sao_Paulo')::int AS ano,
+             EXTRACT(MONTH FROM data_fechamento AT TIME ZONE 'America/Sao_Paulo')::int AS mes,
+             COALESCE(SUM(valor_total), 0)::text AS total_vendas,
+             COUNT(*)::int AS qtd_pedidos,
+             COALESCE(SUM(quantidade_pessoas), 0)::int AS qtd_pessoas,
+             COALESCE(SUM(total_desconto), 0)::text AS total_desconto,
+             COALESCE(SUM(total_acrescimo), 0)::text AS total_acrescimo,
+             COALESCE(SUM(total_servico), 0)::text AS total_servico
+      FROM pedido
+      WHERE filial_id = ${filialSelecionada.id}
+        AND data_delete IS NULL
+        AND data_fechamento >= '2025-10-01T00:00:00-03:00'
+      GROUP BY 1, 2
+    `),
+    db.execute(sql`
+      SELECT EXTRACT(YEAR FROM data_pagamento AT TIME ZONE 'America/Sao_Paulo')::int AS ano,
+             EXTRACT(MONTH FROM data_pagamento AT TIME ZONE 'America/Sao_Paulo')::int AS mes,
+             COALESCE(SUM(valor), 0)::text AS total_pagamentos
+      FROM pagamento
+      WHERE filial_id = ${filialSelecionada.id}
+        AND data_pagamento >= '2025-10-01T00:00:00-03:00'
+      GROUP BY 1, 2
+    `),
+  ]);
+  const pagPorMes = new Map(
+    (pagVivo as unknown as { ano: number; mes: number; total_pagamentos: string }[]).map((r) => [
+      `${r.ano}-${r.mes}`,
+      r.total_pagamentos,
+    ]),
+  );
+  const mesesVivos = (
+    pedVivo as unknown as {
+      ano: number; mes: number; total_vendas: string; qtd_pedidos: number; qtd_pessoas: number;
+      total_desconto: string; total_acrescimo: string; total_servico: string;
+    }[]
+  )
+    .filter((r) => !comSnap.has(`${r.ano}-${r.mes}`))
+    .map((r) => ({
+      ano: Number(r.ano),
+      mes: Number(r.mes),
+      totalVendas: r.total_vendas,
+      qtdPedidos: Number(r.qtd_pedidos),
+      ticketMedio: (Number(r.qtd_pedidos) > 0 ? Number(r.total_vendas) / Number(r.qtd_pedidos) : 0).toFixed(2),
+      qtdPessoas: Number(r.qtd_pessoas),
+      totalDesconto: r.total_desconto,
+      totalAcrescimo: r.total_acrescimo,
+      totalServico: r.total_servico,
+      totalPagamentos: pagPorMes.get(`${r.ano}-${r.mes}`) ?? '0',
+    }));
+  const vivos = new Set(mesesVivos.map((m) => `${m.ano}-${m.mes}`));
+  const meses = [...mesesVivos, ...mesesSnap].sort((a, b) => b.ano - a.ano || b.mes - a.mes);
+
   // Mes selecionado (default: mais recente)
   const anoSel = sp.ano ? Number(sp.ano) : meses[0]?.ano;
   const mesSel = sp.mes ? Number(sp.mes) : meses[0]?.mes;
   const mesAtual = meses.find((m) => m.ano === anoSel && m.mes === mesSel);
 
   // Detalhes do mes selecionado
-  const formas = mesAtual
+  const formasSnap = mesAtual
     ? await db
         .select()
         .from(schema.fechamentoMensalForma)
@@ -86,7 +156,7 @@ export default async function FechamentoMensalPage(props: { searchParams: Promis
         .orderBy(desc(schema.fechamentoMensalForma.valorTotal))
     : [];
 
-  const produtos = mesAtual
+  const produtosSnap = mesAtual
     ? await db
         .select()
         .from(schema.fechamentoMensalProduto)
@@ -101,7 +171,7 @@ export default async function FechamentoMensalPage(props: { searchParams: Promis
         .limit(50)
     : [];
 
-  const colaboradores = mesAtual
+  const colaboradoresSnap = mesAtual
     ? await db
         .select()
         .from(schema.fechamentoMensalColaborador)
@@ -115,6 +185,62 @@ export default async function FechamentoMensalPage(props: { searchParams: Promis
         .orderBy(desc(schema.fechamentoMensalColaborador.valorTotal))
         .limit(20)
     : [];
+
+  // Mês sem snapshot: formas, produtos e colaboradores saem na hora.
+  const mesVivo = !!mesAtual && vivos.has(`${anoSel}-${mesSel}`);
+  const iniMes = mesVivo ? `${anoSel}-${String(mesSel).padStart(2, '0')}-01T00:00:00-03:00` : '';
+  const fimMes = mesVivo
+    ? `${mesSel === 12 ? anoSel! + 1 : anoSel}-${String(mesSel === 12 ? 1 : mesSel! + 1).padStart(2, '0')}-01T00:00:00-03:00`
+    : '';
+  const [formasVivas, produtosVivos, colabVivos] = mesVivo
+    ? ((await Promise.all([
+        db.execute(sql`
+          SELECT COALESCE(forma_pagamento, '(sem forma)') AS id,
+                 COALESCE(forma_pagamento, '(sem forma)') AS "formaPagamento",
+                 COUNT(*)::int AS qtd,
+                 COALESCE(SUM(valor), 0)::text AS "valorTotal"
+          FROM pagamento
+          WHERE filial_id = ${filialSelecionada.id}
+            AND data_pagamento >= ${iniMes}::timestamptz AND data_pagamento < ${fimMes}::timestamptz
+          GROUP BY 1
+          ORDER BY SUM(valor) DESC NULLS LAST
+        `),
+        db.execute(sql`
+          SELECT pi.nome_produto AS id,
+                 (ROW_NUMBER() OVER (ORDER BY COALESCE(SUM(pi.valor_total), 0) DESC))::int AS posicao,
+                 pi.nome_produto AS "nomeProduto",
+                 MAX(pi.codigo_produto_externo)::int AS "codigoProdutoExterno",
+                 COALESCE(SUM(pi.quantidade), 0)::text AS qtd,
+                 COALESCE(SUM(pi.valor_total), 0)::text AS "valorTotal"
+          FROM pedido_item pi
+          JOIN pedido ped ON ped.filial_id = pi.filial_id AND ped.codigo_externo = pi.codigo_pedido_externo
+          WHERE pi.filial_id = ${filialSelecionada.id}
+            AND pi.data_delete IS NULL AND ped.data_delete IS NULL
+            AND pi.nome_produto IS NOT NULL
+            AND ped.data_fechamento >= ${iniMes}::timestamptz AND ped.data_fechamento < ${fimMes}::timestamptz
+          GROUP BY pi.nome_produto
+          ORDER BY COALESCE(SUM(pi.valor_total), 0) DESC
+          LIMIT 50
+        `),
+        db.execute(sql`
+          SELECT codigo_colaborador::text AS id,
+                 NULL::text AS "nomeColaborador",
+                 codigo_colaborador AS "codigoColaborador",
+                 COUNT(*)::int AS "qtdPedidos",
+                 COALESCE(SUM(valor_total), 0)::text AS "valorTotal"
+          FROM pedido
+          WHERE filial_id = ${filialSelecionada.id}
+            AND data_delete IS NULL AND codigo_colaborador IS NOT NULL
+            AND data_fechamento >= ${iniMes}::timestamptz AND data_fechamento < ${fimMes}::timestamptz
+          GROUP BY codigo_colaborador
+          ORDER BY SUM(valor_total) DESC NULLS LAST
+          LIMIT 20
+        `),
+      ])) as unknown as [FormaLinha[], ProdutoLinha[], ColabLinha[]])
+    : [[], [], []];
+  const formas: FormaLinha[] = mesVivo ? [...formasVivas] : formasSnap;
+  const produtos: ProdutoLinha[] = mesVivo ? [...produtosVivos] : produtosSnap;
+  const colaboradores: ColabLinha[] = mesVivo ? [...colabVivos] : colaboradoresSnap;
 
   const totalForma = formas.reduce((s, f) => s + Number(f.valorTotal), 0);
 
@@ -204,6 +330,12 @@ export default async function FechamentoMensalPage(props: { searchParams: Promis
                     <h2 className="text-xl font-semibold text-slate-900">
                       {MESES_LABEL[mesAtual.mes]} {mesAtual.ano}
                     </h2>
+                    {mesVivo && (
+                      <p className="mt-1 text-xs text-slate-500">
+                        Calculado agora a partir dos pedidos e pagamentos (mês sem snapshot; o mês corrente ainda
+                        está em andamento).
+                      </p>
+                    )}
                   </header>
 
                   {/* KPIs */}

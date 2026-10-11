@@ -300,6 +300,8 @@ export const MENU_AREAS: MenuArea[] = [
         label: 'Fiscal',
         links: [
           { label: 'NFC-e emitidas', href: '/fiscal/nfce', perm: 'nfce.read' },
+          { label: 'Mapa mensal do ICMS', href: '/fiscal/mapa-icms', perm: 'nfce.read' },
+          { label: 'NF-e de venda de bem', href: '/fiscal/nfe-avulsa', perm: 'nfce.read' },
           {
             label: 'Certificados A1',
             href: '/configuracoes/certificados',
