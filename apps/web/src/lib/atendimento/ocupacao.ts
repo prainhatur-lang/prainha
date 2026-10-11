@@ -174,5 +174,22 @@ export async function medirOcupacaoHoje(
       ? `Casa TRANQUILA agora (${medida}), mas a janela de reserva de hoje já fechou. Não dá pra reservar — e ainda assim é boa notícia: tem mesa sobrando. Convide com segurança ("pode vir tranquila, a casa está calma e tem mesa"), nunca com cara de recusa.`
       : `Casa movimentada (${medida}) — hoje vale a regra padrão (tarde por ordem de chegada).`;
 
+  // Dia FECHADO pra reserva pela casa (exceção do calendário): o resumo acima
+  // não sabia disso e mandava "reserva liberada até 11h30"; a Nina oferecia, o
+  // cliente dizia "pode" e a ferramenta recusava (11/10/2026, caso Valciria —
+  // duas respostas opostas em 1 minuto). Com o dia fechado não há reserva
+  // liberada: o resumo diz isso e mantém só a parte do movimento.
+  if (cfg?.excecoes?.some((e) => e.data === hoje && e.fechado)) {
+    const movimento = esperaRecepcao > 0
+      ? `Tem fila na recepção agora: ${esperaRecepcao} grupo(s) esperando mesa — avise que tem espera.`
+      : casaTranquila
+        ? 'A casa está com mesa livre agora — convide a vir direto.'
+        : 'A casa está movimentada — pode ter espera.';
+    return {
+      comandasAbertas, reservasFuturasHoje, capacidadeMesas, taxa, corteEstendido: null, casaTranquila, esperaRecepcao, fonte,
+      resumo: `HOJE A CASA FECHOU AS RESERVAS (${medida}): NÃO dá pra reservar pra hoje em área nenhuma e é PROIBIDO oferecer reserva de hoje, "tentar reservar" ou citar horário de chegada liberado. Hoje é por ordem de chegada: chegando, é só procurar a recepção, que acomoda conforme as mesas forem vagando. ${movimento} Reserva que o cliente JÁ TEM pra hoje continua valendo.`,
+    };
+  }
+
   return { comandasAbertas, reservasFuturasHoje, capacidadeMesas, taxa, corteEstendido, casaTranquila, esperaRecepcao, fonte, resumo };
 }
