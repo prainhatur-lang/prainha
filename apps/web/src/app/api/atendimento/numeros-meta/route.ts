@@ -102,6 +102,17 @@ export async function GET(req: Request) {
     const ids = new Set<string>([...numeros.map((n) => n.id), ...cadastrados.map((c) => c.phoneNumberId)]);
     const porNumero: Record<string, unknown> = {};
     for (const id of ids) porNumero[id] = await campos(id, CAMPOS_NUMERO);
+    // A descoberta pelo negócio volta vazia em produção (o token não lista
+    // /me/businesses e o número não expõe whatsapp_business_account). A saúde
+    // de cada número traz a conta dele — é dali que sai a WABA pra ler os
+    // modelos e a nota de cada um.
+    for (const d of Object.values(porNumero)) {
+      const saude = (d as { health_status?: { entities?: Array<{ entity_type?: string; id?: string }> } })
+        .health_status;
+      for (const e of saude?.entities ?? []) {
+        if (e.entity_type === 'WABA' && e.id && !wabas.has(e.id)) wabas.set(e.id, '');
+      }
+    }
     const porWaba: Record<string, unknown> = {};
     for (const waba of wabas.keys()) {
       const modelos = await graph<{ data?: unknown[] }>(

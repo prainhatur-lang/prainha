@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
+import { NumeroMetaPainel } from './numero-meta-painel';
 
 interface Bloco {
   id: string;
@@ -162,6 +163,9 @@ export function ConfigNinaClient() {
                   <span className="font-mono">{n.numeroExibicao || n.phoneNumberId}</span>
                   <span className="text-slate-400">— atender neste número</span>
                 </label>
+              ))}
+              {numeros.map((n) => (
+                <NumeroMetaPainel key={`meta-${n.phoneNumberId}`} phoneNumberId={n.phoneNumberId} />
               ))}
             </div>
           )}
