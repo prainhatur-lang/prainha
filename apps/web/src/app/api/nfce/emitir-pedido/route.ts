@@ -85,7 +85,12 @@ export async function POST(req: Request) {
 
   const montado = await montarNfceDoEspelho(filialId, codigoExterno);
   if (!montado.ok || !montado.input) {
-    return NextResponse.json({ ok: false, erro: montado.erro ?? 'falha ao montar a nota' }, { status: 422 });
+    // doPedido: o problema é deste pedido (excluído, sem pagamento, sem item),
+    // não da emissão — o lote do painel segue pro próximo em vez de parar.
+    return NextResponse.json(
+      { ok: false, erro: montado.erro ?? 'falha ao montar a nota', doPedido: true },
+      { status: 422 },
+    );
   }
 
   try {

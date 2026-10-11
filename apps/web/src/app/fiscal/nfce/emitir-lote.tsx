@@ -75,6 +75,9 @@ export function EmitirLote({ pedidos }: { pedidos: PedidoLote[] }) {
       const k = chaveDe(p);
       setAtual(k);
       let s: Situacao;
+      // falha que é só deste pedido (não deu pra montar a nota) não conta pras
+      // três seguidas: não é sinal de problema geral, o lote segue
+      let soDoPedido = false;
       try {
         const r = await fetch('/api/nfce/emitir-pedido', {
           method: 'POST',
@@ -85,11 +88,12 @@ export function EmitirLote({ pedidos }: { pedidos: PedidoLote[] }) {
         s = j.ok
           ? { ok: true, texto: j.nota?.numero ? `nota ${j.nota.numero}` : 'autorizada' }
           : { ok: false, texto: j.erro ?? 'falhou' };
+        soDoPedido = !j.ok && j.doPedido === true;
       } catch (e) {
         s = { ok: false, texto: (e as Error).message };
       }
       setSituacao((m) => ({ ...m, [k]: s }));
-      seguidas = s.ok ? 0 : seguidas + 1;
+      seguidas = s.ok ? 0 : soDoPedido ? seguidas : seguidas + 1;
       if (seguidas >= 3) {
         setAviso('Parei: três falhas seguidas. Veja o motivo nas linhas em vermelho antes de tentar de novo.');
         break;

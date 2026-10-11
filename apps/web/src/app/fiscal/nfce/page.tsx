@@ -100,6 +100,10 @@ async function pedidosSemNota(
     WHERE p.filial_id IN ${filialIds}
       AND ${quando} ${mesa}
       AND COALESCE(p.valor_total, 0) > 0
+      -- pedido excluído não tem como virar nota (a emissão responde "não
+      -- encontrado"): em 11/10 apareceram 189 excluídos antigos com fechamento
+      -- em 08/10 e as três primeiras falhas pararam o lote
+      AND p.data_delete IS NULL
       AND NOT EXISTS (SELECT 1 FROM nfce_emitida n
         WHERE n.filial_id = p.filial_id AND n.pedido_chave = 'fb:' || p.codigo_externo
           AND n.status IN ('AUTORIZADA', 'PENDENTE'))
