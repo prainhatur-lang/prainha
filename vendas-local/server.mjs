@@ -28743,7 +28743,11 @@ async function apiGerenteResumo(g) {
     mesas, atrasos, setores, fluxo,
     reclamacoes: { abertas: chamados.reclamacoes, garcom: chamados.garcom, avaliacoes,
       avaliacoes_ruins: avaliacoes.filter((a) => Number(a.nota) <= 3 && a.status === 'novo').length },
-    espera: (nuvem && nuvem.ok && nuvem.espera) || [], reservas: (nuvem && nuvem.ok && nuvem.reservas) || [],
+    // A nuvem manda também quem JÁ sentou/desistiu nas últimas 12h (a tela da
+    // recepção precisa pra desfazer clique errado). Aqui é a fila VIVA: sem o
+    // filtro o gerente via 60 "esperando 239 min" com 8 na porta (11/10).
+    espera: ((nuvem && nuvem.ok && nuvem.espera) || []).filter((x) => !x || !x.status || x.status === 'aguardando' || x.status === 'chamado'),
+    reservas: (nuvem && nuvem.ok && nuvem.reservas) || [],
     liberacoes: lib };
 }
 

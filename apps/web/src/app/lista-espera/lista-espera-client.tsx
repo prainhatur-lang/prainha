@@ -19,7 +19,9 @@ type Item = {
 type Filial = { id: string; nome: string };
 
 function minutosDesde(iso: string, agora: number): number {
-  const t = new Date(iso.replace(' ', 'T')).getTime();
+  // O banco manda "2026-10-11 17:31:12.1+00": fuso sem os minutos é data
+  // inválida no navegador e a espera de todo mundo virava "agora" (11/10).
+  const t = new Date(iso.replace(' ', 'T').replace(/([+-]\d{2})$/, '$1:00')).getTime();
   if (Number.isNaN(t)) return 0;
   return Math.max(0, Math.floor((agora - t) / 60000));
 }
