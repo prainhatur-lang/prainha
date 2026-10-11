@@ -20,6 +20,7 @@ import {
   remarcarReservaWhatsApp,
   cancelarReservaWhatsApp,
   localizarReservaWhatsApp,
+  corrigirTelefoneReservaWhatsApp,
   consultarEstornoWhatsApp,
   entrarListaEsperaWhatsApp,
   consultarMesa,
@@ -622,6 +623,8 @@ export async function processarEntrada(params: {
         cancelarReservaWhatsApp({ filialId: entrada.filialId, telefone: entrada.telefone, ...dados }),
       localizarReserva: (dados: import('./ia').DadosLocalizarReserva) =>
         localizarReservaWhatsApp({ filialId: entrada.filialId, telefoneConversa: entrada.telefone, ...dados }),
+      corrigirTelefoneReserva: (dados: { data: string | null; telefoneReserva: string | null; cpfReserva: string | null }) =>
+        corrigirTelefoneReservaWhatsApp({ filialId: entrada.filialId, filialNome, telefone: entrada.telefone, ...dados }),
       consultarEstorno: () => consultarEstornoWhatsApp(entrada.filialId, entrada.telefone),
       entrarListaEspera: (dados: { nome: string; pessoas: number; area: string | null }) =>
         entrarListaEsperaWhatsApp({ filialId: entrada.filialId, telefone: entrada.telefone, ...dados }),

@@ -79,6 +79,8 @@ export interface ExecutoresFerramentas {
   remarcarReserva: (dados: DadosRemarcarReserva) => Promise<string>;
   cancelarReserva: (dados: { data: string | null; telefoneReserva: string | null; cpfReserva: string | null }) => Promise<string>;
   localizarReserva: (dados: DadosLocalizarReserva) => Promise<string>;
+  /** Passa a reserva pro telefone desta conversa e reenvia a confirmação. */
+  corrigirTelefoneReserva?: (dados: { data: string | null; telefoneReserva: string | null; cpfReserva: string | null }) => Promise<string>;
   cadastrarFornecedor: (dados: {
     empresa: string;
     produtos: string;
@@ -310,6 +312,7 @@ ${duasCasas
 - LOUNGE PAGO — regra de estorno (VOCÊ SABE essa regra; responda na hora quando perguntarem sobre reembolso/devolução, sem "confirmar com a equipe"): cancelamento com 48h+ de antecedência = Pix volta integral; entre 24h e 48h = volta 50%; menos de 24h = taxa retida. O banco leva alguns dias pra creditar. Cancelar lounge PAGO é com a equipe: avise a regra, diga que vai passar pra um colega concluir e transfira (transferir_para_humano) com o resumo — o estorno sai quando a equipe cancela.
 - CANCELAR reserva: só quando o cliente quer mesmo DESISTIR. Use cancelar_reserva — ela acha as reservas ativas DESTE telefone; se houver mais de uma, a ferramenta lista e você pergunta qual. Confirme com o cliente antes ("posso cancelar a de sábado 12h?"). Reserva que já virou no_show/cancelada: diga que a mesa já foi liberada. LOUNGE PAGO você NÃO cancela (a ferramenta recusa): explique a regra de estorno e transfira pra equipe concluir.
 - RESERVA EM OUTRO TELEFONE / NOME / CPF ("foi pelo contato 79 9xxxx-xxxx", "meu marido que reservou", "foi no CPF dela"): NÃO transfira e NÃO diga que não achou antes de procurar — chame localizar_reserva com o telefone ou CPF que o cliente deu. Achou: confirme em UMA frase com o cliente (primeiro nome + dia + hora: "achei uma reserva do Italo pra hoje às 10h no Lounge, 6 pessoas — é essa?") e SÓ DEPOIS do sim remarque/cancele passando o MESMO telefone_reserva/cpf_reserva. Não repita telefone nem CPF completo de volta.
+- TELEFONE ERRADO NA RESERVA ("o número que mandaram a confirmação não é o meu", "digitei o celular errado", "não chegou a confirmação"): VOCÊ conserta, não transfira — isso NÃO é o "passar pra outro telefone" que vai pra equipe. Peça o CPF de quem reservou (ou o telefone que ficou errado), chame localizar_reserva, confirme em uma frase que é aquela reserva e, com o sim, chame corrigir_telefone_reserva: ela põe o número DESTA conversa na reserva e manda a confirmação de novo aqui. Só vai pra equipe se o cliente quiser pôr a reserva num número que NÃO é o desta conversa. Caso Tainah (11/10): achou a reserva pelo CPF, disse "prontinho" sem trocar nada e depois transferiu.
 - LOUNGE PAGO NÃO TEM TOLERÂNCIA DE HORÁRIO: quem pagou o lounge é dono da mesa o dia inteiro. Cliente avisa que vai chegar mais tarde ("compramos pra 10h mas só chegamos 13h"): tranquilize na hora ("pode vir com calma, a mesa é de vocês o dia todo") e, se ele quiser, ajuste o horário com remarcar_reserva (passando o telefone/CPF se a reserva for de outra pessoa). NUNCA diga que a reserva pode ser cancelada por atraso quando é lounge pago.
 - RESERVA PRA HOJE — CORTE DINÂMICO: o corte de hoje acompanha o movimento REAL da casa. SEMPRE consulte consultar_disponibilidade_reserva com a data de hoje antes de negar: a linha "OCUPAÇÃO AGORA" diz se a reserva está liberada até mais tarde (casa com espaço libera até 15h ou 17h) ou se vale a regra padrão (tarde por ordem de chegada). Casa com espaço = VENDA a reserva da tarde com entusiasmo (é pra encher a casa!); casa movimentada = explique com carinho que à tarde é por ordem de chegada e convide a vir direto.
 - ESTORNO/REEMBOLSO de reserva paga ("cadê meu dinheiro?", "não caiu o estorno", "quero o reembolso"): chame consultar_estorno_reserva ANTES de responder — ela acha a reserva, diz se o estorno já saiu e COMO volta. PONTO CRÍTICO: se o pagamento foi no CARTÃO, o valor volta NA FATURA do cartão (até ~30 dias, conforme o banco) e NUNCA como Pix — nesse caso NÃO peça e nem use chave Pix; se o cliente mandar uma, agradeça e explique que não precisa. Pagamento no Pix volta sozinho pra conta de origem, também sem precisar de chave. Só transfira se a ferramenta mandar, ou se o prazo já estourou e o cliente reclama.
@@ -500,6 +503,22 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         properties: {
           telefone: { type: 'string', description: 'telefone com DDD em que a reserva foi feita' },
           cpf: { type: 'string', description: 'CPF (11 dígitos) de quem fez a reserva' },
+        },
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'corrigir_telefone_reserva',
+      description:
+        'TROCA o telefone de uma reserva ativa pelo número DESTA conversa e REENVIA a confirmação pra cá. Use quando o cliente diz que a reserva ficou com o celular errado ("digitei errado", "o número que mandaram a confirmação não é o meu", "não recebi a confirmação") ou quer passar a reserva pro número dele. Antes: ache a reserva com localizar_reserva (pelo CPF de quem reservou ou pelo telefone errado) e confirme com o cliente que é ela. O número novo é sempre o desta conversa — não existe trocar pra um terceiro número. Você mesma faz: NÃO transfira por isso.',
+      parameters: {
+        type: 'object',
+        properties: {
+          data: { type: 'string', description: 'YYYY-MM-DD da reserva (só se houver mais de uma ativa)' },
+          cpf_reserva: { type: 'string', description: 'CPF de quem fez a reserva (o mesmo usado em localizar_reserva)' },
+          telefone_reserva: { type: 'string', description: 'telefone que ficou gravado na reserva (o errado), se a reserva foi achada por ele' },
         },
       },
     },
@@ -1067,6 +1086,14 @@ Como usar, SEM EXCEÇÃO:
             telefone: String(args.telefone ?? '') || null,
             cpf: String(args.cpf ?? '') || null,
           });
+        } else if (tc.function.name === 'corrigir_telefone_reserva') {
+          resultado = params.executores.corrigirTelefoneReserva
+            ? await params.executores.corrigirTelefoneReserva({
+                data: /^\d{4}-\d{2}-\d{2}$/.test(String(args.data ?? '')) ? String(args.data) : null,
+                telefoneReserva: String(args.telefone_reserva ?? '') || null,
+                cpfReserva: String(args.cpf_reserva ?? '') || null,
+              })
+            : 'Troca de telefone indisponível aqui — transfira pra equipe com o número certo no resumo.';
         } else if (tc.function.name === 'cancelar_reserva') {
           resultado = await params.executores.cancelarReserva({
             data: String(args.data ?? '') || null,

@@ -21,6 +21,7 @@ const CAMPOS: Array<{ chave: string; campo: string }> = [
   { chave: 'data', campo: 'data' },
   { chave: 'hora', campo: 'hora' },
   { chave: 'pagamentoStatus', campo: 'pagamento' },
+  { chave: 'clienteTelefone', campo: 'telefone' },
 ];
 
 const norm = (v: unknown): string | null =>

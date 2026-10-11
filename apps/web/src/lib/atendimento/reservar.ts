@@ -1107,3 +1107,100 @@ export async function entrarListaEsperaWhatsApp(p: {
     'Diga ao cliente que o nome já está com a recepção: quando ele chegar, é só se apresentar que será chamado assim que vagar mesa — a fila anda conforme as mesas liberam, sem hora garantida. Convide a vir com carinho.'
   );
 }
+
+/** Passa a reserva pro telefone DESTA conversa e manda a confirmação de novo.
+ *
+ *  Caso Tainah (11/10/2026): reservou pelo site digitando o celular errado
+ *  (71 99286-9284 em vez de 79 99913-9284), a confirmação foi pra um estranho,
+ *  ela chamou a Nina, achou a reserva pelo CPF — e a Nina transferiu pra
+ *  equipe, porque não tinha como trocar o número. Pedido do dono: "nina deve
+ *  editar o celular e mandar a confirmação novamente".
+ *
+ *  O número novo é SEMPRE o da própria conversa (quem está falando prova que
+ *  o número é dele); a reserva é achada pelo CPF ou pelo telefone antigo, do
+ *  mesmo jeito que remarcar/cancelar. Lounge pago também troca: não mexe em
+ *  dinheiro, mesa nem horário. */
+export async function corrigirTelefoneReservaWhatsApp(p: {
+  filialId: string;
+  filialNome: string;
+  telefone: string; // WhatsApp da conversa — vira o telefone da reserva
+  data?: string | null;
+  telefoneReserva?: string | null;
+  cpfReserva?: string | null;
+}): Promise<string> {
+  if (!p.cpfReserva && !p.telefoneReserva) {
+    return 'Pra trocar o telefone preciso achar a reserva pelo CPF de quem reservou ou pelo telefone que ficou gravado (o errado). Peça o CPF ao cliente e chame localizar_reserva.';
+  }
+  let ativas = await reservasAtivas(p.filialId, { telefone: p.telefoneReserva, cpf: p.cpfReserva });
+  if (!ativas || ativas.length === 0) {
+    const b = await reservasPlanoB(p.filialId, { telefoneConversa: p.telefone, telefoneReserva: p.telefoneReserva, cpfReserva: p.cpfReserva });
+    if (b.trocadas) ativas = b.trocadas;
+    else if (b.daConversa) {
+      return `A reserva JÁ ESTÁ no telefone desta conversa (${b.daConversa.map((r) => `${dataBr(String(r.data))} às ${String(r.hora).slice(0, 5)}, ${r.area}`).join('; ')}) — não há o que trocar. Diga isso ao cliente.`;
+    }
+  }
+  if (!ativas || ativas.length === 0) {
+    return 'Nenhuma reserva ativa (de hoje em diante) nesse CPF/telefone. Confira o CPF com o cliente; se ele garantir que existe e nada aparecer, transfira pra equipe.';
+  }
+  const candidatas = p.data ? ativas.filter((r) => String(r.data) === p.data) : ativas;
+  if (candidatas.length !== 1) {
+    const linhas = ativas.map((r) => `- ${dataBr(String(r.data))} às ${String(r.hora).slice(0, 5)}, ${r.area}, ${r.pessoas} pessoa(s)`);
+    return `Achei ${ativas.length} reservas — pergunte de qual é e chame de novo com a data (YYYY-MM-DD):\n${linhas.join('\n')}`;
+  }
+  const alvo = candidatas[0]!;
+  const novo = p.telefone.replace(/\D/g, '');
+  const antigo = (alvo.telefone ?? '').replace(/\D/g, '');
+  const jaEra = antigo.slice(-8) === novo.slice(-8);
+  const hora = String(alvo.hora).slice(0, 5);
+
+  if (!jaEra) {
+    // Este número já tem OUTRA reserva no mesmo dia: trocar deixaria duas no
+    // mesmo telefone — isso é pra equipe olhar.
+    const doNumero = await reservasAtivas(p.filialId, { telefone: novo });
+    if (doNumero?.some((r) => r.id !== alvo.id && String(r.data) === String(alvo.data))) {
+      return `NÃO TROQUEI: o telefone desta conversa já tem outra reserva em ${dataBr(String(alvo.data))}. Pode ser reserva repetida — confirme com o cliente qual vale e transfira pra equipe com o resumo.`;
+    }
+    await db
+      .update(schema.reserva)
+      .set({ clienteTelefone: novo, atualizadoEm: sql`now()` })
+      .where(eq(schema.reserva.id, alvo.id));
+    await registrarAlteracoesReserva(
+      alvo.id,
+      { clienteTelefone: antigo },
+      { clienteTelefone: novo },
+      { tipo: 'cliente', nome: 'cliente via Nina (WhatsApp)' },
+    );
+  }
+
+  // Confirmação de novo, agora no número certo (mesmo cancelToken).
+  let enviou = false;
+  try {
+    const [a, m, d] = String(alvo.data).split('-');
+    const nome = alvo.nome ?? 'Cliente';
+    enviou = await enviarConfirmacaoReserva(novo, {
+      nome,
+      data: `${d}/${m}/${a}`,
+      hora,
+      local: alvo.area ?? '',
+      pessoas: String(alvo.pessoas),
+      linkCancelar: alvo.cancelToken ? `https://app.prainhabar.com/reservar/cancelar/${alvo.cancelToken}` : '',
+    });
+    if (String(alvo.data) === hojeBr() && alvo.cancelToken && lembreteReservaConfigurado()) {
+      await enviarLembreteReserva(novo, {
+        nome: nome.split(' ')[0] || 'tudo bem',
+        data: `${d}/${m}/${a}`,
+        hora,
+        local: `${p.filialNome} · ${alvo.area ?? ''}`,
+        token: alvo.cancelToken,
+      });
+    }
+  } catch {
+    // best-effort — a troca já está gravada
+  }
+
+  const oQue = jaEra ? 'A reserva JÁ ESTAVA no telefone desta conversa' : 'TELEFONE TROCADO: a reserva agora está no número desta conversa';
+  const conf = enviou
+    ? 'A confirmação foi enviada de novo, agora pra este número (chega aqui na conversa, com o link de cancelar).'
+    : 'NÃO consegui reenviar a mensagem de confirmação — então confirme você mesma, por escrito, os dados abaixo.';
+  return `${oQue}. ${conf} Reserva: ${dataBr(String(alvo.data))} às ${hora}, ${alvo.area}${alvo.mesa ? ` (mesa ${alvo.mesa})` : ''}, ${alvo.pessoas} pessoa(s)${rotuloPago(alvo)}. Diga ao cliente em UMA frase que o telefone foi corrigido e que os lembretes passam a chegar neste número. NÃO transfira.`;
+}
