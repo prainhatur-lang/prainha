@@ -330,6 +330,9 @@ export async function POST(request: Request) {
               eq(schema.pedido.filialId, r.filialId),
               eq(schema.pedido.numero, numeroMesa),
               isNull(schema.pedido.dataFechamento),
+              // pedido excluído no Consumer nunca foi fechado: sem isto o no-show carimbava
+              // todos os excluídos antigos da mesa e eles viravam "venda sem nota" (08/10)
+              isNull(schema.pedido.dataDelete),
             ),
           )
           .catch(() => null);
