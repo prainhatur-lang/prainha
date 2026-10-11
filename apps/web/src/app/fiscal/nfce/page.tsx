@@ -262,6 +262,13 @@ export default async function NfcePage({
             </p>
           </div>
           <a
+            href="/fiscal/nfe-avulsa"
+            className="ml-auto rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+            title="NF-e de venda de um bem da empresa (carro, equipamento) — não vem de cupom"
+          >
+            🧾 NF-e de venda de bem
+          </a>
+          <a
             href="/configuracoes/fiscal"
             className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
           >
