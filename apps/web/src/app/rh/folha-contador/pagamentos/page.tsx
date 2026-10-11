@@ -40,6 +40,13 @@ const SITUACAO: Record<SituacaoPagamento, { rotulo: string; classe: string }> = 
   sem_liquido: { rotulo: 'sem líquido a receber', classe: 'border-slate-200 bg-slate-50 text-slate-600' },
 };
 
+const NO_LOTE = {
+  dentro: { rotulo: 'pago no lote (repasse da casa confere)', classe: 'border-emerald-200 bg-emerald-50 text-emerald-700' },
+  fora: { rotulo: 'ficou fora do lote', classe: 'border-red-200 bg-red-50 text-red-700' },
+  talvez_fora: { rotulo: 'um destes ficou fora do lote', classe: 'border-amber-200 bg-amber-50 text-amber-800' },
+  casa_difere: { rotulo: 'repasse da casa não fecha', classe: 'border-amber-200 bg-amber-50 text-amber-800' },
+} as const;
+
 export default async function PagamentosFolhaContadorPage(props: { searchParams: Promise<{ comp?: string }> }) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
@@ -76,6 +83,9 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
   const semNome = conta('nao_achou');
   const somaSemNome = somaLiq('nao_achou');
   const faltaNoLote = somaSemNome - totalLote;
+  const porCasa = conf?.porCasa ?? [];
+  const nomeDaLinha = new Map(linhas.map((l) => [l.folhaId, l.nome]));
+  const repassado = porCasa.reduce((t, c) => t + (c.repasse?.valor ?? 0), 0);
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -188,6 +198,63 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
               </div>
             )}
 
+            {porCasa.length > 0 && (
+              <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+                <p className="px-4 pt-3 text-sm font-medium text-slate-900">Encontro de contas por casa</p>
+                <p className="px-4 text-[11px] text-slate-500">
+                  Líquido da folha de cada casa × o que a casa repassou pra {empresa.nome} no dia do lote.
+                </p>
+                <table className="mt-2 w-full text-sm">
+                  <thead className="bg-slate-50 text-left text-[11px] uppercase text-slate-500">
+                    <tr>
+                      <th className="px-4 py-2">Casa</th>
+                      <th className="px-3 py-2 text-right">Pessoas</th>
+                      <th className="px-3 py-2 text-right">Líquido da folha</th>
+                      <th className="px-3 py-2 text-right">Repasse recebido</th>
+                      <th className="px-3 py-2 text-right">Diferença</th>
+                      <th className="px-3 py-2">Quem explica a diferença</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {porCasa.map((c) => (
+                      <tr key={c.filialId} className="border-t border-slate-100">
+                        <td className="px-4 py-2">{nomeFilial.get(c.filialId) ?? '—'}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{c.pessoas}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{brl(c.liquido)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {c.repasse ? `${brl(c.repasse.valor)} · ${fmtDia(c.repasse.dia)}` : 'não achei'}
+                        </td>
+                        <td className={`px-3 py-2 text-right tabular-nums ${c.diferenca > 0.004 ? 'text-red-700' : 'text-emerald-700'}`}>
+                          {brl(c.diferenca)}
+                        </td>
+                        <td className="px-3 py-2 text-xs text-slate-600">
+                          {!c.repasse
+                            ? 'nenhum repasse do dia fecha com esta casa'
+                            : c.fora.length === 0
+                              ? 'confere'
+                              : c.fora.length === 1
+                                ? `${nomeDaLinha.get(c.fora[0]!)} ficou fora do lote`
+                                : `um destes ficou fora: ${c.fora.map((id) => nomeDaLinha.get(id)).join(', ')}`}
+                        </td>
+                      </tr>
+                    ))}
+                    <tr className="border-t border-slate-200 bg-slate-50 font-medium">
+                      <td className="px-4 py-2">Total</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{porCasa.reduce((t, c) => t + c.pessoas, 0)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{brl(porCasa.reduce((t, c) => t + c.liquido, 0))}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{brl(repassado)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{brl(porCasa.reduce((t, c) => t + c.diferenca, 0))}</td>
+                      <td className="px-3 py-2 text-xs text-slate-600">
+                        {Math.abs(repassado - totalLote) < 0.005
+                          ? 'repasses = lote debitado'
+                          : `lote debitado: ${brl(totalLote)}`}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            )}
+
             <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
               <table className="w-full text-sm">
                 <thead className="border-b border-slate-200 bg-slate-50 text-left text-[11px] uppercase tracking-wide text-slate-500">
@@ -227,9 +294,16 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
                         )}
                       </td>
                       <td className="px-3 py-2">
-                        <span className={`inline-block rounded border px-1.5 py-0.5 text-[11px] ${SITUACAO[l.situacao].classe}`}>
-                          {l.situacao === 'nao_achou' && lotes.length > 0 ? 'sem nome no extrato (ver lote)' : SITUACAO[l.situacao].rotulo}
-                        </span>
+                        {l.noLote ? (
+                          <span className={`inline-block rounded border px-1.5 py-0.5 text-[11px] ${NO_LOTE[l.noLote].classe}`}>
+                            {NO_LOTE[l.noLote].rotulo}
+                            {l.situacao === 'difere' && l.noLote === 'dentro' ? ' + Pix avulso' : ''}
+                          </span>
+                        ) : (
+                          <span className={`inline-block rounded border px-1.5 py-0.5 text-[11px] ${SITUACAO[l.situacao].classe}`}>
+                            {l.situacao === 'nao_achou' && lotes.length > 0 ? 'sem nome no extrato (ver lote)' : SITUACAO[l.situacao].rotulo}
+                          </span>
+                        )}
                       </td>
                     </tr>
                   ))}

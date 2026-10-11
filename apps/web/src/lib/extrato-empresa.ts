@@ -132,6 +132,25 @@ export interface LinhaConferencia {
   /** Débitos com o nome da pessoa (ou, em 'so_valor', o de valor igual sem nome). */
   debitos: DebitoExtrato[];
   pago: number;
+  /**
+   * Encontro com o lote da folha, pela casa: 'dentro' = o repasse da casa no dia
+   * do lote cobre o líquido dela; 'fora' = a diferença da casa é exatamente o
+   * líquido desta pessoa; 'talvez_fora' = a diferença é o líquido de uma entre
+   * várias pessoas de valor igual; 'casa_difere' = o repasse da casa não fecha.
+   */
+  noLote?: 'dentro' | 'fora' | 'talvez_fora' | 'casa_difere';
+}
+
+/** Encontro de uma casa: líquido da folha × o que a casa repassou no dia do lote. */
+export interface EncontroCasa {
+  filialId: string;
+  pessoas: number;
+  liquido: number;
+  /** Crédito recebido no dia do lote que fecha com a casa (null = não achei). */
+  repasse: DebitoExtrato | null;
+  diferenca: number;
+  /** Quem explica a diferença (1 = certeza; mais de 1 = uma delas). */
+  fora: string[];
 }
 
 /** Janela em que o líquido de uma competência costuma sair: do dia 20 do mês até o dia 20 do mês seguinte. */
@@ -151,6 +170,8 @@ export async function conferirFolhaComExtrato(
   janela: { de: string; ate: string };
   /** Débitos "Folha de pagamento": o banco paga todo mundo num lote só, sem nome. */
   lotes: DebitoExtrato[];
+  /** Com lote: o encontro casa por casa (repasse do dia do lote × líquido da casa). */
+  porCasa: EncontroCasa[];
 }> {
   const janela = janelaDaCompetencia(competencia);
   const folha = (
@@ -241,5 +262,89 @@ export async function conferirFolhaComExtrato(
   const lotes = debitos.filter((d) => !usados.has(d.id) && normalizarNome(d.texto).includes('FOLHA DE PAGAMENTO'));
   const idsLote = new Set(lotes.map((d) => d.id));
 
-  return { linhas, debitosSemPessoa: debitos.filter((d) => !usados.has(d.id) && !idsLote.has(d.id)), janela, lotes };
+  // Encontro por casa: no dia do lote cada casa repassa pra empresa o líquido da
+  // folha dela. Repasse = líquido da casa -> todo mundo da casa está no lote.
+  // Repasse menor, e a diferença é o líquido de alguém -> essa pessoa ficou fora.
+  const porCasa: EncontroCasa[] = [];
+  if (lotes.length > 0) {
+    const dias = [...new Set(lotes.map((d) => d.dia))];
+    const creditos: DebitoExtrato[] = (
+      await db
+        .select({
+          id: schema.extratoEmpresa.id,
+          dia: sql<string>`${schema.extratoEmpresa.dataMovimento}::text`,
+          valor: schema.extratoEmpresa.valor,
+          historico: schema.extratoEmpresa.codigoHistorico,
+          titulo: schema.extratoEmpresa.titulo,
+          descricao: schema.extratoEmpresa.descricao,
+        })
+        .from(schema.extratoEmpresa)
+        .where(
+          and(
+            eq(schema.extratoEmpresa.empresa, sigla),
+            eq(schema.extratoEmpresa.tipo, 'C'),
+            gte(schema.extratoEmpresa.dataMovimento, dias[0]!),
+            lte(schema.extratoEmpresa.dataMovimento, dias[dias.length - 1]!),
+          ),
+        )
+    )
+      .filter((c) => dias.includes(c.dia))
+      .map((c) => ({
+        id: c.id,
+        dia: c.dia,
+        valor: Number(c.valor),
+        historico: c.historico,
+        texto: [c.titulo, c.descricao].filter(Boolean).join(' — '),
+      }));
+
+    // Entra no lote quem tem líquido e não foi pago inteiro por Pix no próprio nome.
+    const doLote = linhas.filter((l) => l.situacao === 'nao_achou' || l.situacao === 'difere');
+    const casas = [...new Set(doLote.map((l) => l.filialId))].map((filialId) => {
+      const gente = doLote.filter((l) => l.filialId === filialId);
+      return { filialId, gente, liquido: gente.reduce((t, l) => t + l.liquido, 0) };
+    });
+    const creditoUsado = new Set<string>();
+    const achado = new Map<string, EncontroCasa>();
+    // 1ª passada: repasse igual ao líquido da casa.
+    for (const c of casas) {
+      const igual = creditos.find((k) => !creditoUsado.has(k.id) && cent(k.valor) === cent(c.liquido));
+      if (!igual) continue;
+      creditoUsado.add(igual.id);
+      achado.set(c.filialId, { filialId: c.filialId, pessoas: c.gente.length, liquido: c.liquido, repasse: igual, diferenca: 0, fora: [] });
+    }
+    // 2ª passada: repasse menor, e a diferença é o líquido de alguém da casa.
+    for (const c of casas) {
+      if (achado.has(c.filialId)) continue;
+      for (const k of creditos) {
+        if (creditoUsado.has(k.id)) continue;
+        const dif = cent(c.liquido) - cent(k.valor);
+        if (dif <= 0) continue;
+        const quem = c.gente.filter((l) => cent(l.liquido) === dif);
+        if (quem.length === 0) continue;
+        creditoUsado.add(k.id);
+        achado.set(c.filialId, {
+          filialId: c.filialId,
+          pessoas: c.gente.length,
+          liquido: c.liquido,
+          repasse: k,
+          diferenca: dif / 100,
+          fora: quem.map((l) => l.folhaId),
+        });
+        break;
+      }
+    }
+    for (const c of casas) {
+      const e =
+        achado.get(c.filialId) ??
+        ({ filialId: c.filialId, pessoas: c.gente.length, liquido: c.liquido, repasse: null, diferenca: c.liquido, fora: [] } satisfies EncontroCasa);
+      porCasa.push(e);
+      for (const l of c.gente) {
+        if (!e.repasse) l.noLote = 'casa_difere';
+        else if (!e.fora.includes(l.folhaId)) l.noLote = 'dentro';
+        else l.noLote = e.fora.length === 1 ? 'fora' : 'talvez_fora';
+      }
+    }
+  }
+
+  return { linhas, debitosSemPessoa: debitos.filter((d) => !usados.has(d.id) && !idsLote.has(d.id)), janela, lotes, porCasa };
 }
