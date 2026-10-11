@@ -75,6 +75,7 @@ async function cobertura(filialIds: string[]): Promise<CoberturaDia[]> {
     WHERE p.filial_id IN ${filialIds}
       AND p.data_fechamento >= now() - interval '14 days'
       AND COALESCE(p.valor_total, 0) > 0
+      AND p.data_delete IS NULL
     GROUP BY 1, 2
     ORDER BY 2 DESC, 1
   `);
