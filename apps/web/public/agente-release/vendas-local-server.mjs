@@ -18731,6 +18731,9 @@ button:disabled{opacity:.5}
   <span>ajuste →</span><button class="seg" onclick="cfg('dx',-1)">−</button><b id="vDx"></b><button class="seg" onclick="cfg('dx',1)">+</button>
   <button class="seg" id="bInv" onclick="cfg('inv',0)">Invertida 180°</button>
   <button class="seg" onclick="calibrar()">Calibrar papel</button>
+  <button class="seg" onclick="avancar()">Avançar em branco</button>
+  <button class="seg" onclick="trocarImp()">Trocar impressora</button>
+  <span style="display:inline-flex;gap:8px;align-items:center">rolo<button class="seg" id="bR30" onclick="rolo(30)">50×30</button><button class="seg" id="bR50" onclick="rolo(50)">50×50</button></span>
   <div class="st" id="st">Rolo 50×30 (50 de largura, 30 no avanço). Bluetooth: Chrome do Android, no endereço https da loja. Imprima 1 mesa de teste antes de soltar todas.</div>
 </div>
 <div class="aviso" id="info"></div>
@@ -18799,17 +18802,25 @@ function bits(cv){var d=cv.getContext('2d').getImageData(0,0,W,H).data,wb=W/8,o=
 function asc(s){var a=new Uint8Array(s.length);for(var i=0;i<s.length;i++)a[i]=s.charCodeAt(i)&255;return a}
 function junta(ps){var n=0;ps.forEach(function(p){n+=p.length});var o=new Uint8Array(n),k=0;ps.forEach(function(p){o.set(p,k);k+=p.length});return o}
 var NL=String.fromCharCode(13,10);
-function cab(){var c=C();return 'SIZE 50 mm,30 mm'+NL+'GAP 2 mm,0 mm'+NL+'DENSITY '+c.dens+NL+'SPEED 3'+NL+'DIRECTION '+(c.inv?0:1)+NL}
-function tspl(cv,cop){var c=C();return junta([asc(cab()+'CLS'+NL+'BITMAP '+(c.dx*8)+',8,'+(W/8)+','+H+',0,'),bits(cv),asc(NL+'PRINT 1,'+cop+NL)])}
+/* Rolo: 50×30 (o de sempre) ou 50×50, o outro rolo da casa. O desenho é o mesmo
+   de 48×28 mm; no 50×50 só mudam o SIZE e a linha onde o BITMAP começa (centrado
+   na etiqueta mais alta). Com o rolo errado escolhido a impressão anda fora do
+   picote e nenhuma calibração segura. */
+function altR(){return C().h===50?50:30}
+function rolo(h){var c=C();c.h=h===50?50:30;try{localStorage.setItem('qr_etq_cfg',JSON.stringify(c))}catch(e){}pintaRolo();
+  st('Rolo 50×'+c.h+' (50 de largura, '+c.h+' no avanço). Com o rolo no lugar e a tampa fechada, aperte "Calibrar papel" antes de imprimir.')}
+function pintaRolo(){var h=altR();document.getElementById('bR30').className='seg'+(h===30?' on':'');document.getElementById('bR50').className='seg'+(h===50?' on':'')}
+function cab(){var c=C();return 'SIZE 50 mm,'+altR()+' mm'+NL+'GAP 2 mm,0 mm'+NL+'DENSITY '+c.dens+NL+'SPEED 3'+NL+'DIRECTION '+(c.inv?0:1)+NL}
+function tspl(cv,cop){var c=C();return junta([asc(cab()+'CLS'+NL+'BITMAP '+(c.dx*8)+','+(altR()===50?88:8)+','+(W/8)+','+H+',0,'),bits(cv),asc(NL+'PRINT 1,'+cop+NL)])}
 var SERV=['000018f0-0000-1000-8000-00805f9b34fb','0000ff00-0000-1000-8000-00805f9b34fb','0000ffe0-0000-1000-8000-00805f9b34fb',
   '0000fee7-0000-1000-8000-00805f9b34fb','0000ae30-0000-1000-8000-00805f9b34fb','0000ae00-0000-1000-8000-00805f9b34fb',
   '49535343-fe7d-4ae5-8fa9-9fafd205e455','e7810a71-73ae-499d-8c15-faa9aef0c3f2','0000fff0-0000-1000-8000-00805f9b34fb'];
 async function canal(){
   if(BTCH&&BT&&BT.gatt.connected)return BTCH;
   var dev=BT;
-  if(!dev&&navigator.bluetooth.getDevices){try{var ds=await navigator.bluetooth.getDevices();if(ds&&ds.length)dev=ds[0]}catch(e){}}
+  if(!dev&&!PEDIR&&navigator.bluetooth.getDevices){try{var ds=await navigator.bluetooth.getDevices();if(ds&&ds.length)dev=ds[0]}catch(e){}}
   if(!dev)dev=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:SERV});
-  BT=dev;var srv=await dev.gatt.connect(),ss=await srv.getPrimaryServices();
+  PEDIR=false;BT=dev;var srv=await dev.gatt.connect(),ss=await srv.getPrimaryServices();
   for(var i=0;i<ss.length;i++){var cs;try{cs=await ss[i].getCharacteristics()}catch(e){continue}
     for(var j=0;j<cs.length;j++){var p=cs[j].properties;if(p.writeWithoutResponse||p.write){BTCH=cs[j];return cs[j]}}}
   throw new Error('a impressora conectou mas não aceita dados');
@@ -18837,21 +18848,36 @@ async function imprimirBt(){
   }catch(e){BTCH=null;st('parou na mesa '+(MESAS[feitas]||{}).numero+': '+(e&&e.message||e)+' — ajuste o "de" pra '+(MESAS[feitas]||{}).numero+' e continue','err')}
   finally{document.getElementById('bImp').disabled=false;document.getElementById('bPar').style.display='none'}
 }
-async function calibrar(){
-  if(!navigator.bluetooth){st('só pelo Bluetooth','err');return}
-  try{await envia(asc(cab()+'GAPDETECT'+NL));st('✓ calibrando — a impressora puxa 1 ou 2 etiquetas em branco','ok')}
-  catch(e){BTCH=null;st('não foi: '+(e&&e.message||e),'err')}
+/* Calibrar (GAPDETECT: a impressora mede etiqueta + vão do rolo) e avançar em
+   branco (FORMFEED) — os mesmos dois comandos da etiqueta de validade do KDS.
+   O "✓" só diz que o comando SAIU pelo Bluetooth: a tela não tem como saber se a
+   impressora obedeceu, então o texto diz pra qual aparelho foi e o que conferir. */
+var PEDIR=false;
+async function cmdImp(o){
+  if(!navigator.bluetooth){st('este navegador não tem Bluetooth — calibrar e avançar só pelo Chrome do Android (ou Chrome do computador com Bluetooth), no endereço https da loja. iPhone não tem.','err');return}
+  st('enviando…');
+  try{await envia(asc(cab()+(o==='avancar'?'FORMFEED':'GAPDETECT')+NL));
+    var nm=(BT&&BT.name)||'impressora';
+    st(o==='avancar'
+      ?'✓ avanço enviado pra '+nm+'. Saiu 1 etiqueta e parou no picote = papel alinhado, pode imprimir. Parou fora do picote = confira se o rolo é mesmo 50×'+altR()+'. Não saiu nada = "Trocar impressora".'
+      :'✓ calibração enviada pra '+nm+' (rolo 50×'+altR()+'). Ela deve puxar 1 ou 2 etiquetas em branco. Não puxou? Aperte "Avançar em branco".','ok')}
+  catch(e){BTCH=null;st('não foi: '+(e&&e.message||e)+' — impressora ligada e perto? Se insistir, "Trocar impressora".','err')}
 }
+async function calibrar(){return cmdImp('calibrar')}
+function avancar(){return cmdImp('avancar')}
+function trocarImp(){try{if(BT&&BT.gatt.connected)BT.gatt.disconnect();if(BT&&BT.forget)BT.forget()}catch(e){}BT=null;BTCH=null;PEDIR=true;
+  st('Impressora esquecida — no próximo comando o Chrome mostra a lista pra escolher (a XD-210 aparece como PT-260_…).')}
 function imprimirNav(){
-  var c=C(),cop=Math.max(1,Math.min(5,parseInt(document.getElementById('cop').value,10)||1)),h='';
+  var c=C(),cop=Math.max(1,Math.min(5,parseInt(document.getElementById('cop').value,10)||1)),h='',aR=altR();
   MESAS.forEach(function(m){var src=desenha(m).toDataURL('image/png');
-    for(var i=0;i<cop;i++)h+='<img src="'+src+'" style="display:block;width:48mm;height:28mm;margin:1mm 0 0 '+(1+c.dx)+'mm;page-break-after:always">'});
+    for(var i=0;i<cop;i++)h+='<img src="'+src+'" style="display:block;width:48mm;height:28mm;margin:'+(aR===50?11:1)+'mm 0 0 '+(1+c.dx)+'mm;page-break-after:always">'});
   var f=document.createElement('iframe');f.style.cssText='position:fixed;right:0;bottom:0;width:0;height:0;border:0';
   document.body.appendChild(f);var d=f.contentWindow.document;d.open();
-  d.write('<html><head><style>@page{size:50mm 30mm;margin:0}html,body{margin:0;padding:0}</style></head><body>'+h+'</body></html>');d.close();
+  d.write('<html><head><style>@page{size:50mm '+aR+'mm;margin:0}html,body{margin:0;padding:0}</style></head><body>'+h+'</body></html>');d.close();
   setTimeout(function(){f.contentWindow.focus();f.contentWindow.print();setTimeout(function(){f.remove()},60000)},300);
 }
 pintaCfg();
+pintaRolo();
 try{if(localStorage.getItem('qr_modo')==='etq')modo('etq')}catch(e){}
 carregar();
 </script></body></html>`;
