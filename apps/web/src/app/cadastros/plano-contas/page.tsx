@@ -98,6 +98,67 @@ export default async function PlanoContasPage(props: { searchParams: Promise<SP>
       filhos: [],
     });
   }
+  // ── Receitas (11/10) ─────────────────────────────────────────────────────
+  // As categorias de receita (#1 Vendas, #2 Fiado) nunca recebem conta_pagar,
+  // então a tela mostrava "Receitas pagas R$ 0,00". O que o banco já tem:
+  //  · pagamento do PDV SEM conta corrente  → Recebimento - Vendas
+  //  · pagamento do PDV COM conta corrente  → Recebimento - Fiado (quitação)
+  //  · saldo devedor do cadastro do cliente → Fiado em aberto (o mesmo número
+  //    de /financeiro/receber)
+  // "Sem pagamento" não é dinheiro e fica fora.
+  const [recebimentos, [fiadoAberto]] = await Promise.all([
+    db
+      .select({
+        fiado: sql<boolean>`(${schema.pagamento.codigoContaCorrente} IS NOT NULL)`,
+        total: sql<string>`COALESCE(SUM(${schema.pagamento.valor}), 0)::text`,
+        qtd: sql<number>`COUNT(*)::int`,
+      })
+      .from(schema.pagamento)
+      .where(
+        and(
+          eq(schema.pagamento.filialId, filialSelecionada.id),
+          sql`COALESCE(${schema.pagamento.formaPagamento}, '') <> 'Sem pagamento'`,
+        ),
+      )
+      .groupBy(sql`(${schema.pagamento.codigoContaCorrente} IS NOT NULL)`),
+    db
+      .select({
+        total: sql<string>`COALESCE(SUM(${schema.cliente.saldoAtualContaCorrente}), 0)::text`,
+        qtd: sql<number>`COUNT(*)::int`,
+      })
+      .from(schema.cliente)
+      .where(
+        and(
+          eq(schema.cliente.filialId, filialSelecionada.id),
+          isNull(schema.cliente.dataDelete),
+          sql`${schema.cliente.saldoAtualContaCorrente} > 0`,
+        ),
+      ),
+  ]);
+  const recVendas = recebimentos.find((r) => !r.fiado);
+  const recFiado = recebimentos.find((r) => r.fiado);
+  const fiadoAReceber = Number(fiadoAberto?.total ?? 0);
+  const ehReceita = (n: Node) => !!n.tipo?.toLowerCase().startsWith('r');
+  const nodes = [...nodeMap.values()];
+  const nodeVendas =
+    nodes.find((n) => ehReceita(n) && /venda/i.test(n.descricao)) ?? null;
+  const nodeFiado =
+    nodes.find((n) => ehReceita(n) && /fiado/i.test(n.descricao)) ?? nodeVendas;
+  if (nodeVendas && recVendas) {
+    nodeVendas.totalPago += Number(recVendas.total);
+    nodeVendas.qtdLancamentos += Number(recVendas.qtd);
+  }
+  if (nodeFiado) {
+    nodeFiado.totalPago += Number(recFiado?.total ?? 0);
+    nodeFiado.qtdLancamentos += Number(recFiado?.qtd ?? 0);
+    nodeFiado.totalAberto += fiadoAReceber;
+  }
+  // A Prainha Mar (vendas-local) grava o tipo como 'P' (pagar) / 'R' (receber);
+  // 'P' é despesa — sem isto as despesas dela ficavam fora do card e sem selo.
+  for (const n of nodes) {
+    if (n.tipo?.trim().toUpperCase() === 'P') n.tipo = 'DESPESA';
+  }
+
   const raizes: Node[] = [];
   for (const c of categorias) {
     const node = nodeMap.get(c.codigoExterno)!;
@@ -116,6 +177,23 @@ export default async function PlanoContasPage(props: { searchParams: Promise<SP>
   };
   raizes.sort((a, b) => a.descricao.localeCompare(b.descricao));
   raizes.forEach(sortRec);
+
+  // Contas a pagar sem categoria (ou com categoria já excluída) não apareciam
+  // em linha nenhuma nem nos cards. Entram no fim, como despesa.
+  const idsAtivos = new Set(categorias.map((c) => c.id));
+  const semCategoria = totaisContas.filter((t) => !t.categoriaId || !idsAtivos.has(t.categoriaId));
+  if (semCategoria.length > 0) {
+    raizes.push({
+      id: 'sem-categoria',
+      codigoExterno: 0,
+      descricao: 'Sem categoria (conta a pagar sem categoria ou com categoria excluída)',
+      tipo: 'DESPESA',
+      totalAberto: semCategoria.reduce((s, t) => s + Number(t.abertas), 0),
+      totalPago: semCategoria.reduce((s, t) => s + Number(t.pagas), 0),
+      qtdLancamentos: semCategoria.reduce((s, t) => s + Number(t.qtd), 0),
+      filhos: [],
+    });
+  }
 
   // Totais agregados recursivamente
   const agregado = (n: Node): { aberto: number; pago: number; qtd: number } => {
@@ -186,8 +264,28 @@ export default async function PlanoContasPage(props: { searchParams: Promise<SP>
               Em aberto
             </p>
             <p className="mt-1 text-lg font-bold text-amber-900">{brl(totalAberto)}</p>
+            {fiadoAReceber > 0 && nodeFiado && (
+              <p className="mt-0.5 text-[10px] text-amber-800">
+                a pagar {brl(totalAberto - fiadoAReceber)} · a receber (fiado) {brl(fiadoAReceber)}
+              </p>
+            )}
           </div>
         </div>
+
+        <p className="mt-3 text-[11px] leading-relaxed text-slate-500">
+          <b>De onde vêm os números.</b> Despesas: contas a pagar da casa, por categoria. Receitas:{' '}
+          <b>Recebimento - Vendas</b> soma os pagamentos do PDV (todas as formas, desde o primeiro dia sincronizado);{' '}
+          <b>Recebimento - Fiado</b> soma as quitações de conta corrente e mostra em aberto o saldo que os clientes
+          devem hoje (o mesmo de{' '}
+          <Link href={`/financeiro/receber?filialId=${filialSelecionada.id}`} className="underline">
+            Contas a receber
+          </Link>
+          ). É o valor bruto pago pelo cliente, antes da taxa da maquininha. O mês a mês está no{' '}
+          <Link href={`/relatorios/dre?filialId=${filialSelecionada.id}`} className="underline">
+            DRE
+          </Link>
+          .
+        </p>
 
         <div className="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
           <table className="w-full text-sm">
