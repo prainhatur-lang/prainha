@@ -38,6 +38,9 @@ export interface Area {
   mesas?: Mesa[];
   taxaReserva?: { sabDom: number; diasUteis: number };
   percentualReserva?: number;
+  /** Só na tela ⚙️ Espaços: a lista de mesas deste espaço foi mexida — sem
+   *  essa marca o servidor ignora `mesas` e mantém as que estão gravadas. */
+  mesasEditadas?: boolean;
 }
 
 export interface FilialOpt {
@@ -1175,6 +1178,137 @@ function ConfigEspacos({ filiais, onSalvou }: { filiais: FilialOpt[]; onSalvou: 
   );
 }
 
+// Mesas físicas de um espaço: é a lista que vira o mapa da loja (painel do
+// gerente, Balanço "Areia 46/48") e a base do "% das mesas" da reserva. Até
+// 11/10/2026 só dava pra mudar direto no banco — a Areia do Prainha Bar estava
+// com 60 mesas cadastradas e só tem 48, e o dono procurou a tela e não achou.
+// Nada grava aqui: a lista só vai pro servidor no "Salvar espaços".
+function MesasDoEspaco({ mesas, onChange }: { mesas: Mesa[]; onChange: (m: Mesa[]) => void }) {
+  const [aberto, setAberto] = useState(false);
+  const [de, setDe] = useState('');
+  const [ate, setAte] = useState('');
+  const [lug, setLug] = useState(4);
+  const [junt, setJunt] = useState(mesas.length > 0 && mesas.every((m) => m.juntavel));
+  const [aviso, setAviso] = useState<string | null>(null);
+
+  const porNumero = (x: Mesa, y: Mesa) => x.numero.localeCompare(y.numero, 'pt-BR', { numeric: true });
+  const ordenadas = mesas.slice().sort(porNumero);
+  const lugares = mesas.reduce((s, m) => s + (m.lugares || 0), 0);
+
+  function faixa(): { ini: number; fim: number } | null {
+    const ini = Math.trunc(Number(de));
+    const fim = ate.trim() ? Math.trunc(Number(ate)) : ini;
+    if (!(ini >= 1) || !(fim >= ini) || fim > 9999) {
+      setAviso('Informe o número da mesa (ou de–até).');
+      return null;
+    }
+    if (fim - ini >= 200) {
+      setAviso('No máximo 200 mesas por vez.');
+      return null;
+    }
+    return { ini, fim };
+  }
+  function adicionar() {
+    const f = faixa();
+    if (!f) return;
+    const tem = new Set(mesas.map((m) => m.numero));
+    const cap = Math.max(1, Math.min(40, Math.trunc(lug) || 4));
+    const novas: Mesa[] = [];
+    for (let n = f.ini; n <= f.fim; n++) {
+      if (!tem.has(String(n))) novas.push({ numero: String(n), lugares: cap, ...(junt ? { juntavel: true } : {}) });
+    }
+    if (novas.length === 0) {
+      setAviso('Essas mesas já estão neste espaço.');
+      return;
+    }
+    setAviso(null);
+    onChange([...mesas, ...novas].sort(porNumero));
+    setDe('');
+    setAte('');
+  }
+  function tirar() {
+    const f = faixa();
+    if (!f) return;
+    const fica = mesas.filter((m) => !(/^\d+$/.test(m.numero) && Number(m.numero) >= f.ini && Number(m.numero) <= f.fim));
+    if (fica.length === mesas.length) {
+      setAviso('Nenhuma mesa desse intervalo está neste espaço.');
+      return;
+    }
+    setAviso(null);
+    onChange(fica);
+    setDe('');
+    setAte('');
+  }
+
+  const inp = 'rounded-md border border-slate-300 px-2 py-1 text-sm focus:border-sky-500 focus:outline-none';
+
+  return (
+    <div className="mt-1.5 border-t border-slate-100 pt-1.5">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+        <span>
+          mesas:{' '}
+          {ordenadas.length > 0 ? (
+            <>
+              <b className="text-slate-800">{ordenadas.length}</b> ({ordenadas[0].numero} a {ordenadas[ordenadas.length - 1].numero}) · {lugares} lugares
+            </>
+          ) : (
+            <span className="text-slate-400">nenhuma cadastrada</span>
+          )}
+        </span>
+        <button type="button" onClick={() => setAberto((v) => !v)} className="text-sky-600 hover:underline">
+          {aberto ? 'fechar ▴' : 'editar mesas ▾'}
+        </button>
+      </div>
+      {aberto && (
+        <div className="mt-1.5 rounded-md border border-slate-200 bg-slate-50 p-2">
+          <p className="text-[11px] text-slate-500">
+            É a lista de mesas que existem neste espaço: vira o mapa da loja e a base do % de reserva.
+            Tirar uma mesa não cancela reserva que já está nela — troque a mesa da reserva na lista.
+            Só vale depois de <b>Salvar espaços</b>.
+          </p>
+          {ordenadas.length > 0 && (
+            <div className="mt-1.5 flex flex-wrap gap-1">
+              {ordenadas.map((m) => (
+                <span key={m.numero} className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] text-slate-700">
+                  <b>{m.numero}</b>
+                  <span className="text-slate-400">{m.lugares}p{m.juntavel ? ' 🔗' : ''}</span>
+                  <button
+                    type="button"
+                    onClick={() => onChange(mesas.filter((x) => x.numero !== m.numero))}
+                    title={`Tirar a mesa ${m.numero} deste espaço`}
+                    className="text-rose-500 hover:text-rose-700"
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+            <span>mesa nº</span>
+            <input type="number" min={1} value={de} onChange={(e) => setDe(e.target.value)} className={`${inp} w-20`} />
+            <span>até</span>
+            <input type="number" min={1} value={ate} onChange={(e) => setAte(e.target.value)} placeholder="(só ela)" className={`${inp} w-24`} />
+            <span>·</span>
+            <input type="number" min={1} max={40} value={lug} onChange={(e) => setLug(Number(e.target.value))} className={`${inp} w-16`} />
+            <span>lugares</span>
+            <label className="flex items-center gap-1">
+              <input type="checkbox" checked={junt} onChange={(e) => setJunt(e.target.checked)} /> pode juntar 🔗
+            </label>
+            <button type="button" onClick={adicionar} className="rounded-md border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 hover:bg-slate-100">
+              + adicionar
+            </button>
+            <button type="button" onClick={tirar} className="rounded-md border border-rose-200 bg-white px-2 py-1 text-xs text-rose-600 hover:bg-rose-50">
+              − tirar
+            </button>
+          </div>
+          {aviso && <p className="mt-1 text-[11px] text-rose-600">{aviso}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FilialEspacos({ filial, onSalvou }: { filial: FilialOpt; onSalvou: () => void }) {
   const [areas, setAreas] = useState<Area[]>(filial.areas.length ? filial.areas.map((a) => ({ ...a })) : []);
   const [bebidasTxt, setBebidasTxt] = useState((filial.bebidas ?? []).join('\n'));
@@ -1222,6 +1356,10 @@ function FilialEspacos({ filial, onSalvou }: { filial: FilialOpt; onSalvou: () =
         return;
       }
       setMsg('Salvo ✓');
+      // Mesa tirada do espaço com reserva futura em cima: o servidor avisa
+      // (a reserva não é cancelada; a recepção troca a mesa dela na lista).
+      const dOk = await r.json().catch(() => null);
+      if (typeof dOk?.avisoMesas === 'string' && dOk.avisoMesas) setMsg(`Salvo ✓ — ${dOk.avisoMesas}`);
       onSalvou();
     } finally {
       setSalvando(false);
@@ -1303,9 +1441,15 @@ function FilialEspacos({ filial, onSalvou }: { filial: FilialOpt; onSalvou: () =
                     className={`${inp} w-20`}
                   />
                   <span className="text-xs text-slate-500">% das mesas — o resto fica pra quem chega sem reservar</span>
+                  {(a.mesas?.length ?? 0) > 0 && (
+                    <span className="text-xs font-medium text-slate-700">
+                      = até {Math.floor(((a.mesas?.length ?? 0) * a.percentualReserva) / 100)} de {a.mesas?.length} mesas reservadas
+                    </span>
+                  )}
                 </>
               )}
             </div>
+            <MesasDoEspaco mesas={a.mesas ?? []} onChange={(m) => upd(i, { mesas: m, mesasEditadas: true })} />
           </div>
         ))}
       </div>
