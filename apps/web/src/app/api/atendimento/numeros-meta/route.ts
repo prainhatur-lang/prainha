@@ -91,12 +91,65 @@ export async function GET(req: Request) {
   }
 
   const cadastrados = await db.select().from(schema.whatsappNumero);
+
+  // ESTADO NA META (11/10): o número da Tabuará ficou mais de um mês em
+  // "Pendente" no Gerenciador e o prainha Zap caiu pra qualidade "Média", e a
+  // lista acima não dizia por quê. Só com ?detalhe=1, pra chamada de sempre
+  // continuar igual. Um campo por chamada: campo que a conta não enxerga
+  // (name_status é beta) devolve erro só nele, sem derrubar os outros.
+  let detalhe: Record<string, unknown> | undefined;
+  if (new URL(req.url).searchParams.get('detalhe') === '1') {
+    const ids = new Set<string>([...numeros.map((n) => n.id), ...cadastrados.map((c) => c.phoneNumberId)]);
+    const porNumero: Record<string, unknown> = {};
+    for (const id of ids) porNumero[id] = await campos(id, CAMPOS_NUMERO);
+    const porWaba: Record<string, unknown> = {};
+    for (const waba of wabas.keys()) {
+      const modelos = await graph<{ data?: unknown[] }>(
+        `${waba}/message_templates?fields=name,status,category,language,quality_score&limit=200`,
+      );
+      porWaba[waba] = {
+        ...(await campos(waba, CAMPOS_WABA)),
+        modelos: 'erro' in modelos ? { erro: modelos.erro } : (modelos.data ?? []),
+      };
+    }
+    detalhe = { numeros: porNumero, wabas: porWaba };
+  }
+
   return NextResponse.json({
     wabas: [...wabas].map(([id, nome]) => ({ id, nome })),
     numeros,
     cadastrados,
     ...(numeros.length === 0 ? { aviso: 'nenhum numero encontrado', diag } : {}),
+    ...(detalhe ? { detalhe } : {}),
   });
+}
+
+const CAMPOS_NUMERO = [
+  'display_phone_number',
+  'verified_name',
+  'status',
+  'code_verification_status',
+  'name_status',
+  'new_name_status',
+  'platform_type',
+  'account_mode',
+  'quality_rating',
+  'messaging_limit_tier',
+  'throughput',
+  'is_pin_enabled',
+  'health_status',
+];
+const CAMPOS_WABA = ['name', 'account_review_status', 'business_verification_status', 'health_status'];
+
+async function campos(id: string, lista: string[]): Promise<Record<string, unknown>> {
+  const saida: Record<string, unknown> = {};
+  await Promise.all(
+    lista.map(async (campo) => {
+      const r = (await graph<Record<string, unknown>>(`${id}?fields=${campo}`)) as Record<string, unknown>;
+      saida[campo] = typeof r.erro === 'string' ? { erro: r.erro } : (r[campo] ?? null);
+    }),
+  );
+  return saida;
 }
 
 export async function POST(req: Request) {
