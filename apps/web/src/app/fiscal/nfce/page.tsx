@@ -11,6 +11,7 @@ import { formatarDocumento } from '@/lib/nfce/documento';
 import { AcoesNota } from './acoes';
 import { FiltroDocumento } from './filtro-documento';
 import { EmitirPedido } from './emitir-pedido';
+import { EmitirLote } from './emitir-lote';
 import { XmlsDownload } from './xmls-download';
 
 /** Cobertura fiscal: pedido fechado do espelho × nota do Concilia × nota que o
@@ -392,6 +393,14 @@ export default async function NfcePage({
                 {snPeriodo ? 'Nenhum pedido sem nota nesse período.' : 'Nenhum pedido sem nota nas últimas 48h.'}
               </p>
             )}
+            <EmitirLote
+              pedidos={semNota.map((p) => ({
+                filialId: p.filial_id,
+                codigoExterno: Number(p.codigo_externo),
+                rotulo: `${nomePorFilial.get(p.filial_id) ?? ''} · ${p.numero ? `mesa/comanda ${p.numero}` : `pedido ${p.codigo_externo}`} · ${p.fechado_em}`,
+                valor: Number(p.valor),
+              }))}
+            />
             <div className="mt-2 grid grid-cols-1 gap-1">
               {semNota.map((p) => (
                 // chave = o pedido (não a posição): quando um pedido ganha nota e sai
