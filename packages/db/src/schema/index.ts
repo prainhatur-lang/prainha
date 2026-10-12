@@ -54,3 +54,4 @@ export * from './faturamento-historico';
 export * from './evento-ticket';
 export * from './tripadvisor';
 export * from './extrato-fechamento';
+export * from './cartao-fatura';
