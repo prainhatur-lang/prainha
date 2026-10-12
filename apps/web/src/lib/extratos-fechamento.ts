@@ -203,3 +203,54 @@ export function nomeDownloadExtrato(
   const dono = [conta.titular, conta.banco, conta.apelido].filter(Boolean).join(' ');
   return `${ano}-${String(mes).padStart(2, '0')} ${limpo(dono)} - ${limpo(nomeOriginal)}`;
 }
+
+export interface ContaExtratoDoAno extends ContaExtrato {
+  /** Arquivos enviados por mês (1–12). Mês sem arquivo não tem chave. */
+  meses: Record<number, ArquivoExtrato[]>;
+}
+
+/**
+ * O ano inteiro de uma vez (grade conta × mês de /relatorios/fechamento/extratos):
+ * cada conta com os arquivos de cada mês. São os mesmos arquivos de
+ * `extratosDoMes`, só agrupados por mês.
+ */
+export async function extratosDoAno(userId: string, ano: number): Promise<ContaExtratoDoAno[]> {
+  const contas = await contasExtratoVisiveis(userId);
+  if (contas.length === 0) return [];
+  const linhas = await db
+    .select({
+      id: schema.extratoArquivo.id,
+      contaId: schema.extratoArquivo.contaId,
+      mes: schema.extratoArquivo.mes,
+      nome: schema.extratoArquivo.nomeOriginal,
+      tamanhoBytes: schema.extratoArquivo.tamanhoBytes,
+      enviadoEm: schema.extratoArquivo.enviadoEm,
+      usuarioNome: schema.usuario.nome,
+      usuarioEmail: schema.usuario.email,
+    })
+    .from(schema.extratoArquivo)
+    .leftJoin(schema.usuario, eq(schema.usuario.id, schema.extratoArquivo.enviadoPor))
+    .where(
+      and(
+        inArray(schema.extratoArquivo.contaId, contas.map((c) => c.id)),
+        eq(schema.extratoArquivo.ano, ano),
+        isNull(schema.extratoArquivo.excluidoEm),
+      ),
+    )
+    .orderBy(asc(schema.extratoArquivo.enviadoEm));
+
+  const porConta = new Map<string, Record<number, ArquivoExtrato[]>>();
+  for (const l of linhas) {
+    const meses = porConta.get(l.contaId) ?? {};
+    (meses[l.mes] ??= []).push({
+      id: l.id,
+      contaId: l.contaId,
+      nome: l.nome,
+      tamanhoBytes: l.tamanhoBytes,
+      enviadoEm: l.enviadoEm.toISOString(),
+      enviadoPor: l.usuarioNome || l.usuarioEmail || null,
+    });
+    porConta.set(l.contaId, meses);
+  }
+  return contas.map((c) => ({ ...c, meses: porConta.get(c.id) ?? {} }));
+}

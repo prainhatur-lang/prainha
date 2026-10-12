@@ -212,6 +212,11 @@ export function ExtratosMes(props: Props) {
         O extrato do mês de cada conta, no arquivo que o banco gera ({extensoes.slice(0, 4).map((e) => e.toUpperCase()).join(', ')}…). Fica
         guardado aqui pra o contador baixar junto com a apuração. O arquivo não é lido nem lançado em lugar nenhum.
       </p>
+      <p className="mb-3 text-[11px]">
+        <a href={`/relatorios/fechamento/extratos?ano=${ano}`} className="font-medium text-sky-700 hover:text-sky-900">
+          📅 Ver {ano} inteiro (todos os meses e contas numa tela só) →
+        </a>
+      </p>
 
       {pedidas.length > 0 && faltando.length > 0 && mesEncerrado && (
         <p className="mb-3 rounded-md bg-amber-50 px-3 py-2 text-[11px] text-amber-800">

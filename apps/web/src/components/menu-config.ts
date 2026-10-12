@@ -331,6 +331,11 @@ export const MENU_AREAS: MenuArea[] = [
             perm: 'relatorio.read',
           },
           {
+            label: 'Extratos bancários (ano)',
+            href: '/relatorios/fechamento/extratos',
+            perm: 'relatorio.read',
+          },
+          {
             label: 'Histórico de fechamentos',
             href: '/relatorios/fechamento-mensal',
             perm: 'relatorio.read',
