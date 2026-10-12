@@ -14,6 +14,7 @@ import { FiltroPeriodoConciliacao } from '@/components/filtro-periodo-conciliaca
 import { brl, formatDateTime, int } from '@/lib/format';
 import { dateToBrYmd, diasAtrasBr, hojeBr } from '@/lib/datas';
 import { ConciliarAgora } from './conciliar-agora';
+import { DinheiroNaoEntrouPainel } from './dinheiro-nao-entrou';
 
 export const dynamic = 'force-dynamic';
 
@@ -307,6 +308,8 @@ export default async function ConciliacaoPage(props: {
             ))}
           </div>
         )}
+
+        {filial && <DinheiroNaoEntrouPainel filialId={filial.id} />}
 
         {filial && (
           <div className="mt-4">
