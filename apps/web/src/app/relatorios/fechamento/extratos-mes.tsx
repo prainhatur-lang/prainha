@@ -395,7 +395,7 @@ export function ExtratosMes(props: Props) {
                     onChange={(e) => setEmpresa(e.target.value)}
                     list="extrato-empresas"
                     maxLength={80}
-                    placeholder="ex.: Leles"
+                    placeholder="ex.: Lelis"
                     className={`mt-0.5 block w-40 ${campo}`}
                   />
                   <datalist id="extrato-empresas">

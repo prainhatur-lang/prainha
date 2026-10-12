@@ -58,7 +58,9 @@ function credencialDaConta(c: { filialId: string | null; empresa: string | null 
   const nome = semAcento(c.empresa ?? '').toUpperCase();
   if (/^E\.?\s?B\b/.test(nome)) return credenciaisInterEmpresa('EB');
   const sigla = nome.replace(/[^A-Z0-9 ]/g, '').trim().split(/\s+/)[0];
-  return sigla ? credenciaisInterEmpresa(sigla) : null;
+  if (!sigla) return null;
+  // A Lelis foi cadastrada primeiro como "Leles" e as variáveis ficaram INTER_LELES_*.
+  return credenciaisInterEmpresa(sigla) ?? (sigla === 'LELIS' ? credenciaisInterEmpresa('LELES') : null);
 }
 
 function ultimoDia(ano: number, mes: number): number {
