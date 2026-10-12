@@ -15,9 +15,7 @@ import { calcularCustoClt } from '@/lib/rh/custo-clt';
 import { metasDaCompetencia } from '@/lib/metas/resumo';
 import { podeUsuario } from '@/lib/permissoes-runtime';
 import {
-  EXTRATO_EXTENSOES,
   PERM_EXTRATO_ENVIAR,
-  destinosNovaContaExtrato,
   extratosDoMes,
 } from '@/lib/extratos-fechamento';
 import { ExtratosMes } from './extratos-mes';
@@ -129,17 +127,14 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
   // Extratos bancários do mês (arquivo de cada conta, pra o contador baixar).
   // Vale pra todas as casas que o usuário acessa, não só a que está aberta.
   // Se esta parte falhar, o resto do fechamento continua abrindo igual.
-  const [extratos, podeEnviarExtrato, destinosExtrato] = await Promise.all([
+  // Aqui é só ver e baixar: enviar, baixar do Inter e a lista de contas ficam
+  // em /relatorios/fechamento/extratos (o dono tirou a importação daqui em 12/10).
+  const [extratos, podeEnviarExtrato] = await Promise.all([
     extratosDoMes(user.id, ano, mes),
     podeUsuario(user.id, PERM_EXTRATO_ENVIAR),
-    destinosNovaContaExtrato(user.id),
   ]).catch((e) => {
     console.error('[fechamento] extratos bancários do mês:', e);
-    return [[], false, { filiais: [], organizacaoEmpresas: null }] as [
-      Awaited<ReturnType<typeof extratosDoMes>>,
-      boolean,
-      Awaited<ReturnType<typeof destinosNovaContaExtrato>>,
-    ];
+    return [[], false] as [Awaited<ReturnType<typeof extratosDoMes>>, boolean];
   });
   const extratosPedidos = extratos.filter((c) => c.ativo);
   const extratosEnviados = extratosPedidos.filter((c) => c.arquivos.length > 0).length;
@@ -374,15 +369,11 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
         {/* Extratos bancários do mês — arquivo de cada conta, pra o contador baixar */}
         <ExtratosMes
           ano={ano}
-          mes={mes}
           mesNome={`${MESES[mes]}/${ano}`}
           mesEncerrado={mesEncerrado}
           filialAtivaId={filial.id}
           contas={extratos}
           podeEnviar={podeEnviarExtrato}
-          extensoes={EXTRATO_EXTENSOES}
-          casas={destinosExtrato.filiais.map((f) => ({ id: f.id, nome: f.nome }))}
-          podeEmpresa={!!destinosExtrato.organizacaoEmpresas}
         />
 
         {/* Vendas */}

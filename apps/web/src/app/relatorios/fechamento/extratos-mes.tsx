@@ -1,33 +1,24 @@
-'use client';
-
 // Seção "Extratos bancários do mês" do Fechamento do mês: a lista das contas de
-// que o extrato é pedido, o que já foi enviado e o que falta. Quem fecha o mês
-// envia o arquivo do banco; quem vê o fechamento (o contador) baixa aqui.
-// O arquivo só é guardado — nada é lido nem lançado a partir dele.
+// que o extrato é pedido, o que já chegou e o que falta, com o arquivo pra
+// baixar junto com a apuração (é o que o contador usa).
+// Em 12/10/2026 o dono tirou daqui a importação: enviar arquivo, baixar direto
+// do Inter, tirar arquivo e mexer na lista de contas ficam só em
+// /relatorios/fechamento/extratos (a grade do ano). Aqui é só ver e baixar.
 
-import { useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabase/client';
+import Link from 'next/link';
 import type { ContaExtratoDoMes } from '@/lib/extratos-fechamento';
 
 interface Props {
   ano: number;
-  mes: number;
   /** "Setembro/2026" */
   mesNome: string;
   /** Mês já acabou — extrato que falta vira pendência. */
   mesEncerrado: boolean;
   filialAtivaId: string;
   contas: ContaExtratoDoMes[];
+  /** Quem envia extrato: o atalho fala em enviar; pros outros, só em ver o ano. */
   podeEnviar: boolean;
-  extensoes: string[];
-  /** Casas em que este usuário pode cadastrar conta. */
-  casas: Array<{ id: string; nome: string }>;
-  /** Pode cadastrar conta de empresa que não é uma das casas. */
-  podeEmpresa: boolean;
 }
-
-const OUTRA = '__outra__';
 
 /** dd/mm hh:mm em BRT (UTC−3 fixo), igual no servidor e no navegador. */
 function quando(iso: string): string {
@@ -45,35 +36,17 @@ function nomeConta(c: { banco: string; apelido: string | null }): string {
   return c.apelido ? `${c.banco} · ${c.apelido}` : c.banco;
 }
 
-/** Conta do Inter sem "detalhe": o extrato do mês pode vir direto da API do banco. */
-function contaDoInter(c: { banco: string; apelido: string | null }): boolean {
-  return !c.apelido && /^(banco\s+)?inter\b/i.test(c.banco.trim());
-}
-
 /** Planilha que o sistema montou com o que o Inter respondeu (não foi alguém que enviou). */
 function veioDoInter(nome: string): boolean {
   return /^extrato-inter-\d{4}-\d{2}-automatico\.xlsx$/.test(nome);
 }
 
-export function ExtratosMes(props: Props) {
-  const { ano, mes, mesNome, mesEncerrado, filialAtivaId, contas, podeEnviar, extensoes, casas, podeEmpresa } = props;
-  const router = useRouter();
-  const inputs = useRef<Record<string, HTMLInputElement | null>>({});
-  const [enviando, setEnviando] = useState<Record<string, string>>({});
-  const [erros, setErros] = useState<Record<string, string>>({});
-  const [ocupado, setOcupado] = useState(false);
-  const [novaAberta, setNovaAberta] = useState(false);
-  const [dono, setDono] = useState(casas.find((c) => c.id === filialAtivaId)?.id ?? casas[0]?.id ?? OUTRA);
-  const [empresa, setEmpresa] = useState('');
-  const [banco, setBanco] = useState('');
-  const [apelido, setApelido] = useState('');
-  const [erroNova, setErroNova] = useState('');
-
+export function ExtratosMes({ ano, mesNome, mesEncerrado, filialAtivaId, contas, podeEnviar }: Props) {
   const mostradas = contas.filter((c) => c.ativo || c.arquivos.length > 0);
-  const desligadas = contas.filter((c) => !c.ativo && c.arquivos.length === 0);
   const pedidas = mostradas.filter((c) => c.ativo);
   const enviadas = pedidas.filter((c) => c.arquivos.length > 0).length;
   const faltando = pedidas.filter((c) => c.arquivos.length === 0);
+  const telaDoAno = `/relatorios/fechamento/extratos?ano=${ano}`;
 
   // Um bloco por dono da conta; a casa aberta na tela vem primeiro.
   const grupos: Array<{ chave: string; titular: string; contas: ContaExtratoDoMes[] }> = [];
@@ -87,125 +60,6 @@ export function ExtratosMes(props: Props) {
     g.contas.push(c);
   }
   grupos.sort((a, b) => Number(b.chave === filialAtivaId) - Number(a.chave === filialAtivaId));
-
-  const empresasConhecidas = [...new Set(contas.filter((c) => !c.filialId).map((c) => c.titular))];
-
-  async function chamar(url: string, method: string, body?: unknown): Promise<Record<string, unknown>> {
-    const r = await fetch(url, {
-      method,
-      headers: body ? { 'Content-Type': 'application/json' } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    const j = (await r.json().catch(() => ({}))) as Record<string, unknown>;
-    if (!r.ok) throw new Error(typeof j.error === 'string' ? j.error : `erro ${r.status}`);
-    return j;
-  }
-
-  async function enviar(conta: ContaExtratoDoMes, lista: FileList | null) {
-    const arquivos = lista ? Array.from(lista) : [];
-    if (arquivos.length === 0) return;
-    setErros((e) => ({ ...e, [conta.id]: '' }));
-    try {
-      for (let i = 0; i < arquivos.length; i++) {
-        const file = arquivos[i]!;
-        setEnviando((s) => ({ ...s, [conta.id]: arquivos.length > 1 ? `Enviando ${i + 1} de ${arquivos.length}…` : 'Enviando…' }));
-        const passo1 = await chamar('/api/extratos-fechamento/upload-url', 'POST', {
-          contaId: conta.id,
-          ano,
-          mes,
-          nome: file.name,
-          tamanho: file.size,
-        });
-        const up = await createClient()
-          .storage.from(String(passo1.bucket))
-          .uploadToSignedUrl(String(passo1.path), String(passo1.token), file, {
-            contentType: file.type || 'application/octet-stream',
-          });
-        if (up.error) throw new Error(`não consegui guardar o arquivo: ${up.error.message}`);
-        await chamar('/api/extratos-fechamento/arquivos', 'POST', {
-          contaId: conta.id,
-          ano,
-          mes,
-          path: passo1.path,
-          nome: file.name,
-          contentType: file.type,
-        });
-      }
-    } catch (e) {
-      setErros((er) => ({ ...er, [conta.id]: (e as Error).message }));
-    } finally {
-      setEnviando((s) => ({ ...s, [conta.id]: '' }));
-      const input = inputs.current[conta.id];
-      if (input) input.value = '';
-      router.refresh();
-    }
-  }
-
-  async function acao(contaId: string, fn: () => Promise<unknown>) {
-    if (ocupado) return;
-    setOcupado(true);
-    setErros((e) => ({ ...e, [contaId]: '' }));
-    try {
-      await fn();
-    } catch (e) {
-      setErros((er) => ({ ...er, [contaId]: (e as Error).message }));
-    } finally {
-      setOcupado(false);
-      router.refresh();
-    }
-  }
-
-  function buscarNoInter(conta: ContaExtratoDoMes) {
-    setEnviando((s) => ({ ...s, [`inter:${conta.id}`]: 'Buscando…' }));
-    void acao(conta.id, () => chamar('/api/extratos-fechamento/inter', 'POST', { contaId: conta.id, ano, mes })).finally(() =>
-      setEnviando((s) => ({ ...s, [`inter:${conta.id}`]: '' })),
-    );
-  }
-
-  function tirarArquivo(conta: ContaExtratoDoMes, arquivoId: string, nome: string) {
-    if (!window.confirm(`Tirar "${nome}" da lista de ${mesNome}?`)) return;
-    void acao(conta.id, () => chamar(`/api/extratos-fechamento/arquivos/${arquivoId}`, 'DELETE'));
-  }
-
-  function pedir(conta: ContaExtratoDoMes, ativo: boolean) {
-    if (
-      !ativo &&
-      !window.confirm(
-        `Parar de pedir o extrato de ${nomeConta(conta)} (${conta.titular})? Os arquivos já enviados continuam guardados.`,
-      )
-    ) {
-      return;
-    }
-    void acao(conta.id, () => chamar(`/api/extratos-fechamento/contas/${conta.id}`, 'PATCH', { ativo }));
-  }
-
-  async function adicionarConta() {
-    if (ocupado) return;
-    setErroNova('');
-    if (!banco.trim()) return setErroNova('Informe o banco.');
-    if (dono === OUTRA && !empresa.trim()) return setErroNova('Informe o nome da empresa.');
-    setOcupado(true);
-    try {
-      await chamar('/api/extratos-fechamento/contas', 'POST', {
-        filialId: dono === OUTRA ? '' : dono,
-        empresa: dono === OUTRA ? empresa : '',
-        banco,
-        apelido,
-      });
-      setBanco('');
-      setApelido('');
-      setEmpresa('');
-      setNovaAberta(false);
-      router.refresh();
-    } catch (e) {
-      setErroNova((e as Error).message);
-    } finally {
-      setOcupado(false);
-    }
-  }
-
-  const accept = extensoes.map((e) => `.${e}`).join(',');
-  const campo = 'rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900';
 
   return (
     <section id="extratos" className="mb-5 scroll-mt-4 rounded-xl border border-slate-200 bg-white p-4">
@@ -226,16 +80,15 @@ export function ExtratosMes(props: Props) {
         )}
       </div>
       <p className="mb-3 text-[11px] text-slate-500">
-        O extrato do mês de cada conta, no arquivo que o banco gera ({extensoes.slice(0, 4).map((e) => e.toUpperCase()).join(', ')}…). Fica
-        guardado aqui pra o contador baixar junto com a apuração. O arquivo não é lido nem lançado em lugar nenhum.
-      </p>
-      <p className="mb-3 text-[11px] text-slate-500">
-        ⚡ Conta do <b>Inter</b> com integração: o extrato do mês que fechou entra sozinho no dia 1, em planilha (XLSX), direto do banco.
+        O extrato do mês de cada conta, guardado aqui pra baixar junto com a apuração. O arquivo não é lido nem lançado em
+        lugar nenhum.
       </p>
       <p className="mb-3 text-[11px]">
-        <a href={`/relatorios/fechamento/extratos?ano=${ano}`} className="font-medium text-sky-700 hover:text-sky-900">
-          📅 Ver {ano} inteiro (todos os meses e contas numa tela só) →
-        </a>
+        <Link href={telaDoAno} className="font-medium text-sky-700 hover:text-sky-900">
+          {podeEnviar
+            ? `📥 Enviar extrato, baixar direto do Inter ou mexer na lista de contas: Extratos bancários de ${ano} →`
+            : `📅 Ver ${ano} inteiro (todos os meses e contas numa tela só) →`}
+        </Link>
       </p>
 
       {pedidas.length > 0 && faltando.length > 0 && mesEncerrado && (
@@ -294,68 +147,10 @@ export function ExtratosMes(props: Props) {
                               direto do Inter
                             </span>
                           )}
-                          {podeEnviar && (
-                            <button
-                              type="button"
-                              onClick={() => tirarArquivo(c, a.id, a.nome)}
-                              disabled={ocupado}
-                              className="text-[11px] text-slate-400 hover:text-rose-600 disabled:opacity-50"
-                            >
-                              tirar
-                            </button>
-                          )}
                         </div>
                       ))}
                       {!tem && <p className="text-xs text-slate-400">Nenhum arquivo deste mês.</p>}
-                      {erros[c.id] && <p className="text-[11px] text-rose-600">{erros[c.id]}</p>}
                     </div>
-                    {podeEnviar && (
-                      <div className="flex shrink-0 flex-col items-end gap-1">
-                        <input
-                          ref={(el) => {
-                            inputs.current[c.id] = el;
-                          }}
-                          type="file"
-                          multiple
-                          accept={accept}
-                          className="hidden"
-                          onChange={(e) => void enviar(c, e.target.files)}
-                        />
-                        <button
-                          type="button"
-                          onClick={() => inputs.current[c.id]?.click()}
-                          disabled={!!enviando[c.id]}
-                          className={`rounded-md border px-3 py-1.5 text-xs font-medium disabled:opacity-60 ${
-                            tem
-                              ? 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                              : 'border-sky-600 bg-sky-600 text-white hover:bg-sky-700'
-                          }`}
-                        >
-                          {enviando[c.id] || (tem ? 'Enviar outro' : 'Enviar extrato')}
-                        </button>
-                        {mesEncerrado && contaDoInter(c) && (
-                          <button
-                            type="button"
-                            onClick={() => buscarNoInter(c)}
-                            disabled={ocupado || !!enviando[`inter:${c.id}`]}
-                            title="Busca o extrato do mês na API do Inter e guarda em planilha (XLSX). Nos dias 1, 2 e 5 isso roda sozinho."
-                            className="rounded-md border border-orange-300 bg-orange-50 px-3 py-1.5 text-xs font-medium text-orange-800 hover:bg-orange-100 disabled:opacity-60"
-                          >
-                            {enviando[`inter:${c.id}`] || '⚡ Buscar no Inter'}
-                          </button>
-                        )}
-                        {c.ativo && (
-                          <button
-                            type="button"
-                            onClick={() => pedir(c, false)}
-                            disabled={ocupado}
-                            className="text-[11px] text-slate-400 hover:text-slate-600 disabled:opacity-50"
-                          >
-                            não pedir mais
-                          </button>
-                        )}
-                      </div>
-                    )}
                   </li>
                 );
               })}
@@ -363,144 +158,6 @@ export function ExtratosMes(props: Props) {
           </div>
         ))}
       </div>
-
-      {podeEnviar && (
-        <div className="mt-4 border-t border-slate-100 pt-3">
-          {!novaAberta ? (
-            <button
-              type="button"
-              onClick={() => setNovaAberta(true)}
-              className="text-xs font-medium text-sky-700 hover:text-sky-900"
-            >
-              + Adicionar conta
-            </button>
-          ) : (
-            <div className="flex flex-wrap items-end gap-2">
-              <label className="text-[11px] text-slate-500">
-                De quem é a conta
-                <select value={dono} onChange={(e) => setDono(e.target.value)} className={`mt-0.5 block ${campo}`}>
-                  {casas.map((f) => (
-                    <option key={f.id} value={f.id}>
-                      {f.nome}
-                    </option>
-                  ))}
-                  {podeEmpresa && <option value={OUTRA}>Outra empresa (não é uma das casas)</option>}
-                </select>
-              </label>
-              {dono === OUTRA && (
-                <label className="text-[11px] text-slate-500">
-                  Empresa
-                  <input
-                    value={empresa}
-                    onChange={(e) => setEmpresa(e.target.value)}
-                    list="extrato-empresas"
-                    maxLength={80}
-                    placeholder="ex.: Lelis"
-                    className={`mt-0.5 block w-40 ${campo}`}
-                  />
-                  <datalist id="extrato-empresas">
-                    {empresasConhecidas.map((n) => (
-                      <option key={n} value={n} />
-                    ))}
-                  </datalist>
-                </label>
-              )}
-              <label className="text-[11px] text-slate-500">
-                Banco
-                <input
-                  value={banco}
-                  onChange={(e) => setBanco(e.target.value)}
-                  maxLength={60}
-                  placeholder="ex.: Caixa"
-                  className={`mt-0.5 block w-40 ${campo}`}
-                />
-              </label>
-              <label className="text-[11px] text-slate-500">
-                Detalhe (opcional)
-                <input
-                  value={apelido}
-                  onChange={(e) => setApelido(e.target.value)}
-                  maxLength={80}
-                  placeholder="ex.: aplicação"
-                  className={`mt-0.5 block w-36 ${campo}`}
-                />
-              </label>
-              <button
-                type="button"
-                onClick={() => void adicionarConta()}
-                disabled={ocupado}
-                className="rounded-md border border-sky-600 bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-700 disabled:opacity-60"
-              >
-                Adicionar
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setNovaAberta(false);
-                  setErroNova('');
-                }}
-                className="px-2 py-1.5 text-xs text-slate-500 hover:text-slate-700"
-              >
-                cancelar
-              </button>
-              {erroNova && <p className="w-full text-[11px] text-rose-600">{erroNova}</p>}
-            </div>
-          )}
-
-          {desligadas.length > 0 && (
-            <p className="mt-3 text-[11px] text-slate-400">
-              Não são mais pedidas:{' '}
-              {desligadas.map((c, i) => (
-                <span key={c.id}>
-                  {i > 0 && ' · '}
-                  {nomeConta(c)} ({c.titular}){' '}
-                  <button
-                    type="button"
-                    onClick={() => pedir(c, true)}
-                    disabled={ocupado}
-                    className="text-sky-700 hover:text-sky-900 disabled:opacity-50"
-                  >
-                    voltar a pedir
-                  </button>
-                  {' · '}
-                  <input
-                    ref={(el) => {
-                      inputs.current[c.id] = el;
-                    }}
-                    type="file"
-                    multiple
-                    accept={accept}
-                    className="hidden"
-                    onChange={(e) => void enviar(c, e.target.files)}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => inputs.current[c.id]?.click()}
-                    disabled={!!enviando[c.id]}
-                    className="text-sky-700 hover:text-sky-900 disabled:opacity-50"
-                  >
-                    {enviando[c.id] || `enviar o de ${mesNome}`}
-                  </button>
-                  {mesEncerrado && contaDoInter(c) && (
-                    <>
-                      {' · '}
-                      <button
-                        type="button"
-                        onClick={() => buscarNoInter(c)}
-                        disabled={ocupado || !!enviando[`inter:${c.id}`]}
-                        className="text-orange-700 hover:text-orange-900 disabled:opacity-50"
-                      >
-                        {enviando[`inter:${c.id}`] || '⚡ buscar no Inter'}
-                      </button>
-                    </>
-                  )}
-                  {erros[c.id] && <span className="text-rose-600"> — {erros[c.id]}</span>}
-                </span>
-              ))}
-            </p>
-          )}
-        </div>
-      )}
     </section>
   );
 }
