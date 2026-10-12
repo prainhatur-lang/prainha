@@ -148,6 +148,13 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
   const totalForma = d.formas.reduce((s, f) => s + f.total, 0);
   const descontoPct = d.vendas.faturamento ? (d.vendas.descontos / d.vendas.faturamento) * 100 : 0;
   const canceladoPct = d.vendas.pedidos + d.vendas.cancelados ? (d.vendas.cancelados / (d.vendas.pedidos + d.vendas.cancelados)) * 100 : 0;
+  // "Valor cancelado": o percentual de sempre e, quando o caixa da loja registrou cancelamento no mês,
+  // de onde vem o valor (itens e pedidos inteiros cancelados no caixa)
+  const cxCanc = d.vendas.canceladoCaixa;
+  const cxItens = cxCanc.linhas - cxCanc.pedidosInteiros;
+  const canceladoSub = cxCanc.linhas
+    ? `${pct(canceladoPct)} · ${int(cxItens)} ${cxItens === 1 ? 'item' : 'itens'} e ${int(cxCanc.pedidosInteiros)} ${cxCanc.pedidosInteiros === 1 ? 'pedido' : 'pedidos'} no caixa`
+    : pct(canceladoPct);
 
   // Análise automática
   const insights: Array<{ tom: 'bom' | 'atencao'; txt: string }> = [];
@@ -285,7 +292,7 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
         <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
           <KPI label="Faturamento líquido" valor={brl(d.vendas.faturamentoLiquido)} cor="text-emerald-700" sub="bruto − descontos" />
           <KPI label="Acréscimos" valor={brl(d.vendas.acrescimos)} />
-          <KPI label="Valor cancelado" valor={brl(d.vendas.valorCancelado)} cor="text-rose-600" sub={pct(canceladoPct)} />
+          <KPI label="Valor cancelado" valor={brl(d.vendas.valorCancelado)} cor="text-rose-600" sub={canceladoSub} />
           <KPI label="Custo de ocupação" valor={brl(d.vendas.custoOcupacao)} sub={d.vendas.faturamento ? `${pct((d.vendas.custoOcupacao / d.vendas.faturamento) * 100)} da receita` : undefined} />
           <KPI label="Despesas a vencer" valor={brl(d.despesas.aVencer)} cor="text-amber-700" sub={`${int(d.despesas.qtdAVencer)} contas`} />
           <KPI label="Conciliação banco" valor={d.banco.contas.length ? 'Importado' : '—'} sub={d.banco.contas.map((c) => c.nome).join(' · ') || 'sem extrato'} />

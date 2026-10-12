@@ -122,6 +122,28 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
         isNotNull(schema.pedido.dataDelete),
         gte(schema.pedido.dataFechamento, tsStart),
         lte(schema.pedido.dataFechamento, tsEnd),
+        // Excluido que so ganhou data de fechamento dias depois nao foi cancelado no mes: o
+        // "nao compareceu" datou 3.275 excluidos antigos (2019 em diante) em ago–out/2026 e este
+        // quadro mostrou R$ 148 mil de "cancelado" em set/2026 no Prainha Bar. No PDV o pedido e
+        // fechado e excluido no mesmo momento (os 3 casos do historico: menos de 1 h de distancia).
+        sql`${schema.pedido.dataFechamento} <= ${schema.pedido.dataDelete} + interval '1 day'`,
+      ),
+    );
+
+  // O que o caixa da loja cancelou no mes, item a item ou o pedido inteiro, com o valor de cada um
+  // (registro do vendas-local; comeca em ago/2026 — mes anterior vem zerado).
+  const [cancCaixa] = await db
+    .select({
+      q: sql<number>`count(*)::int`,
+      pedidos: sql<number>`(count(*) filter (where ${schema.cancelamentoItem.tipo} = 'pedido'))::int`,
+      valor: sql<string>`coalesce(sum(${schema.cancelamentoItem.valor}),0)`,
+    })
+    .from(schema.cancelamentoItem)
+    .where(
+      and(
+        eq(schema.cancelamentoItem.filialId, filialId),
+        gte(schema.cancelamentoItem.quando, tsStart),
+        lte(schema.cancelamentoItem.quando, tsEnd),
       ),
     );
 
@@ -428,8 +450,10 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
       faturamento,
       faturamentoLiquido: faturamento - num(vendas.descontos),
       pedidos,
-      cancelados: canc.q,
-      valorCancelado: num(canc.valor),
+      // cancelado no mes = excluido logo depois de fechado (PDV) + o que o caixa da loja cancelou
+      cancelados: canc.q + cancCaixa.pedidos,
+      valorCancelado: num(canc.valor) + num(cancCaixa.valor),
+      canceladoCaixa: { linhas: cancCaixa.q, pedidosInteiros: cancCaixa.pedidos, valor: num(cancCaixa.valor) },
       ticketMedio: pedidos ? faturamento / pedidos : 0,
       pessoas: vendas.pessoas,
       descontos: num(vendas.descontos),
