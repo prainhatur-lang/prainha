@@ -12,7 +12,7 @@ import { exigirPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { AtivarClient, type ProdutoLinha } from './ativar-client';
 
@@ -109,6 +109,9 @@ export default async function AtivarProdutosPage(props: { searchParams: Promise<
       and(
         eq(schema.pedidoItem.filialId, filial.id),
         sql`${schema.pedido.dataFechamento} >= now() - interval '90 days'`,
+        // pedido excluído não é venda: o "não compareceu" carimbou data de fechamento em
+        // excluídos antigos (ago–out/2026) e eles acendiam o selo em produto parado
+        isNull(schema.pedido.dataDelete),
       ),
     )
     .groupBy(schema.produto.id);
