@@ -30,11 +30,45 @@ function partirDescricao(p: EquipePermissao): { grupo: string; label: string } {
   return { grupo: 'Outras', label: p.descricao || p.recurso };
 }
 
+// Situação do usuário do PDV. No Consumer quem foi excluído continua na lista
+// com o nome começando por "*Excluído *"; pausado = login desligado sem excluir.
+type Situacao = 'ATIVO' | 'PAUSADO' | 'EXCLUIDO';
+type Filtro = Situacao | 'TODOS';
+
+function situacaoDe(u: EquipeUsuario): Situacao {
+  if (/^\s*\*\s*exclu[ií]do/i.test(u.nome ?? '')) return 'EXCLUIDO';
+  return u.ativo ? 'ATIVO' : 'PAUSADO';
+}
+
+const SITUACAO: Record<Situacao, { rotulo: string; bola: string; selo: string; borda: string; ordem: number }> = {
+  ATIVO: { rotulo: 'ativo', bola: 'bg-emerald-500', selo: 'bg-emerald-100 text-emerald-800', borda: 'border-l-emerald-500', ordem: 0 },
+  PAUSADO: { rotulo: 'pausado', bola: 'bg-amber-500', selo: 'bg-amber-100 text-amber-800', borda: 'border-l-amber-500', ordem: 1 },
+  EXCLUIDO: { rotulo: 'excluído', bola: 'bg-red-500', selo: 'bg-red-100 text-red-800', borda: 'border-l-red-500', ordem: 2 },
+};
+
+const FILTROS: { id: Filtro; rotulo: string }[] = [
+  { id: 'ATIVO', rotulo: 'Ativos' },
+  { id: 'PAUSADO', rotulo: 'Pausados' },
+  { id: 'EXCLUIDO', rotulo: 'Excluídos' },
+  { id: 'TODOS', rotulo: 'Todos' },
+];
+
 const inp =
   'mt-1 w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-sm text-slate-900 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20';
 
-export function EquipeClient({ filiais, podeEditar }: { filiais: Filial[]; podeEditar: boolean }) {
-  const [filialId, setFilialId] = useState(filiais[0]?.id ?? '');
+export function EquipeClient({
+  filiais,
+  podeEditar,
+  filialInicial,
+}: {
+  filiais: Filial[];
+  podeEditar: boolean;
+  filialInicial?: string;
+}) {
+  const [filialId, setFilialId] = useState(
+    (filialInicial && filiais.some((f) => f.id === filialInicial) ? filialInicial : filiais[0]?.id) ?? '',
+  );
+  const [filtro, setFiltro] = useState<Filtro>('ATIVO');
   const [usuarios, setUsuarios] = useState<EquipeUsuario[]>([]);
   const [permissoes, setPermissoes] = useState<EquipePermissao[]>([]);
   const [carregando, setCarregando] = useState(true);
@@ -76,6 +110,18 @@ export function EquipeClient({ filiais, podeEditar }: { filiais: Filial[]; podeE
     return [...porGrupo.entries()].sort((a, b) => a[0].localeCompare(b[0], 'pt-BR'));
   }, [permissoes]);
 
+  const contagem = useMemo(() => {
+    const c: Record<Filtro, number> = { ATIVO: 0, PAUSADO: 0, EXCLUIDO: 0, TODOS: usuarios.length };
+    for (const u of usuarios) c[situacaoDe(u)]++;
+    return c;
+  }, [usuarios]);
+
+  // em "Todos": ativos primeiro, depois pausados, excluídos no fim (a ordem dentro de cada grupo é a da loja)
+  const visiveis = useMemo(() => {
+    if (filtro !== 'TODOS') return usuarios.filter((u) => situacaoDe(u) === filtro);
+    return [...usuarios].sort((a, b) => SITUACAO[situacaoDe(a)].ordem - SITUACAO[situacaoDe(b)].ordem);
+  }, [usuarios, filtro]);
+
   return (
     <div className="mt-6 space-y-4">
       {filiais.length > 1 && (
@@ -102,13 +148,36 @@ export function EquipeClient({ filiais, podeEditar }: { filiais: Filial[]; podeE
         <>
           <NovoUsuario filialId={filialId} podeEditar={podeEditar} onCriado={() => carregar(filialId)} />
 
+          {usuarios.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {FILTROS.map((f) => (
+                <button
+                  key={f.id}
+                  onClick={() => setFiltro(f.id)}
+                  className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold ${
+                    filtro === f.id
+                      ? 'border-slate-900 bg-slate-900 text-white'
+                      : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  {f.id !== 'TODOS' && <span className={`h-2 w-2 rounded-full ${SITUACAO[f.id].bola}`} />}
+                  {f.rotulo} ({contagem[f.id]})
+                </button>
+              ))}
+            </div>
+          )}
+
           <div className="space-y-2">
             {usuarios.length === 0 ? (
               <p className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-6 text-center text-sm text-slate-500">
                 Nenhum usuário cadastrado nesta loja ainda.
               </p>
+            ) : visiveis.length === 0 ? (
+              <p className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-6 text-center text-sm text-slate-500">
+                Nenhum usuário nessa situação. Veja em &quot;Todos&quot;.
+              </p>
             ) : (
-              usuarios.map((u) => (
+              visiveis.map((u) => (
                 <UsuarioCard
                   key={u.codigo}
                   u={u}
@@ -277,19 +346,17 @@ function UsuarioCard({
   }
 
   const setPerms = new Set(u.permissoes);
+  const sit = SITUACAO[situacaoDe(u)];
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+    <div className={`rounded-xl border border-l-4 border-slate-200 bg-white shadow-sm ${sit.borda}`}>
       <button onClick={onToggleAberto} className="flex w-full items-center justify-between gap-3 p-4 text-left">
         <div>
           <div className="flex items-center gap-2">
+            <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${sit.bola}`} />
             <span className="text-sm font-semibold text-slate-900">{u.nome || u.login}</span>
             <span className="text-xs text-slate-400">@{u.login}</span>
-            {!u.ativo && (
-              <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-medium text-slate-600">
-                inativo
-              </span>
-            )}
+            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${sit.selo}`}>{sit.rotulo}</span>
           </div>
           <p className="mt-0.5 text-xs text-slate-500">
             {u.tipo || 'Atendente'} · {u.permissoes.length} permissão(ões)

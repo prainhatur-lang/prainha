@@ -8,6 +8,7 @@ import { exigirPerm } from '@/lib/exigir-perm';
 import { createClient } from '@/lib/supabase/server';
 import { podeUsuario } from '@/lib/permissoes-runtime';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { escolherFilial } from '@/lib/filial-ativa';
 import { AppHeader } from '@/components/app-header';
 import { EquipeClient } from './equipe-client';
 
@@ -21,6 +22,8 @@ export default async function EquipePage() {
   const podeEditar = await podeUsuario(user.id, 'usuario.update');
 
   const filiais = await filiaisDoUsuario(user.id);
+  // abre na casa do seletor do menu (antes abria sempre na primeira da lista)
+  const ativa = await escolherFilial(filiais);
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -37,7 +40,9 @@ export default async function EquipePage() {
             Nenhuma filial acessível.
           </p>
         ) : (
-          <EquipeClient filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))} podeEditar={podeEditar} />
+          <EquipeClient filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))} podeEditar={podeEditar}
+            filialInicial={ativa?.id}
+          />
         )}
       </section>
     </main>
