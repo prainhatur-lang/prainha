@@ -45,6 +45,16 @@ function nomeConta(c: { banco: string; apelido: string | null }): string {
   return c.apelido ? `${c.banco} · ${c.apelido}` : c.banco;
 }
 
+/** Conta do Inter sem "detalhe": o extrato do mês pode vir direto da API do banco. */
+function contaDoInter(c: { banco: string; apelido: string | null }): boolean {
+  return !c.apelido && /^(banco\s+)?inter\b/i.test(c.banco.trim());
+}
+
+/** Planilha que o sistema montou com o que o Inter respondeu (não foi alguém que enviou). */
+function veioDoInter(nome: string): boolean {
+  return /^extrato-inter-\d{4}-\d{2}-automatico\.xlsx$/.test(nome);
+}
+
 export function ExtratosMes(props: Props) {
   const { ano, mes, mesNome, mesEncerrado, filialAtivaId, contas, podeEnviar, extensoes, casas, podeEmpresa } = props;
   const router = useRouter();
@@ -145,6 +155,13 @@ export function ExtratosMes(props: Props) {
     }
   }
 
+  function buscarNoInter(conta: ContaExtratoDoMes) {
+    setEnviando((s) => ({ ...s, [`inter:${conta.id}`]: 'Buscando…' }));
+    void acao(conta.id, () => chamar('/api/extratos-fechamento/inter', 'POST', { contaId: conta.id, ano, mes })).finally(() =>
+      setEnviando((s) => ({ ...s, [`inter:${conta.id}`]: '' })),
+    );
+  }
+
   function tirarArquivo(conta: ContaExtratoDoMes, arquivoId: string, nome: string) {
     if (!window.confirm(`Tirar "${nome}" da lista de ${mesNome}?`)) return;
     void acao(conta.id, () => chamar(`/api/extratos-fechamento/arquivos/${arquivoId}`, 'DELETE'));
@@ -212,6 +229,9 @@ export function ExtratosMes(props: Props) {
         O extrato do mês de cada conta, no arquivo que o banco gera ({extensoes.slice(0, 4).map((e) => e.toUpperCase()).join(', ')}…). Fica
         guardado aqui pra o contador baixar junto com a apuração. O arquivo não é lido nem lançado em lugar nenhum.
       </p>
+      <p className="mb-3 text-[11px] text-slate-500">
+        ⚡ Conta do <b>Inter</b> com integração: o extrato do mês que fechou entra sozinho no dia 1, em planilha (XLSX), direto do banco.
+      </p>
       <p className="mb-3 text-[11px]">
         <a href={`/relatorios/fechamento/extratos?ano=${ano}`} className="font-medium text-sky-700 hover:text-sky-900">
           📅 Ver {ano} inteiro (todos os meses e contas numa tela só) →
@@ -269,6 +289,11 @@ export function ExtratosMes(props: Props) {
                           <span className="text-[11px] text-slate-400">
                             {[tamanho(a.tamanhoBytes), quando(a.enviadoEm), a.enviadoPor].filter(Boolean).join(' · ')}
                           </span>
+                          {veioDoInter(a.nome) && (
+                            <span className="rounded-full bg-orange-50 px-1.5 py-0.5 text-[10px] font-medium text-orange-700">
+                              direto do Inter
+                            </span>
+                          )}
                           {podeEnviar && (
                             <button
                               type="button"
@@ -308,6 +333,17 @@ export function ExtratosMes(props: Props) {
                         >
                           {enviando[c.id] || (tem ? 'Enviar outro' : 'Enviar extrato')}
                         </button>
+                        {mesEncerrado && contaDoInter(c) && (
+                          <button
+                            type="button"
+                            onClick={() => buscarNoInter(c)}
+                            disabled={ocupado || !!enviando[`inter:${c.id}`]}
+                            title="Busca o extrato do mês na API do Inter e guarda em planilha (XLSX). Nos dias 1, 2 e 5 isso roda sozinho."
+                            className="rounded-md border border-orange-300 bg-orange-50 px-3 py-1.5 text-xs font-medium text-orange-800 hover:bg-orange-100 disabled:opacity-60"
+                          >
+                            {enviando[`inter:${c.id}`] || '⚡ Buscar no Inter'}
+                          </button>
+                        )}
                         {c.ativo && (
                           <button
                             type="button"

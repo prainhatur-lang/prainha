@@ -29,6 +29,10 @@
       "schedule": "50 14,0 * * *"
     },
     {
+      "path": "/api/cron/extrato-fechamento-inter",
+      "schedule": "0 9 1,2,5 * *"
+    },
+    {
       "path": "/api/cron/conciliacao-diaria",
       "schedule": "10 15,1 * * *"
     },

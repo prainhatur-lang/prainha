@@ -203,6 +203,23 @@ export async function buscarExtratoInter(
   return data.transacoes ?? [];
 }
 
+/**
+ * Saldo da conta no fim do dia `data` (GET /banking/v2/saldo, mesmo escopo do
+ * extrato). Devolve o disponível, ou null se o banco não responder o campo.
+ */
+export async function buscarSaldoInter(cred: InterCredenciais, data: string): Promise<number | null> {
+  const token = await getAccessToken(cred);
+  const { status, data: r } = await requestJson<{ disponivel?: number | string }>({
+    method: 'GET',
+    path: `/banking/v2/saldo?dataSaldo=${data}`,
+    authorization: `Bearer ${token}`,
+    cred,
+  });
+  if (status !== 200) throw new Error(`Inter saldo erro (${status}): ${JSON.stringify(r)}`);
+  const n = Number(r.disponivel);
+  return Number.isFinite(n) ? n : null;
+}
+
 /** Pagamento de boleto/convênio feito ou agendado pela conta (GET /banking/v2/pagamento). */
 export interface InterPagamento {
   codigoTransacao: string;
