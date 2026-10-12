@@ -238,6 +238,8 @@ export interface RelatorioCasa {
     desconto: number;
     ticket: number;
     permanenciaMedianaMin: number | null;
+    /** contas com consumo que fecharam sem os 10% (serviço zerado) — base pra ver se está subindo ou caindo */
+    semServico?: SemServicoDia;
   };
   semanaPassada: { contas: number; total: number };
   periodos: PeriodoDia[];
@@ -279,6 +281,38 @@ export interface RelatorioCasa {
   /** eventos com prato "de ticket" cadastrados no dia (evento_ticket) — receita que não passa pelo PDV */
   eventos?: EventoDia[];
   atencao: string[];
+}
+
+/** Quem tirou os 10%: contas com consumo (valor > 0) e serviço zerado, no dia e no mesmo dia da semana passada. */
+export interface SemServicoDia {
+  contas: number;
+  /** contas com consumo no dia (a base do percentual) */
+  deContas: number;
+  /** o que essas contas somam (consumo que saiu sem serviço) */
+  valor: number;
+  contasSp: number;
+  deContasSp: number;
+}
+
+/** Faturamento sem os 10%: o total das contas menos o serviço cobrado (tickets de evento não têm serviço). */
+export function faturamentoSemServico(c: Pick<RelatorioCasa, 'eventos' | 'movimento'>): number {
+  return Math.round((faturamentoDoDia(c) - c.movimento.servico) * 100) / 100;
+}
+
+/** "19%" — parte das contas com consumo que saiu sem os 10%; nulo sem conta na base. */
+export function pctSemServico(contas: number, de: number): number | null {
+  return de > 0 ? (contas / de) * 100 : null;
+}
+
+/** Linha pronta: "27 de 141 contas sem os 10% (19%; semana passada 12%)". */
+export function fraseSemServico(s: SemServicoDia): string {
+  const p = pctSemServico(s.contas, s.deContas);
+  const sp = pctSemServico(s.contasSp, s.deContasSp);
+  const pc = (n: number) => `${n.toFixed(0)}%`;
+  return (
+    `${s.contas} de ${s.deContas} ${s.deContas === 1 ? 'conta' : 'contas'} sem os 10%` +
+    (p == null ? '' : ` (${pc(p)}${sp == null ? '' : `; semana passada ${pc(sp)}`})`)
+  );
 }
 
 /** Evento com prato de ticket: o prato entra a R$ 0,01 e a casa recebe o ticket por fora. */
@@ -419,6 +453,11 @@ export async function montarRelatorioCasa(
       contas_sp: number;
       total_sp: number;
       ativa: boolean;
+      sem_serv: number;
+      com_consumo: number;
+      valor_sem_serv: number;
+      sem_serv_sp: number;
+      com_consumo_sp: number;
     }>(sql`
       SELECT count(*)::int AS contas,
              coalesce(sum(p.valor_total), 0)::float8 AS total,
@@ -435,6 +474,19 @@ export async function montarRelatorioCasa(
                WHERE s.filial_id = ${F} AND s.data_delete IS NULL
                  AND s.data_abertura >= ${ini}::timestamptz - interval '7 days'
                  AND s.data_abertura < ${fim}::timestamptz - interval '7 days') AS total_sp,
+             count(*) FILTER (WHERE p.valor_total > 0 AND coalesce(p.total_servico, 0) = 0)::int AS sem_serv,
+             count(*) FILTER (WHERE p.valor_total > 0)::int AS com_consumo,
+             coalesce(sum(p.valor_total) FILTER (WHERE p.valor_total > 0 AND coalesce(p.total_servico, 0) = 0), 0)::float8 AS valor_sem_serv,
+             (SELECT count(*)::int FROM pedido s
+               WHERE s.filial_id = ${F} AND s.data_delete IS NULL
+                 AND s.valor_total > 0 AND coalesce(s.total_servico, 0) = 0
+                 AND s.data_abertura >= ${ini}::timestamptz - interval '7 days'
+                 AND s.data_abertura < ${fim}::timestamptz - interval '7 days') AS sem_serv_sp,
+             (SELECT count(*)::int FROM pedido s
+               WHERE s.filial_id = ${F} AND s.data_delete IS NULL
+                 AND s.valor_total > 0
+                 AND s.data_abertura >= ${ini}::timestamptz - interval '7 days'
+                 AND s.data_abertura < ${fim}::timestamptz - interval '7 days') AS com_consumo_sp,
              EXISTS (SELECT 1 FROM pedido a
                WHERE a.filial_id = ${F}
                  AND a.data_abertura >= ${ini}::timestamptz - interval '30 days'
@@ -608,6 +660,13 @@ export async function montarRelatorioCasa(
     desconto: num(r0?.desconto),
     ticket: num(r0?.ticket),
     permanenciaMedianaMin: r0?.perm == null ? null : num(r0.perm),
+    semServico: {
+      contas: num(r0?.sem_serv),
+      deContas: num(r0?.com_consumo),
+      valor: num(r0?.valor_sem_serv),
+      contasSp: num(r0?.sem_serv_sp),
+      deContasSp: num(r0?.com_consumo_sp),
+    },
   };
 
   // --- Equipe pelo ponto -----------------------------------------------------
@@ -1620,6 +1679,10 @@ function textoCasa(c: RelatorioCasa): string {
     tk > 0
       ? `💰 ${reais(faturamentoDoDia(c))} (contas ${reais(m.total)} + evento ${reais(tk)}) · ${pl(m.contas, 'conta', 'contas')} · ticket ${reais(m.ticket)}${comp}`
       : `💰 ${reais(m.total)} · ${pl(m.contas, 'conta', 'contas')} · ticket ${reais(m.ticket)}${comp}`,
+  );
+  L.push(
+    `🧾 Sem os 10%: ${reais(faturamentoSemServico(c))} · serviço ${reais(m.servico)}` +
+      (m.semServico ? ` · ${fraseSemServico(m.semServico)}` : ''),
   );
   for (const e of c.eventos ?? []) {
     const sit = e.status === 'RECEBIDO' ? 'já recebido' : `a receber${e.pagador ? ` de ${e.pagador}` : ''}${e.status === 'ABERTO' ? ', ainda contando' : ''}`;

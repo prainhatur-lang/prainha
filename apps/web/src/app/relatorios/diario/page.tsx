@@ -15,6 +15,8 @@ import { brl, int } from '@/lib/format';
 import { dateToBrYmd } from '@/lib/datas';
 import {
   faturamentoDoDia,
+  faturamentoSemServico,
+  pctSemServico,
   montarRelatorioFiliais,
   rotuloDia,
   somaDias,
@@ -22,6 +24,7 @@ import {
   ultimoDiaFechado,
   type CaixaDia,
   type RelatorioCasa,
+  type SemServicoDia,
 } from '@/lib/relatorio-diario';
 import {
   estadoDoModelo,
@@ -57,6 +60,48 @@ function KPI({ label, valor, sub, cor = 'text-slate-900' }: { label: string; val
       <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">{label}</p>
       <p className={`mt-1 text-xl font-semibold ${cor}`}>{valor}</p>
       {sub && <p className="mt-0.5 text-[11px] text-slate-400">{sub}</p>}
+    </div>
+  );
+}
+
+/** Os 10%: faturamento sem o serviço, o serviço, o total com ele e quantas contas saíram sem pagar os 10%. */
+function Dez({
+  comServico,
+  semServico,
+  servico,
+  sem,
+}: {
+  comServico: number;
+  semServico: number;
+  servico: number;
+  sem?: SemServicoDia;
+}) {
+  const p = sem ? pctSemServico(sem.contas, sem.deContas) : null;
+  const sp = sem ? pctSemServico(sem.contasSp, sem.deContasSp) : null;
+  const subiu = p != null && sp != null && p > sp + 0.5;
+  const caiu = p != null && sp != null && p < sp - 0.5;
+  return (
+    <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <KPI label="Faturamento sem os 10%" valor={brl(semServico)} sub="contas sem a taxa de serviço" />
+      <KPI
+        label="Serviço (10%)"
+        valor={brl(servico)}
+        sub={semServico > 0 ? `${((servico / semServico) * 100).toFixed(1).replace('.', ',')}% do faturamento sem serviço` : undefined}
+      />
+      <KPI label="Faturamento com os 10%" valor={brl(comServico)} sub="o consolidado do dia" />
+      <KPI
+        label="Contas sem os 10%"
+        valor={sem && p != null ? `${int(sem.contas)} de ${int(sem.deContas)} (${p.toFixed(0)}%)` : '—'}
+        sub={
+          sem && p != null
+            ? `${brl(sem.valor)} em consumo sem serviço · ` +
+              (sp == null
+                ? 'sem movimento na semana passada'
+                : `semana passada ${int(sem.contasSp)} de ${int(sem.deContasSp)} (${sp.toFixed(0)}%)${subiu ? ' ▲' : caiu ? ' ▼' : ''}`)
+            : undefined
+        }
+        cor={subiu ? 'text-rose-700' : caiu ? 'text-emerald-700' : 'text-slate-900'}
+      />
     </div>
   );
 }
@@ -305,6 +350,13 @@ function Casa({ c }: { c: RelatorioCasa }) {
           </Link>
         </div>
       ))}
+
+      <Dez
+        comServico={faturamento}
+        semServico={faturamentoSemServico(c)}
+        servico={c.movimento.servico}
+        sem={c.movimento.semServico}
+      />
 
       <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <KPI
@@ -629,6 +681,22 @@ export default async function RelatorioDiarioPage(props: { searchParams: Promise
     ? casas.reduce((s, c) => s + (c.avaliacoes.media ?? 0) * c.avaliacoes.total, 0) / avTotal
     : null;
   const variacao = semana > 0 ? ((total - semana) / semana) * 100 : null;
+  const servicoTotal = casas.reduce((s, c) => s + c.movimento.servico, 0);
+  const semServicoTotal = casas.reduce(
+    (s, c) => {
+      const x = c.movimento.semServico;
+      return x
+        ? {
+            contas: s.contas + x.contas,
+            deContas: s.deContas + x.deContas,
+            valor: s.valor + x.valor,
+            contasSp: s.contasSp + x.contasSp,
+            deContasSp: s.deContasSp + x.deContasSp,
+          }
+        : s;
+    },
+    { contas: 0, deContas: 0, valor: 0, contasSp: 0, deContasSp: 0 },
+  );
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -703,6 +771,8 @@ export default async function RelatorioDiarioPage(props: { searchParams: Promise
                 sub={`${avTotal} no dia`}
               />
             </div>
+
+            <Dez comServico={total} semServico={total - servicoTotal} servico={servicoTotal} sem={semServicoTotal} />
 
             {casas.map((c) => (
               <Casa key={c.filialId} c={c} />
