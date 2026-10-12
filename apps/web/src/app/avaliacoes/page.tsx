@@ -95,6 +95,7 @@ export default async function AvaliacoesPage() {
             nome: schema.avaliacao.nome,
             whatsapp: schema.avaliacao.whatsapp,
             origem: schema.avaliacao.origem,
+            pedidoCodigo: schema.avaliacao.pedidoCodigo,
             status: schema.avaliacao.status,
             observacaoInterna: schema.avaliacao.observacaoInterna,
             criadoEm: schema.avaliacao.criadoEm,

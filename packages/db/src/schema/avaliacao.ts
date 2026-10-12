@@ -47,6 +47,9 @@ export const avaliacao = pgTable(
     mesRef: varchar('mes_ref', { length: 7 }),
     brinde: text('brinde'),
     mesa: integer('mesa'),
+    /** Conta (pedido.codigo_externo) que estava na mesa quando a avaliação do QR
+     *  foi feita — a loja manda junto. Nulo nas antigas e no QR genérico. */
+    pedidoCodigo: integer('pedido_codigo'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
     atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
   },

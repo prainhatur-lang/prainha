@@ -604,6 +604,9 @@ async function initSchema() {
     nota integer NOT NULL, assunto text, comentario text, nome text, whatsapp text,
     mesa integer, criado_em timestamptz DEFAULT now(), nuvem_em timestamptz, nuvem_id uuid)`;
   await sql`CREATE INDEX IF NOT EXISTS ix_avaliacao_livre_fila ON avaliacao_livre (nuvem_em, id)`;
+  // QUAL CONTA estava na mesa (12/10/2026): so o numero da mesa nao bastou pra
+  // achar de quem era a reclamacao da isca que entrou pelo QR da mesa 19.
+  await addCol('avaliacao_livre', 'pedido_fb bigint');
   // (A lista de espera da recepção mora na NUVEM — tabela lista_espera, a
   //  mesma do /lista-espera do Concilia. Uma fila só pra casa inteira.)
   await sql`CREATE TABLE IF NOT EXISTS transferencia (id bigserial PRIMARY KEY,
@@ -18434,9 +18437,25 @@ async function apiMesaAvaliacaoLivre(body) {
   const itens = Array.isArray(body.itens) ? body.itens.map(Number).filter(Boolean).slice(0, 30) : [];
   const itensTxt = txt(body.itens_txt, 500);
   const comentario = txt([itensTxt, txt(body.comentario, 2000)].filter(Boolean).join(' — '), 2500);
-  const [reg] = await sql`INSERT INTO avaliacao_livre (nota, assunto, comentario, nome, whatsapp, mesa)
+  // A CONTA de quem avaliou: a que o celular fixou ao escanear; sem ela, a que
+  // esta aberta na mesa agora; mesa ja fechada, a ultima fechada nas ultimas 3h.
+  // Nunca derruba a avaliacao: deu erro aqui, grava sem a conta.
+  let pedidoFb = null;
+  try {
+    const s = Number(body.sessao);
+    if (Number.isInteger(s) && s > 0) pedidoFb = s;
+    else if (numero != null) {
+      const [ab] = await sql`SELECT codigo FROM comanda WHERE numero=${numero} AND fechada_em IS NULL AND cancelada_em IS NULL ORDER BY codigo DESC LIMIT 1`;
+      if (ab) pedidoFb = Number(ab.codigo);
+      else {
+        const [fe] = await sql`SELECT codigo FROM comanda WHERE numero=${numero} AND cancelada_em IS NULL AND fechada_em > now() - interval '3 hours' ORDER BY fechada_em DESC LIMIT 1`;
+        if (fe) pedidoFb = Number(fe.codigo);
+      }
+    }
+  } catch { pedidoFb = null; }
+  const [reg] = await sql`INSERT INTO avaliacao_livre (nota, assunto, comentario, nome, whatsapp, mesa, pedido_fb)
     VALUES (${nota}, ${assunto}, ${comentario}, ${txt(body.nome, 200)},
-            ${soDig(body.whatsapp).slice(0, 15) || null}, ${numero}) RETURNING id`;
+            ${soDig(body.whatsapp).slice(0, 15) || null}, ${numero}, ${pedidoFb}) RETURNING id`;
   // nota baixa = a equipe tem que saber AGORA, não quando alguém abrir o painel
   if (nota <= 3) {
     await apiChamadoCriar({ mesa: numero, tipo: 'reclamacao', origem: 'avaliacao-qr', nota,
@@ -18454,7 +18473,8 @@ async function livreParaNuvem(id) {
   // o assunto vai junto do comentário: na retaguarda o que resolve é ler
   const com = [a.assunto ? ASSUNTOS[a.assunto] : null, a.comentario].filter(Boolean).join(' — ') || null;
   const j = await salaoNuvemPost({ tipo: 'avaliacao_nova', nota: a.nota, comentario: com,
-    nome: a.nome, whatsapp: a.whatsapp, mesa: a.mesa, criado_em: a.criado_em });
+    nome: a.nome, whatsapp: a.whatsapp, mesa: a.mesa, criado_em: a.criado_em,
+    pedido: a.pedido_fb != null ? Number(a.pedido_fb) : null });
   if (j && j.ok) {
     await sql`UPDATE avaliacao_livre SET nuvem_em=now(), nuvem_id=${j.id || null} WHERE id=${id}`;
     return j;
@@ -18468,7 +18488,8 @@ async function brindeParaNuvem(id) {
   if (!a) return null;
   const j = await salaoNuvemPost({ tipo: 'avaliacao_nova', cpf: a.cpf, mes: a.mes, nota: a.nota,
     comentario: a.comentario, nome: a.nome, whatsapp: a.whatsapp, mesa: a.mesa,
-    brinde: a.brinde_nome, criado_em: a.criado_em });
+    brinde: a.brinde_nome, criado_em: a.criado_em,
+    pedido: a.pedido_fb != null ? Number(a.pedido_fb) : null });
   if (j && j.ok) {
     await sql`UPDATE avaliacao_brinde SET nuvem_em=now(), nuvem_id=${j.id || null} WHERE id=${id}`;
     return j;
@@ -23578,7 +23599,7 @@ async function avEnviarLivre(){
   bt.disabled=true; bt.textContent='Enviando…';
   var marc=avItensMarcados();
   var r;
-  try{ r=await post('/api/mesa/avaliacao',{mesa:MESA?Number(MESA):null,nota:AV.nota,
+  try{ r=await post('/api/mesa/avaliacao',{mesa:MESA?Number(MESA):null,sessao:SES&&SES.comanda,nota:AV.nota,
     assunto:AV.assunto,comentario:AV.comentario,nome:AV.nome,whatsapp:AV.zap,
     itens:marc.map(function(i){return i.cod}),itens_txt:marc.map(avItemTxt).join(', ')}); }
   catch(e){ r={ok:false,erro:'Sem conexão. Tente de novo.'} }

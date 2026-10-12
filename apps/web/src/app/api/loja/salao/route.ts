@@ -419,6 +419,7 @@ export async function POST(request: Request) {
 type AvaliacaoNova = {
   cpf?: string; mes?: string; nota?: number; comentario?: string | null; nome?: string | null;
   whatsapp?: string | null; mesa?: number | null; brinde?: string | null; criado_em?: string;
+  pedido?: number | null;
 };
 
 /** AVALIE E GANHE UM DRINK: a avaliação feita no QR da mesa (vendas-local)
@@ -465,6 +466,7 @@ async function avaliacaoNova(f: string, b: AvaliacaoNova) {
       mesRef: mes,
       brinde: txt(b.brinde, 200),
       mesa,
+      pedidoCodigo: Number.isInteger(Number(b.pedido)) && Number(b.pedido) > 0 ? Number(b.pedido) : null,
       criadoEm: criado,
     })
     .onConflictDoNothing()

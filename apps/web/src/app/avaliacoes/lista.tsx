@@ -11,6 +11,7 @@ export interface AvaliacaoItem {
   nome: string | null;
   whatsapp: string | null;
   origem: string | null;
+  pedidoCodigo?: number | null;
   status: string;
   observacaoInterna: string | null;
   criadoEm: string | Date;
@@ -118,6 +119,7 @@ function Card({ item, podeAtualizar }: { item: AvaliacaoItem; podeAtualizar: boo
             {item.origem && (
               <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
                 📍 {item.origem}
+                {item.pedidoCodigo ? ` · conta ${item.pedidoCodigo}` : ''}
               </span>
             )}
           </div>

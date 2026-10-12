@@ -175,7 +175,8 @@
     "migrate:faturamento-historico": "tsx scripts/migrate-faturamento-historico.ts",
     "migrate:evento-ticket": "tsx scripts/migrate-evento-ticket.ts",
     "migrate:extrato-fechamento": "tsx scripts/migrate-extrato-fechamento.ts",
-    "migrate:cartao-fatura": "tsx scripts/migrate-cartao-fatura.ts"
+    "migrate:cartao-fatura": "tsx scripts/migrate-cartao-fatura.ts",
+    "migrate:avaliacao-pedido": "tsx scripts/migrate-avaliacao-pedido.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",
