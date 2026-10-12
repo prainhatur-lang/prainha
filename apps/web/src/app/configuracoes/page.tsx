@@ -1,7 +1,9 @@
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { exigirPerm } from '@/lib/exigir-perm';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
 import type { TaxasFilial } from '@concilia/db/schema';
 import { and, eq, inArray, sql } from 'drizzle-orm';
@@ -105,7 +107,12 @@ async function auditoriaFilial(filialId: string, taxas: TaxasFilial): Promise<Au
 
 export const dynamic = 'force-dynamic';
 
-export default async function ConfiguracoesPage() {
+export default async function ConfiguracoesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ filialId?: string; todas?: string }>;
+}) {
+  const sp = await searchParams;
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect('/login');
@@ -129,6 +136,25 @@ export default async function ConfiguracoesPage() {
         .where(inArray(schema.filial.id, filialIds))
     : [];
 
+  // Abas por casa (pedido do dono em 12/10/2026: com as três empilhadas não
+  // dava pra saber em qual filial se estava mexendo). Abre na casa do seletor
+  // do menu; "Todas" mostra a lista inteira, como era.
+  const verTodas = sp.todas === '1';
+  const ativa = await escolherFilial(filiais, sp.filialId);
+  // numeração fixa das casas (01 Bar, 02 Tabuará, 03 Mar)
+  const NUMERO: Record<string, string> = {
+    '7c5c66ce-cceb-4e89-9c6d-d0785255c4f9': '01',
+    'fde37b95-7c7e-4b41-a618-2aba1fbc0de7': '02',
+    'e899dae2-38bf-4f3f-9149-7effd059fab8': '03',
+  };
+  const abas = [...filiais].sort((a, b) =>
+    (NUMERO[a.id] ?? '99').localeCompare(NUMERO[b.id] ?? '99'),
+  );
+  const ordem = new Map(abas.map((f, i) => [f.id, i]));
+  const filialRowsVisiveis = filialRows
+    .filter((f) => verTodas || !ativa || f.id === ativa.id)
+    .sort((a, b) => (ordem.get(a.id) ?? 0) - (ordem.get(b.id) ?? 0));
+
   const taxasDefault: TaxasFilial = {
     ecs: [],
     default: TAXAS_DEFAULT,
@@ -144,9 +170,43 @@ export default async function ConfiguracoesPage() {
           Taxas Cielo por estabelecimento. Aplicadas na conciliação Banco pra calcular o valor líquido esperado.
         </p>
 
+        {filiais.length > 1 && (
+          <nav className="mt-6 flex flex-wrap gap-2">
+            {abas.map((f) => {
+              const sel = !verTodas && ativa?.id === f.id;
+              return (
+                <Link
+                  key={f.id}
+                  href={`/configuracoes?filialId=${f.id}`}
+                  className={`rounded-lg border px-4 py-2 text-sm font-semibold ${
+                    sel
+                      ? 'border-slate-900 bg-slate-900 text-white'
+                      : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  {NUMERO[f.id] && (
+                    <span className={sel ? 'text-slate-300' : 'text-slate-400'}>{NUMERO[f.id]} </span>
+                  )}
+                  {f.nome}
+                </Link>
+              );
+            })}
+            <Link
+              href="/configuracoes?todas=1"
+              className={`rounded-lg border px-4 py-2 text-sm font-semibold ${
+                verTodas
+                  ? 'border-slate-900 bg-slate-900 text-white'
+                  : 'border-slate-300 bg-white text-slate-500 hover:bg-slate-100'
+              }`}
+            >
+              Todas
+            </Link>
+          </nav>
+        )}
+
         <div className="mt-8 space-y-8">
           {await Promise.all(
-            filialRows.map(async (f) => {
+            filialRowsVisiveis.map(async (f) => {
               const taxas = (f.taxas as TaxasFilial | null) ?? taxasDefault;
               const auditoria = await auditoriaFilial(f.id, taxas);
               // Config da folha (pp empresa/gerente/funcionarios)
