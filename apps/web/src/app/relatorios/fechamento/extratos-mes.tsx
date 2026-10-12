@@ -462,6 +462,39 @@ export function ExtratosMes(props: Props) {
                   >
                     voltar a pedir
                   </button>
+                  {' · '}
+                  <input
+                    ref={(el) => {
+                      inputs.current[c.id] = el;
+                    }}
+                    type="file"
+                    multiple
+                    accept={accept}
+                    className="hidden"
+                    onChange={(e) => void enviar(c, e.target.files)}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => inputs.current[c.id]?.click()}
+                    disabled={!!enviando[c.id]}
+                    className="text-sky-700 hover:text-sky-900 disabled:opacity-50"
+                  >
+                    {enviando[c.id] || `enviar o de ${mesNome}`}
+                  </button>
+                  {mesEncerrado && contaDoInter(c) && (
+                    <>
+                      {' · '}
+                      <button
+                        type="button"
+                        onClick={() => buscarNoInter(c)}
+                        disabled={ocupado || !!enviando[`inter:${c.id}`]}
+                        className="text-orange-700 hover:text-orange-900 disabled:opacity-50"
+                      >
+                        {enviando[`inter:${c.id}`] || '⚡ buscar no Inter'}
+                      </button>
+                    </>
+                  )}
+                  {erros[c.id] && <span className="text-rose-600"> — {erros[c.id]}</span>}
                 </span>
               ))}
             </p>

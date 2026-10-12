@@ -175,10 +175,8 @@ export async function guardarExtratosInterDoMes(opts: {
     .from(schema.extratoConta)
     .leftJoin(schema.filial, eq(schema.filial.id, schema.extratoConta.filialId))
     .where(
-      and(
-        eq(schema.extratoConta.ativo, true),
-        opts.contaIds ? inArray(schema.extratoConta.id, opts.contaIds) : undefined,
-      ),
+      // Pedido na mão (contaIds) vale também pra conta em "não pedir mais"; o cron só busca as pedidas.
+      opts.contaIds ? inArray(schema.extratoConta.id, opts.contaIds) : eq(schema.extratoConta.ativo, true),
     )
     .orderBy(asc(schema.extratoConta.ordem));
 

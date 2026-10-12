@@ -29,7 +29,8 @@ export async function POST(req: Request) {
   }
 
   const visiveis = await contasExtratoVisiveis(auth.user.id);
-  const contaIds = visiveis.filter((c) => !contaId || c.id === contaId).map((c) => c.id);
+  // Sem contaId, só as contas pedidas; com contaId, vale também a que está em "não pedir mais".
+  const contaIds = visiveis.filter((c) => (contaId ? c.id === contaId : c.ativo)).map((c) => c.id);
   if (contaId && contaIds.length === 0) return NextResponse.json({ error: 'conta não encontrada' }, { status: 404 });
 
   const resultados = await guardarExtratosInterDoMes({ ano, mes, contaIds, enviadoPor: auth.user.id });
