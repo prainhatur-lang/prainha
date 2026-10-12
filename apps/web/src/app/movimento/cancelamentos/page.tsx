@@ -14,6 +14,7 @@ import { and, asc, count, desc, eq, gte, isNotNull, lte, sql } from 'drizzle-orm
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDateTime, int } from '@/lib/format';
 import { hojeBr, diasAtrasBr, brDateStart, brDateEnd } from '@/lib/datas';
+import { ehEstornoDeItem } from '@/lib/cancelamento-tipo';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,6 +24,8 @@ interface SP {
   dataFim?: string;
   motivo?: string;
   quem?: string;
+  /** estorno · cancelamento — vazio mostra os dois */
+  tipo?: string;
 }
 
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
@@ -71,6 +74,7 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
   const dataFim = sp.dataFim && YMD.test(sp.dataFim) ? sp.dataFim : hoje;
   const motivoSel = (sp.motivo ?? '').trim();
   const quemSel = (sp.quem ?? '').trim().toLowerCase();
+  const tipoSel = sp.tipo === 'estorno' || sp.tipo === 'cancelamento' ? sp.tipo : '';
 
   if (!filialSel) {
     return (
@@ -83,7 +87,7 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
   const filial = filialSel; // alias depois da guarda (narrowing some em closures)
 
   const c = schema.cancelamentoItem;
-  const linhas = await db
+  const todas = await db
     .select({
       id: c.id,
       quando: c.quando,
@@ -135,8 +139,15 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
   const [{ n: totalFilial }] = await db.select({ n: count() }).from(c).where(eq(c.filialId, filial.id));
 
   const valorDe = (l: { valor: string | null }) => Number(l.valor ?? 0);
-  const total = linhas.reduce((s, l) => s + valorDe(l), 0);
-  const produzidos = linhas.filter((l) => jaProduzido(l.statusItem));
+  // Estorno (bebida fechada que voltou pro bar) × cancelamento — regra em lib/cancelamento-tipo.
+  const ehEstorno = (l: (typeof todas)[number]) =>
+    ehEstornoDeItem({ motivo: l.motivo, statusItem: l.statusItem, praca: l.areaCodigo == null ? null : nomeArea.get(l.areaCodigo) });
+  const estornos = todas.filter(ehEstorno);
+  const valorEstornos = estornos.reduce((s, l) => s + valorDe(l), 0);
+  const cancelados = todas.filter((l) => !ehEstorno(l));
+  const linhas = tipoSel === 'estorno' ? estornos : tipoSel === 'cancelamento' ? cancelados : todas;
+  const total = cancelados.reduce((s, l) => s + valorDe(l), 0);
+  const produzidos = cancelados.filter((l) => jaProduzido(l.statusItem));
   const valorProduzidos = produzidos.reduce((s, l) => s + valorDe(l), 0);
   const pedidosInteiros = linhas.filter((l) => l.tipo === 'pedido').length;
   // Devolução = produto voltou pro bar/estoque; a regra da casa é: só com foto.
@@ -164,6 +175,8 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
     if (m) qs.set('motivo', m);
     const q = next.quem !== undefined ? next.quem : quemSel;
     if (q) qs.set('quem', q);
+    const t = next.tipo !== undefined ? next.tipo : tipoSel;
+    if (t) qs.set('tipo', t);
     return `/movimento/cancelamentos?${qs.toString()}`;
   }
   const inputCls = 'mt-1 rounded-md border border-slate-300 px-2 py-1.5 text-sm';
@@ -177,7 +190,9 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
         <p className="mt-1 text-sm text-slate-600">
           Item ou pedido cancelado no caixa, com o motivo, quem cancelou e quem autorizou.{' '}
           <span className="text-amber-700">Já produzido</span> = o item tinha saído da cozinha antes de
-          ser cancelado (custou e não foi vendido).
+          ser cancelado (custou e não foi vendido). <span className="text-sky-700">Estorno</span> = bebida
+          fechada que foi pra mesa e voltou pro bar (isopor que não foi consumido): motivo &quot;Cliente
+          desistiu&quot; ou &quot;Devolução&quot;, item já entregue, praça Bar ou Destilados. Não conta como cancelamento.
         </p>
 
         {filiais.length > 1 && (
@@ -200,12 +215,13 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
         )}
 
         {/* KPIs do período filtrado */}
-        <div className="mt-6 grid grid-cols-2 gap-3 lg:grid-cols-5">
-          <Kpi label="Cancelamentos" valor={int(linhas.length)} sub={brl(total)} tom="slate" />
+        <div className="mt-6 grid grid-cols-2 gap-3 lg:grid-cols-6">
+          <Kpi label="Cancelamentos" valor={int(cancelados.length)} sub={`${brl(total)} · sem os estornos`} tom="slate" />
+          <Kpi label="Estornos" valor={int(estornos.length)} sub={`${brl(valorEstornos)} · voltou pro bar`} tom="slate" />
           <Kpi
             label="Já produzidos"
             valor={int(produzidos.length)}
-            sub={`${brl(valorProduzidos)} · ${linhas.length ? Math.round((produzidos.length / linhas.length) * 100) : 0}% do total`}
+            sub={`${brl(valorProduzidos)} · ${cancelados.length ? Math.round((produzidos.length / cancelados.length) * 100) : 0}% dos cancelamentos`}
             tom="amber"
           />
           <Kpi
@@ -231,6 +247,14 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
           className="mt-6 flex flex-wrap items-end gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
         >
           <input type="hidden" name="filialId" value={filial.id} />
+          <div>
+            <label className={labelCls}>Mostrar</label>
+            <select name="tipo" defaultValue={tipoSel} className={inputCls}>
+              <option value="">tudo</option>
+              <option value="cancelamento">só cancelamentos</option>
+              <option value="estorno">só estornos</option>
+            </select>
+          </div>
           <div>
             <label className={labelCls}>De</label>
             <input type="date" name="dataIni" defaultValue={dataIni} className={`${inputCls} font-mono`} />
@@ -260,9 +284,9 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
           >
             Aplicar
           </button>
-          {(motivoSel || quemSel) && (
+          {(motivoSel || quemSel || tipoSel) && (
             <Link
-              href={href({ motivo: '', quem: '' })}
+              href={href({ motivo: '', quem: '', tipo: '' })}
               className="rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50"
             >
               Limpar
@@ -314,7 +338,8 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
                 </tr>
               ) : (
                 linhas.map((l) => {
-                  const prod = jaProduzido(l.statusItem);
+                  const estorno = ehEstorno(l);
+                  const prod = !estorno && jaProduzido(l.statusItem);
                   return (
                     <tr key={l.id} className={`border-t border-slate-100 ${l.tipo === 'pedido' ? 'bg-rose-50/40' : prod ? 'bg-amber-50/40' : ''}`}>
                       <td className="px-4 py-2 font-mono text-xs text-slate-500">{l.lancadoEm ? formatDateTime(l.lancadoEm) : '—'}</td>
@@ -325,10 +350,13 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
                         {l.tipo === 'pedido' && (
                           <span className="ml-1.5 rounded bg-rose-100 px-1 py-0.5 text-[9px] font-bold text-rose-800">PEDIDO</span>
                         )}
+                        {estorno && (
+                          <span className="ml-1.5 rounded bg-sky-100 px-1 py-0.5 text-[9px] font-bold text-sky-800">ESTORNO</span>
+                        )}
                       </td>
                       <td className="px-4 py-2 text-right font-mono text-sm text-slate-900">{brl(l.valor)}</td>
                       <td className={`px-4 py-2 text-xs ${prod ? 'font-medium text-amber-700' : 'text-slate-600'}`}>
-                        {rotuloStatus(l.statusItem)}
+                        {estorno ? 'voltou pro bar' : rotuloStatus(l.statusItem)}
                       </td>
                       <td className="px-4 py-2 text-xs text-slate-800">{l.login ?? '—'}</td>
                       <td className="px-4 py-2 text-xs text-slate-600">
@@ -354,7 +382,7 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
               )}
             </tbody>
           </table>
-          {linhas.length >= 500 && (
+          {todas.length >= 500 && (
             <p className="border-t border-slate-200 bg-slate-50 px-4 py-2 text-center text-xs text-slate-500">
               Mostrando 500. Refine o período pra ver mais.
             </p>

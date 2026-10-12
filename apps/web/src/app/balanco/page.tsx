@@ -15,6 +15,7 @@ import { AppHeader } from '@/components/app-header';
 import { brDateEnd, brDateStart, hojeBr } from '@/lib/datas';
 import { brl, formatDate, int, relativeTime } from '@/lib/format';
 import type { BalancoDados } from '@/lib/balanco';
+import { ehEstornoDeItem, jaSaiu } from '@/lib/cancelamento-tipo';
 import { AutoRefresh, BotaoAtualizar } from './balanco-client';
 
 export const dynamic = 'force-dynamic';
@@ -78,9 +79,23 @@ function Kpi({
 
 type Evento = { quando: string; tipo: string; icone: string; texto: string; detalhe: string | null; ruim: boolean };
 
-function eventosDoDia(d: BalancoDados): Evento[] {
+function eventosDoDia(d: BalancoDados, estornoItem: Set<number> = new Set()): Evento[] {
   const ev: Evento[] = [];
   for (const c of d.cancelamentos?.lista ?? []) {
+    // bebida fechada que voltou pro bar: estorno de item, não cancelamento
+    if (estornoItem.has(c.id) || /^(devolu|estorno)/i.test(c.motivo ?? '')) {
+      ev.push({
+        quando: c.quando,
+        tipo: 'estorno_item',
+        icone: '↩',
+        texto: `Estorno de item (voltou pro bar) · mesa ${c.numero ?? '?'}${c.nome ? ` · ${c.nome}` : ''}${c.valor != null ? ` · ${brl(c.valor)}` : ''}`,
+        detalhe: [c.motivo, c.login ? `por ${c.login}` : null, c.gerente && c.gerente !== c.login ? `autorizou ${c.gerente}` : null]
+          .filter(Boolean)
+          .join(' · ') || null,
+        ruim: false,
+      });
+      continue;
+    }
     const produzido = !!c.status_item && c.status_item !== 'a_produzir' && c.status_item !== 'pedido';
     const inteiro = c.status_item === 'pedido';
     ev.push({
@@ -221,9 +236,33 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
         .from(fl)
         .where(and(eq(fl.filialId, f.id), eq(fl.tipo, 'pagamento'), eq(fl.status, 'aplicado'),
           isNotNull(fl.pagamentoCodigo), gte(fl.aplicadoEm, ini), lte(fl.aplicadoEm, fim)));
+      // Estorno de item × cancelamento: a foto da loja não traz a praça, então a
+      // separação sai do que a loja mandou pra cancelamento_item (regra em lib/cancelamento-tipo).
+      const ci = schema.cancelamentoItem;
+      const cancNuvem = await db
+        .select({
+          idLocal: ci.idLocal,
+          valor: sql<number>`coalesce(${ci.valor}, 0)::float8`,
+          statusItem: ci.statusItem,
+          motivo: ci.motivo,
+          praca: schema.areaProducao.nome,
+        })
+        .from(ci)
+        .leftJoin(schema.areaProducao, and(eq(schema.areaProducao.filialId, ci.filialId), eq(schema.areaProducao.codigoExterno, ci.areaCodigo)))
+        .where(and(eq(ci.filialId, f.id), gte(ci.quando, ini), lte(ci.quando, fim)));
+      const estornados = cancNuvem.filter((x) => ehEstornoDeItem(x));
+      const estornoItem = {
+        ids: new Set(estornados.map((x) => x.idLocal)),
+        n: estornados.length,
+        valor: estornados.reduce((s, x) => s + x.valor, 0),
+        saidos: estornados.filter((x) => jaSaiu(x.statusItem)).length,
+        valorSaidos: estornados.filter((x) => jaSaiu(x.statusItem)).reduce((s, x) => s + x.valor, 0),
+      };
+
       const baixaAte = (t: Date) => baixas.reduce((s, x) => s + (x.quando && x.quando <= t ? x.valor : 0), 0);
 
       return {
+        estornoItem,
         baixaAte,
         filial: f,
         ultimo: ultimo ? { ...ultimo, dados: ultimo.dados as BalancoDados } : null,
@@ -279,7 +318,7 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
 
         {casas.length === 0 && <p className="mt-10 text-sm text-slate-500">Nenhuma filial disponível.</p>}
 
-        {casas.map(({ filial, ultimo, linha, av, rs, es, baixaAte }) => {
+        {casas.map(({ filial, ultimo, linha, av, rs, es, baixaAte, estornoItem }) => {
           const d = ultimo?.dados;
           const idadeMin = ultimo ? Math.round((Date.now() - ultimo.capturadoEm.getTime()) / 60000) : null;
           const velho = ehHoje && idadeMin != null && idadeMin > 25;
@@ -288,12 +327,20 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
           const at = d?.atrasos ?? null;
           const cx = d?.caixa ?? null;
           const baixaFiado = ultimo ? baixaAte(ultimo.capturadoEm) : 0;
-          const ca = d?.cancelamentos;
+          const caLoja = d?.cancelamentos;
+          // cancelamento de verdade = o total da loja menos o que é estorno de item
+          const ca = caLoja && {
+            ...caLoja,
+            n: Math.max(0, caLoja.n - estornoItem.n),
+            valor: Math.max(0, caLoja.valor - estornoItem.valor),
+            produzidos: Math.max(0, caLoja.produzidos - estornoItem.saidos),
+            valor_produzidos: Math.max(0, caLoja.valor_produzidos - estornoItem.valorSaidos),
+          };
           const et = d?.estornos;
           const re = d?.reaberturas;
           const li = d?.liberacoes;
           const rc = d?.reclamacoes;
-          const eventos = d ? eventosDoDia(d) : [];
+          const eventos = d ? eventosDoDia(d, estornoItem.ids) : [];
           const horasComMovimento = fx
             ? fx.hoje.map((h, i) => ({ h: i, hoje: h.n, ontem: fx.ontem[i]?.n ?? 0, semana: fx.semana[i]?.n ?? 0 })).filter((x, i) => x.hoje || x.ontem || x.semana || (ehHoje && i === fx.hora))
             : [];
@@ -433,7 +480,12 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
                       tom={ca && ca.produzidos > 0 ? 'ruim' : ca && ca.n > 0 ? 'alerta' : 'neutro'}
                     />
                     <Kpi
-                      titulo="Estornos"
+                      titulo="Estornos de item"
+                      valor={caLoja ? int(estornoItem.n) : '—'}
+                      sub={caLoja && <>{brl(estornoItem.valor)} · bebida fechada que foi pra mesa e voltou pro bar (não é perda)</>}
+                    />
+                    <Kpi
+                      titulo="Estornos de pagamento"
                       valor={et ? int(et.n) : '—'}
                       sub={et && <>{brl(et.valor)} estornados no caixa</>}
                       tom={et && et.n > 0 ? 'ruim' : 'neutro'}
