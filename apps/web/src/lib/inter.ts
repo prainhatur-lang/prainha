@@ -47,6 +47,21 @@ export function contasConfiguradas(): Array<{ filialId: string; cred: InterCrede
       contas.push({ filialId, cred: { clientId, clientSecret, certB64, keyB64 } });
     }
   }
+  // Prainha Mar (12/10/2026): não tem integração de extrato própria. A de
+  // pagamentos dela (INTER_MAR_PAG_*) também lê o extrato (escopo extrato.read
+  // conferido), então entra aqui amarrada à filial 03. Se um dia existir
+  // INTER_MAR_* de extrato, essa tem precedência.
+  const PRAINHA_MAR = 'e899dae2-38bf-4f3f-9149-7effd059fab8';
+  if (!contas.some((c) => c.filialId === PRAINHA_MAR)) {
+    const p = process.env.INTER_MAR_CLIENT_ID?.trim() ? 'INTER_MAR' : 'INTER_MAR_PAG';
+    const clientId = process.env[`${p}_CLIENT_ID`]?.trim();
+    const clientSecret = process.env[`${p}_CLIENT_SECRET`]?.trim();
+    const certB64 = process.env[`${p}_CERT_B64`]?.trim();
+    const keyB64 = process.env[`${p}_KEY_B64`]?.trim();
+    if (clientId && clientSecret && certB64 && keyB64) {
+      contas.push({ filialId: PRAINHA_MAR, cred: { clientId, clientSecret, certB64, keyB64 } });
+    }
+  }
   return contas;
 }
 

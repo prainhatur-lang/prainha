@@ -16,6 +16,7 @@ import { dateToBrYmd, diasAtrasBr, hojeBr } from '@/lib/datas';
 import { ConciliarAgora } from './conciliar-agora';
 import { DinheiroNaoEntrouPainel } from './dinheiro-nao-entrou';
 import { TaxasCieloPainel } from './taxas-cielo';
+import { PdvBancoPainel } from './pdv-banco';
 
 export const dynamic = 'force-dynamic';
 
@@ -313,6 +314,7 @@ export default async function ConciliacaoPage(props: {
         {filial && <DinheiroNaoEntrouPainel filialId={filial.id} />}
 
         {filial && <TaxasCieloPainel filialId={filial.id} />}
+        {filial && <PdvBancoPainel filialId={filial.id} />}
 
         {filial && (
           <div className="mt-4">
