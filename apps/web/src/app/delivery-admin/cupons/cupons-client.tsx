@@ -4,6 +4,7 @@
 // validade, mínimo do pedido, limite de usos e "só primeira compra".
 
 import { useState, useTransition } from 'react';
+import { FiltroSituacao, filtrarSituacao, type SituacaoFiltro } from '@/components/filtro-situacao';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
@@ -62,6 +63,7 @@ export function CuponsClient({
 }: Props) {
   const router = useRouter();
   const [, start] = useTransition();
+  const [situacao, setSituacao] = useState<SituacaoFiltro>('todos');
   const [erro, setErro] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [criando, setCriando] = useState(false);
@@ -287,16 +289,24 @@ export function CuponsClient({
         </div>
       ) : (
         <div className="mt-4 space-y-2">
-          {cupons.map((c) => (
+          <FiltroSituacao
+            atual={situacao}
+            ativos={cupons.filter((c) => c.ativo).length}
+            inativos={cupons.filter((c) => !c.ativo).length}
+            onMudar={setSituacao}
+          />
+          {filtrarSituacao(cupons, situacao).map((c) => (
             <div
               key={c.id}
-              className="flex flex-wrap items-center gap-3 rounded-2xl border border-slate-200 bg-white p-4"
+              className={`flex flex-wrap items-center gap-3 rounded-2xl border border-l-4 border-slate-200 bg-white p-4 ${
+                c.ativo ? 'border-l-emerald-500' : 'border-l-red-500'
+              }`}
             >
               <div className="min-w-0 flex-1">
                 <p className="text-sm font-bold text-slate-900">
                   {c.codigo}
                   {!c.ativo ? (
-                    <span className="ml-2 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-normal text-slate-500">
+                    <span className="ml-2 rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-normal text-red-800">
                       inativo
                     </span>
                   ) : null}

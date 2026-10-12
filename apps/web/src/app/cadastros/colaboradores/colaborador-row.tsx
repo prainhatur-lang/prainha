@@ -76,6 +76,10 @@ export function ColaboradorRow({ colaborador }: { colaborador: Colaborador }) {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
+            <span
+              title={colaborador.ativo ? 'Ativo' : 'Inativo'}
+              className={`h-2.5 w-2.5 shrink-0 rounded-full ${colaborador.ativo ? 'bg-emerald-500' : 'bg-red-500'}`}
+            />
             <span className="text-base font-bold text-slate-900">
               👨‍🍳 {colaborador.nome}
             </span>
@@ -83,7 +87,7 @@ export function ColaboradorRow({ colaborador }: { colaborador: Colaborador }) {
               {colaborador.tipo}
             </span>
             {!colaborador.ativo && (
-              <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-medium text-slate-700">
+              <span className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-800">
                 Inativo
               </span>
             )}

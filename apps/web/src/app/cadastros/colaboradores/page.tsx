@@ -11,12 +11,14 @@ import { db, schema } from '@concilia/db';
 import { and, asc, eq } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { ColaboradorRow } from './colaborador-row';
+import { FiltroSituacao, filtrarSituacao, lerSituacao } from '@/components/filtro-situacao';
 
 export const dynamic = 'force-dynamic';
 
 interface SP {
   filialId?: string;
   incluirInativos?: string;
+  situacao?: string;
 }
 
 export default async function ColaboradoresPage(props: {
@@ -31,7 +33,7 @@ export default async function ColaboradoresPage(props: {
   const sp = await props.searchParams;
   const filialSelecionada =
     await escolherFilial(filiais, sp.filialId);
-  const incluirInativos = sp.incluirInativos === '1';
+  const situacao = lerSituacao(sp);
 
   if (!filialSelecionada) {
     return (
@@ -44,12 +46,10 @@ export default async function ColaboradoresPage(props: {
     );
   }
 
-  const where = and(
-    eq(schema.colaborador.filialId, filialSelecionada.id),
-    !incluirInativos ? eq(schema.colaborador.ativo, true) : undefined,
-  );
+  const where = and(eq(schema.colaborador.filialId, filialSelecionada.id));
 
-  const colaboradores = await db
+  // traz todos pra contar ativos e inativos; o filtro é aplicado logo abaixo
+  const todosColaboradores = await db
     .select({
       id: schema.colaborador.id,
       nome: schema.colaborador.nome,
@@ -61,6 +61,8 @@ export default async function ColaboradoresPage(props: {
     .from(schema.colaborador)
     .where(where)
     .orderBy(asc(schema.colaborador.nome));
+  const qtdAtivos = todosColaboradores.filter((c) => c.ativo).length;
+  const colaboradores = filtrarSituacao(todosColaboradores, situacao);
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -93,20 +95,22 @@ export default async function ColaboradoresPage(props: {
           </div>
         )}
 
-        <div className="mt-4 flex items-center gap-3 text-xs">
+        <div className="mt-4 flex flex-wrap items-center gap-3 text-xs">
+          <FiltroSituacao
+            atual={situacao}
+            ativos={qtdAtivos}
+            inativos={todosColaboradores.length - qtdAtivos}
+            hrefBase={`/cadastros/colaboradores?filialId=${filialSelecionada.id}`}
+          />
           <span className="text-slate-500">{colaboradores.length} colaborador(es)</span>
-          <Link
-            href={`/cadastros/colaboradores?filialId=${filialSelecionada.id}${
-              incluirInativos ? '' : '&incluirInativos=1'
-            }`}
-            className="text-slate-700 hover:underline"
-          >
-            {incluirInativos ? 'Esconder inativos' : 'Mostrar inativos'}
-          </Link>
         </div>
 
         <div className="mt-4 space-y-2">
-          {colaboradores.length === 0 ? (
+          {colaboradores.length === 0 && todosColaboradores.length > 0 ? (
+            <p className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-6 text-center text-sm text-slate-500">
+              Nenhum colaborador nessa situação. Veja em &quot;Todos&quot;.
+            </p>
+          ) : colaboradores.length === 0 ? (
             <div className="rounded-xl border-2 border-dashed border-slate-300 bg-white px-4 py-8 text-center">
               <p className="text-sm text-slate-700">Nenhum colaborador ainda.</p>
               <p className="mt-1 text-xs text-slate-500">

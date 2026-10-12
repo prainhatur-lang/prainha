@@ -13,11 +13,14 @@ import { AppHeader } from '@/components/app-header';
 import { int } from '@/lib/format';
 import { NovoTemplateBtn } from './novo-template';
 
+import { FiltroSituacao, filtrarSituacao, lerSituacao } from '@/components/filtro-situacao';
+
 export const dynamic = 'force-dynamic';
 
 interface SP {
   filialId?: string;
   incluirInativos?: string;
+  situacao?: string;
 }
 
 export default async function TemplatesProducaoPage(props: {
@@ -32,7 +35,7 @@ export default async function TemplatesProducaoPage(props: {
   const sp = await props.searchParams;
   const filialSelecionada =
     await escolherFilial(filiais, sp.filialId);
-  const incluirInativos = sp.incluirInativos === '1';
+  const situacao = lerSituacao(sp);
 
   if (!filialSelecionada) {
     return (
@@ -45,12 +48,10 @@ export default async function TemplatesProducaoPage(props: {
     );
   }
 
-  const where = and(
-    eq(schema.templateOp.filialId, filialSelecionada.id),
-    !incluirInativos ? eq(schema.templateOp.ativo, true) : undefined,
-  );
+  const where = and(eq(schema.templateOp.filialId, filialSelecionada.id));
 
-  const templates = await db
+  // traz todos pra contar ativos e inativos; o filtro é aplicado logo abaixo
+  const todosTemplates = await db
     .select({
       id: schema.templateOp.id,
       nome: schema.templateOp.nome,
@@ -65,6 +66,8 @@ export default async function TemplatesProducaoPage(props: {
     .from(schema.templateOp)
     .where(where)
     .orderBy(desc(schema.templateOp.vezesUsado), asc(schema.templateOp.nome));
+  const qtdAtivos = todosTemplates.filter((t) => t.ativo).length;
+  const templates = filtrarSituacao(todosTemplates, situacao);
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -102,16 +105,14 @@ export default async function TemplatesProducaoPage(props: {
           </div>
         )}
 
-        <div className="mt-4 flex items-center gap-3 text-xs">
+        <div className="mt-4 flex flex-wrap items-center gap-3 text-xs">
+          <FiltroSituacao
+            atual={situacao}
+            ativos={qtdAtivos}
+            inativos={todosTemplates.length - qtdAtivos}
+            hrefBase={`/cadastros/templates-producao?filialId=${filialSelecionada.id}`}
+          />
           <span className="text-slate-500">{int(templates.length)} template(s)</span>
-          <Link
-            href={`/cadastros/templates-producao?filialId=${filialSelecionada.id}${
-              incluirInativos ? '' : '&incluirInativos=1'
-            }`}
-            className="text-slate-700 hover:underline"
-          >
-            {incluirInativos ? 'Esconder inativos' : 'Mostrar inativos'}
-          </Link>
         </div>
 
         <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -163,7 +164,7 @@ export default async function TemplatesProducaoPage(props: {
                           Ativo
                         </span>
                       ) : (
-                        <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-medium text-slate-700">
+                        <span className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-medium text-red-800">
                           Inativo
                         </span>
                       )}
