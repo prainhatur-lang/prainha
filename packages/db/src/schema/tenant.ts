@@ -25,6 +25,9 @@ export interface EstabelecimentoConfig extends TaxasPorBandeira {
   rotulo?: string; // nome amigavel
   canal?: 'TEF' | 'ONLINE' | string;
   prazos?: PrazosLiquidacao;
+  /** Banco onde a Cielo paga este EC, quando NAO e' a conta que o sistema le
+   *  (ex.: "Banco do Brasil" pro Pix do QR da mesa). Ver lib/ec-fora-do-extrato. */
+  bancoDestino?: string;
 }
 
 /** Config de taxas da filial: lista de ECs + default pra casos nao mapeados. */

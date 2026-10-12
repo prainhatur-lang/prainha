@@ -10,6 +10,11 @@ export interface RecebivelInput {
   dataPagamento: string; // dd/mm/yyyy
   formaPagamento: string;
   valorLiquido: number;
+  /** Recebivel cujo dinheiro cai numa conta que NAO esta entre os extratos
+   * carregados (ex.: Pix do QR da mesa, que a Cielo paga no Banco do Brasil
+   * enquanto o sistema so le o Inter). Nunca e' casado: sai em gruposSemMatch
+   * com foraDoExtrato=true, pra falta aparecer em vez de sumir. */
+  foraDoExtrato?: boolean;
 }
 
 export interface LancamentoBancoInput {
@@ -38,7 +43,12 @@ export interface MatchCieloBancoResult {
     tipo: 'PIX' | 'CARTAO';
     qtdRecebiveis: number;
     valorTotal: number;
+    /** true = nem foi procurado: a conta de destino nao tem extrato carregado */
+    foraDoExtrato?: boolean;
   }>;
+  /** Ids dos recebiveis marcados foraDoExtrato (nunca contam como pagos, mesmo
+   * que o NSU coincida com o de outro recebivel pago). */
+  idsForaDoExtrato: Set<string>;
   /** Creditos do banco que nao foram consumidos por nenhum grupo */
   creditosSobrando: LancamentoBancoInput[];
 }
@@ -94,7 +104,17 @@ export function matchCieloBanco(
 
   // Agrupa recebiveis por (dia, tipo PIX/CARTAO)
   const recPorGrupo = new Map<string, RecebivelInput[]>();
+  const foraPorGrupo = new Map<string, RecebivelInput[]>();
+  const idsForaDoExtrato = new Set<string>();
   for (const r of recebiveis) {
+    if (r.foraDoExtrato) {
+      const k = `${r.dataPagamento}|${r.formaPagamento === 'Pix' ? 'PIX' : 'CARTAO'}`;
+      const a = foraPorGrupo.get(k) ?? [];
+      a.push(r);
+      foraPorGrupo.set(k, a);
+      if (r.id) idsForaDoExtrato.add(r.id);
+      continue;
+    }
     const tipo = r.formaPagamento === 'Pix' ? 'PIX' : 'CARTAO';
     const key = `${r.dataPagamento}|${tipo}`;
     const arr = recPorGrupo.get(key) ?? [];
@@ -170,6 +190,19 @@ export function matchCieloBanco(
     }
     if (sobrando.length === 0) recPorGrupo.delete(key);
     else recPorGrupo.set(key, sobrando);
+  }
+
+  // Pix que nao achou o credito de valor identico NAO vai pro subset-sum.
+  // Somar a sobra e procurar qualquer combinacao de "PIX RECEBIDO" fecha a
+  // conta com Pix de cliente que nao tem nada a ver: em producao (jul-out/2026)
+  // 265 Pix do QR da mesa (R$ 54.381,48), pagos pela Cielo no Banco do Brasil,
+  // sairam "pagos" no extrato do Inter desse jeito e a falta nunca apareceu.
+  // Pix sem credito identico e' falta, e falta tem que ficar a vista.
+  const pixSemCredito: Array<[string, RecebivelInput[]]> = [];
+  for (const [key, items] of [...recPorGrupo]) {
+    if (!key.endsWith('|PIX')) continue;
+    pixSemCredito.push([key, items]);
+    recPorGrupo.delete(key);
   }
 
   // Processa grupos em ordem CRONOLOGICA real (nao lexicografica sobre
@@ -360,8 +393,8 @@ export function matchCieloBanco(
     restantes.push(...sobram);
   }
 
-  // O que nao achou match mesmo apos re-alocacao
-  for (const [key, items] of restantes) {
+  // O que nao achou match mesmo apos re-alocacao (+ Pix sem credito identico)
+  for (const [key, items] of [...restantes, ...pixSemCredito]) {
     const [dataPagamento, tipo] = key.split('|') as [string, 'PIX' | 'CARTAO'];
     const totalLiq = +items.reduce((s, r) => s + r.valorLiquido, 0).toFixed(2);
     gruposSemMatch.push({
@@ -372,10 +405,22 @@ export function matchCieloBanco(
     });
   }
 
+  // Recebiveis de conta sem extrato carregado: nunca procurados.
+  for (const [key, items] of foraPorGrupo) {
+    const [dataPagamento, tipo] = key.split('|') as [string, 'PIX' | 'CARTAO'];
+    gruposSemMatch.push({
+      dataPagamento,
+      tipo,
+      qtdRecebiveis: items.length,
+      valorTotal: +items.reduce((s, r) => s + r.valorLiquido, 0).toFixed(2),
+      foraDoExtrato: true,
+    });
+  }
+
   const creditosSobrando: LancamentoBancoInput[] = [];
   for (const arr of credByDia.values()) {
     for (const c of arr) if (!usados.has(c)) creditosSobrando.push(c);
   }
 
-  return { nsusPagos, gruposCompletos, gruposSemMatch, creditosSobrando };
+  return { nsusPagos, gruposCompletos, gruposSemMatch, idsForaDoExtrato, creditosSobrando };
 }

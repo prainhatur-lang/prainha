@@ -42,6 +42,7 @@ const ADQUIRENTE_CIELO = 'CIELO';
 
 import type { TaxasFilial, TaxasPorBandeira, EstabelecimentoConfig } from '@concilia/db/schema';
 import { diasFechados } from './fechamento';
+import { ecsForaDoExtrato } from './ec-fora-do-extrato';
 
 /** Defaults de taxa Cielo (%) quando a filial nao tem config propria. */
 export const TAXAS_DEFAULT: TaxasPorBandeira = {
@@ -178,6 +179,7 @@ export async function rodarConciliacaoBanco(opts: {
         valorLiquido: schema.recebivelAdquirente.valorLiquido,
         dataPagamento: schema.recebivelAdquirente.dataPagamento,
         formaPagamento: schema.recebivelAdquirente.formaPagamento,
+        ec: schema.recebivelAdquirente.codigoEstabelecimento,
       })
       .from(schema.recebivelAdquirente)
       .where(
@@ -188,6 +190,11 @@ export async function rodarConciliacaoBanco(opts: {
           lte(schema.recebivelAdquirente.dataPagamento, dataFim),
         ),
       );
+
+    // ECs pagos numa conta que o sistema nao le (ex.: QR da mesa -> Banco do
+    // Brasil): o motor nao procura, e a falta vira excecao com o destino.
+    const ecsFora = await ecsForaDoExtrato(filialId, taxasFilial);
+    const destinosFora = [...new Set(ecsFora.values())].join(', ');
 
     // Filtra dias fechados (pelo data_pagamento do recebivel — dia do credito).
     const fechados = await diasFechados(filialId, PROCESSO_BANCO, dataInicio, dataFim);
@@ -229,6 +236,7 @@ export async function rodarConciliacaoBanco(opts: {
           dataPagamento: r.dataPagamento.split('-').reverse().join('/'), // YYYY-MM-DD -> DD/MM/YYYY
           formaPagamento: isPix ? 'Pix' : forma,
           valorLiquido: Number(r.valorLiquido),
+          foraDoExtrato: !!r.ec && ecsFora.has(r.ec),
         };
       });
 
@@ -269,7 +277,9 @@ export async function rodarConciliacaoBanco(opts: {
         processo: PROCESSO_BANCO,
         tipo: TIPO_BANCO.CIELO_NAO_PAGO,
         severidade: 'ALTA',
-        descricao: `Previsto R$ ${g.valorTotal.toFixed(2)} (${g.qtdRecebiveis} ${g.tipo === 'PIX' ? 'Pix' : 'cartões'}) em ${g.dataPagamento}, não achei crédito correspondente no extrato.`,
+        descricao: g.foraDoExtrato
+          ? `Previsto R$ ${g.valorTotal.toFixed(2)} (${g.qtdRecebiveis} ${g.tipo === 'PIX' ? 'Pix' : 'cartões'}) em ${g.dataPagamento} que a Cielo paga em outra conta (${destinosFora}), não na conta do extrato. Esse extrato não é lido pelo sistema: o crédito NÃO foi conferido.`
+          : `Previsto R$ ${g.valorTotal.toFixed(2)} (${g.qtdRecebiveis} ${g.tipo === 'PIX' ? 'Pix' : 'cartões'}) em ${g.dataPagamento}, não achei crédito correspondente no extrato.`,
         valor: String(g.valorTotal),
       });
     }

@@ -92,3 +92,30 @@ describe('descrições do extrato', () => {
     expect(r.nsusPagos.has('1')).toBe(false);
   });
 });
+
+describe('falta de Pix fica à vista', () => {
+  it('não fecha Pix sem crédito idêntico somando Pix de terceiros', () => {
+    // caso real: Pix do QR da mesa (cai no BB) x Pix de clientes no Inter
+    const r = matchCieloBanco(
+      [pix('1', 99.01), pix('2', 44.29)],
+      [credito(100), credito(43.3)], // somam 143,30, igual aos dois Pix
+    );
+    expect(r.nsusPagos.size).toBe(0);
+    expect(r.gruposSemMatch.reduce((s, g) => s + g.valorTotal, 0)).toBeCloseTo(143.3, 2);
+    expect(r.creditosSobrando).toHaveLength(2);
+  });
+
+  it('recebível de conta sem extrato nunca casa, nem com valor idêntico', () => {
+    const r = matchCieloBanco(
+      [{ ...pix('1', 15.84), foraDoExtrato: true }, pix('2', 80)],
+      [credito(15.84), credito(80)],
+    );
+    expect(r.nsusPagos.has('1')).toBe(false);
+    expect(r.nsusPagos.has('2')).toBe(true);
+    expect(r.idsForaDoExtrato.has('r-1')).toBe(true);
+    expect(r.gruposSemMatch).toEqual([
+      { dataPagamento: '01/08/2026', tipo: 'PIX', qtdRecebiveis: 1, valorTotal: 15.84, foraDoExtrato: true },
+    ]);
+    expect(r.creditosSobrando).toHaveLength(1);
+  });
+});

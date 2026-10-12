@@ -16,6 +16,8 @@ import { rodarConciliacaoOperadora, type OperadoraResultado } from './conciliaca
 import { rodarConciliacaoRecebiveis, type RecebiveisResultado } from './conciliacao-recebiveis';
 import { rodarConciliacaoBanco, type BancoResultado } from './conciliacao-banco';
 import { dateToBrYmd, hojeBr } from './datas';
+import { ecsForaDoExtrato } from './ec-fora-do-extrato';
+import type { TaxasFilial } from '@concilia/db/schema';
 
 const ADQUIRENTE_CIELO = 'CIELO';
 
@@ -203,6 +205,7 @@ export async function materializarBaixa(opts: {
       dataPagamento: schema.recebivelAdquirente.dataPagamento,
       valorLiquido: schema.recebivelAdquirente.valorLiquido,
       formaPagamento: schema.recebivelAdquirente.formaPagamento,
+      ec: schema.recebivelAdquirente.codigoEstabelecimento,
     })
     .from(schema.recebivelAdquirente)
     .where(
@@ -213,6 +216,14 @@ export async function materializarBaixa(opts: {
         lte(schema.recebivelAdquirente.dataPagamento, hoje),
       ),
     );
+  // ECs pagos numa conta que o sistema nao le (QR da mesa -> Banco do Brasil):
+  // nunca viram COMPLETO por coincidencia com credito do extrato carregado.
+  const [filTaxas] = await db
+    .select({ taxas: schema.filial.taxas })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, filialId))
+    .limit(1);
+  const ecsFora = await ecsForaDoExtrato(filialId, (filTaxas?.taxas as TaxasFilial | null) ?? null);
   const lancamentos = await db
     .select({
       id: schema.lancamentoBanco.id,
@@ -240,6 +251,7 @@ export async function materializarBaixa(opts: {
         dataPagamento: isoParaBr(r.dataPagamento),
         formaPagamento: /pix/i.test(r.formaPagamento ?? '') ? 'Pix' : (r.formaPagamento ?? ''),
         valorLiquido: Number(r.valorLiquido),
+        foraDoExtrato: !!r.ec && ecsFora.has(r.ec),
       })),
     lancamentos.map((l) => ({
       id: l.id,
@@ -250,7 +262,7 @@ export async function materializarBaixa(opts: {
       idTransacao: l.idTransacao ?? '',
     })),
   );
-  const { nsusPagos } = resultadoBanco;
+  const { nsusPagos, idsForaDoExtrato } = resultadoBanco;
   // Lançamentos que quitaram cada grupo (dia+tipo) — viram lancamentos_banco_ids.
   const lancsPorGrupo = new Map<string, string[]>();
   for (const g of resultadoBanco.gruposCompletos) {
@@ -289,7 +301,7 @@ export async function materializarBaixa(opts: {
       } else {
         recebivelId = rec.id;
         previsto = rec.dataPagamento;
-        if (nsusPagos.has(rec.nsu)) {
+        if (nsusPagos.has(rec.nsu) && !idsForaDoExtrato.has(rec.id)) {
           c.etapa = 'COMPLETO';
           const tipo = /pix/i.test(rec.formaPagamento ?? '') ? 'PIX' : 'CARTAO';
           lancamentosIds = lancsPorGrupo.get(`${isoParaBr(rec.dataPagamento)}|${tipo}`) ?? null;
