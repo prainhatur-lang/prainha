@@ -18,6 +18,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq, inArray, isNull, ne } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import { consultarCpf, consultarCpfSoCache, spcConfigurado } from '@/lib/spc';
+import { gravarCadastroDoSpc } from '@/lib/spc-cadastro';
 
 export interface DadosCliente {
   nome: string | null;
@@ -76,11 +77,13 @@ const doCliente = (c: typeof schema.cliente.$inferSelect): DadosCliente => ({
  * explícita de gastar, só do painel interno.
  * `permitirSpc: false` corta a consulta paga: usa nossas bases e o cache, e
  * para por aí. É o modo de quem chama de rota pública sem gente logada.
+ * `cadastroNaTela`: quem chama está com o formulário de cliente aberto nesta
+ * casa e vai salvar por ele — o cadastro automático vai só pras outras casas.
  */
 export async function identificarPorCpf(
   cpf: string,
   filialId: string,
-  opts: { forcarSpc?: boolean; permitirSpc?: boolean; usuarioId?: string } = {},
+  opts: { forcarSpc?: boolean; permitirSpc?: boolean; usuarioId?: string; cadastroNaTela?: boolean } = {},
 ): Promise<ResultadoIdentificacao> {
   const permitirSpc = opts.permitirSpc !== false;
   /** O CPF bateu em mais de um cadastro nosso, com nomes diferentes. Nenhum
@@ -195,6 +198,7 @@ export async function identificarPorCpf(
     try {
       const c = await consultarCpfSoCache(cpf);
       if (c) {
+        await gravarCadastroDoSpc(cpf, c, filialId, { pularOrigem: opts.cadastroNaTela });
         return {
           fonte: 'spc-cache',
           dados: {
@@ -222,6 +226,8 @@ export async function identificarPorCpf(
   try {
     const spc = await consultarCpf(cpf, { usuarioId: opts.usuarioId, filialId });
     if (!spc) return semSpc();
+    // Norma do dono (12/10/2026): veio do SPC, vira cadastro em todas as casas.
+    await gravarCadastroDoSpc(cpf, spc, filialId, { pularOrigem: opts.cadastroNaTela });
     return {
       fonte: spc.fonte === 'cache' ? 'spc-cache' : 'spc',
       dados: {

@@ -9,6 +9,7 @@ import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { podeUsuario } from '@/lib/permissoes-runtime';
 import { consultarCpf, cpfValido, spcConfigurado, spcStatus } from '@/lib/spc';
+import { gravarCadastroDoSpc } from '@/lib/spc-cadastro';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -47,6 +48,10 @@ export async function POST(req: Request) {
     if (!dados) {
       return NextResponse.json({ achou: false });
     }
+    // Norma do dono (12/10/2026): veio do SPC, vira cadastro em todas as casas.
+    const filialDaConsulta =
+      body.filialId && /^[0-9a-f-]{36}$/i.test(body.filialId) ? body.filialId : null;
+    if (filialDaConsulta) await gravarCadastroDoSpc(cpf, dados, filialDaConsulta);
     return NextResponse.json({ achou: true, ...dados });
   } catch (e) {
     // Erro do SPC (credencial, cota, timeout) não pode derrubar o cadastro —

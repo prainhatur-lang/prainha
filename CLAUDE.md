@@ -33,6 +33,14 @@ integração com o **Consumer** (PDV Firebird on-site, via agente + CDC).
    garçom de lançar (29/09); login pela nuvem da 1.10.24 prendeu a LIO no túnel.
    Release de LIO/vendas-local só sai depois de conferir: lançar, receber inteiro,
    parcial digitado, dividir, TUDO (mesa+comandas), fechar conta e rota local ⚡.
+7. **Consultou CPF e o SPC respondeu → vira cadastro de cliente em TODAS as casas.**
+   Norma do dono (12/10/2026): o que vem do SPC não fica só em `spc_consulta`.
+   Toda consulta passa por `identificarPorCpf` (`@/lib/identificar-cpf`), que chama
+   `gravarCadastroDoSpc` (`@/lib/spc-cadastro`): enfileira `criar_cliente` em cada
+   casa que ainda não tem aquele CPF. Fluxo novo que consulte CPF usa essa função —
+   nunca chamar `consultarCpf` direto e largar o resultado. E quem pede CPF GRAVA o
+   CPF no registro que criou (reserva, pedido, inscrição): a reserva do site jogou
+   o CPF fora até 10/10/2026 e ficou só com o primeiro nome.
 
 ## Multi-tenant & permissões
 - Hierarquia: `organizacao → filial → dados`. Toda query filtra por `filialId`.

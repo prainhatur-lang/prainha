@@ -43,6 +43,7 @@ export async function POST(req: Request) {
     const r = await identificarPorCpf(cpf, filialId, {
       forcarSpc: body.forcarSpc,
       usuarioId: user.id,
+      cadastroNaTela: true,
     });
     return NextResponse.json(r);
   } catch (e) {
