@@ -63,6 +63,22 @@ function credencialDaConta(c: { filialId: string | null; empresa: string | null 
   return credenciaisInterEmpresa(sigla) ?? (sigla === 'LELIS' ? credenciaisInterEmpresa('LELES') : null);
 }
 
+/**
+ * O extrato desta conta pode vir direto do Inter: banco Inter, sem "detalhe" e
+ * com integração cadastrada. É a mesma conta que `guardarExtratosInterDoMes`
+ * atende — a tela usa pra só oferecer "baixar do Inter" onde ele funciona.
+ * Só no servidor (lê as variáveis de ambiente).
+ */
+export function contaVemDoInter(c: {
+  filialId: string | null;
+  titular: string;
+  banco: string;
+  apelido: string | null;
+}): boolean {
+  if (!ehContaInter(c.banco) || c.apelido) return false;
+  return !!credencialDaConta({ filialId: c.filialId, empresa: c.filialId ? null : c.titular });
+}
+
 function ultimoDia(ano: number, mes: number): number {
   return new Date(Date.UTC(ano, mes, 0)).getUTCDate();
 }

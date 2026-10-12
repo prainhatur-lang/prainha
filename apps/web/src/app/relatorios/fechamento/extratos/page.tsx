@@ -1,7 +1,7 @@
 // /relatorios/fechamento/extratos — os extratos bancários do ANO inteiro numa
-// grade (conta × mês), pra subir e baixar sem abrir o Fechamento do mês um mês
-// de cada vez. São a mesma lista de contas e os mesmos arquivos da seção
-// "Extratos bancários" do Fechamento do mês; aqui só muda o jeito de ver.
+// grade (conta × mês). É o lugar de pôr extrato pra dentro (enviar arquivo,
+// baixar direto do Inter, mexer na lista de contas). A seção "Extratos
+// bancários" do Fechamento do mês mostra os mesmos arquivos, só pra ver e baixar.
 
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
@@ -14,8 +14,10 @@ import {
   EXTRATO_EXTENSOES,
   PERM_EXTRATO_ENVIAR,
   PERM_EXTRATO_VER,
+  destinosNovaContaExtrato,
   extratosDoAno,
 } from '@/lib/extratos-fechamento';
+import { contaVemDoInter } from '@/lib/extrato-inter-fechamento';
 import { ExtratosAno } from './extratos-ano';
 
 export const dynamic = 'force-dynamic';
@@ -38,9 +40,10 @@ export default async function ExtratosAnoPage(props: { searchParams: Promise<SP>
   // Anos nos botões: o atual e os dois anteriores, mais o que estiver aberto.
   const anos = [...new Set([hojeAno - 2, hojeAno - 1, hojeAno, ano])].sort((a, b) => a - b);
 
-  const [contas, podeEnviar] = await Promise.all([
+  const [contas, podeEnviar, destinos] = await Promise.all([
     extratosDoAno(user.id, ano),
     podeUsuario(user.id, PERM_EXTRATO_ENVIAR),
+    destinosNovaContaExtrato(user.id),
   ]);
 
   return (
@@ -51,7 +54,8 @@ export default async function ExtratosAnoPage(props: { searchParams: Promise<SP>
           <div>
             <h1 className="text-xl font-semibold text-slate-900">Extratos bancários de {ano}</h1>
             <p className="mt-0.5 text-xs text-slate-500">
-              O extrato de cada conta, mês a mês. Os mesmos arquivos aparecem no Fechamento do mês.
+              O extrato de cada conta, mês a mês. É aqui que o extrato entra; no Fechamento do mês os mesmos arquivos
+              aparecem pra ver e baixar.
             </p>
           </div>
           <Link
@@ -86,6 +90,9 @@ export default async function ExtratosAnoPage(props: { searchParams: Promise<SP>
           contas={contas}
           podeEnviar={podeEnviar}
           extensoes={EXTRATO_EXTENSOES}
+          casas={destinos.filiais.map((f) => ({ id: f.id, nome: f.nome }))}
+          podeEmpresa={!!destinos.organizacaoEmpresas}
+          interIds={contas.filter(contaVemDoInter).map((c) => c.id)}
         />
       </div>
     </main>
