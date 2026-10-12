@@ -24233,9 +24233,10 @@ async function verJaPedido(){
   // ao vivo: o cliente ve o item mudar de "em produção" pra "a caminho" sem
   // ter que sair e voltar. Para sozinho quando ele troca de tela.
   clearInterval(jaTmr);
-  jaTmr=setInterval(function(){ if(document.getElementById('jalista'))pintaJa(n); else pararJa(); },8000);
+  jaTmr=setInterval(function(){ if(document.getElementById('jalista'))pintaJa(n,true); else pararJa(); },8000);
 }
-async function pintaJa(n){
+var JA_HTML='';
+async function pintaJa(n,aoVivo){
   var d;try{d=await (await fetch('/api/ja-pedido?n='+n,{cache:'no-store'})).json()}catch(e){return}
   var its=d.itens||[];
   var est={preparando:'em produção',pronto:'pronto, a caminho',entregue:'já na mesa'};
@@ -24243,7 +24244,7 @@ async function pintaJa(n){
   var mudou=jaEstado&&jaEstado!==assinatura;
   jaEstado=assinatura;
   var prontos=its.filter(function(i){return i.estado==='pronto'}).length;
-  app('<h1>O que você já pediu</h1>'+
+  var html='<h1>O que você já pediu</h1>'+
     '<div class="mut" style="margin:6px 0 12px">Mesa '+n+' · '+its.length+' item(ns)'+
     (prontos?' · <b style="color:#0f8a3e">'+prontos+' a caminho</b>':'')+
     ' <span class="aovivo">ao vivo</span></div>'+
@@ -24270,7 +24271,19 @@ async function pintaJa(n){
     '<button class="b ped" onclick="pararJa();telaPedir()">Pedir mais</button>'+
     // e' aqui que o cliente olha quando o prato atrasa: a reclamacao sai daqui
     (its.length?'<button class="b op" onclick="pararJa();telaProblema()">⚠️ Demorando ou veio errado?<small>avise a cozinha e o gerente na hora</small></button>':'')+
-    '<button class="b g" onclick="pararJa();inicio()">Voltar</button>');
+    '<button class="b g" onclick="pararJa();inicio()">Voltar</button>';
+  if(aoVivo){
+    // Atualizacao automatica: NAO usa app(), que rola pro topo (feito pra
+    // troca de tela). O cliente estava lendo o fim da lista e a cada 8s a
+    // pagina pulava pro comeco. Aqui mantem a rolagem onde ele deixou, nao
+    // redesenha se nada mudou, e nao pinta por cima se ele ja saiu da tela.
+    if(!document.getElementById('jalista'))return;
+    if(html===JA_HTML)return;
+    var y=window.scrollY;
+    document.getElementById('app').innerHTML=html;
+    window.scrollTo(0,y);
+  } else app(html);
+  JA_HTML=html;
   if(mudou&&navigator.vibrate)try{navigator.vibrate(120)}catch(e){}
 }
 function minhaConta(){var n=mesaAtual();if(n===null)return;location.href='/conta/ver?n='+n}
