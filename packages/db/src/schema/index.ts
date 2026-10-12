@@ -53,3 +53,4 @@ export * from './relatorio-diario';
 export * from './faturamento-historico';
 export * from './evento-ticket';
 export * from './tripadvisor';
+export * from './extrato-fechamento';

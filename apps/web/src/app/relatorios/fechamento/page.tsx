@@ -13,6 +13,14 @@ import { hojeBr } from '@/lib/datas';
 import { dashboardFechamento, evolucaoMensal } from '@/lib/fechamento-dashboard';
 import { calcularCustoClt } from '@/lib/rh/custo-clt';
 import { metasDaCompetencia } from '@/lib/metas/resumo';
+import { podeUsuario } from '@/lib/permissoes-runtime';
+import {
+  EXTRATO_EXTENSOES,
+  PERM_EXTRATO_ENVIAR,
+  destinosNovaContaExtrato,
+  extratosDoMes,
+} from '@/lib/extratos-fechamento';
+import { ExtratosMes } from './extratos-mes';
 
 export const dynamic = 'force-dynamic';
 
@@ -118,6 +126,25 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
     metasDaCompetencia(filial.id, competencia),
   ]);
 
+  // Extratos bancários do mês (arquivo de cada conta, pra o contador baixar).
+  // Vale pra todas as casas que o usuário acessa, não só a que está aberta.
+  // Se esta parte falhar, o resto do fechamento continua abrindo igual.
+  const [extratos, podeEnviarExtrato, destinosExtrato] = await Promise.all([
+    extratosDoMes(user.id, ano, mes),
+    podeUsuario(user.id, PERM_EXTRATO_ENVIAR),
+    destinosNovaContaExtrato(user.id),
+  ]).catch((e) => {
+    console.error('[fechamento] extratos bancários do mês:', e);
+    return [[], false, { filiais: [], organizacaoEmpresas: null }] as [
+      Awaited<ReturnType<typeof extratosDoMes>>,
+      boolean,
+      Awaited<ReturnType<typeof destinosNovaContaExtrato>>,
+    ];
+  });
+  const extratosPedidos = extratos.filter((c) => c.ativo);
+  const extratosEnviados = extratosPedidos.filter((c) => c.arquivos.length > 0).length;
+  const mesEncerrado = competencia < hojeBr().slice(0, 7);
+
   const totalForma = d.formas.reduce((s, f) => s + f.total, 0);
   const descontoPct = d.vendas.faturamento ? (d.vendas.descontos / d.vendas.faturamento) * 100 : 0;
   const canceladoPct = d.vendas.pedidos + d.vendas.cancelados ? (d.vendas.cancelados / (d.vendas.pedidos + d.vendas.cancelados)) * 100 : 0;
@@ -195,6 +222,20 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
               {filial.nome} · {MESES[mes]}/{ano} · vendas + extrato bancário + despesas
             </p>
           </div>
+          {extratosPedidos.length > 0 && (
+            <a
+              href="#extratos"
+              className={`rounded-full border px-3 py-1 text-xs font-medium ${
+                extratosEnviados === extratosPedidos.length
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                  : mesEncerrado
+                    ? 'border-amber-200 bg-amber-50 text-amber-800'
+                    : 'border-slate-200 bg-white text-slate-600'
+              }`}
+            >
+              📎 Extratos bancários: {extratosEnviados} de {extratosPedidos.length}
+            </a>
+          )}
         </div>
 
         {/* Seletores */}
@@ -322,6 +363,20 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
             </p>
           )}
         </Secao>
+
+        {/* Extratos bancários do mês — arquivo de cada conta, pra o contador baixar */}
+        <ExtratosMes
+          ano={ano}
+          mes={mes}
+          mesNome={`${MESES[mes]}/${ano}`}
+          mesEncerrado={mesEncerrado}
+          filialAtivaId={filial.id}
+          contas={extratos}
+          podeEnviar={podeEnviarExtrato}
+          extensoes={EXTRATO_EXTENSOES}
+          casas={destinosExtrato.filiais.map((f) => ({ id: f.id, nome: f.nome }))}
+          podeEmpresa={!!destinosExtrato.organizacaoEmpresas}
+        />
 
         {/* Vendas */}
         <div className="mb-5 grid grid-cols-1 gap-3 lg:grid-cols-2">
