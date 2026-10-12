@@ -345,7 +345,7 @@ function PlantaMar({ salao, varanda, ocupadas, ocupadasConsumer, reservasPorMesa
             <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] text-slate-700">
               {reservadas.map(({ m, info }) => (
                 <span key={m.numero} className="rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5">
-                  <b>Mesa {m.numero}</b> · {info.nome.split(' ')[0]} · {info.hora} · {info.pessoas}p
+                  <b>Mesa {m.numero}</b> · {info.nome} · {info.hora} · {info.pessoas}p
                 </span>
               ))}
             </div>

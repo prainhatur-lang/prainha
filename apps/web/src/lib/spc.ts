@@ -184,6 +184,37 @@ export function hashCpf(cpf: string): string {
 }
 
 /**
+ * Só o CACHE: o que uma consulta já paga deixou gravado. Nunca bate no SPC,
+ * nunca cobra. null quando o CPF nunca foi consultado ou o resultado foi
+ * negativo. É o que a rota pública usa depois que o teto de consulta fechou
+ * (ou quando só quer reaproveitar o que já se sabe).
+ */
+export async function consultarCpfSoCache(cpf: string): Promise<DadosSpc | null> {
+  const doc = soDig(cpf);
+  if (!cpfValido(doc)) return null;
+  const [cache] = await db
+    .select()
+    .from(schema.spcConsulta)
+    .where(eq(schema.spcConsulta.cpfHash, hashCpf(doc)))
+    .limit(1);
+  if (!cache?.nome) return null;
+  return {
+    nome: cache.nome,
+    nascimento: cache.nascimento ?? null,
+    mae: cache.mae ?? null,
+    email: cache.email ?? null,
+    telefone: cache.telefone ?? null,
+    endereco: cache.endereco ?? null,
+    numero: cache.numero ?? null,
+    bairro: cache.bairro ?? null,
+    cidade: cache.cidade ?? null,
+    uf: cache.uf ?? null,
+    cep: cache.cep ?? null,
+    fonte: 'cache',
+  };
+}
+
+/**
  * Consulta o CPF. Cache primeiro; só bate no SPC (e só aí cobra) quando o
  * documento nunca foi consultado.
  * Retorna null quando o SPC não tem cadastro útil pra esse CPF.

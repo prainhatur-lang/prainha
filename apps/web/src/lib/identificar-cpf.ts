@@ -17,7 +17,7 @@
 import { db, schema } from '@concilia/db';
 import { and, eq, inArray, isNull, ne } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
-import { consultarCpf, spcConfigurado } from '@/lib/spc';
+import { consultarCpf, consultarCpfSoCache, spcConfigurado } from '@/lib/spc';
 
 export interface DadosCliente {
   nome: string | null;
@@ -187,7 +187,37 @@ export async function identificarPorCpf(
   });
 
   // 4 e 5. Cache do SPC e, só se não tiver, a consulta paga.
-  if (!permitirSpc || !spcConfigurado()) return semSpc();
+  // Sem consulta paga, o cache ainda vale: é consulta que já foi paga antes.
+  // Sem isto a reserva do site ficava só com o primeiro nome — o /identificar
+  // pagava o SPC, devolvia "Emmanuel" pro formulário e o /confirmar, que roda
+  // com permitirSpc=false, não achava o nome completo em lugar nenhum.
+  if (!permitirSpc || !spcConfigurado()) {
+    try {
+      const c = await consultarCpfSoCache(cpf);
+      if (c) {
+        return {
+          fonte: 'spc-cache',
+          dados: {
+            ...vazio(),
+            nome: c.nome ?? nomeDoGrupo,
+            email: c.email,
+            celular: c.telefone,
+            dataNascimento: c.nascimento,
+            endereco: c.endereco,
+            numero: c.numero,
+            bairro: c.bairro,
+            cidade: c.cidade,
+            uf: c.uf,
+            cep: c.cep,
+          },
+          spcDisponivel: spcConfigurado(),
+        };
+      }
+    } catch {
+      // cache é conveniência: falhou, segue como antes
+    }
+    return semSpc();
+  }
 
   try {
     const spc = await consultarCpf(cpf, { usuarioId: opts.usuarioId, filialId });
