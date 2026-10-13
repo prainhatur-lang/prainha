@@ -14,8 +14,11 @@ import { and, eq } from 'drizzle-orm';
 import {
   BUCKET_PEDIDO,
   MIMES_PEDIDO,
+  NotaServicoLida,
   catalogoDaFilial,
   chaveDoPedido,
+  fornecedorDoServico,
+  gravarNotaServico,
   gravarPedido,
   hashArquivo,
   lerPedido,
@@ -85,6 +88,31 @@ export async function POST(req: Request) {
   try {
     lido = await lerPedido(buf, mime, arquivo.name, cat);
   } catch (e) {
+    // Nota de serviço (NFS-e): sem insumo, vai direto pro contas a pagar.
+    if (e instanceof NotaServicoLida) {
+      const s = e.lido;
+      if (!fornecedorDoServico(s, cat)) {
+        return NextResponse.json(
+          {
+            error: `é uma nota de serviço de ${s.fornecedorNome ?? 'fornecedor não identificado'}${s.fornecedorCnpj ? ` (CNPJ ${s.fornecedorCnpj})` : ''}, mas esse fornecedor não está no cadastro desta casa — cadastre em Cadastros → Fornecedores e envie de novo`,
+          },
+          { status: 422 },
+        );
+      }
+      if (!(Number(s.total) > 0)) {
+        return NextResponse.json({ error: 'é uma nota de serviço, mas não deu pra ler o valor total' }, { status: 422 });
+      }
+      const pathServico = `pedidos-sem-nota/${filialId}/${hash}.${extOf(mime)}`;
+      const supaServico = await createAdminClient();
+      const upServico = await supaServico.storage
+        .from(BUCKET_PEDIDO)
+        .upload(pathServico, buf, { contentType: mime, upsert: true });
+      if (upServico.error) {
+        return NextResponse.json({ error: `storage: ${upServico.error.message}` }, { status: 500 });
+      }
+      const rs = await gravarNotaServico({ filialId, lido: s, cat, hash, storagePath: pathServico, usuarioId: user.id });
+      return NextResponse.json({ ok: true, servico: true, ...rs });
+    }
     return NextResponse.json({ error: (e as Error).message }, { status: 422 });
   }
 

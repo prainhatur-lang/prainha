@@ -87,7 +87,14 @@ Insumos:
 Saída: SOMENTE um objeto JSON, sem cerca de código e sem texto em volta:
 {"pedido": true, "fornecedorNome": "JOÃO DO PEIXE", "fornecedorCnpj": null, "fornecedor": "F3", "numero": "1234", "data": "2026-10-12", "vencimentos": [["2026-10-20", 350.00]], "total": 350.00, "desconto": null, "legibilidade": "alta", "observacao": null, "itens": [["Camarão cinza médio", 10, "kg", 35.00, 350.00, "P12", "alta"]]}
 Cada item é uma lista nesta ordem: descricao, quantidade, unidade, valorUnitario, valorTotal, insumo, certeza.
-Se o arquivo NÃO for um pedido/romaneio/recibo de compra de mercadoria: {"pedido": false, "motivo": "o que é o arquivo"}.`;
+Se o arquivo NÃO for um pedido/romaneio/recibo de compra de mercadoria: {"pedido": false, "motivo": "o que é o arquivo"}.
+
+Exceção — NOTA DE SERVIÇO (NFS-e de prefeitura ou nota/recibo de prestação de serviço, sem mercadoria pra estoque): não vira entrada de estoque, mas vira conta a pagar. Devolva:
+{"pedido": false, "servico": true, "motivo": "nota de serviço", "fornecedorNome": "I9 EMBALAGENS LTDA", "fornecedorCnpj": "29196541000119", "fornecedor": "F7", "numero": "901", "data": "2026-09-10", "descricao": "Personalização de artigos gráficos", "total": 7012.41, "vencimentos": [["2026-09-10", 3400.00], ["2026-09-17", 722.48]]}
+- O fornecedor é o PRESTADOR do serviço — nunca o tomador (o tomador é o próprio restaurante).
+- "numero" = número da nota; "data" = data de emissão; "descricao" = o serviço em poucas palavras, como está na discriminação.
+- "total" = valor total do serviço / valor total cobrado, como está ESCRITO.
+- "vencimentos": mesmas regras do pedido. Sinal/entrada vence na data de emissão. "Restante em N boletos" = o restante dividido em N partes iguais, com a diferença de centavos na última; prazo em dias conta da emissão. A soma tem que dar o total. Sem condição de pagamento escrita: lista vazia.`;
 
 type Bloco =
   | { type: 'text'; text: string }
@@ -149,9 +156,61 @@ function certeza(v: unknown): 'alta' | 'media' | 'baixa' {
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
+// ───────────────────────── nota de serviço ─────────────────────────
+// NFS-e (ou recibo de serviço) enviada pelo mesmo botão: não tem insumo, então
+// não passa pelo lancar-estoque — vira nota_compra (origem NFSE_PDF) sem itens,
+// com as parcelas já lançadas no contas a pagar.
+
+export const ORIGEM_NOTA_SERVICO = 'NFSE_PDF';
+
+export interface ServicoLido {
+  fornecedorNome: string | null;
+  fornecedorCnpj: string | null;
+  fornecedorIdx: number | null;
+  numero: string | null;
+  data: string | null;
+  descricao: string | null;
+  total: number | null;
+  vencimentos: Array<{ data: string; valor: number }>;
+}
+
+/** A leitura achou uma nota de serviço em vez de pedido — a rota trata à parte. */
+export class NotaServicoLida extends Error {
+  readonly lido: ServicoLido;
+  constructor(lido: ServicoLido) {
+    super('nota de serviço');
+    this.name = 'NotaServicoLida';
+    this.lido = lido;
+  }
+}
+
+function normalizarServico(o: Record<string, unknown>, qtdFornecedores: number): ServicoLido {
+  const vencimentos: ServicoLido['vencimentos'] = [];
+  for (const v of Array.isArray(o.vencimentos) ? o.vencimentos : []) {
+    if (!Array.isArray(v)) continue;
+    const data = ymd(v[0]);
+    const valor = num(v[1]);
+    if (data && valor != null && valor > 0) vencimentos.push({ data, valor });
+  }
+  const cnpj = typeof o.fornecedorCnpj === 'string' ? o.fornecedorCnpj.replace(/\D/g, '') : '';
+  return {
+    fornecedorNome: typeof o.fornecedorNome === 'string' && o.fornecedorNome.trim() ? o.fornecedorNome.trim().slice(0, 200) : null,
+    fornecedorCnpj: cnpj.length === 14 || cnpj.length === 11 ? cnpj : null,
+    fornecedorIdx: idx(o.fornecedor, 'F', qtdFornecedores),
+    numero: o.numero != null && String(o.numero).trim() ? String(o.numero).trim().slice(0, 30) : null,
+    data: ymd(o.data),
+    descricao: typeof o.descricao === 'string' && o.descricao.trim() ? o.descricao.trim().slice(0, 120) : null,
+    total: num(o.total),
+    vencimentos,
+  };
+}
+
 /** Normaliza o JSON da IA e completa o número que faltar em cada item. */
 export function normalizarPedido(bruto: unknown, qtdProdutos: number, qtdFornecedores: number): PedidoLido {
   const o = (bruto ?? {}) as Record<string, unknown>;
+  if (o.pedido === false && o.servico === true) {
+    throw new NotaServicoLida(normalizarServico(o, qtdFornecedores));
+  }
   if (o.pedido === false) {
     throw new Error(`o arquivo não parece um pedido de compra${typeof o.motivo === 'string' ? ` (${o.motivo})` : ''}`);
   }
@@ -561,5 +620,175 @@ export async function gravarPedido(opts: {
     categoriaId,
     pronto: pendencias.length === 0,
     pendencias,
+  };
+}
+
+// ───────────────────────── gravação da nota de serviço ─────────────────────────
+
+/** Fornecedor da casa que emitiu a nota de serviço: CNPJ manda; senão o que a IA reconheceu. */
+export function fornecedorDoServico(lido: ServicoLido, cat: CatalogoPedido): CatalogoPedido['fornecedores'][number] | null {
+  const doc = lido.fornecedorCnpj;
+  const porDoc = doc ? cat.fornecedores.find((f) => (f.cnpj ?? '').replace(/\D/g, '') === doc) : undefined;
+  return porDoc ?? (lido.fornecedorIdx != null ? cat.fornecedores[lido.fornecedorIdx] : undefined) ?? null;
+}
+
+export interface ResultadoServico {
+  id: string;
+  emitNome: string | null;
+  valorTotal: number;
+  parcelas: Array<{ data: string; valor: number }>;
+  contasCriadas: number;
+  contasAproveitadas: number;
+  categoriaId: string | null;
+  /** true quando o papel não trazia prazo que fechasse com o total — ficou 1 parcela */
+  semPrazo: boolean;
+}
+
+/**
+ * Grava a nota de serviço como nota_compra (origem NFSE_PDF, sem itens) e lança
+ * as parcelas no contas a pagar, em aberto. Parcela que já foi digitada na mão
+ * (mesmo fornecedor, mesmo valor, vencimento a até 15 dias) é aproveitada em vez
+ * de criar outra — mesma regra do pedido sem nota.
+ */
+export async function gravarNotaServico(opts: {
+  filialId: string;
+  lido: ServicoLido;
+  cat: CatalogoPedido;
+  hash: string;
+  storagePath: string;
+  usuarioId: string;
+}): Promise<ResultadoServico> {
+  const { filialId, lido, cat, hash, storagePath, usuarioId } = opts;
+  const fornecedor = fornecedorDoServico(lido, cat);
+  if (!fornecedor) throw new Error('fornecedor da nota de serviço não está no cadastro desta casa');
+  const total = lido.total != null && lido.total > 0 ? r2(lido.total) : 0;
+  if (!(total > 0)) throw new Error('não deu pra ler o valor total da nota de serviço');
+
+  const dataNota = lido.data ?? hojeBr();
+  const somaVenc = r2(lido.vencimentos.reduce((a, v) => a + v.valor, 0));
+  const prazoFecha = lido.vencimentos.length > 0 && Math.abs(somaVenc - total) <= 0.05;
+  const parcelas = prazoFecha
+    ? lido.vencimentos
+    : [{ data: lido.vencimentos.length === 1 ? lido.vencimentos[0].data : dataNota, valor: total }];
+
+  const numero = lido.numero && /^\d{1,9}$/.test(lido.numero) ? Number(lido.numero) : null;
+
+  const [nova] = await db
+    .insert(schema.notaCompra)
+    .values({
+      filialId,
+      chave: chaveDoPedido(hash),
+      numero,
+      naturezaOperacao: (lido.descricao ? `Nota de serviço — ${lido.descricao}` : 'Nota de serviço').slice(0, 200),
+      emitCnpj: lido.fornecedorCnpj ?? fornecedor.cnpj ?? null,
+      emitNome: lido.fornecedorNome ?? fornecedor.nome ?? null,
+      fornecedorId: fornecedor.id,
+      dataEmissao: new Date(`${dataNota}T12:00:00-03:00`),
+      dataEntrada: new Date(),
+      valorTotal: total.toFixed(2),
+      valorProdutos: '0.00',
+      situacao: 'SERVIÇO',
+      xmlStoragePath: storagePath,
+      xmlHash: hash,
+      origemImportacao: ORIGEM_NOTA_SERVICO,
+    })
+    .returning({ id: schema.notaCompra.id });
+  const notaCompraId = nova!.id;
+
+  const duplicatas = await db
+    .insert(schema.notaCompraDuplicata)
+    .values(
+      parcelas.map((p, i) => ({
+        filialId,
+        notaCompraId,
+        numero: String(i + 1).padStart(3, '0'),
+        dataVencimento: p.data,
+        valor: p.valor.toFixed(2),
+      })),
+    )
+    .returning({
+      id: schema.notaCompraDuplicata.id,
+      numero: schema.notaCompraDuplicata.numero,
+      dataVencimento: schema.notaCompraDuplicata.dataVencimento,
+      valor: schema.notaCompraDuplicata.valor,
+    });
+  duplicatas.sort((a, b) => (a.numero ?? '').localeCompare(b.numero ?? ''));
+
+  // Categoria que esse fornecedor mais usa no contas a pagar.
+  const [cat1] = await db
+    .select({ categoriaId: schema.contaPagar.categoriaId, n: sql<number>`count(*)::int` })
+    .from(schema.contaPagar)
+    .where(
+      and(
+        eq(schema.contaPagar.filialId, filialId),
+        eq(schema.contaPagar.fornecedorId, fornecedor.id),
+        isNotNull(schema.contaPagar.categoriaId),
+        isNull(schema.contaPagar.dataDelete),
+      ),
+    )
+    .groupBy(schema.contaPagar.categoriaId)
+    .orderBy(desc(sql`count(*)`))
+    .limit(1);
+  const categoriaId = cat1?.categoriaId ?? null;
+
+  const base = `NFS-e${lido.numero ? ` nº ${lido.numero}` : ''}${lido.descricao ? ` — ${lido.descricao}` : ''}`;
+  let contasCriadas = 0;
+  let contasAproveitadas = 0;
+  for (let i = 0; i < duplicatas.length; i++) {
+    const d = duplicatas[i];
+    const [jaExiste] = await db
+      .select({ id: schema.contaPagar.id })
+      .from(schema.contaPagar)
+      .where(
+        and(
+          eq(schema.contaPagar.filialId, filialId),
+          eq(schema.contaPagar.fornecedorId, fornecedor.id),
+          eq(schema.contaPagar.valor, d.valor),
+          isNull(schema.contaPagar.dataDelete),
+          isNull(schema.contaPagar.notaCompraId),
+          sql`abs(${schema.contaPagar.dataVencimento} - ${d.dataVencimento}::date) <= 15`,
+          sql`NOT EXISTS (SELECT 1 FROM nota_compra_duplicata x WHERE x.conta_pagar_id = ${schema.contaPagar.id})`,
+        ),
+      )
+      .orderBy(sql`abs(${schema.contaPagar.dataVencimento} - ${d.dataVencimento}::date)`)
+      .limit(1);
+    let contaId = jaExiste?.id ?? null;
+    if (contaId) {
+      contasAproveitadas++;
+    } else {
+      const [novaConta] = await db
+        .insert(schema.contaPagar)
+        .values({
+          filialId,
+          criadoPor: usuarioId,
+          criadoEm: new Date(),
+          origem: 'NFE',
+          notaCompraId,
+          fornecedorId: fornecedor.id,
+          categoriaId,
+          parcela: i + 1,
+          totalParcelas: duplicatas.length,
+          dataVencimento: d.dataVencimento,
+          valor: d.valor,
+          descricao: duplicatas.length > 1 ? `${base} — parcela ${i + 1}/${duplicatas.length}` : base,
+        })
+        .returning({ id: schema.contaPagar.id });
+      contaId = novaConta?.id ?? null;
+      if (contaId) contasCriadas++;
+    }
+    if (contaId) {
+      await db.update(schema.notaCompraDuplicata).set({ contaPagarId: contaId }).where(eq(schema.notaCompraDuplicata.id, d.id));
+    }
+  }
+
+  return {
+    id: notaCompraId,
+    emitNome: lido.fornecedorNome ?? fornecedor.nome ?? null,
+    valorTotal: total,
+    parcelas,
+    contasCriadas,
+    contasAproveitadas,
+    categoriaId,
+    semPrazo: !prazoFecha,
   };
 }

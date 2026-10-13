@@ -352,6 +352,21 @@ export default async function NotaDetalhePage(props: {
             ) : (
               <div className="mt-1 font-mono text-[10px] text-slate-400">{nota.chave}</div>
             )}
+            {nota.origemImportacao === 'NFSE_PDF' && (
+              <p className="mt-2 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-900">
+                Nota de <b>serviço</b>: não tem insumo nem entrada de estoque. As parcelas já estão no contas a pagar.{' '}
+                {urlFotoPedido(nota.xmlStoragePath) && (
+                  <a
+                    href={urlFotoPedido(nota.xmlStoragePath)!}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-medium underline"
+                  >
+                    ver a nota
+                  </a>
+                )}
+              </p>
+            )}
             {nfeTransf?.transferenciaId && (
               <p className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
                 ⚠️ Esta é a nota fiscal da <b>transferência #{nfeTransf.numero}</b> entre casas. O estoque entra pelo

@@ -70,6 +70,26 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
     if (d.duplicada) {
       return { arquivo: f.name, ok: true, titulo: 'Este pedido já tinha sido enviado', detalhes: [], notaId: d.id };
     }
+    if (d.servico) {
+      // Nota de serviço: não tem estoque — as parcelas já foram pro contas a pagar.
+      const parcelas = (d.parcelas ?? []) as Array<{ data: string; valor: number }>;
+      const det = parcelas.map(
+        (p, i) => `parcela ${i + 1}/${parcelas.length}: ${p.data.split('-').reverse().join('/')} — ${brl(p.valor)}`,
+      );
+      det.push(`${d.contasCriadas} conta(s) a pagar criada(s), em aberto — dê baixa no que já foi pago (sinal)`);
+      if (d.contasAproveitadas > 0) {
+        det.push(`${d.contasAproveitadas} conta(s) a pagar já existia(m) com esse valor — não foi criada outra`);
+      }
+      if (d.semPrazo) det.push('a nota não traz parcelas que fechem com o total — ficou uma conta só; ajuste no financeiro');
+      if (!d.categoriaId) det.push('conta a pagar ficou sem categoria (fornecedor ainda não tem histórico)');
+      return {
+        arquivo: f.name,
+        ok: true,
+        titulo: `Nota de serviço lançada no contas a pagar — ${d.emitNome ?? 'fornecedor'} · ${brl(d.valorTotal)}`,
+        detalhes: det,
+        notaId: d.id,
+      };
+    }
     const cab = `${d.emitNome ?? 'fornecedor não identificado'} · ${brl(d.valorTotal)} · ${d.qtdItens} item(ns)`;
     if (!d.pronto || !lancarDireto) {
       return {

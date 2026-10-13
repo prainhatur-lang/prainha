@@ -54,6 +54,11 @@ const ORIGEM_LABEL: Record<string, { label: string; curto: string; cls: string }
     curto: 'Sem nota',
     cls: 'bg-emerald-100 text-emerald-800',
   },
+  NFSE_PDF: {
+    label: 'Nota de serviço (PDF lido pelo sistema — só contas a pagar)',
+    curto: 'Serviço',
+    cls: 'bg-indigo-100 text-indigo-800',
+  },
 };
 
 const PAGE_SIZE = 50;
