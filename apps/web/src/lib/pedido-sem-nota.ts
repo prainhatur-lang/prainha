@@ -9,7 +9,7 @@
 
 import { createHash } from 'node:crypto';
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { hojeBr } from '@/lib/datas';
 
 export const ORIGEM_PEDIDO_FOTO = 'PEDIDO_FOTO';
@@ -233,10 +233,44 @@ export async function catalogoDaFilial(filialId: string): Promise<CatalogoPedido
       nome: schema.fornecedor.nome,
       razao: schema.fornecedor.razaoSocial,
       cnpj: schema.fornecedor.cnpjOuCpf,
+      grupo: schema.fornecedor.grupoEconomicoId,
     })
     .from(schema.fornecedor)
     .where(and(eq(schema.fornecedor.filialId, filialId), isNull(schema.fornecedor.dataDelete)))
     .orderBy(schema.fornecedor.nome);
+
+  // O papel traz o nome da empresa ("Butique da Carne") e o cadastro da casa o
+  // apelido ("BRUNIOR FILE"). O mesmo fornecedor nas outras casas (cadastro único,
+  // grupo_economico) costuma ter a razão social — entra como "também chamado".
+  const grupos = [...new Set(fornecedores.map((f) => f.grupo).filter((g): g is string => !!g))];
+  const apelidos = new Map<string, Set<string>>();
+  if (grupos.length > 0) {
+    const irmaos = await db
+      .select({
+        grupo: schema.fornecedor.grupoEconomicoId,
+        nome: schema.fornecedor.nome,
+        razao: schema.fornecedor.razaoSocial,
+      })
+      .from(schema.fornecedor)
+      .where(and(inArray(schema.fornecedor.grupoEconomicoId, grupos), isNull(schema.fornecedor.dataDelete)));
+    for (const i of irmaos) {
+      if (!i.grupo) continue;
+      const set = apelidos.get(i.grupo) ?? new Set<string>();
+      for (const n of [i.nome, i.razao]) if (n?.trim()) set.add(n.trim());
+      apelidos.set(i.grupo, set);
+    }
+  }
+  const nomeCompleto = (f: (typeof fornecedores)[number]) => {
+    const vistos = new Set<string>();
+    const partes: string[] = [];
+    for (const n of [f.nome, f.razao, ...(f.grupo ? (apelidos.get(f.grupo) ?? []) : [])]) {
+      const k = chaveDescricao(n ?? null);
+      if (!k || vistos.has(k)) continue;
+      vistos.add(k);
+      partes.push(n!.trim());
+    }
+    return partes.join(' / ');
+  };
   return {
     produtos: produtos.map((p) => ({
       id: p.id,
@@ -245,11 +279,7 @@ export async function catalogoDaFilial(filialId: string): Promise<CatalogoPedido
     })),
     fornecedores: fornecedores
       .filter((f) => (f.nome ?? f.razao ?? '').trim())
-      .map((f) => ({
-        id: f.id,
-        nome: f.razao && f.nome && f.razao !== f.nome ? `${f.nome} / ${f.razao}` : (f.nome ?? f.razao ?? ''),
-        cnpj: f.cnpj,
-      })),
+      .map((f) => ({ id: f.id, nome: nomeCompleto(f), cnpj: f.cnpj })),
   };
 }
 
@@ -352,6 +382,23 @@ export async function gravarPedido(opts: {
 
   // Fornecedor: CNPJ do papel manda; senão o que a IA reconheceu na lista.
   let fornecedor = lido.fornecedorCnpj ? cat.fornecedores.find((f) => f.cnpj === lido.fornecedorCnpj) : undefined;
+  // Nome do papel que já foi ligado a um fornecedor numa entrada anterior desta
+  // casa (vinculado na mão uma vez → vale pros próximos pedidos).
+  if (!fornecedor && lido.fornecedorNome) {
+    const [antes] = await db
+      .select({ fornecedorId: schema.notaCompra.fornecedorId })
+      .from(schema.notaCompra)
+      .where(
+        and(
+          eq(schema.notaCompra.filialId, filialId),
+          isNotNull(schema.notaCompra.fornecedorId),
+          sql`upper(trim(${schema.notaCompra.emitNome})) = upper(trim(${lido.fornecedorNome}))`,
+        ),
+      )
+      .orderBy(desc(schema.notaCompra.dataEmissao))
+      .limit(1);
+    if (antes?.fornecedorId) fornecedor = cat.fornecedores.find((f) => f.id === antes.fornecedorId);
+  }
   if (!fornecedor && lido.fornecedorIdx != null) fornecedor = cat.fornecedores[lido.fornecedorIdx];
   const fornecedorId = fornecedor?.id ?? null;
   if (!fornecedorId) {

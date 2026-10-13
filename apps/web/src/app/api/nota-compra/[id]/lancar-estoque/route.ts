@@ -30,7 +30,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq, isNotNull, isNull } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 import { aplicarMpmEntrada, fatorRateioNfe } from '@/lib/custo-medio';
 import { lerConferenciaNota } from '@/lib/nota-conferencia';
 
@@ -256,6 +256,7 @@ export async function POST(
   // de fornecedor) — pula com aviso.
   let contasCriadas = 0;
   let contasPuladas = 0;
+  let contasAproveitadas = 0;
   if (nota.fornecedorId) {
     const duplicatas = await db
       .select({
@@ -282,6 +283,37 @@ export async function POST(
           : nota.numero
             ? `NFe nº ${nota.numero}${parc}`
             : `NFe duplicata ${d.numero ?? i + 1}/${total}`;
+
+      // Pedido sem nota: a compra muitas vezes JÁ foi digitada no contas a pagar
+      // (mesmo fornecedor, mesmo valor). Nesse caso a parcela aponta pra conta que
+      // existe em vez de criar outra. A conta não ganha nota_compra_id: excluir o
+      // pedido não apaga o que foi lançado na mão.
+      if (nota.origemImportacao === 'PEDIDO_FOTO') {
+        const [jaExiste] = await db
+          .select({ id: schema.contaPagar.id })
+          .from(schema.contaPagar)
+          .where(
+            and(
+              eq(schema.contaPagar.filialId, nota.filialId),
+              eq(schema.contaPagar.fornecedorId, nota.fornecedorId),
+              eq(schema.contaPagar.valor, d.valor),
+              isNull(schema.contaPagar.dataDelete),
+              isNull(schema.contaPagar.notaCompraId),
+              sql`abs(${schema.contaPagar.dataVencimento} - ${d.dataVencimento}::date) <= 15`,
+              sql`NOT EXISTS (SELECT 1 FROM nota_compra_duplicata x WHERE x.conta_pagar_id = ${schema.contaPagar.id})`,
+            ),
+          )
+          .orderBy(sql`abs(${schema.contaPagar.dataVencimento} - ${d.dataVencimento}::date)`)
+          .limit(1);
+        if (jaExiste) {
+          await db
+            .update(schema.notaCompraDuplicata)
+            .set({ contaPagarId: jaExiste.id })
+            .where(eq(schema.notaCompraDuplicata.id, d.id));
+          contasAproveitadas++;
+          continue;
+        }
+      }
 
       const [novaConta] = await db
         .insert(schema.contaPagar)
@@ -332,5 +364,6 @@ export async function POST(
     fatorRateio,
     contasPagarCriadas: contasCriadas,
     contasPagarPuladas: contasPuladas,
+    contasPagarAproveitadas: contasAproveitadas,
   });
 }

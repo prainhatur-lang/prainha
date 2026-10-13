@@ -97,6 +97,9 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
       };
     }
     const det = [`${ld.lancados} insumo(s) no estoque`, `${ld.contasPagarCriadas} conta(s) a pagar`];
+    if (ld.contasPagarAproveitadas > 0) {
+      det.push(`${ld.contasPagarAproveitadas} conta(s) a pagar já existia(m) com esse valor — não foi criada outra`);
+    }
     if (ld.pulados > 0) det.push(`${ld.pulados} item(ns) não entraram — abra pra ver`);
     if (!d.categoriaId) det.push('conta a pagar ficou sem categoria (fornecedor ainda não tem histórico)');
     return { arquivo: f.name, ok: true, titulo: `Lançado — ${cab}`, detalhes: det, notaId: d.id };
