@@ -151,26 +151,6 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
     .limit(PAGE_SIZE)
     .offset(page * PAGE_SIZE);
 
-  // Top fornecedores no período
-  const topFornecedores = await db
-    .select({
-      emitNome: schema.notaCompra.emitNome,
-      emitCnpj: schema.notaCompra.emitCnpj,
-      qtd: sql<number>`COUNT(*)::int`,
-      total: sql<string>`COALESCE(SUM(${schema.notaCompra.valorTotal}), 0)::text`,
-    })
-    .from(schema.notaCompra)
-    .where(
-      and(
-        eq(schema.notaCompra.filialId, filialSelecionada.id),
-        gte(schema.notaCompra.dataEmissao, dtIni),
-        lte(schema.notaCompra.dataEmissao, dtFim),
-      ),
-    )
-    .groupBy(schema.notaCompra.emitNome, schema.notaCompra.emitCnpj)
-    .orderBy(sql`4 DESC`)
-    .limit(10);
-
   const totalPag = Math.max(1, Math.ceil(Number(stats?.qtd ?? 0) / PAGE_SIZE));
   const hrefPag = (p: number) => {
     const qs = new URLSearchParams();
@@ -294,24 +274,6 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
               filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
             />
 
-            {topFornecedores.length > 0 && (
-              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                <h3 className="text-sm font-semibold text-slate-900">Top fornecedores</h3>
-                <p className="mt-0.5 text-xs text-slate-500">
-                  {dataIni.split('-').reverse().join('/')} a {dataFim.split('-').reverse().join('/')}
-                </p>
-                <ul className="mt-3 space-y-1.5">
-                  {topFornecedores.map((f, i) => (
-                    <li key={i} className="flex items-center justify-between text-xs">
-                      <span className="truncate pr-2 text-slate-700">{f.emitNome ?? '—'}</span>
-                      <span className="shrink-0 font-mono font-medium text-slate-900">
-                        {brl(Number(f.total))}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
           </div>
 
           {/* Coluna direita: busca + lista */}
