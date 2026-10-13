@@ -177,6 +177,7 @@
     "migrate:extrato-fechamento": "tsx scripts/migrate-extrato-fechamento.ts",
     "migrate:cartao-fatura": "tsx scripts/migrate-cartao-fatura.ts",
     "migrate:cartao-rateio": "tsx scripts/migrate-cartao-rateio.ts",
+    "migrate:conta-pagar-criado-por": "tsx scripts/migrate-conta-pagar-criado-por.ts",
     "migrate:avaliacao-pedido": "tsx scripts/migrate-avaliacao-pedido.ts"
   },
   "dependencies": {

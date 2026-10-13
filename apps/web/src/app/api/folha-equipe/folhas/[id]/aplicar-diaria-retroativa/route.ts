@@ -197,7 +197,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     });
   }
 
-  await db.insert(schema.contaPagar).values(inserts);
+  await db
+    .insert(schema.contaPagar)
+    .values(inserts.map((l) => ({ ...l, criadoPor: user.id, criadoEm: new Date() })));
 
   const valorTotal = inserts.reduce((s, l) => s + Number(l.valor), 0);
 

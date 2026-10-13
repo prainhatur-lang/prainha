@@ -116,6 +116,8 @@ export async function POST(req: Request) {
       valorPago: paga ? b.valor.toFixed(2) : null,
       competencia: b.dataVencimento.slice(0, 7),
       origem: 'MANUAL',
+      criadoPor: user.id,
+      criadoEm: new Date(),
       // meio-dia BRT: evita o -1 dia da conversão UTC no timestamptz
       dataCadastro: new Date(`${lancamento}T12:00:00-03:00`),
     })

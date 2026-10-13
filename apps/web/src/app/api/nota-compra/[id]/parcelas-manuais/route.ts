@@ -157,6 +157,8 @@ export async function POST(
       .insert(schema.contaPagar)
       .values({
         filialId: nota.filialId,
+        criadoPor: user.id,
+        criadoEm: new Date(),
         origem: 'NFE',
         notaCompraId: id,
         fornecedorId: nota.fornecedorId,

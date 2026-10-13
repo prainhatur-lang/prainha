@@ -150,6 +150,8 @@ export async function POST(request: Request) {
             competencia: dia.slice(0, 7),
             codigoReferencia,
             origem: 'MANUAL',
+            // sem usuário do app: quem lançou no caixa vai na observação
+            criadoEm: new Date(),
             dataCadastro: quando,
           })
           .returning({ id: schema.contaPagar.id });

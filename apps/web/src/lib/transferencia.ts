@@ -451,6 +451,8 @@ export async function criarTransferencia(opts: {
         .insert(schema.contaPagar)
         .values({
           filialId: filialDestinoId,
+          criadoPor: userId,
+          criadoEm: new Date(),
           dataVencimento: ultimoDiaMes(competencia),
           valor: valorTotal.toFixed(2),
           competencia,
@@ -594,6 +596,8 @@ export async function receberTransferencia(opts: {
       .insert(schema.contaPagar)
       .values({
         filialId: t.filialDestinoId,
+        criadoPor: userId,
+        criadoEm: new Date(),
         dataVencimento: ultimoDiaMes(competencia),
         valor: valorTotal.toFixed(2),
         competencia,
@@ -872,6 +876,8 @@ export async function fecharEncontro(opts: {
           .insert(schema.contaPagar)
           .values({
             filialId: devedora,
+            criadoPor: userId,
+            criadoEm: new Date(),
             dataVencimento: vencimento,
             valor: p.liquido.toFixed(2),
             competencia,

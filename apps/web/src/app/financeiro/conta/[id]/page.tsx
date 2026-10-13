@@ -35,6 +35,8 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
       dataVencimento: schema.contaPagar.dataVencimento,
       dataPagamento: schema.contaPagar.dataPagamento,
       dataCadastro: schema.contaPagar.dataCadastro,
+      criadoPor: schema.contaPagar.criadoPor,
+      criadoEm: schema.contaPagar.criadoEm,
       competencia: schema.contaPagar.competencia,
       parcela: schema.contaPagar.parcela,
       totalParcelas: schema.contaPagar.totalParcelas,
@@ -96,7 +98,9 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
     .orderBy(desc(schema.contaPagarBaixa.data), desc(schema.contaPagarBaixa.criadoEm));
 
   const autores = new Map<string, string>();
-  const autorIds = [...new Set(baixas.map((b) => b.criadoPor).filter((x): x is string => !!x))];
+  const autorIds = [
+    ...new Set([conta.criadoPor, ...baixas.map((b) => b.criadoPor)].filter((x): x is string => !!x)),
+  ];
   if (autorIds.length > 0) {
     const users = await db
       .select({ id: schema.usuario.id, email: schema.usuario.email })
@@ -204,6 +208,20 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
               {conta.dataPagamento ? formatDate(conta.dataPagamento) : '—'}
             </p>
           </div>
+          <p className="mt-2 border-t border-slate-100 pt-2">
+            <span className="text-slate-400">Lançada por:</span>{' '}
+            {conta.criadoPor ? (
+              <span className="font-medium text-slate-800">{autores.get(conta.criadoPor) ?? 'usuário removido'}</span>
+            ) : conta.criadoEm ? (
+              'caixa da loja (ver observação)'
+            ) : consumer ? (
+              'veio do Consumer'
+            ) : (
+              'sem registro — conta anterior a 13/10/2026'
+            )}
+            {conta.criadoEm &&
+              ` · ${new Date(conta.criadoEm).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', dateStyle: 'short', timeStyle: 'short' })}`}
+          </p>
           {conta.observacao && <p className="mt-2 text-slate-500">{conta.observacao}</p>}
         </div>
 

@@ -113,6 +113,8 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     }
     await db.insert(schema.contaPagar).values({
       filialId: folha.filialId,
+      criadoPor: user.id,
+      criadoEm: new Date(),
       codigoExterno: null,
       fornecedorId: l.fornecedorId,
       categoriaId,

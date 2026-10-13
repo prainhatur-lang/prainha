@@ -319,6 +319,8 @@ export async function POST(
         .insert(schema.contaPagar)
         .values({
           filialId: nota.filialId,
+          criadoPor: user.id,
+          criadoEm: new Date(),
           // origem='NFE'; codigoExterno=null ate o agente fazer match
           origem: 'NFE',
           notaCompraId: id,

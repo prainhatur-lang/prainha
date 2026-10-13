@@ -292,6 +292,10 @@ export const contaPagar = pgTable(
      *  (vide schema/folha.ts) — usamos uuid raw aqui pra evitar ciclo
      *  de imports entre financeiro.ts e folha.ts. */
     folhaSemanaId: uuid('folha_semana_id'),
+    /** Quem lançou (id do usuário logado) e quando. Vazio em conta antiga
+     *  (antes de 13/10/2026) e no que vem do Consumer/agente. */
+    criadoPor: uuid('criado_por'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }),
     dataCadastro: timestamp('data_cadastro', { withTimezone: true }),
     dataDelete: timestamp('data_delete', { withTimezone: true }),
     versaoReg: integer('versao_reg'),
