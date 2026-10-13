@@ -123,18 +123,29 @@ export function AcoesFatura({ id }: { id: string }) {
   const [fazendo, setFazendo] = useState('');
   const [erro, setErro] = useState('');
 
+  // Ler de novo apaga a categoria e a casa marcadas na mão: pede a senha.
+  const [pedindoSenha, setPedindoSenha] = useState(false);
+  const [senha, setSenha] = useState('');
+
   async function agir(method: 'POST' | 'DELETE') {
     if (fazendo) return;
+    if (method === 'POST' && !senha) {
+      setErro('');
+      setPedindoSenha(true);
+      return;
+    }
     if (method === 'DELETE' && !window.confirm('Tirar esta fatura da lista? O arquivo continua guardado.')) return;
     setErro('');
     setFazendo(method === 'POST' ? 'lendo…' : 'tirando…');
     try {
-      await chamar(`/api/cartoes/faturas/${id}`, method);
+      await chamar(`/api/cartoes/faturas/${id}`, method, method === 'POST' ? { senha } : undefined);
+      setPedindoSenha(false);
       router.refresh();
     } catch (e) {
       setErro((e as Error).message);
     } finally {
       setFazendo('');
+      setSenha('');
     }
   }
 
@@ -142,6 +153,43 @@ export function AcoesFatura({ id }: { id: string }) {
     <span className="text-xs">
       {fazendo ? (
         <span className="text-slate-500">{fazendo}</span>
+      ) : pedindoSenha ? (
+        <form
+          className="inline-flex max-w-md flex-wrap items-center justify-end gap-1.5 whitespace-normal rounded border border-amber-300 bg-amber-50 p-2 text-left"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void agir('POST');
+          }}
+        >
+          <span className="w-full text-amber-900">
+            <strong>Atenção:</strong> ler de novo apaga os lançamentos desta fatura e lê o arquivo outra vez. A
+            categoria e a casa que você marcou na mão nesta fatura se perdem e voltam pra sugestão automática. O
+            arquivo e as outras faturas não mudam.
+          </span>
+          <span className="text-slate-700">Sua senha pra confirmar:</span>
+          <input
+            type="password"
+            autoFocus
+            autoComplete="current-password"
+            value={senha}
+            onChange={(e) => setSenha(e.target.value)}
+            className="w-28 rounded border border-slate-300 px-1.5 py-0.5"
+          />
+          <button type="submit" disabled={!senha} className="text-slate-700 underline disabled:opacity-40">
+            ler de novo
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setPedindoSenha(false);
+              setSenha('');
+              setErro('');
+            }}
+            className="text-slate-500 underline"
+          >
+            desistir
+          </button>
+        </form>
       ) : (
         <>
           <button type="button" onClick={() => void agir('POST')} className="mr-3 text-slate-600 underline">
