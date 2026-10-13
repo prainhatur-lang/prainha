@@ -68,6 +68,7 @@ export async function POST(
       filialId: schema.notaCompra.filialId,
       fornecedorId: schema.notaCompra.fornecedorId,
       numero: schema.notaCompra.numero,
+      origemImportacao: schema.notaCompra.origemImportacao,
       dataEmissao: schema.notaCompra.dataEmissao,
       dataEntrada: schema.notaCompra.dataEntrada,
       situacao: schema.notaCompra.situacao,
@@ -274,9 +275,13 @@ export async function POST(
     const total = duplicatas.length;
     for (let i = 0; i < duplicatas.length; i++) {
       const d = duplicatas[i];
-      const descricaoConta = nota.numero
-        ? `NFe nº ${nota.numero}${total > 1 ? ` — parcela ${i + 1}/${total}` : ''}`
-        : `NFe duplicata ${d.numero ?? i + 1}/${total}`;
+      const parc = total > 1 ? ` — parcela ${i + 1}/${total}` : '';
+      const descricaoConta =
+        nota.origemImportacao === 'PEDIDO_FOTO'
+          ? `Pedido sem nota${nota.numero ? ` nº ${nota.numero}` : ''}${parc}`
+          : nota.numero
+            ? `NFe nº ${nota.numero}${parc}`
+            : `NFe duplicata ${d.numero ?? i + 1}/${total}`;
 
       const [novaConta] = await db
         .insert(schema.contaPagar)

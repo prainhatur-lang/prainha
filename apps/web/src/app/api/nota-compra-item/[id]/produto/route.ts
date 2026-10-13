@@ -91,7 +91,13 @@ export async function PATCH(
     if (existente) {
       await db
         .update(schema.produtoFornecedor)
-        .set({ ...dados, atualizadoEm: new Date() })
+        // pedido sem nota não traz código nem EAN: não apaga o que a NF-e já ensinou
+        .set({
+          ...dados,
+          codigoFornecedor: dados.codigoFornecedor ?? undefined,
+          ean: dados.ean ?? undefined,
+          atualizadoEm: new Date(),
+        })
         .where(eq(schema.produtoFornecedor.id, existente.id));
     } else {
       await db.insert(schema.produtoFornecedor).values({

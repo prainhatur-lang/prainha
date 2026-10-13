@@ -12,6 +12,7 @@ import { VincularFornecedorBtn } from './vincular-fornecedor';
 import { ConferirNota } from './conferir-nota';
 import { lerConferenciaNota } from '@/lib/nota-conferencia';
 import { fornecedoresParaLancar } from '@/lib/fornecedor-unico';
+import { urlFotoPedido } from '@/lib/pedido-sem-nota';
 
 export const dynamic = 'force-dynamic';
 
@@ -287,9 +288,11 @@ export default async function NotaDetalhePage(props: {
             </h1>
             <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-slate-600">
               <span>
-                NFe nº{' '}
+                {nota.origemImportacao === 'PEDIDO_FOTO' ? 'Pedido sem nota nº' : 'NFe nº'}{' '}
                 <span className="font-mono text-slate-900">
-                  {nota.numero ?? '—'}/{nota.serie ?? '—'}
+                  {nota.origemImportacao === 'PEDIDO_FOTO'
+                    ? (nota.numero ?? '—')
+                    : `${nota.numero ?? '—'}/${nota.serie ?? '—'}`}
                 </span>
               </span>
               {nota.emitCnpj && (
@@ -322,7 +325,23 @@ export default async function NotaDetalhePage(props: {
                 </span>
               )}
             </div>
-            <div className="mt-1 font-mono text-[10px] text-slate-400">{nota.chave}</div>
+            {nota.origemImportacao === 'PEDIDO_FOTO' ? (
+              <div className="mt-1 text-xs text-slate-500">
+                Lido da foto do pedido — confira os itens com o papel.{' '}
+                {urlFotoPedido(nota.xmlStoragePath) && (
+                  <a
+                    href={urlFotoPedido(nota.xmlStoragePath)!}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-medium text-sky-700 underline"
+                  >
+                    ver a foto do pedido
+                  </a>
+                )}
+              </div>
+            ) : (
+              <div className="mt-1 font-mono text-[10px] text-slate-400">{nota.chave}</div>
+            )}
             {nfeTransf?.transferenciaId && (
               <p className="mt-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
                 ⚠️ Esta é a nota fiscal da <b>transferência #{nfeTransf.numero}</b> entre casas. O estoque entra pelo

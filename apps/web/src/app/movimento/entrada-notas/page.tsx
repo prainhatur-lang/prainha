@@ -11,6 +11,7 @@ import { AppHeader } from '@/components/app-header';
 import { brl, int, maskCnpj } from '@/lib/format';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
 import { UploadNotasForm } from './upload-form';
+import { PedidoFotoForm } from './pedido-foto-form';
 import { ManifestarBtn } from './manifestar-btn';
 import { ManifestarUmaBtn } from './manifestar-uma-btn';
 
@@ -25,7 +26,7 @@ interface SP {
   page?: string;
 }
 
-type OrigemFiltro = 'TODAS' | 'UPLOAD' | 'SEFAZ_DFE' | 'SEFAZ_DFE_RESUMO' | 'SEFAZ_DFE_RESUMO_CIENTE';
+type OrigemFiltro = 'TODAS' | 'UPLOAD' | 'SEFAZ_DFE' | 'SEFAZ_DFE_RESUMO' | 'SEFAZ_DFE_RESUMO_CIENTE' | 'PEDIDO_FOTO';
 
 const ORIGEM_LABEL: Record<string, { label: string; curto: string; cls: string }> = {
   UPLOAD: {
@@ -47,6 +48,11 @@ const ORIGEM_LABEL: Record<string, { label: string; curto: string; cls: string }
     label: 'Ciência enviada — aguardando XML completo',
     curto: 'Aguard.',
     cls: 'bg-violet-100 text-violet-800',
+  },
+  PEDIDO_FOTO: {
+    label: 'Pedido sem nota (foto lida pelo sistema)',
+    curto: 'Sem nota',
+    cls: 'bg-emerald-100 text-emerald-800',
   },
 };
 
@@ -283,6 +289,11 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
               filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
             />
 
+            <PedidoFotoForm
+              filialId={filialSelecionada.id}
+              filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
+            />
+
             {topFornecedores.length > 0 && (
               <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                 <h3 className="text-sm font-semibold text-slate-900">Top fornecedores</h3>
@@ -347,7 +358,7 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
             {/* Tabs de origem */}
             <div className="flex flex-wrap items-center gap-1 text-xs">
               <span className="mr-1 text-slate-500">Origem:</span>
-              {(['TODAS', 'UPLOAD', 'SEFAZ_DFE', 'SEFAZ_DFE_RESUMO', 'SEFAZ_DFE_RESUMO_CIENTE'] as const).map((o) => {
+              {(['TODAS', 'UPLOAD', 'SEFAZ_DFE', 'SEFAZ_DFE_RESUMO', 'SEFAZ_DFE_RESUMO_CIENTE', 'PEDIDO_FOTO'] as const).map((o) => {
                 const ativo = o === origem;
                 const label =
                   o === 'TODAS'
