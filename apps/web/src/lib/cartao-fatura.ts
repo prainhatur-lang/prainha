@@ -56,12 +56,14 @@ export async function acessoCartoes(userId: string): Promise<AcessoCartoes | nul
   const orgIds = [...new Set(minhas.map((f) => f.organizacaoId))];
   if (orgIds.length === 0) return null;
   const todas = await db
-    .select({ id: schema.filial.id, organizacaoId: schema.filial.organizacaoId })
+    .select({ id: schema.filial.id, organizacaoId: schema.filial.organizacaoId, cnpj: schema.filial.cnpj })
     .from(schema.filial)
     .where(inArray(schema.filial.organizacaoId, orgIds));
   const tenho = new Set(minhas.map((f) => f.id));
   for (const orgId of orgIds) {
-    const daOrg = todas.filter((f) => f.organizacaoId === orgId);
+    // Casa de ensaio (CNPJ zerado, ex.: "TESTE LOCAL Mac") não conta: ninguém
+    // é ligado a ela, e contá-la deixava a tela vazia até pro dono (13/10/2026).
+    const daOrg = todas.filter((f) => f.organizacaoId === orgId && !/^0+$/.test(f.cnpj ?? ''));
     if (daOrg.length > 0 && daOrg.every((f) => tenho.has(f.id))) {
       return {
         organizacaoId: orgId,
