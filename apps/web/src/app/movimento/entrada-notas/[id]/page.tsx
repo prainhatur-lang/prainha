@@ -2,6 +2,7 @@ import { notFound, redirect } from 'next/navigation';
 import { exigirPerm } from '@/lib/exigir-perm';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
+import { vincularItensConhecidos } from '@/lib/nota-vinculo-auto';
 import { db, schema } from '@concilia/db';
 import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
@@ -56,6 +57,15 @@ export default async function NotaDetalhePage(props: {
         .where(eq(schema.nfeEmitida.chave, nota.chave))
         .limit(1)
     : [];
+
+  // Regra do dono (13/10/2026): item que já foi vinculado numa entrada anterior
+  // abre com o último vínculo, sem precisar apertar nada. Só preenche item sem
+  // produto; se falhar, a tela abre igual e o vínculo fica pra mão.
+  try {
+    await vincularItensConhecidos(nota);
+  } catch (e) {
+    console.error('[entrada-notas] vínculo automático falhou', e);
+  }
 
   const itens = await db
     .select({

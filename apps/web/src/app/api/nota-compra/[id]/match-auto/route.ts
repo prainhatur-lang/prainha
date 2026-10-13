@@ -4,12 +4,15 @@
 //  2) EAN do item ↔ produto.codigoEtiqueta (mesma filial)
 //  3) codigoProdutoFornecedor ↔ produto_fornecedor.codigoFornecedor
 //     (escopo no fornecedor da nota)
+//  4) mesma descrição já vinculada numa entrada anterior do mesmo fornecedor
+//     (lib/nota-vinculo-auto) — o último vínculo ganha
 // Retorna quantos foram mapeados e quantos sobraram.
 
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq, isNull, sql } from 'drizzle-orm';
+import { vincularItensConhecidos } from '@/lib/nota-vinculo-auto';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -118,6 +121,9 @@ export async function POST(
       mapeados++;
     }
   }
+
+  // O que sobrou sem produto: tenta pelo último vínculo da mesma descrição.
+  mapeados += await vincularItensConhecidos(nota);
 
   const [totais] = await db
     .select({
