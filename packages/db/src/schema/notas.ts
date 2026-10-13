@@ -2,6 +2,7 @@
 // Upload manual (XML) na Fase 1; SEFAZ Manifesto/Distribuicao DF-e na Fase 2.
 
 import {
+  boolean,
   pgTable,
   uuid,
   text,
@@ -187,6 +188,8 @@ export const notaCompraItem = pgTable(
 
     // Matching com produto local
     produtoId: uuid('produto_id').references(() => produto.id, { onDelete: 'set null' }),
+    /** Usuário tirou o vínculo na mão — a abertura da entrada não vincula de novo sozinha. */
+    semVinculoAuto: boolean('sem_vinculo_auto').notNull().default(false),
   },
   (t) => ({
     notaIdx: index('idx_nota_compra_item_nota').on(t.notaCompraId),

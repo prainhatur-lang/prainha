@@ -27,7 +27,14 @@ export async function vincularItensConhecidos(nota: {
       descricao: schema.notaCompraItem.descricao,
     })
     .from(schema.notaCompraItem)
-    .where(and(eq(schema.notaCompraItem.notaCompraId, nota.id), isNull(schema.notaCompraItem.produtoId)));
+    .where(
+      and(
+        eq(schema.notaCompraItem.notaCompraId, nota.id),
+        isNull(schema.notaCompraItem.produtoId),
+        // desvinculado na mão: não insiste
+        eq(schema.notaCompraItem.semVinculoAuto, false),
+      ),
+    );
   if (itens.length === 0) return 0;
 
   let porDescricao: Map<string, string> | null = null;

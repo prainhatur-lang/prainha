@@ -105,7 +105,8 @@ export async function PATCH(
 
   await db
     .update(schema.notaCompraItem)
-    .set({ produtoId })
+    // semVinculoAuto: tirou o vínculo na mão → a abertura da entrada não repõe sozinha
+    .set({ produtoId, semVinculoAuto: !produtoId })
     .where(eq(schema.notaCompraItem.id, id));
 
   // Se vinculou e nota tem fornecedor, upsert em produto_fornecedor pra
@@ -152,6 +153,39 @@ export async function PATCH(
         await db
           .update(schema.produtoFornecedor)
           .set({ fatorConversao: fatorStr })
+          .where(eq(schema.produtoFornecedor.id, existente.id));
+      }
+    } else if (nota?.fornecedorId) {
+      // Item sem código nem EAN (pedido sem nota): guarda o vínculo pela
+      // descrição do papel, pra próxima entrada desse fornecedor já vir com o
+      // insumo e o fator — mesmo que esta entrada seja excluída depois.
+      const [existente] = await db
+        .select({ id: schema.produtoFornecedor.id, descricao: schema.produtoFornecedor.descricaoFornecedor })
+        .from(schema.produtoFornecedor)
+        .where(
+          and(
+            eq(schema.produtoFornecedor.fornecedorId, nota.fornecedorId),
+            eq(schema.produtoFornecedor.produtoId, produtoId),
+          ),
+        )
+        .limit(1);
+      if (!existente) {
+        await db.insert(schema.produtoFornecedor).values({
+          filialId: item.filialId,
+          produtoId,
+          fornecedorId: nota.fornecedorId,
+          descricaoFornecedor: item.descricao,
+          unidadeFornecedor: item.unidade,
+          fatorConversao: fatorStr ?? '1',
+        });
+      } else {
+        await db
+          .update(schema.produtoFornecedor)
+          .set({
+            ...(fatorStr != null ? { fatorConversao: fatorStr } : {}),
+            ...(existente.descricao ? {} : { descricaoFornecedor: item.descricao }),
+            atualizadoEm: new Date(),
+          })
           .where(eq(schema.produtoFornecedor.id, existente.id));
       }
     }
