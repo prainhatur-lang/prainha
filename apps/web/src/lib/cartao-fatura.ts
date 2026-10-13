@@ -490,3 +490,64 @@ export async function lancamentosDaFatura(faturaId: string) {
     .where(eq(schema.cartaoLancamento.faturaId, faturaId))
     .orderBy(asc(schema.cartaoLancamento.ordem));
 }
+
+// ───────────────────────── classificar na mão ─────────────────────────
+
+/** Categorias já usadas nos lançamentos da organização, pra oferecer na tela. */
+export async function categoriasEmUso(organizacaoId: string): Promise<string[]> {
+  const r = await db
+    .selectDistinct({ c: schema.cartaoLancamento.categoria })
+    .from(schema.cartaoLancamento)
+    .where(eq(schema.cartaoLancamento.organizacaoId, organizacaoId));
+  return r
+    .map((x) => x.c)
+    .filter((c): c is string => !!c)
+    .sort((a, b) => a.localeCompare(b, 'pt-BR'));
+}
+
+export interface Classificacao {
+  /** undefined = não mexe; null = tira a categoria. */
+  categoria?: string | null;
+  /** undefined = não mexe; null = tira a casa. */
+  filialId?: string | null;
+  /** Aplica também aos outros lançamentos do MESMO estabelecimento, em todas
+   *  as faturas da organização. */
+  mesmoEstabelecimento?: boolean;
+}
+
+/** Grava categoria e/ou casa num lançamento (decisão do dono, por cima da
+ *  sugestão da regra). Devolve quantos lançamentos mudaram. */
+export async function classificarLancamento(
+  acesso: AcessoCartoes,
+  lancamentoId: string,
+  c: Classificacao,
+): Promise<number> {
+  const set: { categoria?: string | null; filialId?: string | null } = {};
+  if (c.categoria !== undefined) set.categoria = c.categoria ? c.categoria.trim().slice(0, 60) : null;
+  if (c.filialId !== undefined) {
+    if (c.filialId !== null && !acesso.filiais.some((f) => f.id === c.filialId)) throw new Error('casa desconhecida');
+    set.filialId = c.filialId;
+  }
+  if (Object.keys(set).length === 0) return 0;
+  const [alvo] = await db
+    .select({ id: schema.cartaoLancamento.id, estabelecimento: schema.cartaoLancamento.estabelecimento })
+    .from(schema.cartaoLancamento)
+    .where(
+      and(eq(schema.cartaoLancamento.id, lancamentoId), eq(schema.cartaoLancamento.organizacaoId, acesso.organizacaoId)),
+    )
+    .limit(1);
+  if (!alvo) throw new Error('lançamento não encontrado');
+  const mudados = await db
+    .update(schema.cartaoLancamento)
+    .set(set)
+    .where(
+      and(
+        eq(schema.cartaoLancamento.organizacaoId, acesso.organizacaoId),
+        c.mesmoEstabelecimento
+          ? eq(schema.cartaoLancamento.estabelecimento, alvo.estabelecimento)
+          : eq(schema.cartaoLancamento.id, alvo.id),
+      ),
+    )
+    .returning({ id: schema.cartaoLancamento.id });
+  return mudados.length;
+}

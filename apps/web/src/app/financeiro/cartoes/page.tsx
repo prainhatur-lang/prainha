@@ -14,11 +14,13 @@ import {
   PERM_CARTAO_ENVIAR,
   PERM_CARTAO_VER,
   acessoCartoes,
+  categoriasEmUso,
   faturaVisivel,
   faturasDaOrganizacao,
   lancamentosDaFatura,
 } from '@/lib/cartao-fatura';
 import { AcoesFatura, EnviarFaturas } from './enviar';
+import { LancamentosEditaveis } from './classificar';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -48,6 +50,8 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
     porCategoria.set(c, (porCategoria.get(c) ?? 0) + Number(l.valor));
   }
   const categorias = [...porCategoria.entries()].sort((a, b) => b[1] - a[1]);
+  const categoriasOpcoes = acesso && aberta && podeEnviar ? await categoriasEmUso(acesso.organizacaoId) : [];
+  const nomeCasa = new Map((acesso?.filiais ?? []).map((f) => [f.id, f.nome]));
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -171,6 +175,23 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
                     </span>
                   ))}
                 </div>
+                {podeEnviar && acesso ? (
+                  <LancamentosEditaveis
+                    categorias={categoriasOpcoes}
+                    filiais={acesso.filiais}
+                    linhas={lancamentos.map((l) => ({
+                      id: l.id,
+                      data: l.dataCompra ? formatDate(l.dataCompra) : '—',
+                      cartao: l.cartaoFinal ?? '—',
+                      estabelecimento: l.estabelecimento,
+                      parcela: l.parcela && l.totalParcelas ? `${l.parcela}/${l.totalParcelas}` : '—',
+                      categoria: l.categoria,
+                      filialId: l.filialId,
+                      valor: brl(l.valor),
+                      credito: Number(l.valor) < 0,
+                    }))}
+                  />
+                ) : (
                 <div className="mt-3 overflow-x-auto rounded-lg border border-slate-200 bg-white">
                   <table className="w-full text-sm">
                     <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
@@ -194,6 +215,9 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
                           </td>
                           <td className="px-3 py-1.5">
                             {l.categoria ?? <span className="text-amber-700">sem categoria</span>}
+                            {l.filialId && nomeCasa.get(l.filialId) ? (
+                              <span className="ml-2 text-xs text-slate-500">· {nomeCasa.get(l.filialId)}</span>
+                            ) : null}
                           </td>
                           <td
                             className={`px-3 py-1.5 text-right tabular-nums ${Number(l.valor) < 0 ? 'text-emerald-700' : ''}`}
@@ -205,6 +229,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
                     </tbody>
                   </table>
                 </div>
+                )}
               </div>
             ) : null}
           </>
