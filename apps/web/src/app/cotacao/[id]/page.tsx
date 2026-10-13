@@ -294,7 +294,7 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
             itensQueVende: sql<number>`(
               SELECT count(DISTINCT ci.id)::int FROM produto_fornecedor pf
               JOIN cotacao_item ci ON ci.produto_id = pf.produto_id
-              WHERE pf.fornecedor_id = ${schema.fornecedor.id} AND ci.cotacao_id = ${id})`,
+              WHERE pf.fornecedor_id = "fornecedor"."id" AND ci.cotacao_id = ${id})`,
           })
           .from(schema.fornecedor)
           .where(
