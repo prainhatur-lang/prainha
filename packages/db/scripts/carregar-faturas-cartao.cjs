@@ -16,7 +16,7 @@ const ORG = 'a7238ba3-b150-4fb5-aa37-a895866df03f';
 const USUARIO = 'ed9317ef-7360-4c88-9564-298b39846a81'; // prainhatur@gmail.com
 const FILIAL = { 'Prainha Bar': '7c5c66ce-cceb-4e89-9c6d-d0785255c4f9', 'Tabuará': 'fde37b95-7c7e-4b41-a618-2aba1fbc0de7', 'Prainha Mar': 'e899dae2-38bf-4f3f-9149-7effd059fab8' };
 const BUCKET = 'extratos-fechamento';
-const TIPO = { '.pdf': 'application/pdf', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' };
+const TIPO = { '.pdf': 'application/pdf', '.csv': 'text/csv', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' };
 
 // Mesmas regras de categoriaSugerida (apps/web/src/lib/cartao-fatura.ts).
 const REGRAS = [
