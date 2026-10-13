@@ -137,6 +137,18 @@ export function ItemRow({
         <div className="max-w-xs truncate" title={item.descricao ?? ''}>
           {item.descricao || '—'}
         </div>
+        {/* Celular: o vínculo fica na última coluna, fora da tela — atalho aqui */}
+        {!item.lancado && (
+          <button
+            type="button"
+            onClick={() => setModal(true)}
+            className={`mt-1 rounded px-2 py-1 text-[11px] font-medium md:hidden ${
+              item.produtoId ? 'border border-slate-300 text-slate-600' : 'bg-emerald-600 text-white'
+            }`}
+          >
+            {item.produtoId ? 'trocar insumo' : '🔗 vincular insumo'}
+          </button>
+        )}
       </td>
       <td className="px-3 py-2 text-right font-mono text-xs">{qtd}</td>
       <td className="px-3 py-2 font-mono text-[10px] text-slate-500">

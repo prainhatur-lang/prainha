@@ -672,8 +672,13 @@ export default async function NotaDetalhePage(props: {
           </div>
         )}
 
-        <div className="mt-6 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-          <table className="w-full text-sm">
+        {/* No celular a tabela não cabe: a coluna "Produto interno" (onde se vincula
+            o insumo) ficava cortada e sem como chegar nela. Agora rola pro lado. */}
+        <p className="mt-6 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900 md:hidden">
+          👉 Arraste a tabela para o lado: o vínculo do insumo fica na última coluna, <b>Produto interno</b>.
+        </p>
+        <div className="mt-2 overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm md:mt-6">
+          <table className="w-full min-w-[820px] text-sm md:min-w-0">
             <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="px-3 py-2">#</th>
