@@ -8360,13 +8360,18 @@ async function fbSaldoAnterior(usuarioCodigo, login = null) {
 //  - não tem → abre o DELE automaticamente com o saldo anterior de fundo.
 // `terminal` (serial da maquininha) só vem quando o app manda; sem ele, não
 // trava (mas o auto-abrir funciona igual).
+function terminalBase(t) { return String(t || '').trim().replace(/-\d+$/, ''); }
 async function fbCaixaMaquininha(login, terminal) {
   const term = String(terminal || '').trim();
   const meu = await fbCaixaDoOperador(login);
   if (meu) {
     if (term) {
       const [v] = await sql`SELECT terminal FROM caixa_maquininha WHERE caixa_codigo=${meu.codigo}`;
-      if (v && v.terminal && v.terminal !== term)
+      // A MESMA maquininha manda o serial de dois jeitos: '01745929' no cartão
+      // e '01745929-8' no Pix (com o dígito). Comparando o texto cru, o caixa
+      // ficava preso na primeira forma e recusava a outra (13/10/2026: 207
+      // cobranças recusadas no Bar em 4 dias). Compara sem o dígito.
+      if (v && v.terminal && terminalBase(v.terminal) !== terminalBase(term))
         return { erro: 'Seu caixa está aberto em OUTRA maquininha. Feche o caixa lá antes de receber aqui.' };
       if (!v) await sql`INSERT INTO caixa_maquininha (caixa_codigo, terminal) VALUES (${meu.codigo}, ${term})
         ON CONFLICT (caixa_codigo) DO NOTHING`;
