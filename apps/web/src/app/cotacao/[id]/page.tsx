@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { foneParaWhatsapp, origemDoFone } from '@/lib/vendedor-fone';
-import { eq, asc, inArray, sql } from 'drizzle-orm';
+import { and, eq, asc, ilike, inArray, isNull, not, sql } from 'drizzle-orm';
 import { headers } from 'next/headers';
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDateTime, formatFone, pareceFixo } from '@/lib/format';
@@ -13,6 +13,7 @@ import { EnviarWhatsappButton } from './enviar-whatsapp-button';
 import { EnviarTodosButton } from './enviar-todos-button';
 import { GerarPedidoButton, type ItemPraPedido } from './gerar-pedido-button';
 import { TirarDasCotacoes } from './tirar-das-cotacoes';
+import { IncluirFornecedor } from './incluir-fornecedor';
 import { agruparDuplicados } from '@/lib/fornecedor-duplicado';
 import { ItemEditor } from './item-editor';
 import { conviteCotacaoConfigurado } from '@/lib/whatsapp-otp';
@@ -277,6 +278,46 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
   const podeEditarItens = c.status === 'ABERTA' || c.status === 'AGUARDANDO_APROVACAO';
   const badge = BADGE_STATUS[c.status] ?? BADGE_STATUS.RASCUNHO;
 
+  // Quem ainda dá pra convocar: fornecedor de compras da casa que ficou de fora
+  // na criação (mesma lista da Nova cotação, menos os já convocados).
+  const jaConvocados = new Set(fornecedores.map((f) => f.fornecedorId));
+  const candidatos = !podeEditarItens
+    ? []
+    : (
+        await db
+          .select({
+            id: schema.fornecedor.id,
+            nome: schema.fornecedor.nome,
+            categoria: schema.fornecedor.categoriaCompras,
+            geral: schema.fornecedor.geral,
+            fone: foneParaWhatsapp(),
+            itensQueVende: sql<number>`(
+              SELECT count(DISTINCT ci.id)::int FROM produto_fornecedor pf
+              JOIN cotacao_item ci ON ci.produto_id = pf.produto_id
+              WHERE pf.fornecedor_id = ${schema.fornecedor.id} AND ci.cotacao_id = ${id})`,
+          })
+          .from(schema.fornecedor)
+          .where(
+            and(
+              eq(schema.fornecedor.filialId, c.filialId),
+              eq(schema.fornecedor.ativoCompras, true),
+              isNull(schema.fornecedor.dataDelete),
+              not(ilike(schema.fornecedor.nome, '%*excluído%')),
+              not(ilike(schema.fornecedor.nome, '%excluido%')),
+            ),
+          )
+          .orderBy(asc(schema.fornecedor.nome))
+      )
+        .filter((f) => !jaConvocados.has(f.id))
+        .map((f) => ({
+          id: f.id,
+          nome: f.nome ?? '(sem nome)',
+          categoria: f.categoria,
+          geral: !!f.geral,
+          itensQueVende: Number(f.itensQueVende ?? 0),
+          temFone: !!f.fone,
+        }));
+
   // Pré-visualização da alocação (só calcula, não escreve nada).
   // Mostra antes da aprovação pra você ver totais por fornecedor + reassigns
   // por valor mínimo + itens órfãos.
@@ -459,6 +500,7 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
               <EnviarTodosButton cotacaoId={id} naoAbriram={naoAbriram.length} />
             )}
           </div>
+          {podeEditarItens && <IncluirFornecedor cotacaoId={id} candidatos={candidatos} />}
           {duplicados.length > 0 && (
             <div className="mb-3 rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-[11px] text-rose-900">
               <div className="font-semibold">
