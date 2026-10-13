@@ -21,6 +21,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const body = (await req.json().catch(() => null)) as {
     categoria?: string | null;
     filialId?: string | null;
+    ratear?: boolean;
     mesmoEstabelecimento?: boolean;
   } | null;
   if (!body) return NextResponse.json({ error: 'corpo ausente' }, { status: 400 });
@@ -28,6 +29,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     const mudados = await classificarLancamento(acesso, id, {
       categoria: body.categoria === undefined ? undefined : body.categoria === null ? null : String(body.categoria),
       filialId: body.filialId === undefined ? undefined : body.filialId === null ? null : String(body.filialId),
+      ratear: typeof body.ratear === 'boolean' ? body.ratear : undefined,
       mesmoEstabelecimento: body.mesmoEstabelecimento === true,
     });
     return NextResponse.json({ ok: true, mudados });

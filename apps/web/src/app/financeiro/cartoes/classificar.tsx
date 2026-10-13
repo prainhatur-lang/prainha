@@ -7,11 +7,14 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 const OUTRA = '__outra__';
+const RATEIO = '__rateio__';
 
 export function ClassificarLancamento({
   id,
   categoria,
   filialId,
+  rateado,
+  parte,
   categorias,
   filiais,
   todos,
@@ -19,6 +22,10 @@ export function ClassificarLancamento({
   id: string;
   categoria: string | null;
   filialId: string | null;
+  /** Dividido em partes iguais entre as casas. */
+  rateado: boolean;
+  /** Quanto cabe a cada casa quando está dividido (já formatado). */
+  parte: string | null;
   categorias: string[];
   filiais: Array<{ id: string; nome: string }>;
   todos: boolean;
@@ -74,10 +81,15 @@ export function ClassificarLancamento({
         <option value={OUTRA}>+ outra categoria…</option>
       </select>
       <select
-        className={`${cls} ${filialId ? '' : 'border-amber-400 text-amber-800'}`}
+        className={`${cls} ${filialId || rateado ? '' : 'border-amber-400 text-amber-800'}`}
         disabled={ocupado}
-        value={filialId ?? ''}
-        onChange={(e) => void gravar({ filialId: e.target.value || null })}
+        value={rateado ? RATEIO : (filialId ?? '')}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (v === RATEIO) void gravar({ ratear: true });
+          else if (v) void gravar({ filialId: v });
+          else void gravar({ filialId: null, ratear: false });
+        }}
       >
         <option value="">sem casa</option>
         {filiais.map((f) => (
@@ -85,7 +97,9 @@ export function ClassificarLancamento({
             {f.nome}
           </option>
         ))}
+        {filiais.length > 1 ? <option value={RATEIO}>÷ dividir entre as {filiais.length} casas</option> : null}
       </select>
+      {rateado && parte ? <span className="text-xs text-slate-500">{parte} cada</span> : null}
       {aviso ? <span className="text-xs text-slate-500">{aviso}</span> : null}
     </div>
   );
@@ -99,6 +113,8 @@ export interface LinhaLancamento {
   parcela: string;
   categoria: string | null;
   filialId: string | null;
+  rateado: boolean;
+  parte: string | null;
   valor: string;
   credito: boolean;
 }
@@ -144,6 +160,8 @@ export function LancamentosEditaveis({
                     id={l.id}
                     categoria={l.categoria}
                     filialId={l.filialId}
+                    rateado={l.rateado}
+                    parte={l.parte}
                     categorias={categorias}
                     filiais={filiais}
                     todos={todos}

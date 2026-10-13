@@ -9,7 +9,7 @@
 // Nada aqui gera conta a pagar, baixa ou lançamento: é o registro do que o
 // banco cobrou. O pagamento da fatura continua sendo lançado como sempre.
 
-import { pgTable, uuid, varchar, timestamp, integer, text, numeric, date, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, integer, text, numeric, date, index, jsonb } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { organizacao, filial, usuario } from './tenant';
 
@@ -75,6 +75,9 @@ export const cartaoLancamento = pgTable(
     categoria: varchar('categoria', { length: 60 }),
     /** Casa da despesa. Nulo = ainda não decidida. */
     filialId: uuid('filial_id').references(() => filial.id, { onDelete: 'set null' }),
+    /** Despesa dividida entre casas (banco de dados do sistema, hospedagem):
+     *  as casas que racham, em partes iguais. Com rateio, filial_id fica nulo. */
+    rateio: jsonb('rateio').$type<string[]>(),
   },
   (t) => ({
     faturaIdx: index('idx_cartao_lanc_fatura').on(t.faturaId, t.ordem),

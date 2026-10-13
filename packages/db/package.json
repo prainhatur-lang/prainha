@@ -176,6 +176,7 @@
     "migrate:evento-ticket": "tsx scripts/migrate-evento-ticket.ts",
     "migrate:extrato-fechamento": "tsx scripts/migrate-extrato-fechamento.ts",
     "migrate:cartao-fatura": "tsx scripts/migrate-cartao-fatura.ts",
+    "migrate:cartao-rateio": "tsx scripts/migrate-cartao-rateio.ts",
     "migrate:avaliacao-pedido": "tsx scripts/migrate-avaliacao-pedido.ts"
   },
   "dependencies": {

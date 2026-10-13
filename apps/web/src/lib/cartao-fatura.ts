@@ -510,6 +510,9 @@ export interface Classificacao {
   categoria?: string | null;
   /** undefined = não mexe; null = tira a casa. */
   filialId?: string | null;
+  /** true = divide em partes iguais entre todas as casas (e tira a casa
+   *  única); false = desfaz a divisão. undefined = não mexe. */
+  ratear?: boolean;
   /** Aplica também aos outros lançamentos do MESMO estabelecimento, em todas
    *  as faturas da organização. */
   mesmoEstabelecimento?: boolean;
@@ -522,11 +525,18 @@ export async function classificarLancamento(
   lancamentoId: string,
   c: Classificacao,
 ): Promise<number> {
-  const set: { categoria?: string | null; filialId?: string | null } = {};
+  const set: { categoria?: string | null; filialId?: string | null; rateio?: string[] | null } = {};
   if (c.categoria !== undefined) set.categoria = c.categoria ? c.categoria.trim().slice(0, 60) : null;
   if (c.filialId !== undefined) {
     if (c.filialId !== null && !acesso.filiais.some((f) => f.id === c.filialId)) throw new Error('casa desconhecida');
     set.filialId = c.filialId;
+    // Casa única escolhida desfaz a divisão.
+    set.rateio = null;
+  }
+  if (c.ratear !== undefined) {
+    if (c.ratear && acesso.filiais.length < 2) throw new Error('não há casas pra dividir');
+    set.rateio = c.ratear ? acesso.filiais.map((f) => f.id) : null;
+    if (c.ratear) set.filialId = null;
   }
   if (Object.keys(set).length === 0) return 0;
   const [alvo] = await db

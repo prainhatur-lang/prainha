@@ -52,6 +52,21 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
   const categorias = [...porCategoria.entries()].sort((a, b) => b[1] - a[1]);
   const categoriasOpcoes = acesso && aberta && podeEnviar ? await categoriasEmUso(acesso.organizacaoId) : [];
   const nomeCasa = new Map((acesso?.filiais ?? []).map((f) => [f.id, f.nome]));
+  // Quanto da fatura coube a cada casa (despesa dividida entra em partes iguais).
+  const porCasa = new Map<string, number>();
+  for (const l of lancamentos) {
+    const v = Number(l.valor);
+    if (l.rateio?.length) {
+      for (const fid of l.rateio) {
+        const n = nomeCasa.get(fid) ?? 'Outra casa';
+        porCasa.set(n, (porCasa.get(n) ?? 0) + v / l.rateio.length);
+      }
+    } else {
+      const n = (l.filialId && nomeCasa.get(l.filialId)) || 'Sem casa';
+      porCasa.set(n, (porCasa.get(n) ?? 0) + v);
+    }
+  }
+  const casas = [...porCasa.entries()].sort((a, b) => b[1] - a[1]);
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -175,6 +190,13 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
                     </span>
                   ))}
                 </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {casas.map(([c, v]) => (
+                    <span key={c} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-700">
+                      {c}: <strong className="tabular-nums">{brl(v)}</strong>
+                    </span>
+                  ))}
+                </div>
                 {podeEnviar && acesso ? (
                   <LancamentosEditaveis
                     categorias={categoriasOpcoes}
@@ -187,6 +209,8 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
                       parcela: l.parcela && l.totalParcelas ? `${l.parcela}/${l.totalParcelas}` : '—',
                       categoria: l.categoria,
                       filialId: l.filialId,
+                      rateado: !!l.rateio?.length,
+                      parte: l.rateio?.length ? brl(Number(l.valor) / l.rateio.length) : null,
                       valor: brl(l.valor),
                       credito: Number(l.valor) < 0,
                     }))}
@@ -215,6 +239,9 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
                           </td>
                           <td className="px-3 py-1.5">
                             {l.categoria ?? <span className="text-amber-700">sem categoria</span>}
+                            {l.rateio?.length ? (
+                              <span className="ml-2 text-xs text-slate-500">· dividido entre {l.rateio.length} casas</span>
+                            ) : null}
                             {l.filialId && nomeCasa.get(l.filialId) ? (
                               <span className="ml-2 text-xs text-slate-500">· {nomeCasa.get(l.filialId)}</span>
                             ) : null}
