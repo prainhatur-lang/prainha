@@ -43,6 +43,8 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
       origem: schema.contaPagar.origem,
       dataDelete: schema.contaPagar.dataDelete,
       fornecedorNome: schema.fornecedor.nome,
+      fornecedorChavePix: schema.fornecedor.chavePix,
+      fornecedorPixFavorecido: schema.fornecedor.pixFavorecido,
       categoriaNome: schema.categoriaConta.descricao,
       categoriaPaiCodigo: schema.categoriaConta.codigoPaiExterno,
       categoriaFilial: schema.categoriaConta.filialId,
@@ -147,6 +149,12 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
                 <> · parcela {conta.parcela}/{conta.totalParcelas}</>
               )}
             </p>
+            {(conta.fornecedorChavePix || conta.fornecedorPixFavorecido) && (
+              <p className="mt-0.5 text-xs text-emerald-800">
+                💠 Pagar por Pix{conta.fornecedorChavePix ? `: ${conta.fornecedorChavePix}` : ''}
+                {conta.fornecedorPixFavorecido ? ` — em nome de ${conta.fornecedorPixFavorecido}` : ''}
+              </p>
+            )}
           </div>
           <div className="flex shrink-0 flex-col items-end gap-2">
             <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${status.cls}`}>

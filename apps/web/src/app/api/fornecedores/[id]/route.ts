@@ -34,6 +34,8 @@ export async function PATCH(
     foneWhatsapp?: string | null;
     email?: string | null;
     nome?: string;
+    chavePix?: string | null;
+    pixFavorecido?: string | null;
   };
   try {
     body = (await req.json()) as typeof body;
@@ -74,6 +76,10 @@ export async function PATCH(
   if (typeof body.nome === 'string' && body.nome.trim()) {
     updates.nome = body.nome.trim().slice(0, 200);
   }
+
+  // Como o fornecedor recebe: chave Pix e quem recebe (quando o Pix cai no nome de outra pessoa)
+  if ('chavePix' in body) updates.chavePix = body.chavePix?.trim().slice(0, 100) || null;
+  if ('pixFavorecido' in body) updates.pixFavorecido = body.pixFavorecido?.trim().slice(0, 200) || null;
 
   if (Object.keys(updates).length === 0) {
     return NextResponse.json({ error: 'nenhum campo pra atualizar' }, { status: 400 });

@@ -10,6 +10,7 @@ import { buscaIlike } from '@/lib/texto';
 import { AppHeader } from '@/components/app-header';
 import { brl, formatFone, int, maskCnpj, pareceFixo } from '@/lib/format';
 import { EditPedidoMinimo } from './edit-pedido-minimo';
+import { EditPix } from './edit-pix';
 import { NovoFornecedor } from './novo-fornecedor';
 import { foneParaWhatsapp, origemDoFone } from '@/lib/vendedor-fone';
 import { fornecedoresDeOutrasCasas, outrasCasasDe } from '@/lib/fornecedor-unico';
@@ -86,6 +87,8 @@ export default async function FornecedoresPage(props: { searchParams: Promise<SP
       email: schema.fornecedor.email,
       fonePrincipal: schema.fornecedor.fonePrincipal,
       valorPedidoMinimo: schema.fornecedor.valorPedidoMinimo,
+      chavePix: schema.fornecedor.chavePix,
+      pixFavorecido: schema.fornecedor.pixFavorecido,
       whatsapp: foneParaWhatsapp(),
       whatsappOrigem: origemDoFone(),
     })
@@ -289,6 +292,7 @@ export default async function FornecedoresPage(props: { searchParams: Promise<SP
                           </Link>
                         )}
                         {f.email && <span className="ml-1 text-slate-400">· {f.email}</span>}
+                        <EditPix fornecedorId={f.id} chaveAtual={f.chavePix} favorecidoAtual={f.pixFavorecido} />
                       </td>
                       <td className="px-4 py-2 text-right">
                         <EditPedidoMinimo fornecedorId={f.id} valorAtual={f.valorPedidoMinimo} />

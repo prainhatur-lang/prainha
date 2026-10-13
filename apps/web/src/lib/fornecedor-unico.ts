@@ -85,7 +85,7 @@ export async function irmaosDoFornecedor(fornecedorId: string, exec: Exec = db):
 export type CamposCompartilhados = Partial<
   Pick<
     typeof schema.fornecedor.$inferInsert,
-    'nome' | 'email' | 'foneWhatsapp' | 'categoriaCompras' | 'valorPedidoMinimo' | 'ativoCompras' | 'geral'
+    'nome' | 'email' | 'foneWhatsapp' | 'categoriaCompras' | 'valorPedidoMinimo' | 'ativoCompras' | 'geral' | 'chavePix' | 'pixFavorecido'
   >
 >;
 
@@ -96,7 +96,7 @@ export async function propagarParaIrmaos(
   exec: Exec = db,
 ): Promise<number> {
   const set: CamposCompartilhados = {};
-  for (const k of ['nome', 'email', 'foneWhatsapp', 'categoriaCompras', 'valorPedidoMinimo', 'ativoCompras', 'geral'] as const) {
+  for (const k of ['nome', 'email', 'foneWhatsapp', 'categoriaCompras', 'valorPedidoMinimo', 'ativoCompras', 'geral', 'chavePix', 'pixFavorecido'] as const) {
     if (k in campos) (set as Record<string, unknown>)[k] = campos[k];
   }
   if (Object.keys(set).length === 0) return 0;

@@ -94,6 +94,9 @@ export const fornecedor = pgTable(
     bancoAgencia: varchar('banco_agencia', { length: 20 }),
     bancoConta: varchar('banco_conta', { length: 30 }),
     chavePix: varchar('chave_pix', { length: 100 }),
+    /** Quem recebe o Pix quando não é o próprio fornecedor (nome que aparece no
+     *  extrato). Ex.: Butique da Carne recebe em nome de Elizabeth Vieira dos Santos. */
+    pixFavorecido: varchar('pix_favorecido', { length: 200 }),
     /** Mesma empresa nas outras casas (cadastro único). Ver grupoEconomico. */
     grupoEconomicoId: uuid('grupo_economico_id').references(() => grupoEconomico.id, { onDelete: 'set null' }),
     contatoTravado: boolean('contato_travado').notNull().default(false),
