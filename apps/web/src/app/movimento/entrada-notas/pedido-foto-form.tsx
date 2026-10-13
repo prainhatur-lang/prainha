@@ -46,6 +46,7 @@ async function reduzirFoto(file: File): Promise<File> {
 export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiais: Filial[] }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
+  const scanRef = useRef<HTMLInputElement>(null);
   const [selecionada, setSelecionada] = useState(filialId);
   const [lancarDireto, setLancarDireto] = useState(true);
   const [andamento, setAndamento] = useState<string | null>(null);
@@ -116,6 +117,7 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
     }
     setAndamento(null);
     if (inputRef.current) inputRef.current.value = '';
+    if (scanRef.current) scanRef.current.value = '';
     router.refresh();
   }
 
@@ -148,6 +150,26 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
           </div>
         )}
 
+        {/* Escanear: no celular/tablet abre a câmera traseira direto, sem passar pela galeria */}
+        <label className="block">
+          <input
+            ref={scanRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            disabled={enviando}
+            onChange={onChange}
+            className="hidden"
+          />
+          <div
+            className={`cursor-pointer rounded-lg px-4 py-4 text-center text-sm font-semibold ${
+              enviando ? 'bg-slate-200 text-slate-500' : 'bg-emerald-600 text-white hover:bg-emerald-700'
+            }`}
+          >
+            {andamento ?? '📷 Escanear pedido agora'}
+          </div>
+        </label>
+
         <label className="block">
           <input
             ref={inputRef}
@@ -159,13 +181,13 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
             className="hidden"
           />
           <div
-            className={`cursor-pointer rounded-lg border-2 border-dashed px-4 py-5 text-center text-sm ${
+            className={`cursor-pointer rounded-lg border-2 border-dashed px-4 py-3 text-center text-xs ${
               enviando
                 ? 'border-slate-200 bg-slate-50 text-slate-400'
                 : 'border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
             }`}
           >
-            {andamento ?? 'Tirar foto ou escolher arquivo (foto ou PDF)'}
+            {enviando ? 'aguarde…' : 'ou escolher arquivo já escaneado (foto ou PDF)'}
           </div>
         </label>
 
