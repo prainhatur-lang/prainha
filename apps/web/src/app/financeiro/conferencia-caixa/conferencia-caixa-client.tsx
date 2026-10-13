@@ -1,5 +1,6 @@
 'use client';
 
+import { motivoSemExtrato, semExtratoCielo, ROTULO_SEM_EXTRATO } from '@/lib/caixa-sem-extrato';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 interface FormaTot {
@@ -490,13 +491,13 @@ export function ConferenciaCaixaClient({
               }`}
             >
               <div>
-                {indeterminado ? '⚪' : '⛔'} {v.motivo}
+                {indeterminado ? '⚪' : '⛔'} {v.motivo ? motivoSemExtrato(v.motivo) : v.motivo}
               </div>
               {(v.bloqueios ?? []).length > 1 && (
                 <ul className="mt-1 space-y-0.5 pl-4">
                   {(v.bloqueios ?? []).map((b, i) => (
                     <li key={i} className="list-disc text-amber-800">
-                      {b.texto}
+                      {motivoSemExtrato(b.texto)}
                     </li>
                   ))}
                 </ul>
@@ -707,7 +708,11 @@ export function ConferenciaCaixaClient({
                 <div className="text-xs font-semibold uppercase tracking-wide text-amber-800">Por quê</div>
                 {porQue.map(([cat, v]) => (
                   <div key={cat} className="text-xs text-amber-900">
-                    <b>{v.n} caixa(s)</b> · {brl(v.valor)} — {rotuloCategoria(cat)}
+                    <b>{v.n} caixa(s)</b> · {brl(v.valor)} —{' '}
+                    {cat === 'extrato_atrasado' &&
+                    (conf.caixas ?? []).some((c) => semExtratoCielo(c.extrato_ate, c.motivo))
+                      ? ROTULO_SEM_EXTRATO
+                      : rotuloCategoria(cat)}
                     {cat === 'sem_par' && (
                       <div className="mt-0.5 text-amber-700">
                         o extrato da Cielo fecha com o PDV dia a dia (medido: diferença de centavos) —

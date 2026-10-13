@@ -9,6 +9,7 @@
 // ainda chegam pela metade na nuvem — `kds.cobertura` diz quanto do dia tem
 // tempo medido, e o relatório só afirma sobre o que tem marca.
 
+import { motivoSemExtrato, semExtratoCielo } from '@/lib/caixa-sem-extrato';
 import { db } from '@concilia/db';
 import { sql, type SQL } from 'drizzle-orm';
 import { dateToBrYmd } from './datas';
@@ -1417,12 +1418,15 @@ async function caixaDaLoja(filialId: string, dia: string): Promise<CaixaDia> {
             fecharia,
             categoria,
             motivo: c.motivo
-              ? String(c.motivo).replace(' (vai até 00/00/0000)', ' (a nuvem ainda não tem extrato da Cielo desta casa)')
+              ? motivoSemExtrato(String(c.motivo)).replace(' (vai até 00/00/0000)', ' (a nuvem ainda não tem extrato da Cielo desta casa)')
               : null,
             canal: r2(num(c.canal?.total)),
             // Extrato do próprio dia que ainda não chegou é passageiro; o resto
             // (dinheiro lançado, sem par, duplicado, ou caixa de dias atrás) é trava.
-            travada: !fecharia && (!passageiras.includes(categoria ?? '') || aberto.getTime() < iniMs),
+            // Casa sem extrato da Cielo: o arquivo não chega, então não é passageiro.
+            travada:
+              !fecharia &&
+              (!passageiras.includes(categoria ?? '') || aberto.getTime() < iniMs || semExtratoCielo(null, c.motivo)),
           };
         });
     }
