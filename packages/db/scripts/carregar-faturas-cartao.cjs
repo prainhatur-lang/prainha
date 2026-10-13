@@ -22,7 +22,7 @@ const TIPO = { '.pdf': 'application/pdf', '.csv': 'text/csv', '.xlsx': 'applicat
 const REGRAS = [
   [/LEVEROS|PROSOLARE|CHOPERIA|SORVEPAN/i, 'Equipamento / imobilizado'],
   [/TUDOTEC|CONECTE TUDO|UBIQUITI/i, 'Informática e rede'],
-  [/CONSUMER/i, 'Software'],
+  [/CONSUMER|SPOTIFY/i, 'Software'],
   [/FERREIRA COS|DIMARA|ZABATA|PISOLAR|PS PARAF|MADAL|ANCORA|ELETRICA BAHIANA/i, 'Manutenção e reforma'],
   [/PETROX|VASPETRO|A C POSTO|MIRELLE|CIMAVEL|ESTACION|RIOMAR/i, 'Combustível e veículo'],
   [/MAPFRE/i, 'Seguro'],
