@@ -95,15 +95,20 @@ function montarEnvelope(opts: {
   tpAmb: number;
   cnpj: string;
   ultimoNsu: string;
+  /** Se informada, consulta essa chave (consChNFe) em vez da fila por NSU. */
+  chave?: string;
 }): string {
   const { cUF, tpAmb, cnpj, ultimoNsu } = opts;
+  const consulta = opts.chave
+    ? `<consChNFe><chNFe>${opts.chave}</chNFe></consChNFe>`
+    : `<distNSU><ultNSU>${padNsu(ultimoNsu)}</ultNSU></distNSU>`;
   // distDFeInt SEM declaração XML e SEM espaços supérfluos (SEFAZ é chato)
   const distDFeInt =
     `<distDFeInt xmlns="http://www.portalfiscal.inf.br/nfe" versao="1.01">` +
     `<tpAmb>${tpAmb}</tpAmb>` +
     `<cUFAutor>${cUF}</cUFAutor>` +
     `<CNPJ>${cnpj}</CNPJ>` +
-    `<distNSU><ultNSU>${padNsu(ultimoNsu)}</ultNSU></distNSU>` +
+    consulta +
     `</distDFeInt>`;
 
   return (
@@ -259,6 +264,39 @@ export async function consultarDistribuicao(input: ConsultaDFeInput): Promise<Co
 
   const result = parsearResposta(body);
   return { ...result, respostaXml: body };
+}
+
+/** Consulta UMA nota pela chave (consChNFe). Não mexe na fila de NSU.
+ *  Com ciência/confirmação já registrada devolve o procNFe (XML completo);
+ *  sem manifestação devolve só o resNFe. cStat 137 = nada achado,
+ *  632 = fora do prazo de download, 656 = consumo indevido (esperar 1 h). */
+export async function consultarPorChave(input: {
+  pfxBytes: Buffer;
+  senhaPfx: string;
+  cnpj: string;
+  cUF: number;
+  chave: string;
+  tpAmb?: 1 | 2;
+}): Promise<ConsultaDFeResult> {
+  const tpAmb = input.tpAmb ?? 1;
+  const envelope = montarEnvelope({
+    cUF: input.cUF,
+    tpAmb,
+    cnpj: input.cnpj,
+    ultimoNsu: '0',
+    chave: input.chave,
+  });
+  const pem = extrairPem(input.pfxBytes, input.senhaPfx);
+  const { status, body } = await postSoap({
+    url: tpAmb === 1 ? URL_PROD : URL_HOM,
+    body: envelope,
+    certPem: pem.certPem,
+    keyPem: pem.privateKeyPem,
+  });
+  if (status !== 200) {
+    throw new Error(`SEFAZ DF-e retornou HTTP ${status}. Corpo: ${body.slice(0, 500)}`);
+  }
+  return { ...parsearResposta(body), respostaXml: body };
 }
 
 /** Mapa UF → código IBGE. Útil pra derivar cUFAutor. */

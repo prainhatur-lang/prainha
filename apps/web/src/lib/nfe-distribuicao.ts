@@ -8,14 +8,14 @@
 // Usado tanto pelo endpoint manual quanto pelo cron.
 
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import { createAdminClient } from '@/lib/supabase/server';
 import { decifrarSenha } from '@/lib/certificado';
 import { findActiveCertForFilial, atualizarNsu } from '@/lib/certificado-resolver';
 import { resolverFornecedorParaNota } from '@/lib/match-fornecedor';
 import { tentarMatchPedidoComNota } from '@/lib/match-pedido-nf';
-import { consultarDistribuicao, UF_CODIGO } from '@/lib/sefaz-dfe';
+import { consultarDistribuicao, consultarPorChave, UF_CODIGO } from '@/lib/sefaz-dfe';
 import { parseNfeXml } from '@/lib/nfe-parser';
 import { XMLParser } from 'fast-xml-parser';
 
@@ -460,4 +460,119 @@ export async function consultarEProcessar(opts: {
     erros,
     temMais: resp.maxNSU > ultNsuDepois,
   };
+}
+
+export interface ResultadoBuscaXml {
+  filialId: string;
+  tentadas: number;
+  /** Chaves que viraram nota completa (com itens). */
+  completas: string[];
+  /** Chaves em que a SEFAZ não devolveu o XML (ou deu erro ao gravar). */
+  semXml: { chave: string; motivo: string }[];
+  /** cStat 656: a SEFAZ bloqueou o CNPJ por 1 h — parou de consultar. */
+  bloqueio: string | null;
+}
+
+/** Busca o XML completo nota a nota pela chave (consChNFe), sem depender da
+ *  fila de NSU. Pra nota que já tem ciência/confirmação e o procNFe não chegou
+ *  pela fila (no Bar ~1/3 das cientes ficou presa em "Aguard." entre jun e
+ *  out/2026). A SEFAZ só entrega até 90 dias da autorização e limita ~20
+ *  consultas por chave por hora por CNPJ (656 = bloqueio de 1 h), então cada
+ *  chamada faz no máximo 15 e roda as que foram tentadas há mais tempo
+ *  primeiro (marca atualizado_em em cada tentativa). */
+export async function buscarXmlPorChave(opts: {
+  filialId: string;
+  /** Se informado, só essas chaves (resumo ou ciente). Senão, as cientes da filial. */
+  chaves?: string[];
+  limite?: number;
+  uf?: string;
+  tpAmb?: 1 | 2;
+}): Promise<ResultadoBuscaXml> {
+  const limite = Math.min(opts.limite ?? 10, 15);
+  const res: ResultadoBuscaXml = {
+    filialId: opts.filialId,
+    tentadas: 0,
+    completas: [],
+    semXml: [],
+    bloqueio: null,
+  };
+  const individual = !!(opts.chaves && opts.chaves.length);
+
+  const alvos = await db
+    .select({ id: schema.notaCompra.id, chave: schema.notaCompra.chave })
+    .from(schema.notaCompra)
+    .where(
+      and(
+        eq(schema.notaCompra.filialId, opts.filialId),
+        individual
+          ? and(
+              inArray(schema.notaCompra.chave, opts.chaves!),
+              inArray(schema.notaCompra.origemImportacao, [
+                'SEFAZ_DFE_RESUMO',
+                'SEFAZ_DFE_RESUMO_CIENTE',
+              ]),
+            )
+          : eq(schema.notaCompra.origemImportacao, 'SEFAZ_DFE_RESUMO_CIENTE'),
+        sql`coalesce(${schema.notaCompra.situacao}, '') <> 'CANCELADA'`,
+        sql`coalesce(${schema.notaCompra.dataAutorizacao}, ${schema.notaCompra.dataEmissao}) >= now() - interval '90 days'`,
+      ),
+    )
+    .orderBy(asc(schema.notaCompra.atualizadoEm), desc(schema.notaCompra.dataEmissao))
+    .limit(limite);
+  if (alvos.length === 0) return res;
+
+  const uf = (opts.uf ?? 'SE').toUpperCase();
+  const cUF = UF_CODIGO[uf];
+  if (!cUF) throw new Error(`UF invalida: ${uf}`);
+  const row = await findActiveCertForFilial(opts.filialId);
+  if (!row) throw new Error('filial sem certificado A1 disponivel (nem proprio nem compartilhado)');
+  const pfxBytes = await baixarPfx(row.pfxStoragePath);
+  const senhaPfx = decifrarSenha(row.senhaCifrada);
+
+  for (const a of alvos) {
+    res.tentadas++;
+    let motivo: string | null = null;
+    try {
+      const r = await consultarPorChave({
+        pfxBytes,
+        senhaPfx,
+        cnpj: row.filialCnpj,
+        cUF,
+        chave: a.chave,
+        tpAmb: opts.tpAmb ?? 1,
+      });
+      if (r.cStat === '656') {
+        res.bloqueio = `${r.cStat} ${r.xMotivo}`;
+        res.tentadas--;
+        break;
+      }
+      // Cancelamento que vier junto já marca a nota
+      for (const d of r.docs) {
+        if (d.tipo === 'EVENTO_COMPLETO' || d.tipo === 'EVENTO_RESUMO') {
+          await aplicarEvento(opts.filialId, d.xml);
+        }
+      }
+      const completa = r.docs.find((d) => d.tipo === 'NFE_COMPLETA' && d.chave === a.chave);
+      if (completa) {
+        const g = await inserirNfeCompleta(opts.filialId, completa.xml);
+        if (g === 'ATUALIZADA' || g === 'INSERIDA') res.completas.push(a.chave);
+        else motivo = g === 'ERRO' ? 'XML veio mas não deu pra ler' : 'já estava completa';
+      } else if (r.docs.some((d) => d.tipo === 'NFE_RESUMO')) {
+        motivo = 'SEFAZ ainda só entrega o resumo (falta ciência/confirmação registrada)';
+      } else {
+        motivo = `${r.cStat} ${r.xMotivo}`.trim() || 'sem resposta da SEFAZ';
+      }
+    } catch (e) {
+      motivo = (e as Error).message.slice(0, 200);
+    }
+    if (motivo) {
+      res.semXml.push({ chave: a.chave, motivo });
+      // Gira a fila: a próxima rodada começa pelas que não foram tentadas
+      await db
+        .update(schema.notaCompra)
+        .set({ atualizadoEm: new Date() })
+        .where(eq(schema.notaCompra.id, a.id));
+    }
+  }
+  return res;
 }

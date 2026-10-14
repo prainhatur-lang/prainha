@@ -10,13 +10,14 @@
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { eq, isNull } from 'drizzle-orm';
-import { consultarEProcessar } from '@/lib/nfe-distribuicao';
+import { buscarXmlPorChave, consultarEProcessar } from '@/lib/nfe-distribuicao';
 import { manifestarPendentes } from '@/lib/nfe-manifestar';
 import { findActiveCertForFilial } from '@/lib/certificado-resolver';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+// 300: alem da fila de NSU e da ciencia, busca XML por chave (ate 10 por casa).
+export const maxDuration = 300;
 
 export async function GET(req: Request) {
   const auth = req.headers.get('authorization') ?? '';
@@ -64,6 +65,9 @@ export async function GET(req: Request) {
     duplicadas: number;
     ciencias: number;
     ciencias_erro: number;
+    xml_por_chave?: number;
+    xml_por_chave_falta?: number;
+    xml_por_chave_bloqueio?: string | null;
     erro?: string;
   }> = [];
 
@@ -94,6 +98,9 @@ export async function GET(req: Request) {
     let duplicadas = 0;
     let ciencias = 0;
     let ciencias_erro = 0;
+    let xml_por_chave = 0;
+    let xml_por_chave_falta = 0;
+    let xml_por_chave_bloqueio: string | null = null;
     let erro: string | undefined;
 
     try {
@@ -113,13 +120,26 @@ export async function GET(req: Request) {
       // 2. Manifestação automática: dá ciência em todos os resumos
       //    Na próxima execução do cron, a SEFAZ vai devolver os procNFe
       //    completos pra upgrade.
-      if (resumos > 0) {
-        const m = await manifestarPendentes({ filialId: c.filialId, limite: 50 });
-        ciencias = m.chavesManifestadas.length;
-        ciencias_erro = m.chavesComErro.length;
-      }
+      //    Roda em TODA execução (não só quando chegou resumo novo): resumo que
+      //    chegou numa rodada e não levou ciência ficava parado até passar dos
+      //    10 dias. O manifestarPendentes já pega só as que cabem no prazo.
+      const m = await manifestarPendentes({ filialId: c.filialId, limite: 50 });
+      ciencias = m.chavesManifestadas.length;
+      ciencias_erro = m.chavesComErro.length;
     } catch (e) {
       erro = (e as Error).message;
+    }
+
+    // 3. Nota com ciência cujo XML não veio pela fila: busca pela chave.
+    if (!erro) {
+      try {
+        const b = await buscarXmlPorChave({ filialId: c.filialId, limite: 10 });
+        xml_por_chave = b.completas.length;
+        xml_por_chave_falta = b.semXml.length;
+        xml_por_chave_bloqueio = b.bloqueio;
+      } catch (e) {
+        erro = `xml por chave: ${(e as Error).message}`;
+      }
     }
 
     resultados.push({
@@ -133,6 +153,9 @@ export async function GET(req: Request) {
       duplicadas,
       ciencias,
       ciencias_erro,
+      xml_por_chave,
+      xml_por_chave_falta,
+      xml_por_chave_bloqueio,
       erro,
     });
   }

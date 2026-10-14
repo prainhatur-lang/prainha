@@ -14,6 +14,8 @@ import { UploadNotasForm } from './upload-form';
 import { PedidoFotoForm } from './pedido-foto-form';
 import { ManifestarBtn } from './manifestar-btn';
 import { ManifestarUmaBtn } from './manifestar-uma-btn';
+import { ConfirmarOperacaoBtn } from './confirmar-operacao-btn';
+import { BuscarXmlBtn } from './buscar-xml-btn';
 
 export const dynamic = 'force-dynamic';
 
@@ -127,6 +129,66 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
       ),
     );
 
+  // Prazos da SEFAZ contados da autorização: ciência só até 10 dias (depois
+  // responde 596); confirmação até 180, mas o XML só desce até ~90 dias (632).
+  // Entre 10 e 88 dias o caminho é a Confirmação da Operação; depois disso, só
+  // subindo o XML na mão.
+  const idadeSql = sql`extract(epoch from now() - coalesce(${schema.notaCompra.dataAutorizacao}, ${schema.notaCompra.dataEmissao})) / 86400`;
+  const naoCancelada = sql`coalesce(${schema.notaCompra.situacao}, '') <> 'CANCELADA'`;
+  const confirmaveis = await db
+    .select({
+      chave: schema.notaCompra.chave,
+      emitNome: schema.notaCompra.emitNome,
+      valorTotal: schema.notaCompra.valorTotal,
+    })
+    .from(schema.notaCompra)
+    .where(
+      and(
+        eq(schema.notaCompra.filialId, filialSelecionada.id),
+        gte(schema.notaCompra.dataEmissao, dtIni),
+        lte(schema.notaCompra.dataEmissao, dtFim),
+        eq(schema.notaCompra.origemImportacao, 'SEFAZ_DFE_RESUMO'),
+        naoCancelada,
+        sql`${idadeSql} > 10`,
+        sql`${idadeSql} <= 88`,
+      ),
+    )
+    .orderBy(desc(schema.notaCompra.dataEmissao))
+    .limit(50);
+  const [foraDoPrazo] = await db
+    .select({ qtd: count() })
+    .from(schema.notaCompra)
+    .where(
+      and(
+        eq(schema.notaCompra.filialId, filialSelecionada.id),
+        gte(schema.notaCompra.dataEmissao, dtIni),
+        lte(schema.notaCompra.dataEmissao, dtFim),
+        eq(schema.notaCompra.origemImportacao, 'SEFAZ_DFE_RESUMO'),
+        naoCancelada,
+        sql`${idadeSql} > 88`,
+      ),
+    );
+  const [cientesAguardando] = await db
+    .select({ qtd: count() })
+    .from(schema.notaCompra)
+    .where(
+      and(
+        eq(schema.notaCompra.filialId, filialSelecionada.id),
+        gte(schema.notaCompra.dataEmissao, dtIni),
+        lte(schema.notaCompra.dataEmissao, dtFim),
+        eq(schema.notaCompra.origemImportacao, 'SEFAZ_DFE_RESUMO_CIENTE'),
+        naoCancelada,
+        sql`${idadeSql} <= 90`,
+      ),
+    );
+  const fornecedoresConfirmaveis = [
+    ...new Set(confirmaveis.map((c) => (c.emitNome ?? '').split(' ').slice(0, 2).join(' '))),
+  ]
+    .filter(Boolean)
+    .slice(0, 6)
+    .join(', ');
+  const totalConfirmaveis = confirmaveis.reduce((a, c) => a + Number(c.valorTotal ?? 0), 0);
+
   const [stats] = await db
     .select({
       qtd: count(),
@@ -149,6 +211,7 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
       valorProdutos: schema.notaCompra.valorProdutos,
       situacao: schema.notaCompra.situacao,
       origemImportacao: schema.notaCompra.origemImportacao,
+      idadeDias: sql<number>`(${idadeSql})::float8`,
     })
     .from(schema.notaCompra)
     .where(where)
@@ -263,6 +326,56 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
               </Link>
             </p>
             <ManifestarBtn filialId={filialSelecionada.id} />
+            {confirmaveis.length > 0 && (
+              <div className="mt-3 border-t border-amber-200 pt-3">
+                <p className="font-semibold">
+                  {int(confirmaveis.length)} resumo(s) passaram dos 10 dias da ciência (a SEFAZ
+                  responde &quot;596 … prazo permitido [10 dias]&quot;)
+                </p>
+                <p className="mt-1 text-amber-800">
+                  Pra essas, o que libera o XML é a <b>Confirmação da Operação</b> (vale até 180
+                  dias). Ela declara à SEFAZ que a mercadoria chegou e não se desfaz — confirme só
+                  o que foi recebido. Também dá pra confirmar uma a uma na lista.
+                  {fornecedoresConfirmaveis && <> Fornecedores: {fornecedoresConfirmaveis}.</>}
+                </p>
+                <div className="mt-2">
+                  <ConfirmarOperacaoBtn
+                    filialId={filialSelecionada.id}
+                    chaves={confirmaveis.map((c) => c.chave)}
+                    resumo={`${brl(totalConfirmaveis)}${
+                      fornecedoresConfirmaveis ? ` — ${fornecedoresConfirmaveis}` : ''
+                    }`}
+                    lote
+                  />
+                </div>
+              </div>
+            )}
+            {Number(foraDoPrazo?.qtd ?? 0) > 0 && (
+              <p className="mt-3 border-t border-amber-200 pt-3 text-amber-800">
+                {int(Number(foraDoPrazo?.qtd ?? 0))} resumo(s) têm mais de 88 dias: a SEFAZ não
+                entrega mais o XML (só até 90 dias). Pra ter os itens, peça o XML ao fornecedor e
+                suba no upload aqui do lado.
+              </p>
+            )}
+          </div>
+        )}
+
+        {Number(cientesAguardando?.qtd ?? 0) > 0 && (
+          <div className="mt-4 rounded-lg border border-sky-200 bg-sky-50 p-3 text-xs text-sky-900">
+            <p className="font-semibold">
+              {int(Number(cientesAguardando?.qtd ?? 0))} nota(s) já têm ciência e o XML não veio
+            </p>
+            <p className="mt-1 text-sky-800">
+              A consulta automática agora também pede o XML pela chave (até 10 por casa a cada
+              rodada). Dá pra puxar na hora: a SEFAZ aceita ~20 consultas por hora — se passar,
+              bloqueia por 1 hora.{' '}
+              <Link href={hrefOrigem('SEFAZ_DFE_RESUMO_CIENTE')} className="underline">
+                Ver só essas →
+              </Link>
+            </p>
+            <div className="mt-2">
+              <BuscarXmlBtn filialId={filialSelecionada.id} />
+            </div>
           </div>
         )}
 
@@ -479,6 +592,32 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
                               />
                             </div>
                           )}
+                          {n.origemImportacao === 'SEFAZ_DFE_RESUMO' &&
+                            n.situacao !== 'CANCELADA' &&
+                            Number(n.idadeDias) > 10 &&
+                            Number(n.idadeDias) <= 88 && (
+                              <div className="mt-1">
+                                <ConfirmarOperacaoBtn
+                                  filialId={filialSelecionada.id}
+                                  chaves={[n.chave]}
+                                  resumo={`${n.emitNome ?? ''} ${brl(n.valorTotal)}`.trim()}
+                                />
+                              </div>
+                            )}
+                          {n.origemImportacao === 'SEFAZ_DFE_RESUMO' &&
+                            n.situacao !== 'CANCELADA' &&
+                            Number(n.idadeDias) > 88 && (
+                              <div className="mt-1 max-w-[180px] whitespace-normal text-[10px] leading-tight text-slate-500">
+                                fora do prazo da SEFAZ (90 dias) — suba o XML
+                              </div>
+                            )}
+                          {n.origemImportacao === 'SEFAZ_DFE_RESUMO_CIENTE' &&
+                            n.situacao !== 'CANCELADA' &&
+                            Number(n.idadeDias) <= 90 && (
+                              <div className="mt-1">
+                                <BuscarXmlBtn filialId={filialSelecionada.id} chave={n.chave} />
+                              </div>
+                            )}
                         </td>
                       </tr>
                     ))
