@@ -2207,6 +2207,16 @@ class ContaActivity : AppCompatActivity() {
                         val q = if (l.qtd == Math.floor(l.qtd)) l.qtd.toInt().toString() else l.qtd.toString()
                         nomeTxt.text = "${q}x ${l.nome}"
                         valorTxt.text = Cupom.brl(l.valor)
+                        // quem lançou (dono, 14/10: "mostrar em tudo, inclusive
+                        // na maquininha") — linha menor e cinza embaixo do item
+                        if (!l.quem.isNullOrBlank()) {
+                            val sb = android.text.SpannableStringBuilder("${q}x ${l.nome}\n")
+                            val ini = sb.length
+                            sb.append(l.quem)
+                            sb.setSpan(android.text.style.RelativeSizeSpan(0.8f), ini, sb.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                            sb.setSpan(android.text.style.ForegroundColorSpan(0xFF6B7280.toInt()), ini, sb.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                            nomeTxt.text = sb
+                        }
                     }
                 }
                 is Api.PagFeito -> {

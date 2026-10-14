@@ -92,7 +92,9 @@ object Api {
         val chamouGarcom: Boolean = false, // cliente apertou "chamar garçom" → pisca vermelho
     )
 
-    data class ItemConta(val nome: String, val qtd: Double, val valor: Double, val tipo: Int)
+    // quem = "👤 Matheus" / "📱 Cliente" — quem lançou o item (servidor
+    // de 14/10 em diante manda pronto em quem_txt; servidor antigo não manda → null)
+    data class ItemConta(val nome: String, val qtd: Double, val valor: Double, val tipo: Int, val quem: String? = null)
     data class PagFeito(val forma: String, val valor: Double, val nsu: String?, val status: String, val criadoEm: String?)
 
     /** Conta AO VIVO do Firebird (/api/conta) — números reais pra cobrar. */
@@ -390,7 +392,8 @@ object Api {
             contaPedida = j.optBoolean("conta_pedida", false),
             itens = (0 until itens.length()).mapNotNull { i ->
                 val o = itens.optJSONObject(i) ?: return@mapNotNull null
-                ItemConta(o.optString("nome"), o.optDouble("qtd", 1.0), o.optDouble("valor", 0.0), o.optInt("tipo", 1))
+                ItemConta(o.optString("nome"), o.optDouble("qtd", 1.0), o.optDouble("valor", 0.0), o.optInt("tipo", 1),
+                    o.optStringOrNull("quem_txt"))
             },
             total = j.optDouble("total", 0.0),
             servico = j.optDouble("servico", 0.0),
