@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { normalizaBusca } from '@/lib/texto';
 import { brl } from '@/lib/format';
 import { MapaMesas } from './mapa-mesas';
+import { JuntarNoMapa } from './juntar-mapa';
 import { parseJuntadas, textoMesas } from '@/lib/reservas/mesas-juntadas';
 
 /** Resposta de /api/reservas/quem — quem é a pessoa do telefone/CPF digitado. */
@@ -1002,7 +1003,9 @@ function MesaInline({ reservaId, filialId, areaInicial, areasDaFilial, inicial, 
           />
         )}
         {mesaSel && mesasDoEsp.length > 1 && (
-          <JuntarMesas
+          <JuntarMesasComMapa
+            filialId={filialId}
+            area={temEspacos ? esp : ''}
             mesas={mesasDoEsp}
             principal={val}
             selecionadas={juntadas}
@@ -1038,6 +1041,30 @@ function MesaInline({ reservaId, filialId, areaInicial, areasDaFilial, inicial, 
 function mesaTexto(mesa: string | null, mesaJuntada?: string | null) {
   if (!mesa) return 'sem mesa';
   return `mesa ${textoMesas(mesa, mesaJuntada)}`;
+}
+
+// Juntar mesas olhando o mapa do espaço (dono, 14/10/2026: só junta mesa
+// encostada — do lado, na frente ou atrás). "ver em lista" volta pros
+// checkboxes de antes (JuntarMesas, abaixo), do jeito que eram.
+function JuntarMesasComMapa({ filialId, area, ...props }: Parameters<typeof JuntarMesas>[0] & { filialId: string; area: string }) {
+  const [lista, setLista] = useState(false);
+  if (!area || lista) {
+    return (
+      <>
+        <JuntarMesas {...props} />
+        {area && (
+          <button
+            type="button"
+            onClick={() => setLista(false)}
+            className="ml-1 text-[10px] text-slate-400 underline hover:text-slate-600"
+          >
+            🗺️ ver no mapa
+          </button>
+        )}
+      </>
+    );
+  }
+  return <JuntarNoMapa filialId={filialId} area={area} {...props} onVerLista={() => setLista(true)} />;
 }
 
 // Checkboxes pra juntar mesas à principal — a equipe marca quantas precisar
@@ -1854,7 +1881,9 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, ocupadas, ocupadasCons
             )}
           </p>
           <div className="mt-1.5">
-            <JuntarMesas
+            <JuntarMesasComMapa
+              filialId={filialId}
+              area={area}
               mesas={mesasDoEspaco}
               principal={mesa}
               selecionadas={juntadas}
