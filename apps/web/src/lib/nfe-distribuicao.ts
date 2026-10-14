@@ -16,6 +16,7 @@ import { findActiveCertForFilial, atualizarNsu } from '@/lib/certificado-resolve
 import { resolverFornecedorParaNota } from '@/lib/match-fornecedor';
 import { tentarMatchPedidoComNota } from '@/lib/match-pedido-nf';
 import { consultarDistribuicao, consultarPorChave, UF_CODIGO } from '@/lib/sefaz-dfe';
+import { manifestarPendentes } from '@/lib/nfe-manifestar';
 import { parseNfeXml } from '@/lib/nfe-parser';
 import { XMLParser } from 'fast-xml-parser';
 
@@ -575,4 +576,135 @@ export async function buscarXmlPorChave(opts: {
     }
   }
   return res;
+}
+
+/** Dígito verificador da chave de acesso (módulo 11, pesos 2..9). */
+export function chaveNfeValida(chave: string): boolean {
+  if (!/^\d{44}$/.test(chave)) return false;
+  let soma = 0;
+  let peso = 2;
+  for (let i = 42; i >= 0; i--) {
+    soma += Number(chave[i]) * peso;
+    peso = peso === 9 ? 2 : peso + 1;
+  }
+  const resto = soma % 11;
+  const dv = resto < 2 ? 0 : 11 - resto;
+  return dv === Number(chave[43]);
+}
+
+export interface ResultadoImportarChave {
+  status: 'COMPLETA' | 'RESUMO' | 'JA_EXISTE' | 'NAO_ENCONTRADA' | 'BLOQUEIO';
+  motivo: string;
+  ciencia: boolean;
+}
+
+/** Traz UMA nota pela chave quando ela não veio pela fila de NSU (a fila
+ *  engole erro por documento e o NSU avança — a nota some sem aviso).
+ *  Resumo dentro dos 10 dias já leva ciência e tenta o XML completo na hora.
+ *  Gasta 1 a 2 das ~20 consultas por hora do CNPJ. */
+export async function importarPorChave(opts: {
+  filialId: string;
+  chave: string;
+  uf?: string;
+  tpAmb?: 1 | 2;
+}): Promise<ResultadoImportarChave> {
+  const chave = opts.chave.replace(/\D/g, '');
+  if (!chaveNfeValida(chave)) {
+    return { status: 'NAO_ENCONTRADA', motivo: 'chave inválida (confira os 44 dígitos)', ciencia: false };
+  }
+
+  const existente = async () =>
+    (
+      await db
+        .select({
+          origem: schema.notaCompra.origemImportacao,
+          idadeDias: sql<number>`(extract(epoch from now() - coalesce(${schema.notaCompra.dataAutorizacao}, ${schema.notaCompra.dataEmissao})) / 86400)::float8`,
+        })
+        .from(schema.notaCompra)
+        .where(and(eq(schema.notaCompra.filialId, opts.filialId), eq(schema.notaCompra.chave, chave)))
+        .limit(1)
+    )[0];
+
+  let nota = await existente();
+  if (nota && nota.origem !== 'SEFAZ_DFE_RESUMO' && nota.origem !== 'SEFAZ_DFE_RESUMO_CIENTE') {
+    return { status: 'JA_EXISTE', motivo: 'a nota já está completa aqui', ciencia: false };
+  }
+
+  if (!nota) {
+    const uf = (opts.uf ?? 'SE').toUpperCase();
+    const cUF = UF_CODIGO[uf];
+    if (!cUF) throw new Error(`UF invalida: ${uf}`);
+    const row = await findActiveCertForFilial(opts.filialId);
+    if (!row) throw new Error('filial sem certificado A1 disponivel (nem proprio nem compartilhado)');
+    const r = await consultarPorChave({
+      pfxBytes: await baixarPfx(row.pfxStoragePath),
+      senhaPfx: decifrarSenha(row.senhaCifrada),
+      cnpj: row.filialCnpj,
+      cUF,
+      chave,
+      tpAmb: opts.tpAmb ?? 1,
+    });
+    if (r.cStat === '656') {
+      return { status: 'BLOQUEIO', motivo: `${r.cStat} ${r.xMotivo}`, ciencia: false };
+    }
+    let entrou = false;
+    for (const d of r.docs) {
+      if (d.tipo === 'NFE_COMPLETA' && d.chave === chave) {
+        const g = await inserirNfeCompleta(opts.filialId, d.xml);
+        if (g === 'INSERIDA' || g === 'ATUALIZADA') {
+          return { status: 'COMPLETA', motivo: 'XML completo importado', ciencia: false };
+        }
+      } else if (d.tipo === 'NFE_RESUMO') {
+        const g = await inserirResumo(opts.filialId, d.xml);
+        if (g === 'INSERIDA' || g === 'DUPLICADA') entrou = true;
+      }
+    }
+    for (const d of r.docs) {
+      if (d.tipo === 'EVENTO_COMPLETO' || d.tipo === 'EVENTO_RESUMO') {
+        await aplicarEvento(opts.filialId, d.xml);
+      }
+    }
+    if (!entrou) {
+      return {
+        status: 'NAO_ENCONTRADA',
+        motivo: `${r.cStat} ${r.xMotivo}`.trim() || 'SEFAZ não devolveu a nota',
+        ciencia: false,
+      };
+    }
+    nota = await existente();
+    if (!nota) return { status: 'NAO_ENCONTRADA', motivo: 'resumo não gravou', ciencia: false };
+  }
+
+  // Resumo: ciência se ainda cabe no prazo (a mesma que o cron daria sozinho).
+  let ciencia = false;
+  if (nota.origem === 'SEFAZ_DFE_RESUMO') {
+    if (Number(nota.idadeDias) > 10) {
+      return {
+        status: 'RESUMO',
+        motivo: 'entrou como resumo; passou dos 10 dias da ciência — use "Confirmar operação"',
+        ciencia: false,
+      };
+    }
+    const m = await manifestarPendentes({ filialId: opts.filialId, chaves: [chave] });
+    if (m.chavesManifestadas.length === 0) {
+      return {
+        status: 'RESUMO',
+        motivo: `entrou como resumo; ciência recusada: ${m.chavesComErro[0]?.motivo ?? 'sem retorno'}`,
+        ciencia: false,
+      };
+    }
+    ciencia = true;
+  }
+
+  const b = await buscarXmlPorChave({ filialId: opts.filialId, chaves: [chave], limite: 1 });
+  if (b.completas.length) {
+    return { status: 'COMPLETA', motivo: 'XML completo importado', ciencia };
+  }
+  return {
+    status: 'RESUMO',
+    motivo: `entrou como resumo${ciencia ? ' com ciência' : ''}; o XML vem na próxima consulta (${
+      b.bloqueio ?? b.semXml[0]?.motivo ?? 'SEFAZ ainda não liberou'
+    })`,
+    ciencia,
+  };
 }

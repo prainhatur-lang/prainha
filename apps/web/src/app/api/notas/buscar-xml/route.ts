@@ -6,12 +6,15 @@
 // cientes da filial que estão há mais tempo sem tentativa (até 15).
 // A SEFAZ aceita ~20 consultas por hora por CNPJ; passou disso responde 656 e
 // bloqueia por 1 hora — a rota para no primeiro 656 e devolve o aviso.
+//
+// chaveNova: nota que nem chegou aqui (a fila de NSU perdeu). Busca na SEFAZ
+// pela chave, grava como completa ou resumo e, se der, já dá ciência.
 
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
-import { buscarXmlPorChave } from '@/lib/nfe-distribuicao';
+import { buscarXmlPorChave, importarPorChave } from '@/lib/nfe-distribuicao';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -25,6 +28,8 @@ export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as {
     filialId?: string;
     chaves?: string[];
+    /** Chave de nota que não existe aqui ainda (44 dígitos, pode vir com espaços). */
+    chaveNova?: string;
   };
   const filialId = body.filialId;
   if (!filialId || !/^[0-9a-f-]{36}$/i.test(filialId)) {
@@ -43,6 +48,18 @@ export async function POST(req: Request) {
     .limit(1);
   if (!link || link.role !== 'DONO') {
     return NextResponse.json({ error: 'so DONO pode buscar XML na SEFAZ' }, { status: 403 });
+  }
+
+  if (body.chaveNova) {
+    try {
+      const r = await importarPorChave({ filialId, chave: body.chaveNova });
+      return NextResponse.json({ ok: true, ...r });
+    } catch (e) {
+      return NextResponse.json(
+        { error: `erro trazendo a nota: ${(e as Error).message}` },
+        { status: 500 },
+      );
+    }
   }
 
   const chaves = (body.chaves ?? []).filter((c) => /^\d{44}$/.test(c));

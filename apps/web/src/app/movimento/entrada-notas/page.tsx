@@ -16,6 +16,7 @@ import { ManifestarBtn } from './manifestar-btn';
 import { ManifestarUmaBtn } from './manifestar-uma-btn';
 import { ConfirmarOperacaoBtn } from './confirmar-operacao-btn';
 import { BuscarXmlBtn } from './buscar-xml-btn';
+import { TrazerPorChaveForm } from './trazer-por-chave-form';
 
 export const dynamic = 'force-dynamic';
 
@@ -378,6 +379,8 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
             </div>
           </div>
         )}
+
+        <TrazerPorChaveForm filialId={filialSelecionada.id} />
 
         <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[380px_1fr]">
           {/* Coluna esquerda: upload + filtro */}
