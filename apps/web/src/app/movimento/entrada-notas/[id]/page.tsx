@@ -14,6 +14,8 @@ import { ConferirNota } from './conferir-nota';
 import { lerConferenciaNota } from '@/lib/nota-conferencia';
 import { fornecedoresParaLancar } from '@/lib/fornecedor-unico';
 import { urlFotoPedido } from '@/lib/pedido-sem-nota';
+import { confrontoDaNota } from '@/lib/confronto-pedido-nota';
+import { ConfrontoPedido } from './confronto-pedido';
 
 export const dynamic = 'force-dynamic';
 
@@ -201,6 +203,19 @@ export default async function NotaDetalhePage(props: {
     .where(eq(schema.pedidoCompra.notaCompraId, id))
     .limit(1);
   const pedido = pedidoVinculado[0] ?? null;
+
+  // Pedido × nota, item a item (só leitura). Erro aqui não derruba a entrada.
+  const confronto = await confrontoDaNota(id).catch((e) => {
+    console.error('[confronto-pedido-nota]', e);
+    return null;
+  });
+  const [casa] = confronto
+    ? await db
+        .select({ nome: schema.filial.nome })
+        .from(schema.filial)
+        .where(eq(schema.filial.id, nota.filialId))
+        .limit(1)
+    : [undefined];
 
   // Pedidos candidatos (mesmo fornecedor, sem NF, status pendente) — pra
   // permitir vinculo manual quando auto-match nao pegou
@@ -519,6 +534,10 @@ export default async function NotaDetalhePage(props: {
               </Link>
             </div>
           </div>
+        )}
+
+        {confronto && (
+          <ConfrontoPedido confronto={confronto} notaNumero={nota.numero} casaNome={casa?.nome ?? null} />
         )}
 
         {/* Card: candidatos a vincular manualmente quando auto-match nao pegou */}
