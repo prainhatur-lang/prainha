@@ -127,6 +127,7 @@ export function ReservasClient({
   itens,
   podeCriar,
   podeAtualizar,
+  podeExcluir = false,
   podeImportar,
   podeConfigurar,
   podeVerListaEspera,
@@ -143,6 +144,8 @@ export function ReservasClient({
   itens: ReservaItem[];
   podeCriar: boolean;
   podeAtualizar: boolean;
+  /** reserva.delete — mostra o "Excluir" (reserva feita por engano). */
+  podeExcluir?: boolean;
   podeImportar: boolean;
   podeConfigurar: boolean;
   podeVerListaEspera: boolean;
@@ -542,16 +545,17 @@ export function ReservasClient({
             Nenhuma reserva bate com esse filtro.
           </p>
         ) : (
-          itensFiltrados.map((r) => <Linha key={r.id} r={r} hist={historico[r.id]} fiado={fiado[r.id]} membro={membroSet.has(r.id)} podeAtualizar={podeAtualizar} mostrarFilial={filiais.length > 1 && !filialFiltro} filiais={filiais} ocupadas={ocupadas} ocupadasConsumer={ocupadasConsumer} reservasPorMesa={reservasPorMesa} onMudou={() => router.refresh()} />)
+          itensFiltrados.map((r) => <Linha key={r.id} r={r} hist={historico[r.id]} fiado={fiado[r.id]} membro={membroSet.has(r.id)} podeAtualizar={podeAtualizar} podeExcluir={podeExcluir} mostrarFilial={filiais.length > 1 && !filialFiltro} filiais={filiais} ocupadas={ocupadas} ocupadasConsumer={ocupadasConsumer} reservasPorMesa={reservasPorMesa} onMudou={() => router.refresh()} />)
         )}
       </div>
     </div>
   );
 }
 
-function Linha({ r, hist, fiado, membro, podeAtualizar, mostrarFilial, filiais, ocupadas, ocupadasConsumer, reservasPorMesa, onMudou }: { r: ReservaItem; hist?: { visitas: number; ultima: string | null }; fiado?: { saldo: number; clienteId: string }; membro?: boolean; podeAtualizar: boolean; mostrarFilial: boolean; filiais: FilialOpt[]; ocupadas: string[]; ocupadasConsumer: string[]; reservasPorMesa: Record<string, { nome: string; hora: string; pessoas: number }>; onMudou: () => void }) {
+function Linha({ r, hist, fiado, membro, podeAtualizar, podeExcluir = false, mostrarFilial, filiais, ocupadas, ocupadasConsumer, reservasPorMesa, onMudou }: { r: ReservaItem; hist?: { visitas: number; ultima: string | null }; fiado?: { saldo: number; clienteId: string }; membro?: boolean; podeAtualizar: boolean; podeExcluir?: boolean; mostrarFilial: boolean; filiais: FilialOpt[]; ocupadas: string[]; ocupadasConsumer: string[]; reservasPorMesa: Record<string, { nome: string; hora: string; pessoas: number }>; onMudou: () => void }) {
   const [salvando, setSalvando] = useState(false);
   const [confirmandoBebida, setConfirmandoBebida] = useState(false);
+  const [editandoData, setEditandoData] = useState(false);
   const st = STATUS_INFO[r.status] ?? STATUS_INFO.pendente;
   const areasDaFilial = (filiais.find((f) => f.id === r.filialId)?.areas ?? []).filter((a) => a.ativo && !a.somenteEventos);
   const mesasDoEspaco = areasDaFilial.find((a) => a.nome === r.area)?.mesas ?? [];
@@ -568,6 +572,22 @@ function Linha({ r, hist, fiado, membro, podeAtualizar, mostrarFilial, filiais, 
       if (!r2.ok) {
         const d = await r2.json().catch(() => ({}));
         alert(d.error ?? `Erro ${r2.status} ao atualizar a reserva.`);
+        return;
+      }
+      onMudou();
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  async function excluir() {
+    if (!confirm(`Excluir a reserva de ${r.clienteNome} (${r.pessoas} pessoa(s), ${r.data.split('-').reverse().join('/')} às ${r.hora})?\n\nEla some da agenda — use só pra reserva feita por engano. Pra cliente que desistiu, use Cancelar.`)) return;
+    setSalvando(true);
+    try {
+      const r2 = await fetch(`/api/reservas/${r.id}`, { method: 'DELETE' });
+      if (!r2.ok) {
+        const d = await r2.json().catch(() => ({}));
+        alert(d.error ?? `Erro ${r2.status} ao excluir a reserva.`);
         return;
       }
       onMudou();
@@ -735,8 +755,91 @@ function Linha({ r, hist, fiado, membro, podeAtualizar, mostrarFilial, filiais, 
             </Btn>
           )}
           {r.status !== 'no_show' && <Btn onClick={() => setStatus('no_show')} disabled={salvando} cls="border-amber-300 text-amber-700 active:bg-amber-100 hover:bg-amber-50">No-show</Btn>}
+          {r.status !== 'cancelada' && !editandoData && (
+            <Btn onClick={() => setEditandoData(true)} disabled={salvando} cls="border-slate-300 text-slate-700 active:bg-slate-100 hover:bg-slate-50" title="Mudar o dia ou o horário — só grava se a mesa estiver livre no dia novo">📅 Alterar data/hora</Btn>
+          )}
+          {podeExcluir && r.pagamentoStatus !== 'pago' && !(r.pagamentoStatus ?? '').startsWith('estorno_falhou') && (
+            <Btn onClick={excluir} disabled={salvando} cls="border-rose-200 text-rose-500 active:bg-rose-100 hover:bg-rose-50" title="Apaga a reserva feita por engano (some da agenda e do histórico)">🗑 Excluir</Btn>
+          )}
         </div>
       )}
+      {podeAtualizar && editandoData && (
+        <DataHoraEditor
+          reservaId={r.id}
+          dataAtual={r.data}
+          horaAtual={r.hora}
+          temTelefone={!!r.clienteTelefone}
+          onFechar={() => setEditandoData(false)}
+          onMudou={() => { setEditandoData(false); onMudou(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Mudar dia/hora da reserva. Grava só se a mesa estiver livre no dia novo;
+ *  se estiver tomada, oferece mudar mesmo assim e escolher outra mesa depois. */
+function DataHoraEditor({ reservaId, dataAtual, horaAtual, temTelefone, onFechar, onMudou }: { reservaId: string; dataAtual: string; horaAtual: string; temTelefone: boolean; onFechar: () => void; onMudou: () => void }) {
+  const [dataNova, setDataNova] = useState(dataAtual);
+  const [horaNova, setHoraNova] = useState(horaAtual.slice(0, 5));
+  const [avisar, setAvisar] = useState(true);
+  const [salvando, setSalvando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  const [tomadas, setTomadas] = useState<string[] | null>(null);
+
+  async function salvar(semMesa = false) {
+    const corpo: Record<string, unknown> = { avisarCliente: avisar && temTelefone };
+    if (dataNova !== dataAtual) corpo.data = dataNova;
+    if (horaNova !== horaAtual.slice(0, 5)) corpo.hora = horaNova;
+    if (!('data' in corpo) && !('hora' in corpo)) return onFechar();
+    if (semMesa) corpo.semMesa = true;
+    setSalvando(true);
+    setErro(null);
+    try {
+      const r = await fetch(`/api/reservas/${reservaId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(corpo),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setErro(d.error ?? `Erro ${r.status}`);
+        setTomadas(Array.isArray(d.mesasTomadas) ? d.mesasTomadas : null);
+        return;
+      }
+      onMudou();
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  const inp = 'h-10 rounded-lg border border-slate-300 px-3 text-sm focus:border-sky-500 focus:outline-none';
+  return (
+    <div className="mt-3 rounded-lg border border-sky-200 bg-sky-50 p-3">
+      <p className="text-xs font-semibold text-sky-900">📅 Alterar data/hora</p>
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <input type="date" value={dataNova} onChange={(e) => { setDataNova(e.target.value); setErro(null); setTomadas(null); }} className={inp} />
+        <input type="time" value={horaNova} onChange={(e) => { setHoraNova(e.target.value); setErro(null); setTomadas(null); }} className={inp} />
+        {temTelefone && (
+          <label className="flex items-center gap-1.5 text-xs text-slate-700">
+            <input type="checkbox" checked={avisar} onChange={(e) => setAvisar(e.target.checked)} />
+            avisar o cliente no WhatsApp
+          </label>
+        )}
+      </div>
+      {erro && <p className="mt-2 text-xs font-medium text-rose-700">{erro}</p>}
+      <div className="mt-2 flex flex-wrap gap-2">
+        {tomadas ? (
+          <Btn onClick={() => salvar(true)} disabled={salvando} cls="border-amber-300 bg-white text-amber-800 active:bg-amber-100 hover:bg-amber-50">
+            {salvando ? 'Salvando…' : 'Mudar a data e escolher outra mesa depois'}
+          </Btn>
+        ) : (
+          <Btn onClick={() => salvar(false)} disabled={salvando || !dataNova || !horaNova} cls="border-sky-400 bg-sky-600 text-white active:bg-sky-800 hover:bg-sky-700">
+            {salvando ? 'Salvando…' : 'Salvar'}
+          </Btn>
+        )}
+        <Btn onClick={onFechar} disabled={salvando} cls="border-slate-300 bg-white text-slate-600 hover:bg-slate-50">Voltar</Btn>
+      </div>
     </div>
   );
 }

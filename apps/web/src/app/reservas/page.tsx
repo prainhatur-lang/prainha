@@ -29,6 +29,7 @@ export default async function ReservasPage(props: {
 
   const podeCriar = await podeUsuario(user.id, 'reserva.create');
   const podeAtualizar = await podeUsuario(user.id, 'reserva.update');
+  const podeExcluir = await podeUsuario(user.id, 'reserva.delete');
   const podeImportar = await podeUsuario(user.id, 'reserva.importar');
   const podeConfigurar = await podeUsuario(user.id, 'reserva.configurar');
   const podeVerListaEspera = await podeUsuario(user.id, 'lista_espera.read');
@@ -215,6 +216,7 @@ export default async function ReservasPage(props: {
           itens={itens.map((i) => ({ ...i, filialNome: nomeFilial.get(i.filialId) ?? '' }))}
           podeCriar={podeCriar}
           podeAtualizar={podeAtualizar}
+          podeExcluir={podeExcluir}
           podeImportar={podeImportar}
           podeConfigurar={podeConfigurar}
           podeVerListaEspera={podeVerListaEspera}

@@ -1,4 +1,5 @@
-// PATCH /api/reservas/[id] — atualiza status / mesa / area de uma reserva.
+// PATCH /api/reservas/[id] — atualiza status / mesa / area / data / hora de uma reserva.
+// DELETE /api/reservas/[id] — apaga reserva feita por engano (admin).
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
@@ -6,7 +7,8 @@ import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { exigirPermApi, negarSemPerm } from '@/lib/exigir-perm';
 import { estornarReservaSePago } from '@/lib/reservas/estorno';
 import { filiaisDoUsuario } from '@/lib/filiais';
-import { mesasEstaoLivres } from '@/lib/reservas/mesa-disponivel';
+import { mesasEstaoLivres, mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
+import { hojeBr } from '@/lib/datas';
 import { mesasDaReserva, parseJuntadas, serializeJuntadas } from '@/lib/reservas/mesas-juntadas';
 import { registrarAlteracoesReserva } from '@/lib/reservas/alteracoes';
 import { enviarAtualizacaoReserva } from '@/lib/whatsapp-otp';
@@ -83,6 +85,25 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     }
     set.pessoas = n;
   }
+  // Data/hora editáveis pelo painel (dono 14/10/2026: "errei a data e não
+  // consigo alterar"). Só grava se a mesa da reserva estiver livre no dia
+  // novo — checado lá embaixo, com o estado atual em mãos. `semMesa: true`
+  // = muda a data mesmo com a mesa tomada e solta a mesa (escolhe depois).
+  if (b?.data !== undefined) {
+    if (typeof b.data !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(b.data)) {
+      return NextResponse.json({ error: 'data inválida' }, { status: 400 });
+    }
+    if (b.data < hojeBr()) return NextResponse.json({ error: 'essa data já passou' }, { status: 400 });
+    set.data = b.data;
+  }
+  if (b?.hora !== undefined) {
+    if (typeof b.hora !== 'string' || !/^\d{2}:\d{2}$/.test(b.hora)) {
+      return NextResponse.json({ error: 'hora inválida' }, { status: 400 });
+    }
+    set.hora = b.hora;
+  }
+  const soltarMesaSeOcupada = b?.semMesa === true;
+  const avisarCliente = b?.avisarCliente !== false;
 
   if (Object.keys(set).length === 1) {
     return NextResponse.json({ error: 'nada para atualizar' }, { status: 400 });
@@ -161,12 +182,20 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     set.bebidaLancamentoStatus = 'aguardando';
   }
 
+  // Data/hora: só conta como mudança o que de fato é diferente do atual.
+  const mudaData = !!atual && typeof set.data === 'string' && set.data !== atual.data;
+  const mudaHora = !!atual && typeof set.hora === 'string' && set.hora !== atual.hora.slice(0, 5);
+  if (atual && typeof set.data === 'string' && !mudaData) delete set.data;
+  if (atual && typeof set.hora === 'string' && !mudaHora) delete set.hora;
+  const dataFinal = (mudaData ? set.data : atual?.data) as string;
+
   // Mesas do espaço (pra escopar a ocupação do Consumer — ver comentário em
   // mesasOcupadas: sem isso, conta comandas abertas da casa INTEIRA e
   // derruba espaços pequenos como "ocupado" à toa). Só busca quando alguma
   // checagem abaixo vai precisar.
   let mesasValidas: string[] | undefined;
-  if (atual && (mudaMesa || mudaMesaJuntada || vaiSentar)) {
+  let horaLimiteEspaco: string | null | undefined;
+  if (atual && (mudaMesa || mudaMesaJuntada || vaiSentar || mudaData || mudaHora)) {
     const [fil] = await db
       .select({ reservaConfig: schema.filial.reservaConfig })
       .from(schema.filial)
@@ -175,6 +204,50 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     const areaParaBuscar = (typeof set.area === 'string' ? set.area : atual.area) ?? undefined;
     const espacoCfg = fil?.reservaConfig?.areas?.find((a) => a.nome === areaParaBuscar);
     mesasValidas = espacoCfg?.mesas?.map((m) => String(m.numero));
+    horaLimiteEspaco = espacoCfg?.horaLimite;
+  }
+
+  // Hora nova respeita o limite do espaço (mesma regra do POST da recepção).
+  if (mudaHora && horaLimiteEspaco && (set.hora as string) > horaLimiteEspaco) {
+    return NextResponse.json(
+      { error: `${atual?.area ?? 'Esse espaço'} aceita reserva de mesa só até ${horaLimiteEspaco}` },
+      { status: 400 },
+    );
+  }
+
+  // Dia novo: a(s) mesa(s) que a reserva já tem têm que estar livres nele.
+  // Se estiverem tomadas, devolve quais — o painel oferece mudar a data e
+  // escolher outra mesa depois (`semMesa`). Troca de mesa no mesmo PATCH é
+  // checada no bloco seguinte, já com a data nova.
+  if (mudaData && !mudaMesa && !mudaMesaJuntada && atual?.mesa && atual.area) {
+    const mesas = mesasDaReserva(atual.mesa, atual.mesaJuntada);
+    const ocupadasNoDia = await mesasOcupadas({
+      filialId: atual.filialId,
+      data: dataFinal,
+      area: atual.area,
+      excluirReservaId: id,
+      mesasValidas,
+    });
+    const tomadas = mesas.filter((m) => ocupadasNoDia.has(String(m).trim()));
+    if (tomadas.length > 0) {
+      if (!soltarMesaSeOcupada) {
+        const [a, m, d] = dataFinal.split('-');
+        return NextResponse.json(
+          {
+            error: `Mesa ${tomadas.join('/')} já está reservada em ${atual.area} no dia ${d}/${m}/${a}.`,
+            mesasTomadas: tomadas,
+          },
+          { status: 409 },
+        );
+      }
+      set.mesa = null;
+      set.mesaJuntada = null;
+    }
+  }
+  // Mudou o dia: o lembrete/confirmação do cliente era do dia antigo.
+  if (mudaData) {
+    set.lembreteConfirmacaoEm = null;
+    set.confirmadaClienteEm = null;
   }
 
   // Troca de mesa e/ou junção (recepção): a mesa (ou o conjunto mesa+juntadas)
@@ -190,7 +263,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       const mesas = mesasDaReserva(mesaFinal, mesaJuntadaFinal);
       const livre = await mesasEstaoLivres({
         filialId: atual.filialId,
-        data: atual.data,
+        data: dataFinal,
         area: areaFinal,
         mesas,
         excluirReservaId: id,
@@ -276,6 +349,12 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         ? `Sua mesa pra reserva de ${dataBr} às ${atual.hora} foi alterada para a mesa ${set.mesa}.`
         : null;
     }
+    if ((mudaData || mudaHora) && avisarCliente) {
+      const [na, nm, nd] = dataFinal.split('-');
+      const novaHora = (mudaHora ? set.hora : atual.hora) as string;
+      const mesaNova = mudaMesa ? set.mesa : 'mesa' in set ? null : atual.mesa;
+      mensagem = `Sua reserva de ${dataBr} às ${atual.hora} foi alterada para ${nd}/${nm}/${na} às ${novaHora}${atual.area ? ` (${atual.area}${mesaNova ? `, mesa ${mesaNova}` : ''})` : ''}.`;
+    }
     if (mudaStatus && set.status !== atual.status) {
       if (set.status === 'no_show') {
         // Fechar o pedido/comanda no Consumer pra liberar a mesa
@@ -328,5 +407,39 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     }
   }
 
+  return NextResponse.json({ ok: true });
+}
+
+// DELETE /api/reservas/[id] — apaga a reserva feita por engano (dono
+// 14/10/2026: "ou ainda excluir"). Só administrador (reserva.delete, a mesma
+// régua do Cancelar). Reserva com taxa paga NÃO se apaga: tem que Cancelar,
+// que é o que estorna o Pix. O histórico (reserva_alteracao) vai junto
+// (cascade); a linha inteira fica no log da Vercel pra recuperar se precisar.
+export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { user, error } = await exigirPermApi('reserva.delete');
+  if (error) return error;
+
+  const { id } = await params;
+  const filiais = await filiaisDoUsuario(user.id);
+  const filialIds = filiais.map((f) => f.id);
+  if (filialIds.length === 0) return NextResponse.json({ error: 'sem filiais' }, { status: 403 });
+
+  const [row] = await db
+    .select()
+    .from(schema.reserva)
+    .where(and(eq(schema.reserva.id, id), inArray(schema.reserva.filialId, filialIds)))
+    .limit(1);
+  if (!row) return NextResponse.json({ error: 'reserva não encontrada' }, { status: 404 });
+  if (row.pagamentoStatus === 'pago' || (row.pagamentoStatus ?? '').startsWith('estorno_falhou')) {
+    return NextResponse.json(
+      { error: 'Essa reserva tem taxa paga — use Cancelar (que devolve o Pix) em vez de excluir.' },
+      { status: 409 },
+    );
+  }
+
+  console.log(`[reserva] excluida por ${user.email ?? user.id}: ${JSON.stringify(row)}`);
+  await db
+    .delete(schema.reserva)
+    .where(and(eq(schema.reserva.id, id), inArray(schema.reserva.filialId, filialIds)));
   return NextResponse.json({ ok: true });
 }
