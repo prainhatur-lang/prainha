@@ -630,7 +630,7 @@ class ProdutosActivity : AppCompatActivity() {
                 ticketOcupado(false)
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 // comprovante da maquininha já saiu; agora os tickets, um por unidade
-                Ticket.imprimir(this, t, onOk = { }, onErro = { m -> runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_LONG).show() } })
+                Ticket.imprimirComRetomada(this, t)
                 val msg = StringBuilder("Recebido ${Cupom.brl(total / 100.0)}\n${p0.forma.uppercase()} ${p0.bandeira}" +
                     (if (p0.nsu.isNotBlank()) " · NSU ${p0.nsu}" else "") +
                     "\n\n🎟 Ticket $id impresso.")
@@ -640,9 +640,7 @@ class ProdutosActivity : AppCompatActivity() {
                     .setTitle(if (registrou) "✅ Ticket pago" else "⚠️ Pago — registro pendente")
                     .setMessage(msg.toString())
                     .setPositiveButton("Nova venda") { _, _ -> }
-                    .setNeutralButton("🖨 Imprimir de novo") { _, _ ->
-                        Ticket.imprimir(this, t, onOk = { }, onErro = { m -> runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_LONG).show() } })
-                    }
+                    .setNeutralButton("🔒 Reimprimir") { _, _ -> Ticket.reimprimirComSupervisor(this, id) }
                     .setNegativeButton("Sair") { _, _ -> finish() }
                     .setCancelable(false)
                     .show()

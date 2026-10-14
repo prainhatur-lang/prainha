@@ -590,6 +590,21 @@ object Api {
     fun ticketsHoje(base: String, token: String, todos: Boolean = false): JSONObject =
         getJson("$base/api/lio/tickets" + (if (todos) "?todos=1" else ""), token)
 
+    /** POST /api/lio/ticket/reimprimir — só com login + PIN do supervisor. */
+    @Throws(IOException::class)
+    fun ticketReimprimir(base: String, token: String, ticketId: Int, supLogin: String, supPin: String): JSONObject {
+        val j = try {
+            postJson("$base/api/lio/ticket/reimprimir", token, JSONObject().put("ticket_id", ticketId)
+                .put("supervisor_login", supLogin).put("supervisor_pin", supPin))
+        } catch (e: IOException) {
+            if ((e.message ?: "").contains("404"))
+                throw IOException("Servidor da loja desatualizado (sem reimpressão com supervisor) — rode a atualização do vendas-local")
+            throw e
+        }
+        if (!j.optBoolean("ok") && j.optBoolean("sem_sessao")) throw SemSessao()
+        return j
+    }
+
     // -------- ações da mesa: transferir / vincular comanda / identificar --------
 
     /** Junta/move: comanda→mesa muda só o vínculo; mesa→mesa move TODOS os

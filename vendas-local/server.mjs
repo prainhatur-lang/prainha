@@ -691,6 +691,10 @@ async function initSchema() {
     valor_itens numeric NOT NULL, valor_servico numeric NOT NULL, total numeric NOT NULL,
     status text NOT NULL DEFAULT 'aberto', pedido_fb integer, pago_em timestamptz,
     nsu text, forma text, erro text)`;
+  // REIMPRESSÃO de ticket só com senha do supervisor (dono, 14/10): quem pediu,
+  // quem liberou e quando — ticket repetido vira item retirado duas vezes.
+  await sql`CREATE TABLE IF NOT EXISTS ticket_reimpressao (id bigserial PRIMARY KEY,
+    quando timestamptz DEFAULT now(), ticket_id bigint NOT NULL, login text, supervisor text)`;
   // QUEM BAIXOU: foto de quem tocou "Pronto"/"Entregue", com o que foi baixado.
   // Sem login no KDS, a foto é a única referência de quem apertou — é o que
   // permite apurar baixa indevida e resolver "entregaram na mesa errada".
@@ -6165,6 +6169,33 @@ async function apiTicketsHoje(u, g) {
   return { ok: true, loja: LOJA_NOME, tickets: rows.map((t) => ({ ...t, id: Number(t.id),
     valor_itens: Number(t.valor_itens), valor_servico: Number(t.valor_servico), total: Number(t.total),
     itens: typeof t.itens === 'string' ? JSON.parse(t.itens) : t.itens })) };
+}
+
+/** POST /api/lio/ticket/reimprimir {ticket_id, supervisor_login, supervisor_pin}
+ *  Dono, 14/10: reimprimir ticket SÓ com a senha do supervisor (PIN de quem é
+ *  gerente — mesma régua do ehGerente). Devolve o ticket pra imprimir e grava
+ *  quem liberou em ticket_reimpressao. A 1ª impressão (logo depois de pago)
+ *  não passa aqui. */
+async function apiTicketReimprimir(body, g) {
+  const id = Number(body.ticket_id) || 0;
+  const sl = String(body.supervisor_login || '').trim().toLowerCase();
+  const sp = String(body.supervisor_pin || '').replace(/\D/g, '');
+  if (!id) return { ok: false, erro: 'ticket inválido' };
+  if (!sl || !sp) return { ok: false, precisa: true, erro: 'Digite o login e o PIN do supervisor.' };
+  const pin = (await sql`SELECT pin_hash, salt FROM garcom_pin WHERE login=${sl}`)[0];
+  if (!pin || !pinConfere(sp, pin.salt, pin.pin_hash)) return { ok: false, precisa: true, erro: 'PIN do supervisor não confere.' };
+  if (!(await ehGerente(sl))) return { ok: false, precisa: true, erro: sl + ' não é supervisor (precisa ser gerente).' };
+  const t = (await sql`SELECT id, criado_em, login, nome_usuario, itens, servico, valor_itens, valor_servico,
+      total, status, pedido_fb, pago_em, nsu, forma FROM ticket_venda WHERE id=${id}`)[0];
+  if (!t) return { ok: false, erro: 'ticket não encontrado' };
+  // status fica pro app avisar: 'aberto' com o cartão aprovado = registro ainda
+  // na fila da maquininha. Quem decide reimprimir é o supervisor.
+  await sql`INSERT INTO ticket_reimpressao (ticket_id, login, supervisor) VALUES (${id}, ${g.login}, ${sl})`;
+  const n = Number((await sql`SELECT count(*)::int n FROM ticket_reimpressao WHERE ticket_id=${id}`)[0].n) || 1;
+  console.log(`[ticket] ${id} reimpresso por ${g.login}, liberado por ${sl} (${n}ª vez)`);
+  return { ok: true, loja: LOJA_NOME, reimpressao: n, supervisor: sl, ticket: { ...t, id: Number(t.id),
+    valor_itens: Number(t.valor_itens), valor_servico: Number(t.valor_servico), total: Number(t.total),
+    itens: typeof t.itens === 'string' ? JSON.parse(t.itens) : t.itens } };
 }
 
 // FECHAMENTO DO DIA da maquininha: tudo que o app registrou hoje (origem
@@ -30501,6 +30532,12 @@ const server = http.createServer(async (req, res) => {
       if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
       const body = await readBody(req);
       res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTicketAbrir(body, g)));
+    }
+    if (req.method === 'POST' && p === '/api/lio/ticket/reimprimir') {
+      const g = await garcomDaRequisicao(req, u);
+      if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
+      const body = await readBody(req);
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTicketReimprimir(body, g)));
     }
     if (p === '/api/lio/tickets') {
       const g = await garcomDaRequisicao(req, u);

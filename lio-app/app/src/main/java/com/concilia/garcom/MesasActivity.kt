@@ -269,7 +269,7 @@ class MesasActivity : AppCompatActivity() {
     private fun dialogTicket() {
         AlertDialog.Builder(this)
             .setTitle("🎟 Ticket · venda direta")
-            .setItems(arrayOf("🎟 Vender ticket", "🖨 Reimprimir ticket de hoje")) { _, i ->
+            .setItems(arrayOf("🎟 Vender ticket", "🔒 Reimprimir ticket (supervisor)")) { _, i ->
                 if (i == 0) startActivity(Intent(this, ProdutosActivity::class.java).putExtra("ticket", true))
                 else ticketReimprimir()
             }
@@ -300,10 +300,7 @@ class MesasActivity : AppCompatActivity() {
                     }.toTypedArray()
                     AlertDialog.Builder(this)
                         .setTitle("Reimprimir qual?")
-                        .setItems(rot) { _, i ->
-                            Ticket.imprimir(this, pagos[i], onOk = { },
-                                onErro = { m -> runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_LONG).show() } })
-                        }
+                        .setItems(rot) { _, i -> Ticket.reimprimirComSupervisor(this, pagos[i].optInt("id")) }
                         .setNegativeButton("Fechar", null)
                         .show()
                 }
