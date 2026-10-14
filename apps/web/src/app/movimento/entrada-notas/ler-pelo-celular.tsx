@@ -6,6 +6,7 @@
 // Aberto no próprio celular, vai direto pra câmera.
 
 import { useEffect, useMemo, useState, useTransition } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import QRCode from 'qrcode-svg';
 import { brl } from '@/lib/format';
@@ -171,7 +172,13 @@ export function LerPeloCelular({ filialId, onFechar }: { filialId: string; onFec
                         {resumo ? '⚠' : '✓'} {n.emitNome ?? 'Nota'}
                         {n.numero ? ` · NF ${n.numero}` : ''}
                         {n.valorTotal ? ` · ${brl(n.valorTotal)}` : ''}
-                        {resumo ? ' — resumo, o XML vem na próxima consulta' : ''}
+                        {resumo ? ' — resumo, o XML vem na próxima consulta' : ''}{' '}
+                        <Link
+                          href={`/movimento/entrada-notas/${n.id}`}
+                          className="font-semibold text-sky-700 underline hover:text-sky-900"
+                        >
+                          Abrir →
+                        </Link>
                       </li>
                     );
                   })}

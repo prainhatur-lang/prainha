@@ -25,6 +25,7 @@ interface Item {
   estado: Estado;
   texto: string;
   nota?: Nota | null;
+  status?: RespEnviar['status'];
 }
 interface RespEnviar {
   ok?: boolean;
@@ -54,6 +55,50 @@ export function CameraChave({ f, e, s, casa }: { f: string; e: number; s: string
   const [aviso, setAviso] = useState<{ texto: string; erro?: boolean } | null>(null);
   const [lanterna, setLanterna] = useState<boolean | null>(null); // null = celular sem lanterna
   const [leu, setLeu] = useState(false); // moldura verde por um instante
+  const [repetida, setRepetida] = useState(false); // apontou de novo pra uma nota já lida
+  const repetidaTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Bipe: iPhone não vibra, então o aviso sonoro é o que diz "leu" sem olhar.
+  // O navegador só solta o som depois de um toque na tela.
+  const somRef = useRef<AudioContext | null>(null);
+  const [somLigado, setSomLigado] = useState(true);
+
+  useEffect(() => {
+    const Ctx =
+      window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    somRef.current = ctx;
+    const marcar = () => setSomLigado(ctx.state === 'running');
+    const destravar = () => void ctx.resume().then(marcar).catch(() => {});
+    ctx.addEventListener('statechange', marcar);
+    window.addEventListener('pointerdown', destravar);
+    window.addEventListener('touchend', destravar);
+    marcar();
+    return () => {
+      window.removeEventListener('pointerdown', destravar);
+      window.removeEventListener('touchend', destravar);
+      somRef.current = null;
+      void ctx.close().catch(() => {});
+    };
+  }, []);
+
+  function bipe(tipo: 'leu' | 'ok' | 'erro') {
+    const ctx = somRef.current;
+    if (!ctx || ctx.state !== 'running') return;
+    const tons = tipo === 'leu' ? [1500] : tipo === 'ok' ? [1300, 1800] : [300];
+    const dur = tipo === 'erro' ? 0.35 : 0.11;
+    tons.forEach((freq, i) => {
+      const t0 = ctx.currentTime + i * (dur + 0.05);
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.frequency.value = freq;
+      g.gain.setValueAtTime(0.3, t0);
+      g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+      o.connect(g).connect(ctx.destination);
+      o.start(t0);
+      o.stop(t0 + dur);
+    });
+  }
 
   function atualizar(chave: string, p: Partial<Item>) {
     setItens((l) => l.map((i) => (i.chave === chave ? { ...i, ...p } : i)));
@@ -81,6 +126,7 @@ export function CameraChave({ f, e, s, casa }: { f: string; e: number; s: string
       const d = (await r.json().catch(() => ({}))) as RespEnviar;
       if (!r.ok || !d.ok) {
         atualizar(chave, { estado: 'erro', texto: d.error ?? `HTTP ${r.status}` });
+        bipe('erro');
         return;
       }
       if (d.status === 'BLOQUEIO') pausaAteRef.current = Date.now() + PAUSA_SEFAZ_MS;
@@ -94,15 +140,25 @@ export function CameraChave({ f, e, s, casa }: { f: string; e: number; s: string
             : d.status === 'BLOQUEIO'
               ? 'A SEFAZ pediu pausa de 1 hora por excesso de consultas — tente de novo depois'
               : (d.motivo ?? d.status ?? '');
-      atualizar(chave, { estado, texto, nota: d.nota });
+      atualizar(chave, { estado, texto, nota: d.nota, status: d.status });
+      bipe(estado === 'erro' ? 'erro' : 'ok');
+      if (estado !== 'erro') navigator.vibrate?.([60, 60, 60]);
     } catch (err) {
       atualizar(chave, { estado: 'erro', texto: `Sem internet? ${(err as Error).message}` });
+      bipe('erro');
     }
   }
 
   function achou(chave: string, deNovo = false) {
-    if (lidasRef.current.has(chave) && !deNovo) return;
+    if (lidasRef.current.has(chave) && !deNovo) {
+      // continua apontado pra mesma nota: avisa que essa já foi
+      setRepetida(true);
+      if (repetidaTimer.current) clearTimeout(repetidaTimer.current);
+      repetidaTimer.current = setTimeout(() => setRepetida(false), 2000);
+      return;
+    }
     lidasRef.current.add(chave);
+    bipe('leu');
     navigator.vibrate?.(120);
     setLeu(true);
     setTimeout(() => setLeu(false), 700);
@@ -257,14 +313,23 @@ export function CameraChave({ f, e, s, casa }: { f: string; e: number; s: string
   }
 
   const lendoFoto = aviso !== null && !aviso.erro;
+  const ultimo = itens[0];
+  const entraram = itens.filter((i) => i.estado === 'ok' || i.estado === 'aviso').length;
 
   return (
     <div className="pb-8">
-      <header className="px-4 pb-3 pt-4">
-        <h1 className="text-base font-semibold">📷 Chave de acesso da nota</h1>
-        <p className="mt-0.5 text-xs text-slate-400">
-          {casa ? `${casa} · ` : ''}aponte pro código de barras do DANFE — a nota entra sozinha
-        </p>
+      <header className="flex items-start justify-between gap-2 px-4 pb-3 pt-4">
+        <div>
+          <h1 className="text-base font-semibold">📷 Chave de acesso da nota</h1>
+          <p className="mt-0.5 text-xs text-slate-400">
+            {casa ? `${casa} · ` : ''}aponte pro código de barras do DANFE — a nota entra sozinha
+          </p>
+        </div>
+        {entraram > 0 && (
+          <span className="shrink-0 rounded-full bg-emerald-500 px-2.5 py-1 text-xs font-bold text-white">
+            {entraram} {entraram === 1 ? 'nota' : 'notas'}
+          </span>
+        )}
       </header>
 
       <div className="relative bg-black">
@@ -273,8 +338,48 @@ export function CameraChave({ f, e, s, casa }: { f: string; e: number; s: string
           playsInline
           muted
           autoPlay
-          className={`block h-auto w-full ${fase === 'camera' ? '' : 'min-h-[240px] opacity-0'}`}
+          className={`block w-full ${fase === 'camera' ? 'h-[52vh] object-cover' : 'h-auto min-h-[240px] opacity-0'}`}
         />
+        {/* resultado da última leitura em cima da câmera: não precisa rolar a tela */}
+        {fase === 'camera' && ultimo && (
+          <div
+            className={`pointer-events-none absolute inset-x-2 top-2 rounded-xl px-3 py-2 shadow-lg ${
+              ultimo.estado === 'ok'
+                ? 'bg-emerald-600 text-white'
+                : ultimo.estado === 'aviso'
+                  ? 'bg-amber-500 text-slate-950'
+                  : ultimo.estado === 'erro'
+                    ? 'bg-rose-600 text-white'
+                    : 'bg-slate-900/90 text-white'
+            }`}
+          >
+            <p className="text-sm font-bold">
+              {ultimo.estado === 'enviando'
+                ? '⏳ Lida! Buscando a nota na SEFAZ...'
+                : ultimo.estado === 'ok'
+                  ? ultimo.status === 'JA_EXISTE'
+                    ? '✓ Lida — essa nota já estava no sistema'
+                    : '✓ Lida — a nota entrou no sistema'
+                  : ultimo.estado === 'aviso'
+                    ? '⚠ Lida — entrou só o resumo da nota'
+                    : '✗ Lida, mas a nota não entrou'}
+            </p>
+            {ultimo.nota?.emitNome ? (
+              <p className="mt-0.5 truncate text-xs">
+                {ultimo.nota.emitNome}
+                {ultimo.nota.numero ? ` · NF ${ultimo.nota.numero}` : ''}
+                {ultimo.nota.valorTotal ? ` · ${brl(ultimo.nota.valorTotal)}` : ''}
+              </p>
+            ) : ultimo.estado !== 'enviando' && ultimo.estado !== 'ok' ? (
+              <p className="mt-0.5 line-clamp-2 text-xs">{ultimo.texto}</p>
+            ) : null}
+          </div>
+        )}
+        {fase === 'camera' && repetida && (
+          <p className="pointer-events-none absolute inset-x-0 bottom-3 mx-auto w-fit rounded-full bg-slate-900/90 px-3 py-1.5 text-xs font-semibold text-emerald-300">
+            ✓ Essa já foi lida — aponte pra próxima nota
+          </p>
+        )}
         {fase === 'camera' && (
           <div
             className={`pointer-events-none absolute inset-x-[4%] top-[30%] h-[40%] rounded-xl border-2 transition-colors ${
@@ -352,6 +457,15 @@ export function CameraChave({ f, e, s, casa }: { f: string; e: number; s: string
               }`}
             >
               🔦
+            </button>
+          )}
+          {fase === 'camera' && !somLigado && (
+            <button
+              type="button"
+              onClick={() => void somRef.current?.resume().catch(() => {})}
+              className="rounded-xl bg-slate-800 px-3 py-3 text-xs font-semibold text-white"
+            >
+              🔇 Ligar bipe
             </button>
           )}
         </div>
