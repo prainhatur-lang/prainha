@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { PerguntaNfe } from '../nfe-btn';
 
@@ -134,8 +134,24 @@ export function NovaTransferenciaForm(props: {
   const semAcessoDestino = props.destinos.find((d) => d.id === destinoId)?.semAcesso === true;
   const entradaImediata = jaEstaLa && !semAcessoDestino;
 
+  // Lembra a última casa que recebeu (por casa que envia): ao recarregar a
+  // página o select voltava pro Prainha Bar e a busca procurava no lugar
+  // errado (14/10).
+  const chaveDestino = `transf_destino_${props.origemId}`;
+  useEffect(() => {
+    let salvo: string | null = null;
+    try {
+      salvo = localStorage.getItem(chaveDestino);
+    } catch {}
+    if (salvo && salvo !== destinoId && props.destinos.some((d) => d.id === salvo)) trocarDestino(salvo);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function trocarDestino(id: string) {
     setDestinoId(id);
+    try {
+      localStorage.setItem(chaveDestino, id);
+    } catch {}
     const lista = props.produtosDestino[id] ?? [];
     setLinhas((ls) =>
       ls.map((l) => ({ ...l, produtoDestinoId: acharNoDestino(origemPor.get(l.produtoOrigemId), lista, props.depara[id]) })),
