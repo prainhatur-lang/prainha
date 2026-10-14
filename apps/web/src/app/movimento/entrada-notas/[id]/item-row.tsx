@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useTransition, useMemo } from 'react';
+import { useState, useTransition, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { brl } from '@/lib/format';
@@ -477,6 +477,7 @@ function ModalVincular({
   fatorInicial?: number;
 }) {
   const corrigindo = modo === 'corrigir';
+  const fundoPressionado = useRef(false);
   const [busca, setBusca] = useState((item.descricao ?? '').slice(0, 30));
   const [pending, start] = useTransition();
   const [aba, setAba] = useState<'vincular' | 'criar'>('vincular');
@@ -562,7 +563,15 @@ function ModalVincular({
     <td colSpan={9} className="p-0">
       <div
         className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
-        onClick={onFechar}
+        // Fecha só no clique que COMEÇA e termina no fundo: arrastar pra
+        // selecionar o texto do campo e soltar fora fechava a caixa (14/10).
+        onMouseDown={(e) => {
+          fundoPressionado.current = e.target === e.currentTarget;
+        }}
+        onClick={(e) => {
+          if (fundoPressionado.current && e.target === e.currentTarget) onFechar();
+          fundoPressionado.current = false;
+        }}
       >
         <div
           onClick={(e) => e.stopPropagation()}
