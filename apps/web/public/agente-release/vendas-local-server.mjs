@@ -8778,6 +8778,25 @@ async function caixaMaquininhaConfere(cod, usados = new Set()) {
       if (par) continue;
     }
 
+    // a2) Pix do QR da mesa, CONFIRMADO pelo provedor (Cielo/Inter). O
+    // pixBaixarNaConta só grava o venda_pagamento 'pix-cliente' depois que a
+    // consulta na Cielo devolveu pago (pix_cobranca.pago_em) — é a mesma
+    // prova do app da LIO. Mas ele guarda o NSU em `autorizacao` (nsu fica
+    // NULL), então o passo (a) nunca achava e o Pix ia pro extrato. Na
+    // Prainha Mar, que não tem extrato da Cielo na nuvem, o caixa ficava
+    // aberto pra sempre: 14/10/2026, 4 caixas de 02/10 a 11/10 (R$ 22 mil)
+    // presos por 5 Pix do QR (R$ 710,90), todos pagos. Casa pelo código
+    // exato do pagamento (pagamento_fb), não por NSU: um lançamento só.
+    if (Number(p.F) === FORMA.PIX_ONLINE && Number(p.COD) > 0) {
+      const [pix] = await sql`SELECT vp.id FROM venda_pagamento vp
+        WHERE vp.origem='pix-cliente' AND vp.status='ok' AND vp.estornado_em IS NULL
+          AND vp.pagamento_fb = ${Number(p.COD)} AND abs(vp.valor - ${valor}) < 0.005
+          AND EXISTS (SELECT 1 FROM pix_cobranca c WHERE c.pago_em IS NOT NULL
+            AND c.pedido_fb = vp.pedido_fb AND abs(c.valor - vp.valor) < 0.005)
+        LIMIT 1`;
+      if (pix) continue;
+    }
+
     // b) extrato da Cielo — pelo NSU quando há, senão por valor+dia
     if (!cielo) {
       bloqueios.push({ ...base, categoria: 'extrato_indisponivel',
@@ -8856,11 +8875,13 @@ async function caixaPagamentosDoCaixa(cod) {
     // UTC, e ymdDoBanco lê com getters locais (BRT) → todo pagamento caía no
     // dia ANTERIOR. Medido 12/09/2026: 62 recebimentos de 12/09 lidos como
     // 11/09 viraram "sem par" (o certo era "extrato atrasado").
-    const r = await sql`SELECT forma_codigo, valor, nsu, quando::date::text AS dia
+    // COD = código do pagamento (é o pagamento_fb do venda_pagamento) — usado
+    // pra casar o Pix do QR da mesa no passo (a2) da conferência.
+    const r = await sql`SELECT codigo, forma_codigo, valor, nsu, quando::date::text AS dia
       FROM pagamento_local WHERE caixa_codigo=${Number(cod)} AND cancelado_em IS NULL`;
-    return { ok: true, rows: r.map((x) => ({ F: x.forma_codigo, V: x.valor, NSU: x.nsu, DIA: x.dia })) };
+    return { ok: true, rows: r.map((x) => ({ COD: x.codigo, F: x.forma_codigo, V: x.valor, NSU: x.nsu, DIA: x.dia })) };
   }
-  return await qi(`SELECT CODIGOFORMAPAGAMENTO F, CAST(VALOR AS NUMERIC(12,2)) V, NSUTRANSACAO NSU,
+  return await qi(`SELECT CODIGO COD, CODIGOFORMAPAGAMENTO F, CAST(VALOR AS NUMERIC(12,2)) V, NSUTRANSACAO NSU,
       CAST(DATAPAGAMENTO AS DATE) DIA
     FROM PAGAMENTOS WHERE CODIGOCAIXA=${Number(cod)} AND DATADELETE IS NULL`);
 }

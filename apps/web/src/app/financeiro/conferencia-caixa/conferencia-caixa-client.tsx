@@ -452,6 +452,21 @@ export function ConferenciaCaixaClient({
       <div className="mt-0.5 text-xs text-slate-500">
         {(c.formas ?? []).map((f) => `${f.nome} ${brl(f.valor)} (${f.n}×)`).join(' · ') || 'sem recebimentos'}
       </div>
+      {/* Caixa aberto de outro dia: o valor acima é só do DIA escolhido (dava
+          "R$ 0,00 · sem recebimentos" num caixa com R$ 6 mil de 02/10). O
+          total do caixa inteiro vem do veredito da loja. */}
+      {!c.fechado_em &&
+        (() => {
+          const v = vered.get(c.codigo);
+          if (!v || !(v.pagamentos ?? 0)) return null;
+          if (Math.abs((v.total ?? 0) - (c.recebido ?? 0)) < 0.005) return null;
+          return (
+            <div className="text-xs font-semibold text-slate-700">
+              no caixa inteiro: {v.pagamentos} pagamento(s) · {brl(v.total ?? 0)}
+              <span className="font-normal text-slate-400"> — o valor acima é só do dia escolhido</span>
+            </div>
+          );
+        })()}
       <div className="text-xs text-slate-400">
         {c.fechado_em ? (
           <>fechado · esperado {brl(c.esperado ?? 0)} · contado {brl(c.contado ?? 0)}</>
@@ -501,6 +516,20 @@ export function ConferenciaCaixaClient({
                     </li>
                   ))}
                 </ul>
+              )}
+              {/* O texto pede "confira o NSU" mas não dizia QUAL: aqui vai o
+                  NSU, o valor e o dia de cada pendência. */}
+              {(v.bloqueios ?? []).some((b) => b.nsu || b.valor) && (
+                <div className="mt-1 text-amber-800">
+                  pendente:{' '}
+                  {(v.bloqueios ?? [])
+                    .map(
+                      (b) =>
+                        `${b.nsu ? `NSU ${b.nsu}` : 'sem NSU'} · ${brl(b.valor)}` +
+                        (b.dia ? ` · ${b.dia.slice(8, 10)}/${b.dia.slice(5, 7)}` : ''),
+                    )
+                    .join('  |  ')}
+                </div>
               )}
             </div>
           );
