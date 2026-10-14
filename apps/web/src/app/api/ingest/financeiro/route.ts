@@ -369,7 +369,10 @@ export async function POST(req: Request) {
             eq(schema.contaPagar.origem, 'NFE'),
             isNull(schema.contaPagar.codigoExterno),
             eq(schema.contaPagar.dataVencimento, r.dataVencimento),
-            drizzleSql`ABS(${schema.contaPagar.valor} - ${r.valor}::numeric) < 0.01`,
+            // valor_nota: conta cujo boleto veio com acréscimo (valor = boleto);
+            // o Consumer lança pelo valor da nota e tem que casar do mesmo jeito
+            drizzleSql`(ABS(${schema.contaPagar.valor} - ${r.valor}::numeric) < 0.01
+              OR ABS(${schema.contaPagar.valorNota} - ${r.valor}::numeric) < 0.01)`,
             drizzleSql`${schema.contaPagar.fornecedorId} IN (
               SELECT id FROM fornecedor
               WHERE filial_id = ${filial.id}
@@ -398,7 +401,11 @@ export async function POST(req: Request) {
             parcela: drizzleSql`excluded.parcela`,
             totalParcelas: drizzleSql`excluded.total_parcelas`,
             dataVencimento: drizzleSql`excluded.data_vencimento`,
-            valor: drizzleSql`excluded.valor`,
+            // conta com valor do boleto ajustado (valor_nota preenchido): o
+            // Consumer ainda com o valor da nota não desfaz o ajuste
+            valor: drizzleSql`CASE WHEN conta_pagar.valor_nota IS NOT NULL
+              AND ABS(excluded.valor - conta_pagar.valor_nota) < 0.01
+              THEN conta_pagar.valor ELSE excluded.valor END`,
             dataPagamento: drizzleSql`excluded.data_pagamento`,
             descontos: drizzleSql`excluded.descontos`,
             jurosMulta: drizzleSql`excluded.juros_multa`,

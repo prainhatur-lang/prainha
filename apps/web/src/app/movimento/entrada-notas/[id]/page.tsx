@@ -161,6 +161,7 @@ export default async function NotaDetalhePage(props: {
       dataVencimento: sql<string>`${schema.contaPagar.dataVencimento}::text`,
       dataPagamento: sql<string | null>`${schema.contaPagar.dataPagamento}::text`,
       valor: schema.contaPagar.valor,
+      valorNota: schema.contaPagar.valorNota,
       boleto: schema.contaPagar.boletoStoragePath,
     })
     .from(schema.contaPagar)
@@ -591,6 +592,19 @@ export default async function NotaDetalhePage(props: {
                         </span>
                       )}
                       {!c.boleto && <span className="text-[10px] text-slate-400">sem boleto anexado</span>}
+                      {c.valorNota != null && (
+                        <span className="text-[10px] text-amber-700">
+                          boleto = nota {brl(Number(c.valorNota))} + acréscimo financeiro{' '}
+                          {brl(Number(c.valor) - Number(c.valorNota))}
+                        </span>
+                      )}
+                      <Link
+                        href={`/financeiro/conta/${c.id}`}
+                        className="text-[10px] text-sky-700 underline hover:text-sky-900"
+                        title="Abrir a conta — dá pra ajustar o valor quando o boleto veio diferente da nota"
+                      >
+                        abrir conta / valor do boleto
+                      </Link>
                     </div>
                   ))}
                 </div>

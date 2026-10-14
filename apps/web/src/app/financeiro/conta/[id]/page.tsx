@@ -13,6 +13,7 @@ import { hojeBr } from '@/lib/datas';
 import { consumerParado } from '@/lib/consumer-contas';
 import { BaixaForm } from './baixa-form';
 import { AcoesConta } from './acoes-conta';
+import { ValorBoletoForm } from './valor-boleto-form';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,6 +33,7 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
       descricao: schema.contaPagar.descricao,
       observacao: schema.contaPagar.observacao,
       valor: schema.contaPagar.valor,
+      valorNota: schema.contaPagar.valorNota,
       valorPago: schema.contaPagar.valorPago,
       dataVencimento: schema.contaPagar.dataVencimento,
       dataPagamento: schema.contaPagar.dataPagamento,
@@ -209,6 +211,14 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
             </div>
           ))}
         </div>
+
+        {conta.origem === 'NFE' && (
+          <ValorBoletoForm
+            contaId={conta.id}
+            valor={valor}
+            valorNota={conta.valorNota != null ? Number(conta.valorNota) : null}
+          />
+        )}
 
         <div className="mt-3 rounded-xl border border-slate-200 bg-white p-4 text-xs text-slate-600">
           <div className="grid grid-cols-2 gap-2 md:grid-cols-4">

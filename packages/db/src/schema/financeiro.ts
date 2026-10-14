@@ -272,6 +272,11 @@ export const contaPagar = pgTable(
     totalParcelas: integer('total_parcelas'),
     dataVencimento: date('data_vencimento').notNull(),
     valor: numeric('valor', { precision: 14, scale: 2 }).notNull(),
+    /** Conta de NF-e cujo boleto veio com valor diferente (acréscimo
+     *  financeiro / tarifa bancária no boleto): `valor` vira o do boleto e
+     *  aqui fica o que a nota mandou. NULL = nunca ajustada. Acréscimo =
+     *  valor - valorNota. (migrate:conta-valor-nota, 14/10/2026) */
+    valorNota: numeric('valor_nota', { precision: 14, scale: 2 }),
     dataPagamento: date('data_pagamento'),
     descontos: numeric('descontos', { precision: 14, scale: 2 }),
     jurosMulta: numeric('juros_multa', { precision: 14, scale: 2 }),
