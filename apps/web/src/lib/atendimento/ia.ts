@@ -98,7 +98,8 @@ export interface ExecutoresFerramentas {
   consultarCotacoesFornecedor: () => Promise<string>;
   consultarMare: (data: string) => Promise<string>;
   enviarAudioVoz: (texto: string) => Promise<string>;
-  consultarCardapio: (termo: string) => Promise<string>;
+  /** casa = outra casa que este número também atende (ex.: "Prainha Mar"); sem casa = a própria. */
+  consultarCardapio: (termo: string, casa?: string) => Promise<string>;
   listarOpcoesOrcamento: () => Promise<string>;
   gerarOrcamento: (dados: DadosOrcamentoEvento) => Promise<string>;
 }
@@ -128,6 +129,14 @@ function agoraBrtLegivel(): string {
   return `${dia}, ${dd}/${mm}/${d.getUTCFullYear()}, ${hh}:${mi}`;
 }
 
+/** Casa do grupo sem WhatsApp próprio atendida por este número (ex.: Prainha Mar). */
+export interface CasaCobertaPrompt {
+  filialNome: string;
+  conhecimento: BlocoConhecimento[];
+  linkReserva: string | null;
+  linkCardapio: string;
+}
+
 function montarSystemPrompt(params: {
   nomeAtendente: string;
   filialId: string;
@@ -144,6 +153,8 @@ function montarSystemPrompt(params: {
   duasCasas?: boolean;
   /** Outras casas do grupo com atendente própria no WhatsApp (passagem). */
   outrasCasas?: { filialNome: string; atendente: string }[];
+  /** Casas do grupo SEM número próprio que este número atende (base delas). */
+  casasCobertas?: CasaCobertaPrompt[];
 }): string {
   const { nomeAtendente, filialNome, persona, conhecimento, espacos, primeiraResposta, retomada } = params;
   // Cardápio online da CASA (a Tabuará tem o dela) — nunca o link fixo do Prainha.
@@ -179,9 +190,32 @@ ${outras.map((c) => `- ${c.filialNome}: ${c.atendente}`).join('\n')}
 `
     : '';
 
-  const blocos = conhecimento
-    .map((b) => `### ${b.titulo}\n${b.conteudo}`)
-    .join('\n\n');
+  // CASA SEM NÚMERO PRÓPRIO (14/10/2026): o botão de WhatsApp do site da
+  // Prainha Mar cai neste número e a Nina dizia "não temos unidade no Shopping
+  // Praia Sul". Só no número do Prainha Bar: a base vem da própria casa e entra
+  // como "### <casa> — <título>"; reserva dela vai pelo link do site.
+  const cobertas = duasCasas ? params.casasCobertas ?? [] : [];
+  const nomesCobertas = cobertas.map((c) => c.filialNome).join(' e ');
+  const blocoCobertas = cobertas.length
+    ? `
+ESTE NÚMERO TAMBÉM ATENDE A CASA ${nomesCobertas.toUpperCase()} — casa nova do grupo Prainha que ainda não tem WhatsApp próprio (o botão de WhatsApp do site dela cai aqui):
+- É PROIBIDO dizer que o grupo não tem casa lá, que você não conhece, que "não temos unidade" nesse endereço, ou mandar a pessoa procurar outro contato: ${nomesCobertas} é do grupo e você atende por ela, com o mesmo carinho.
+- Quem cita ${nomesCobertas}, o endereço dela ou chega com a mensagem pronta do site dela já disse de qual casa fala — não pergunte de novo.
+- O que você sabe dela está nos blocos "### ${cobertas[0].filialNome} — …" de O QUE VOCÊ SABE. Os outros blocos (horário, áreas, couvert, promoções, AquaArena, Terraço, eventos) são do Prainha Bar e NÃO valem pra ela. Sem a informação nos blocos dela, transfira pra equipe — não invente.
+- A ocupação ao vivo e as áreas de reserva que aparecem neste prompt são do Prainha Bar, não dela.
+${cobertas
+  .map(
+    (c) => `- RESERVA DE MESA — ${c.filialNome}: você NÃO cria por aqui (consultar_disponibilidade_reserva, criar_reserva, remarcar, cancelar e lista de espera são só do Prainha Bar — reserva dela criada aqui cairia na casa errada). ${c.linkReserva ? `Mande o link ${c.linkReserva} — a pessoa escolhe dia, horário e mesa em menos de um minuto. Se ela não conseguir pelo link, pegue data, horário, pessoas e nome e transfira pra equipe.` : 'Pegue data, horário, pessoas e nome e transfira pra equipe.'}
+- CARDÁPIO E PREÇO — ${c.filialNome}: chame consultar_cardapio com casa="${c.filialNome}" (sem o casa vem o cardápio do Prainha Bar). Cardápio online dela: ${c.linkCardapio}`,
+  )
+  .join('\n')}
+`
+    : '';
+
+  const blocos = [
+    ...conhecimento.map((b) => `### ${b.titulo}\n${b.conteudo}`),
+    ...cobertas.flatMap((c) => c.conhecimento.map((b) => `### ${c.filialNome} — ${b.titulo}\n${b.conteudo}`)),
+  ].join('\n\n');
 
   const espacosTxt = espacos
     .filter((e) => e.ativo)
@@ -196,7 +230,7 @@ ${outras.map((c) => `- ${c.filialNome}: ${c.atendente}`).join('\n')}
   // duasCasas = numero historico compartilhado (Prainha Bar + Tabuara);
   // numero dedicado de uma casa se apresenta so como ela.
   return `${duasCasas
-    ? `Você é ${nomeAtendente}, atendente do grupo Prainha no WhatsApp — este número atende o ${filialNome} e o restaurante Tabuará.`
+    ? `Você é ${nomeAtendente}, atendente do grupo Prainha no WhatsApp — este número atende o ${filialNome} e o restaurante Tabuará${cobertas.length ? `, e também a casa ${nomesCobertas} (ainda sem WhatsApp próprio)` : ''}.`
     : `Você é ${nomeAtendente}, atendente do ${filialNome} (grupo Prainha) no WhatsApp — este número é só do ${filialNome}.`} Não diga que é "virtual" ou robô por conta própria — se apresente só como "${nomeAtendente}, do atendimento${duasCasas ? ' do Prainha' : ` do ${filialNome}`}".
 
 SEU JEITO:
@@ -217,7 +251,7 @@ COMO ESCREVER (estilo WhatsApp):
 
 INÍCIO DA CONVERSA (situação atual: ${primeiraResposta ? 'esta É a sua primeira resposta pra essa pessoa' : 'a conversa já está em andamento — não se apresente de novo'}):
 - Na sua PRIMEIRA resposta pra uma pessoa, dê boas-vindas e se apresente rapidinho: ${duasCasas
-    ? 'você é a atendente do Prainha Bar e do Tabuará. Se a pessoa só cumprimentou ("oi", "olá", "boa tarde"), acolha, pergunte de qual das casas ela quer falar e em que pode ajudar (reservas, eventos e festas, horários, cardápio). NÃO ofereça o parque AquaArena na saudação — ele está fechado até o verão.'
+    ? 'você é a atendente do Prainha Bar e do Tabuará' + (cobertas.length ? ` (e também da ${nomesCobertas} — se a pessoa chegou falando dela, apresente-se como atendente de lá)` : '') + '. Se a pessoa só cumprimentou ("oi", "olá", "boa tarde"), acolha, pergunte de qual das casas ela quer falar e em que pode ajudar (reservas, eventos e festas, horários, cardápio). NÃO ofereça o parque AquaArena na saudação — ele está fechado até o verão.'
     : `você é a atendente do ${filialNome}. Se a pessoa só cumprimentou ("oi", "olá", "boa tarde"), acolha e pergunte em que pode ajudar (reservas, eventos, horários, cardápio).`} Se ela já veio com uma pergunta, responda a pergunta primeiro e encaixe a apresentação numa palavrinha.
 - Nas mensagens seguintes, NÃO se apresente de novo.
 ${duasCasas
@@ -226,10 +260,10 @@ DE QUAL CASA A PESSOA FALA:
 - Quando a resposta depender da casa (horário, endereço, reserva, cardápio) e ainda não estiver claro se é Prainha Bar ou Tabuará, pergunte com carinho de qual das duas a pessoa fala ANTES de responder — e depois não pergunte de novo, guarde o contexto.
 - Se a pergunta já deixa óbvio (a pessoa cita a casa, o parque, o pôr do sol, o gramado/terraço/varandinha), não pergunte à toa. AquaArena e os espaços de evento (gramado, terraço, varandinha) são do Prainha Bar.
 - Sobre o Tabuará você só sabe o que está nos blocos acima — se não tiver a informação, transfira pra equipe.
-`
+${cobertas.length ? `- Com a ${nomesCobertas} também atendida aqui: quando não estiver claro, pergunte de qual das casas a pessoa fala (Prainha Bar, Tabuará ou ${nomesCobertas}).\n` : ''}`
     : `
 A OUTRA CASA DO GRUPO: se perguntarem de outra casa do grupo Prainha que não o ${filialNome}, responda só o que estiver nos blocos abaixo; sem a informação, indique o contato dela ou transfira pra equipe.
-`}${blocoOutrasCasas}
+`}${blocoOutrasCasas}${blocoCobertas}
 O QUE VOCÊ SABE — sua ÚNICA fonte de verdade:
 ${blocos}
 
@@ -450,6 +484,11 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         type: 'object',
         properties: {
           termo: { type: 'string', description: 'palavra(s)-chave do prato, sem frase completa' },
+          casa: {
+            type: 'string',
+            description:
+              'SÓ pra casa sem WhatsApp próprio que este número também atende (ex.: "Prainha Mar") — omita pra casa deste número',
+          },
         },
         required: ['termo'],
       },
@@ -898,6 +937,8 @@ export async function gerarResposta(params: {
   forcarModelo?: string;
   /** Outras casas com atendente própria — sem nenhuma, a ferramenta de passagem sai. */
   outrasCasas?: { filialNome: string; atendente: string }[];
+  /** Casas do grupo sem número próprio que este número atende (só no número do Prainha Bar). */
+  casasCobertas?: CasaCobertaPrompt[];
   /** A pessoa chegou pelo link de passagem de outra casa: o fim da conversa de lá. */
   passagem?: { deAtendente: string; deCasa: string; mensagens: MsgHistorico[] } | null;
 }): Promise<RespostaNina> {
@@ -1128,7 +1169,10 @@ Como usar, SEM EXCEÇÃO:
             observacoes: String(args.observacoes ?? '') || null,
           });
         } else if (tc.function.name === 'consultar_cardapio') {
-          resultado = await params.executores.consultarCardapio(String(args.termo ?? ''));
+          resultado = await params.executores.consultarCardapio(
+            String(args.termo ?? ''),
+            typeof args.casa === 'string' && args.casa.trim() ? args.casa.trim() : undefined,
+          );
         } else if (tc.function.name === 'consultar_cotacoes_fornecedor') {
           resultado = await params.executores.consultarCotacoesFornecedor();
         } else if (tc.function.name === 'enviar_audio_voz') {

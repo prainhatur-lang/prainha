@@ -11,7 +11,9 @@
 // que tiver número.
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, ne, sql } from 'drizzle-orm';
+import type { BlocoConhecimento } from '@concilia/db/schema';
 import type { MsgHistorico } from './ia';
+import { linkCardapio } from './cardapio';
 
 export interface OutraCasa {
   filialId: string;
@@ -74,6 +76,80 @@ export async function casasComAtendente(filialIdAtual: string): Promise<OutraCas
     out.push({ filialId: l.filialId, filialNome: nomeDaCasa(l.filialNome), atendente: l.atendente, numero });
   }
   return out;
+}
+
+// CASA SEM NÚMERO PRÓPRIO (14/10/2026): o botão de WhatsApp do site da Prainha
+// Mar cai no número do Prainha Bar, e a Nina dizia "não temos unidade no
+// Shopping Praia Sul" (9+ clientes entre 30/09 e 13/10). Enquanto a casa não
+// tem número ligado, quem atende por ela é o número do Prainha Bar, lendo a
+// base de conhecimento da própria casa (atendimento_config dela, mesmo com a
+// atendente desligada). No dia em que a casa ligar número e atendente, ela sai
+// daqui e entra em casasComAtendente (passagem).
+const FILIAL_TABUARA = 'fde37b95-7c7e-4b41-a618-2aba1fbc0de7';
+/** Reserva online da casa coberta — a Nina manda o link, não cria por aqui. */
+const LINK_RESERVA_POR_FILIAL: Record<string, string> = {
+  'e899dae2-38bf-4f3f-9149-7effd059fab8': 'https://prainhamar.com.br/reserva',
+};
+
+export interface CasaCoberta {
+  filialId: string;
+  filialNome: string;
+  conhecimento: BlocoConhecimento[];
+  linkReserva: string | null;
+  linkCardapio: string;
+}
+
+/**
+ * Casas do grupo que ainda não têm WhatsApp próprio e têm base de conhecimento
+ * cadastrada. A Tabuará fica de fora: o número do Prainha Bar já fala dela
+ * pelos próprios blocos (modo "duas casas").
+ */
+export async function casasCobertas(filialIdAtual: string, comAtendente: OutraCasa[]): Promise<CasaCoberta[]> {
+  const [atual] = await db
+    .select({ organizacaoId: schema.filial.organizacaoId })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, filialIdAtual))
+    .limit(1);
+  if (!atual) return [];
+  const linhas = await db
+    .select({
+      filialId: schema.filial.id,
+      filialNome: schema.filial.nome,
+      conhecimento: schema.atendimentoConfig.conhecimento,
+    })
+    .from(schema.atendimentoConfig)
+    .innerJoin(schema.filial, eq(schema.filial.id, schema.atendimentoConfig.filialId))
+    .where(
+      and(
+        eq(schema.filial.organizacaoId, atual.organizacaoId),
+        ne(schema.filial.id, filialIdAtual),
+        ne(schema.filial.id, FILIAL_TABUARA),
+      ),
+    );
+  const ligadas = new Set(comAtendente.map((c) => c.filialId));
+  return linhas
+    .filter((l) => !ligadas.has(l.filialId) && (l.conhecimento ?? []).length > 0)
+    .map((l) => ({
+      filialId: l.filialId,
+      filialNome: nomeDaCasa(l.filialNome),
+      conhecimento: l.conhecimento ?? [],
+      linkReserva: LINK_RESERVA_POR_FILIAL[l.filialId] ?? null,
+      linkCardapio: linkCardapio(l.filialId),
+    }));
+}
+
+/** Casa coberta pelo nome que o modelo escreveu ("Prainha Mar", "Mar", "mar e grill"). */
+export function acharCasaCoberta(casas: CasaCoberta[], pedido: string): CasaCoberta | null {
+  const p = semAcento(pedido);
+  if (!p) return null;
+  const exata = casas.find((c) => semAcento(c.filialNome) === p);
+  if (exata) return exata;
+  const palavras = p.split(/\s+/).filter((w) => w.length >= 3 && !['prainha', 'restaurante', 'casa', 'bar', 'grill'].includes(w));
+  const candidatas = casas.filter((c) => {
+    const n = semAcento(c.filialNome);
+    return n.includes(p) || palavras.some((w) => n.split(/\s+/).includes(w));
+  });
+  return candidatas.length === 1 ? candidatas[0] : null;
 }
 
 /** Acha a casa pelo que o modelo escreveu ("Tabuará", "tabuara", "Otávio", "Mar"). */

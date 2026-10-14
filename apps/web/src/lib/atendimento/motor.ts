@@ -30,7 +30,7 @@ import { medirOcupacaoHoje } from './ocupacao';
 import { consultarMareTexto } from './mare';
 import { consultarCotacoesFornecedor, cadastrarFornecedorProspect } from './fornecedor';
 import { listarOpcoesOrcamento, gerarOrcamentoEvento } from './orcamento';
-import { casasComAtendente, acharCasa, linkPassagem, passagemRecebida, type OutraCasa, type PassagemRecebida } from './outras-casas';
+import { casasComAtendente, acharCasa, linkPassagem, passagemRecebida, casasCobertas, acharCasaCoberta, type OutraCasa, type PassagemRecebida, type CasaCoberta } from './outras-casas';
 
 const DEBOUNCE_MS = 6_000;
 const HISTORICO_MAX = 30;
@@ -537,6 +537,17 @@ export async function processarEntrada(params: {
         console.error('[nina] passagem entre casas falhou:', e instanceof Error ? e.message : e);
       }
     }
+    // Casa do grupo sem número próprio (Prainha Mar, 14/10/2026): o site dela
+    // manda o WhatsApp pro número do Prainha Bar — a Nina atende com a base de
+    // conhecimento de lá. Best-effort: falhou, segue como antes.
+    let cobertas: CasaCoberta[] = [];
+    if (modo === 'cliente' && /prainha bar/i.test(filialNome)) {
+      try {
+        cobertas = await casasCobertas(entrada.filialId, outrasCasas);
+      } catch (e) {
+        console.error('[nina] casas cobertas falhou:', e instanceof Error ? e.message : e);
+      }
+    }
     let passouPara: { casa: OutraCasa; link: string } | null = null;
 
     let audioEnviado = false;
@@ -597,7 +608,12 @@ export async function processarEntrada(params: {
           nomePerfil: conversa.nomeCliente,
           observacao: dados.observacao,
         }),
-      consultarCardapio: (termo: string) => consultarCardapio(entrada.filialId, termo),
+      consultarCardapio: (termo: string, casa?: string) => {
+        // casa = outra casa que este número atende (Prainha Mar); não achou ou
+        // sem casa = cardápio daqui, como sempre foi.
+        const alvo = casa ? acharCasaCoberta(cobertas, casa) : null;
+        return consultarCardapio(alvo?.filialId ?? entrada.filialId, termo);
+      },
       listarOpcoesOrcamento: () => listarOpcoesOrcamento(entrada.filialId),
       gerarOrcamento: (dados: import('./ia').DadosOrcamentoEvento) =>
         gerarOrcamentoEvento({
@@ -721,6 +737,7 @@ export async function processarEntrada(params: {
           imagem,
           imagemJaRespondida,
           outrasCasas,
+          casasCobertas: cobertas,
           passagem,
         });
       } catch (e1) {
@@ -749,6 +766,7 @@ export async function processarEntrada(params: {
           imagem,
           imagemJaRespondida,
           outrasCasas,
+          casasCobertas: cobertas,
           passagem,
         });
         } catch (e2) {
@@ -776,6 +794,7 @@ export async function processarEntrada(params: {
             imagemJaRespondida,
             forcarModelo: alternativo,
             outrasCasas,
+            casasCobertas: cobertas,
             passagem,
           });
         }
