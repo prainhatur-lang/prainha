@@ -7,7 +7,7 @@ import { exigirPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
-import { and, asc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
+import { and, asc, eq, gte, inArray, isNotNull, notInArray, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { hojeBr } from '@/lib/datas';
 import { estimarCustos } from '@/lib/transferencia';
@@ -110,8 +110,28 @@ export default async function NovaTransferenciaPage(props: {
       const e = p.custo > 0 ? undefined : estimados.get(p.id);
       return e ? { ...p, custoEstimado: e.custo, fonteEstimativa: e.fonte } : p;
     });
+  // Em uso na casa que recebe: tem saldo ou mexeu (venda, ficha, compra…) nos
+  // últimos 90 dias. A Mar herdou ~450 produtos do Bar que nunca usou e eles
+  // tomavam a busca (14/10) — vão pro fim, atrás de um botão.
+  const movimentados = destinos.length
+    ? await db
+        .selectDistinct({ id: schema.movimentoEstoque.produtoId })
+        .from(schema.movimentoEstoque)
+        .where(
+          and(
+            inArray(schema.movimentoEstoque.filialId, destinos.map((d) => d.id)),
+            gte(schema.movimentoEstoque.dataHora, sql`now() - interval '90 days'`),
+            notInArray(schema.movimentoEstoque.tipo, ['ENTRADA_AJUSTE', 'SAIDA_AJUSTE']),
+          ),
+        )
+    : [];
+  const idsMovimentados = new Set(movimentados.map((m) => m.id));
   const produtosDestino: Record<string, ProdOpc[]> = {};
-  for (const d of destinos) produtosDestino[d.id] = prods.filter((p) => p.filialId === d.id).map(toOpc);
+  for (const d of destinos)
+    produtosDestino[d.id] = prods
+      .filter((p) => p.filialId === d.id)
+      .map(toOpc)
+      .map((p) => ({ ...p, emUso: p.saldo !== 0 || idsMovimentados.has(p.id) }));
 
   // De/para salvo (produto da origem → produto em cada casa que recebe)
   const depara: Record<string, Record<string, string>> = {};

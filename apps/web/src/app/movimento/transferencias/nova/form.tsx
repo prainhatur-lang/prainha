@@ -15,6 +15,9 @@ export interface ProdOpc {
   /** Sem custo médio: custo estimado (última compra / outra casa) e de onde veio */
   custoEstimado?: number;
   fonteEstimativa?: string;
+  /** Casa que recebe: false = cadastrado mas parado (sem saldo nem movimento
+   *  em 90 dias) — vai pro fim da busca, atrás de um botão */
+  emUso?: boolean;
 }
 export interface ItemInicial {
   produtoOrigemId: string;
@@ -51,11 +54,10 @@ function acharNoDestino(
   const salvo = depara[p.id];
   if (salvo && lista.some((d) => d.id === salvo)) return salvo;
   const n = norm(p.nome);
-  return (
-    lista.find((d) => !d.inativo && norm(d.nome) === n && d.unidade === p.unidade)?.id ??
-    lista.find((d) => !d.inativo && norm(d.nome) === n)?.id ??
-    null
-  );
+  const iguais = lista.filter((d) => !d.inativo && norm(d.nome) === n);
+  // Nome repetido lá: o que está em uso antes do parado
+  const ord = [...iguais.filter((d) => d.emUso !== false), ...iguais.filter((d) => d.emUso === false)];
+  return ord.find((d) => d.unidade === p.unidade)?.id ?? ord[0]?.id ?? null;
 }
 
 /** Busca por palavras. Ordem: nome que começa com o que foi digitado, depois
@@ -120,6 +122,7 @@ export function NovaTransferenciaForm(props: {
   const [busca, setBusca] = useState('');
   const [trocando, setTrocando] = useState<number | null>(null);
   const [buscaDest, setBuscaDest] = useState('');
+  const [verParados, setVerParados] = useState(false);
   const [data, setData] = useState(props.hoje);
   const [obs, setObs] = useState('');
   const [busy, setBusy] = useState(false);
@@ -223,7 +226,15 @@ export function NovaTransferenciaForm(props: {
   }
 
   const { itens: achados, total: totalAchados } = buscar(props.produtosOrigem, busca);
-  const { itens: achadosDest, total: totalAchadosDest } = buscar(listaDestino, buscaDest);
+  const { itens: achadosDest, total: totalAchadosDest } = buscar(
+    listaDestino.filter((d) => d.emUso !== false),
+    buscaDest,
+  );
+  const { itens: paradosDest, total: totalParadosDest } = buscar(
+    listaDestino.filter((d) => d.emUso === false),
+    buscaDest,
+  );
+  const mostrarParados = verParados || (achadosDest.length === 0 && totalParadosDest > 0);
 
   return (
     <div className="mt-6 space-y-4">
@@ -372,7 +383,7 @@ export function NovaTransferenciaForm(props: {
                           className="w-full rounded border border-slate-300 px-2 py-1"
                         />
                         <ul className="mt-1 max-h-60 overflow-auto rounded-md border border-slate-200 bg-white shadow-sm">
-                          {achadosDest.map((d) => (
+                          {[...achadosDest, ...(mostrarParados ? paradosDest : [])].map((d) => (
                             <li key={d.id}>
                               <button
                                 type="button"
@@ -381,15 +392,43 @@ export function NovaTransferenciaForm(props: {
                                   setTrocando(null);
                                   setBuscaDest('');
                                 }}
-                                className="w-full px-3 py-1.5 text-left text-sm hover:bg-slate-50"
+                                className={`w-full px-3 py-1.5 text-left text-sm hover:bg-slate-50 ${
+                                  d.emUso === false ? 'text-slate-400' : ''
+                                }`}
                               >
                                 {d.nome} <span className="text-xs text-slate-500">({d.unidade})</span>
+                                {d.emUso === false ? (
+                                  <span className="ml-1 text-[10px] text-slate-400">parado</span>
+                                ) : (
+                                  d.saldo !== 0 && (
+                                    <span className="ml-1 text-[10px] text-slate-500">
+                                      saldo {d.saldo.toLocaleString('pt-BR', { maximumFractionDigits: 3 })}
+                                    </span>
+                                  )
+                                )}
                               </button>
                             </li>
                           ))}
                           {totalAchadosDest > achadosDest.length && (
                             <li className="px-3 py-1.5 text-xs text-slate-500">
                               mostrando {achadosDest.length} de {totalAchadosDest} — digite mais pra afinar
+                            </li>
+                          )}
+                          {mostrarParados && totalParadosDest > paradosDest.length && (
+                            <li className="px-3 py-1.5 text-xs text-slate-500">
+                              mostrando {paradosDest.length} de {totalParadosDest} parados — digite mais pra afinar
+                            </li>
+                          )}
+                          {!mostrarParados && totalParadosDest > 0 && (
+                            <li>
+                              <button
+                                type="button"
+                                onClick={() => setVerParados(true)}
+                                className="w-full border-t border-slate-100 px-3 py-1.5 text-left text-xs text-slate-500 hover:bg-slate-50"
+                                title={`Cadastrados em ${nomeDestino} sem saldo e sem venda/compra nos últimos 90 dias`}
+                              >
+                                + {totalParadosDest} parado(s) em {nomeDestino} (sem saldo nem venda em 90 dias) — mostrar
+                              </button>
                             </li>
                           )}
                           <li>
@@ -422,6 +461,7 @@ export function NovaTransferenciaForm(props: {
                         onClick={() => {
                           setTrocando(l.key);
                           setBuscaDest('');
+                          setVerParados(false);
                         }}
                         className="text-left"
                         title="trocar"
@@ -446,6 +486,7 @@ export function NovaTransferenciaForm(props: {
                           onClick={() => {
                             setTrocando(l.key);
                             setBuscaDest(po?.nome.split(' ').slice(0, 2).join(' ') ?? '');
+                            setVerParados(false);
                           }}
                           className="mt-1 rounded border border-sky-300 bg-sky-50 px-2 py-0.5 text-[11px] text-sky-800"
                           title="O produto existe lá com outro nome? Escolha — fica salvo como de/para"
