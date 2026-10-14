@@ -111,6 +111,7 @@ export async function PATCH(
 
   // Se vinculou e nota tem fornecedor, upsert em produto_fornecedor pra
   // acelerar matches futuros do mesmo fornecedor com o mesmo código/EAN.
+  let aviso: string | null = null;
   if (produtoId) {
     const [nota] = await db
       .select({ fornecedorId: schema.notaCompra.fornecedorId })
@@ -143,8 +144,42 @@ export async function PATCH(
             fatorConversao: fatorStr ?? '1',
           });
         } catch {
-          // Conflito de unique (ex: mesmo código mapeado pra outro produto).
-          // Ignora — o usuário pode resolver manualmente em /cadastros/produtos/[id].
+          // Conflito de unique: o mesmo código já está ligado a OUTRO produto
+          // (14/10/2026: a CRBS mandou Corona Zero e Corona Extra com o mesmo
+          // código). Antes o vínculo não era gravado e o fator digitado se
+          // perdia — a caixa com 24 entrava como 1 un. Agora grava o vínculo
+          // sem o código (o fator vale pelo produto) e avisa.
+          const [dono] = item.codigoProdutoFornecedor
+            ? await db
+                .select({ nome: schema.produto.nome })
+                .from(schema.produtoFornecedor)
+                .innerJoin(schema.produto, eq(schema.produto.id, schema.produtoFornecedor.produtoId))
+                .where(
+                  and(
+                    eq(schema.produtoFornecedor.fornecedorId, nota.fornecedorId),
+                    eq(schema.produtoFornecedor.codigoFornecedor, item.codigoProdutoFornecedor),
+                  ),
+                )
+                .limit(1)
+            : [];
+          try {
+            await db.insert(schema.produtoFornecedor).values({
+              filialId: item.filialId,
+              produtoId,
+              fornecedorId: nota.fornecedorId,
+              codigoFornecedor: null,
+              ean: item.ean,
+              descricaoFornecedor: item.descricao,
+              unidadeFornecedor: item.unidade,
+              fatorConversao: fatorStr ?? '1',
+            });
+            aviso = `O código ${item.codigoProdutoFornecedor ?? ''} do fornecedor já está ligado a "${
+              dono?.nome ?? 'outro produto'
+            }". O vínculo deste item foi salvo sem o código, com o fator ${fatorStr ?? '1'}.`;
+          } catch (e) {
+            console.error('[nota-compra-item] vínculo sem código falhou', e);
+            aviso = `O vínculo com o fornecedor não foi salvo (código ${item.codigoProdutoFornecedor ?? ''} já usado). Confira o fator antes de lançar.`;
+          }
         }
       } else if (fatorStr != null) {
         // Ja existia o vinculo do produto com o fornecedor; o usuario quer
@@ -191,5 +226,5 @@ export async function PATCH(
     }
   }
 
-  return NextResponse.json({ id, produtoId, fator: fatorStr ?? null });
+  return NextResponse.json({ id, produtoId, fator: fatorStr ?? null, ...(aviso ? { aviso } : {}) });
 }

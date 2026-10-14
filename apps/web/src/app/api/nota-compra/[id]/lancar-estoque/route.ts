@@ -33,6 +33,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 import { aplicarMpmEntrada, fatorRateioNfe } from '@/lib/custo-medio';
 import { lerConferenciaNota } from '@/lib/nota-conferencia';
+import { fatorDoItemNota } from '@/lib/fator-nota-item';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -159,28 +160,15 @@ export async function POST(
       continue;
     }
 
-    // Busca mapeamento produto×fornecedor pra fator e pra atualizar último custo
-    let fator = 1;
-    let pfId: string | null = null;
-    if (nota.fornecedorId) {
-      const [pf] = await db
-        .select({
-          id: schema.produtoFornecedor.id,
-          fatorConversao: schema.produtoFornecedor.fatorConversao,
-        })
-        .from(schema.produtoFornecedor)
-        .where(
-          and(
-            eq(schema.produtoFornecedor.fornecedorId, nota.fornecedorId),
-            eq(schema.produtoFornecedor.produtoId, item.produtoId),
-          ),
-        )
-        .limit(1);
-      if (pf) {
-        fator = Number(pf.fatorConversao) || 1;
-        pfId = pf.id;
-      }
-    }
+    // Busca mapeamento produto×fornecedor pra fator e pra atualizar último custo.
+    // Sem vínculo do produto, usa o do mesmo código/EAN (mesma embalagem) —
+    // antes caía em 1 e a caixa com 24 virava 1 un (Corona, 14/10/2026).
+    const { fator, pfId } = await fatorDoItemNota({
+      fornecedorId: nota.fornecedorId,
+      produtoId: item.produtoId,
+      codigo: item.codigoProdutoFornecedor,
+      ean: item.ean,
+    });
 
     const qtdNota = Number(item.quantidade ?? 0);
     const qtdRecebidaConf = conferencia.porItem.get(item.id);

@@ -24,6 +24,8 @@ interface Item {
   produtoFornecedorId: string | null;
   fatorConversao: string | null;
   lancado: boolean;
+  /** quantidade que entrou no estoque (movimento do item), na unidade do produto */
+  qtdLancada?: number | null;
 }
 
 interface ProdutoOpcao {
@@ -87,6 +89,12 @@ function sugerirFator(
   return peloCadastro ?? { fator: 1, explicacao: null };
 }
 
+/** Unidade da nota que é embalagem (caixa, pacote, fardo…), não unidade solta. */
+const UNIDADES_EMBALAGEM = new Set(['CX', 'CXA', 'PAC', 'PCT', 'PC', 'FD', 'FDO', 'FARDO', 'DZ', 'PACK', 'PK', 'KIT', 'EMB', 'BD', 'BDJ', 'SC', 'CJ', 'GF', 'ENG']);
+function ehEmbalagem(unidade: string | null | undefined): boolean {
+  return UNIDADES_EMBALAGEM.has((unidade ?? '').trim().toUpperCase().replace(/[^A-Z]/g, ''));
+}
+
 export function ItemRow({
   item,
   produtosDisponiveis,
@@ -98,6 +106,7 @@ export function ItemRow({
 }) {
   const router = useRouter();
   const [modal, setModal] = useState(false);
+  const [corrigir, setCorrigir] = useState(false);
   const [editandoFator, setEditandoFator] = useState(false);
   const [pending, start] = useTransition();
 
@@ -112,7 +121,51 @@ export function ItemRow({
       alert(`Erro: ${d.error ?? r.status}`);
       return false;
     }
+    // aviso: o código do fornecedor já era de outro produto (vínculo salvo sem o código)
+    const ok = (await r.json().catch(() => ({}))) as { aviso?: string };
+    if (ok.aviso) alert(ok.aviso);
     setModal(false);
+    start(() => router.refresh());
+    return true;
+  }
+
+  // Item já lançado com produto ou fator errado: refaz o movimento, o saldo e
+  // o custo médio (POST corrigir-lancamento).
+  async function corrigirLancamento(produtoId: string | null, fator?: number) {
+    if (!produtoId || !fator) return false;
+    const r = await fetch(`/api/nota-compra-item/${item.id}/corrigir-lancamento`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ produtoId, fator }),
+    });
+    const d = (await r.json().catch(() => ({}))) as {
+      error?: string;
+      aviso?: string;
+      mudouEstoque?: boolean;
+      qtdAntiga?: number;
+      qtdNova?: number;
+      precoNovo?: number;
+      produtos?: { produto: string; saldoAntes: number; custoAntes: number; saldoDepois: number; custoDepois: number; saidasRecusto: number }[];
+    };
+    if (!r.ok) {
+      alert(`Erro: ${d.error ?? r.status}`);
+      return false;
+    }
+    const n = (v: number) => v.toLocaleString('pt-BR', { maximumFractionDigits: 3 });
+    const linhas = d.mudouEstoque
+      ? [
+          `Entrada corrigida: ${n(d.qtdAntiga ?? 0)} → ${n(d.qtdNova ?? 0)} ${item.produtoUnidade ?? 'un'} a ${brl(d.precoNovo ?? 0)}.`,
+          ...(d.produtos ?? []).map(
+            (p) =>
+              `${p.produto}: saldo ${n(p.saldoAntes)} → ${n(p.saldoDepois)}, custo ${brl(p.custoAntes)} → ${brl(p.custoDepois)}${
+                p.saidasRecusto > 0 ? ` (${p.saidasRecusto} saída(s) com custo refeito)` : ''
+              }`,
+          ),
+        ]
+      : ['Estoque já estava certo — vínculo do fornecedor atualizado pras próximas notas.'];
+    if (d.aviso) linhas.push('', d.aviso);
+    alert(linhas.join('\n'));
+    setCorrigir(false);
     start(() => router.refresh());
     return true;
   }
@@ -121,6 +174,18 @@ export function ItemRow({
   const unit = Number(item.valorUnitario ?? 0);
   const fatorAtual = Number(item.fatorConversao ?? 1);
   const fatorDiferenteDeUm = Math.abs(fatorAtual - 1) > 1e-9;
+  // Fator que ENTROU de verdade (movimento ÷ qtd da nota); o do vínculo pode
+  // ter mudado depois ou nem ter sido usado (Corona 14/10/2026).
+  const fatorLancado =
+    item.lancado && item.qtdLancada != null && qtd > 0 ? item.qtdLancada / qtd : null;
+  const fatorMostrado = fatorLancado ?? fatorAtual;
+  const unidadeProdUn = (item.produtoUnidade ?? '').toLowerCase() === 'un';
+  // Caixa/pacote entrando como 1 un: o custo vira o preço da caixa
+  const caixaComoUm =
+    !!item.produtoId &&
+    unidadeProdUn &&
+    ehEmbalagem(item.unidade) &&
+    Math.abs((item.lancado ? fatorMostrado : item.produtoFornecedorId ? fatorAtual : 1) - 1) < 1e-9;
 
   return (
     <tr
@@ -149,6 +214,15 @@ export function ItemRow({
             {item.produtoId ? 'trocar insumo' : '🔗 vincular insumo'}
           </button>
         )}
+        {item.lancado && item.produtoId && (
+          <button
+            type="button"
+            onClick={() => setCorrigir(true)}
+            className="mt-1 rounded border border-amber-300 px-2 py-1 text-[11px] font-medium text-amber-800 md:hidden"
+          >
+            corrigir lançamento
+          </button>
+        )}
       </td>
       <td className="px-3 py-2 text-right font-mono text-xs">{qtd}</td>
       <td className="px-3 py-2 font-mono text-[10px] text-slate-500">
@@ -175,9 +249,19 @@ export function ItemRow({
                 </span>
               )}
               {item.lancado ? (
-                <span className="rounded bg-emerald-100 px-1 py-0.5 text-[9px] text-emerald-800">
-                  ✓ lançado
-                </span>
+                <>
+                  <span className="rounded bg-emerald-100 px-1 py-0.5 text-[9px] text-emerald-800">
+                    ✓ lançado
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setCorrigir(true)}
+                    title="Produto ou fator errado: refaz a entrada, o saldo e o custo médio"
+                    className="text-[10px] text-amber-700 hover:text-amber-900 hover:underline"
+                  >
+                    corrigir
+                  </button>
+                </>
               ) : (
                 <button
                   type="button"
@@ -203,10 +287,17 @@ export function ItemRow({
               />
             )}
             {/* Quando ja lancou, so mostra o fator usado (read-only) */}
-            {item.lancado && fatorDiferenteDeUm && (
+            {item.lancado && (fatorLancado != null ? Math.abs(fatorLancado - 1) > 1e-9 : fatorDiferenteDeUm) && (
               <span className="text-[10px] text-slate-500">
-                {textoConversao(item.unidade || 'UN', fatorAtual, item.produtoUnidade ?? '')} → entrou{' '}
-                {(qtd * fatorAtual).toLocaleString('pt-BR')} {item.produtoUnidade}
+                {textoConversao(item.unidade || 'UN', fatorMostrado, item.produtoUnidade ?? '')} → entrou{' '}
+                {(item.qtdLancada ?? qtd * fatorAtual).toLocaleString('pt-BR')} {item.produtoUnidade}
+              </span>
+            )}
+            {caixaComoUm && (
+              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-900">
+                ⚠ {item.unidade} {item.lancado ? 'entrou' : 'vai entrar'} como 1 {item.produtoUnidade} — confira quantas
+                vêm na {item.unidade}
+                {item.lancado ? ' e use "corrigir"' : ''}
               </span>
             )}
           </div>
@@ -228,6 +319,17 @@ export function ItemRow({
           filialId={filialId}
           onFechar={() => setModal(false)}
           onVincular={vincular}
+        />
+      )}
+      {corrigir && (
+        <ModalVincular
+          item={item}
+          produtosDisponiveis={produtosDisponiveis}
+          filialId={filialId}
+          onFechar={() => setCorrigir(false)}
+          onVincular={corrigirLancamento}
+          modo="corrigir"
+          fatorInicial={fatorMostrado}
         />
       )}
     </tr>
@@ -362,13 +464,19 @@ function ModalVincular({
   filialId,
   onFechar,
   onVincular,
+  modo = 'vincular',
+  fatorInicial,
 }: {
   item: Item;
   produtosDisponiveis: ProdutoOpcao[];
   filialId: string;
   onFechar: () => void;
   onVincular: (produtoId: string | null, fator?: number) => Promise<boolean>;
+  /** 'corrigir': item já lançado — sem criar insumo nem desvincular */
+  modo?: 'vincular' | 'corrigir';
+  fatorInicial?: number;
 }) {
+  const corrigindo = modo === 'corrigir';
   const [busca, setBusca] = useState((item.descricao ?? '').slice(0, 30));
   const [pending, start] = useTransition();
   const [aba, setAba] = useState<'vincular' | 'criar'>('vincular');
@@ -379,8 +487,12 @@ function ModalVincular({
   const [erroCriar, setErroCriar] = useState<string | null>(null);
 
   // Produto selecionado pra ver/editar fator antes de vincular.
-  const [produtoSelecionado, setProdutoSelecionado] = useState<ProdutoOpcao | null>(null);
-  const [fatorTexto, setFatorTexto] = useState<string>('1');
+  const [produtoSelecionado, setProdutoSelecionado] = useState<ProdutoOpcao | null>(() =>
+    corrigindo ? (produtosDisponiveis.find((p) => p.id === item.produtoId) ?? null) : null,
+  );
+  const [fatorTexto, setFatorTexto] = useState<string>(() =>
+    corrigindo && fatorInicial ? String(Math.round(fatorInicial * 1e6) / 1e6) : '1',
+  );
   const [fatorNovo, setFatorNovo] = useState<number | null>(null);
 
   const opcoes = useMemo(() => {
@@ -457,7 +569,9 @@ function ModalVincular({
           className="w-full max-w-lg space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-lg"
         >
           <div>
-            <h2 className="text-sm font-semibold text-slate-900">Vincular produto</h2>
+            <h2 className="text-sm font-semibold text-slate-900">
+              {corrigindo ? 'Corrigir lançamento' : 'Vincular produto'}
+            </h2>
             <p className="mt-0.5 text-xs text-slate-500">
               Item #{item.numeroItem}:{' '}
               <span className="font-medium text-slate-700">{item.descricao}</span>
@@ -466,9 +580,20 @@ function ModalVincular({
               EAN {item.ean || '—'} · Cód {item.codigoProdutoFornecedor || '—'} ·{' '}
               {qtdNota} {item.unidade || '?'}
             </p>
+            {corrigindo && (
+              <p className="mt-2 rounded-md bg-amber-50 px-2 py-1.5 text-[11px] text-amber-900">
+                Entrou{' '}
+                <b>
+                  {(item.qtdLancada ?? qtdNota).toLocaleString('pt-BR')} {item.produtoUnidade ?? 'un'}
+                </b>{' '}
+                de <b>{item.produtoNome}</b>. Escolha o produto certo e quantas unidades vêm em cada{' '}
+                {item.unidade || 'UN'}: a entrada, o saldo e o custo médio são refeitos (o valor da nota não
+                muda).
+              </p>
+            )}
           </div>
 
-          <div className="flex gap-1 border-b border-slate-200">
+          <div className={`flex gap-1 border-b border-slate-200 ${corrigindo ? 'hidden' : ''}`}>
             <button
               type="button"
               onClick={() => {
@@ -567,6 +692,7 @@ function ModalVincular({
                   onVoltar={() => setProdutoSelecionado(null)}
                   onConfirmar={confirmarVinculo}
                   pending={pending}
+                  rotulo={corrigindo ? 'Corrigir lançamento' : undefined}
                 />
               )}
             </>
@@ -654,7 +780,7 @@ function ModalVincular({
           )}
 
           <div className="flex justify-between border-t border-slate-100 pt-3">
-            {item.produtoId ? (
+            {item.produtoId && !corrigindo ? (
               <button
                 type="button"
                 disabled={pending}
@@ -693,6 +819,7 @@ function ConfirmarFator({
   onVoltar,
   onConfirmar,
   pending,
+  rotulo = 'Continuar',
 }: {
   produto: ProdutoOpcao;
   qtdNota: number;
@@ -705,6 +832,7 @@ function ConfirmarFator({
   onVoltar: () => void;
   onConfirmar: () => void;
   pending: boolean;
+  rotulo?: string;
 }) {
   const sug = sugerirFator(descricao, produto.unidade, produto.volumeMl ?? null);
 
@@ -745,7 +873,7 @@ function ConfirmarFator({
           ← Voltar
         </button>
         <BotaoConfirmarConversao
-          rotulo="Continuar"
+          rotulo={rotulo}
           pending={pending}
           onConfirmar={onConfirmar}
           resumo={

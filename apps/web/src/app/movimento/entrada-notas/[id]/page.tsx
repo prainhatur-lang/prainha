@@ -70,7 +70,7 @@ export default async function NotaDetalhePage(props: {
     console.error('[entrada-notas] vínculo automático falhou', e);
   }
 
-  const itens = await db
+  const itensJoin = await db
     .select({
       id: schema.notaCompraItem.id,
       numeroItem: schema.notaCompraItem.numeroItem,
@@ -90,6 +90,8 @@ export default async function NotaDetalhePage(props: {
       // pega o fator atual; senao, vem null e a UI mostra o default.
       produtoFornecedorId: schema.produtoFornecedor.id,
       fatorConversao: schema.produtoFornecedor.fatorConversao,
+      pfCodigo: schema.produtoFornecedor.codigoFornecedor,
+      pfEan: schema.produtoFornecedor.ean,
     })
     .from(schema.notaCompraItem)
     .leftJoin(schema.produto, eq(schema.produto.id, schema.notaCompraItem.produtoId))
@@ -104,10 +106,25 @@ export default async function NotaDetalhePage(props: {
     )
     .where(eq(schema.notaCompraItem.notaCompraId, id))
     .orderBy(asc(schema.notaCompraItem.numeroItem));
+  // Produto com mais de um vínculo no fornecedor (ex.: código repetido, 14/10)
+  // duplicava a linha do item: fica um por item, o do mesmo código/EAN.
+  const itens = (() => {
+    const porItem = new Map<string, (typeof itensJoin)[number]>();
+    const nota_ = (r: (typeof itensJoin)[number]) =>
+      (r.pfCodigo && r.pfCodigo === r.codigoProdutoFornecedor ? 2 : 0) + (r.pfEan && r.pfEan === r.ean ? 1 : 0);
+    for (const r of itensJoin) {
+      const atual = porItem.get(r.id);
+      if (!atual || nota_(r) > nota_(atual)) porItem.set(r.id, r);
+    }
+    return [...porItem.values()];
+  })();
 
   // Detecta quais itens já foram lançados no estoque (movimento_estoque)
   const itensLancadosRows = await db
-    .select({ itemId: schema.movimentoEstoque.notaCompraItemId })
+    .select({
+      itemId: schema.movimentoEstoque.notaCompraItemId,
+      qtd: sql<string>`sum(${schema.movimentoEstoque.quantidade})`,
+    })
     .from(schema.movimentoEstoque)
     .where(
       and(
@@ -116,8 +133,12 @@ export default async function NotaDetalhePage(props: {
           SELECT id FROM ${schema.notaCompraItem} WHERE ${schema.notaCompraItem.notaCompraId} = ${id}
         )`,
       ),
-    );
+    )
+    .groupBy(schema.movimentoEstoque.notaCompraItemId);
   const idsLancados = new Set(itensLancadosRows.map((r) => r.itemId).filter(Boolean) as string[]);
+  const qtdLancadaPorItem = new Map(
+    itensLancadosRows.filter((r) => r.itemId).map((r) => [r.itemId as string, Number(r.qtd)]),
+  );
 
   // Produtos disponíveis pra vincular (mesma filial, sem descontinuados)
   const produtosDisponiveis = await db
@@ -847,6 +868,7 @@ export default async function NotaDetalhePage(props: {
                       produtoFornecedorId: it.produtoFornecedorId,
                       fatorConversao: it.fatorConversao,
                       lancado: idsLancados.has(it.id),
+                      qtdLancada: qtdLancadaPorItem.get(it.id) ?? null,
                     }}
                     produtosDisponiveis={produtosDisponiveis.map((p) => ({
                       id: p.id,
