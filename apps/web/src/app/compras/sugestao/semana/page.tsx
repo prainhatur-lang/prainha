@@ -199,6 +199,15 @@ export default async function ListaSemanaPage(props: { searchParams: Promise<SP>
   if (idsSql) {
     const notas = (await db.execute(sql`
       SELECT DISTINCT ON (nci.produto_id) nci.produto_id, nci.quantidade, nci.unidade,
+             -- quantidade na unidade do produto (10 CX → 240 un): o que entrou
+             -- no estoque, senão o fator do vínculo com a mesma unidade da nota
+             COALESCE(
+               (SELECT SUM(m.quantidade) FROM movimento_estoque m
+                 WHERE m.nota_compra_item_id = nci.id AND m.tipo = 'ENTRADA_COMPRA'),
+               nci.quantidade * (SELECT pf.fator_conversao FROM produto_fornecedor pf
+                 WHERE pf.produto_id = nci.produto_id AND UPPER(pf.unidade_fornecedor) = UPPER(nci.unidade)
+                   AND pf.fator_conversao > 0 LIMIT 1)
+             ) AS qtd_produto,
              COALESCE(nc.data_entrada, nc.data_emissao)::date::text AS data, nc.emit_nome
       FROM nota_compra_item nci JOIN nota_compra nc ON nc.id = nci.nota_compra_id
       WHERE nci.filial_id = ${filial.id} AND nci.produto_id IN ${idsSql}
@@ -206,7 +215,7 @@ export default async function ListaSemanaPage(props: { searchParams: Promise<SP>
     `)) as unknown as Row[];
     for (const r of notas)
       ultEntrada.set(String(r.produto_id), {
-        q: Number(r.quantidade ?? 0),
+        q: Number(r.qtd_produto ?? r.quantidade ?? 0),
         data: String(r.data),
         fornecedor: r.emit_nome ? String(r.emit_nome) : null,
       });

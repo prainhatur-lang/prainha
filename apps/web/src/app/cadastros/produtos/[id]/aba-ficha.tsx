@@ -67,8 +67,9 @@ export function AbaFicha({
   linhas,
   tamanhos = [],
   usadoEm,
-  insumosDisponiveis,
+  insumosDisponiveis: insumosDoServidor,
   soUsadoEm = false,
+  filialId,
 }: {
   produtoId: string;
   produtoTipo: string;
@@ -77,7 +78,17 @@ export function AbaFicha({
   usadoEm: UsadoEm[];
   insumosDisponiveis: InsumoOpcao[];
   soUsadoEm?: boolean;
+  /** Filial do produto — habilita criar o insumo ali mesmo quando a busca não acha. */
+  filialId?: string;
 }) {
+  // Insumo criado agora pelo "criar insumo" entra na lista na hora, antes do refresh.
+  const [criados, setCriados] = useState<InsumoOpcao[]>([]);
+  const insumosDisponiveis = useMemo(
+    () => [...insumosDoServidor, ...criados.filter((c) => !insumosDoServidor.some((i) => i.id === c.id))],
+    [insumosDoServidor, criados],
+  );
+  const [novaUnidade, setNovaUnidade] = useState('un');
+  const [criandoInsumo, setCriandoInsumo] = useState(false);
   const router = useRouter();
   const [adicionar, setAdicionar] = useState<Grupo | null>(null);
   const [busca, setBusca] = useState('');
@@ -463,6 +474,57 @@ export function AbaFicha({
                         Produtos → Novo insumo
                       </Link>
                       .
+                      {filialId && (
+                        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-2">
+                          <span className="text-slate-700">
+                            Ou criar agora: <b>{busca.trim()}</b>
+                          </span>
+                          <select
+                            value={novaUnidade}
+                            onChange={(e) => setNovaUnidade(e.target.value)}
+                            className="rounded border border-slate-300 px-1 py-0.5 text-xs"
+                          >
+                            {['un', 'kg', 'g', 'l', 'ml'].map((u) => (
+                              <option key={u} value={u}>
+                                {u}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            disabled={criandoInsumo}
+                            onClick={async () => {
+                              const nome = busca.trim();
+                              if (!nome) return;
+                              setCriandoInsumo(true);
+                              setErro(null);
+                              try {
+                                const r = await fetch('/api/produtos/insumo', {
+                                  method: 'POST',
+                                  headers: { 'content-type': 'application/json' },
+                                  body: JSON.stringify({ filialId, nome, unidadeEstoque: novaUnidade }),
+                                });
+                                const d = await r.json().catch(() => ({}));
+                                if (!r.ok || !d.id) {
+                                  setErro((d.error as string) ?? `HTTP ${r.status}`);
+                                  return;
+                                }
+                                setCriados((p) => [
+                                  ...p,
+                                  { id: d.id as string, nome, tipo: 'INSUMO', unidade: novaUnidade } as InsumoOpcao,
+                                ]);
+                                setInsumoId(d.id as string);
+                                router.refresh();
+                              } finally {
+                                setCriandoInsumo(false);
+                              }
+                            }}
+                            className="rounded bg-slate-900 px-2 py-0.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+                          >
+                            {criandoInsumo ? 'Criando…' : '+ Criar insumo'}
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     opcoesFiltradas.map((o) => (

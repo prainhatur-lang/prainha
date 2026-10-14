@@ -83,6 +83,7 @@ export default async function SugestaoCompraPage(props: { searchParams: Promise<
       codigoExterno: schema.produto.codigoExterno,
       nome: schema.produto.nome,
       unidade: schema.produto.unidadeEstoque,
+      tipo: schema.produto.tipo,
       categoria: schema.produto.categoriaCompras,
       atual: schema.produto.estoqueAtual,
       minimo: schema.produto.estoqueMinimo,
@@ -122,6 +123,10 @@ export default async function SugestaoCompraPage(props: { searchParams: Promise<
     data: string;
     fornecedor: string | null;
     origem: 'nota' | 'movimento';
+    /** Como veio na nota (ex.: 10 CX), quando a quantidade foi convertida
+     *  pra unidade do produto (10 CX × 24 = 240 un). */
+    embalagemQtd?: number | null;
+    embalagemUnidade?: string | null;
   }
   const ultimaEntrada = new Map<string, UltEntrada>();
   if (ids.length > 0) {
@@ -129,6 +134,19 @@ export default async function SugestaoCompraPage(props: { searchParams: Promise<
       SELECT DISTINCT ON (nci.produto_id)
         nci.produto_id                                   AS produto_id,
         nci.quantidade                                   AS quantidade,
+        nci.unidade                                      AS unidade_nota,
+        -- O que o lançamento no estoque gravou pra este item da nota (já
+        -- convertido pelo fator da embalagem: 10 CX → 240 un).
+        (SELECT SUM(m.quantidade) FROM movimento_estoque m
+          WHERE m.nota_compra_item_id = nci.id AND m.tipo = 'ENTRADA_COMPRA') AS qtd_estoque,
+        -- Nota ainda não lançada: fator do vínculo produto × fornecedor com a
+        -- mesma unidade da nota (o mesmo que o lançamento vai usar).
+        (SELECT pf.fator_conversao FROM produto_fornecedor pf
+          WHERE pf.produto_id = nci.produto_id
+            AND UPPER(pf.unidade_fornecedor) = UPPER(nci.unidade)
+            AND pf.fator_conversao > 0
+          ORDER BY (LTRIM(pf.codigo_fornecedor, '0') = LTRIM(COALESCE(nci.codigo_produto_fornecedor, ''), '0')) DESC
+          LIMIT 1)                                       AS fator,
         COALESCE(nc.data_entrada, nc.data_emissao)::date::text AS data,
         nc.emit_nome                                     AS fornecedor
       FROM nota_compra_item nci
@@ -138,11 +156,21 @@ export default async function SugestaoCompraPage(props: { searchParams: Promise<
       ORDER BY nci.produto_id, COALESCE(nc.data_entrada, nc.data_emissao) DESC
     `);
     for (const r of entradasNota as unknown as Array<Record<string, unknown>>) {
+      // A nota vem na unidade do fornecedor (CX, FD, PCT). Converte pra
+      // unidade do produto: primeiro o que entrou no estoque, senão o fator.
+      const qtdNota = Number(r.quantidade ?? 0);
+      const qtdEstoque = r.qtd_estoque != null ? Number(r.qtd_estoque) : null;
+      const fator = r.fator != null ? Number(r.fator) : null;
+      const quantidade =
+        qtdEstoque != null && qtdEstoque > 0 ? qtdEstoque : fator != null && fator > 0 ? qtdNota * fator : qtdNota;
+      const converteu = Math.abs(quantidade - qtdNota) > 0.0001;
       ultimaEntrada.set(String(r.produto_id), {
-        quantidade: Number(r.quantidade ?? 0),
+        quantidade,
         data: String(r.data),
         fornecedor: r.fornecedor ? String(r.fornecedor) : null,
         origem: 'nota',
+        embalagemQtd: converteu ? qtdNota : null,
+        embalagemUnidade: converteu && r.unidade_nota ? String(r.unidade_nota) : null,
       });
     }
 
@@ -188,6 +216,29 @@ export default async function SugestaoCompraPage(props: { searchParams: Promise<
     for (const v of vincProd) temFornecedor.add(v.produtoId);
   }
 
+  // Ficha técnica de cada produto de venda: quais insumos ele consome. Prato
+  // sem ficha (ex.: Caranguejo) não baixa insumo nenhum — a tela oferece
+  // cadastrar a ficha dali mesmo.
+  const insumosPorProduto = new Map<string, string[]>();
+  if (ids.length > 0) {
+    const fichas = await db
+      .select({ produtoId: schema.fichaTecnica.produtoId, insumo: schema.produto.nome })
+      .from(schema.fichaTecnica)
+      .innerJoin(schema.produto, eq(schema.produto.id, schema.fichaTecnica.insumoId))
+      .where(
+        and(
+          eq(schema.fichaTecnica.filialId, filial.id),
+          inArray(schema.fichaTecnica.produtoId, ids),
+        ),
+      );
+    for (const f of fichas) {
+      const lista = insumosPorProduto.get(f.produtoId) ?? [];
+      const nome = f.insumo ?? '(sem nome)';
+      if (!lista.includes(nome)) lista.push(nome);
+      insumosPorProduto.set(f.produtoId, lista);
+    }
+  }
+
   const linhas: LinhaSugestao[] = candidatos
     .map((c) => {
       const atual = Number(c.atual ?? 0);
@@ -218,6 +269,10 @@ export default async function SugestaoCompraPage(props: { searchParams: Promise<
         ultEntradaQtd: ent?.quantidade ?? null,
         ultEntradaData: ent?.data ?? null,
         ultEntradaFornecedor: ent?.fornecedor ?? null,
+        ultEntradaEmbalagemQtd: ent?.embalagemQtd ?? null,
+        ultEntradaEmbalagemUnidade: ent?.embalagemUnidade ?? null,
+        ehInsumo: c.tipo === 'INSUMO',
+        insumos: insumosPorProduto.get(c.id) ?? [],
         sugestao,
         deCompra,
       };

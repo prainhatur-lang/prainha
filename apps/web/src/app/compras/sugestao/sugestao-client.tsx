@@ -16,6 +16,13 @@ export interface LinhaSugestao {
   ultEntradaQtd: number | null;
   ultEntradaData: string | null;
   ultEntradaFornecedor: string | null;
+  /** Como veio na nota quando foi convertida (ex.: 10 CX → 240 un). */
+  ultEntradaEmbalagemQtd?: number | null;
+  ultEntradaEmbalagemUnidade?: string | null;
+  /** Produto é insumo (não tem ficha técnica própria). */
+  ehInsumo?: boolean;
+  /** Insumos da ficha técnica do produto de venda. */
+  insumos?: string[];
   sugestao: number;
   deCompra: boolean;
 }
@@ -201,6 +208,31 @@ export function SugestaoClient({ filialId, linhas, fornecedores, fornecedoresPor
                       {!l.deCompra && <span className="ml-1 text-amber-600">sem cadastro de compra</span>}
                       {risco && <span className="ml-1 text-rose-600">⚠ vendeu mais que o estoque</span>}
                     </div>
+                    {!l.ehInsumo && (
+                      <div className="text-[10px]">
+                        {(l.insumos?.length ?? 0) > 0 ? (
+                          <a
+                            href={`/cadastros/produtos/${l.produtoId}?aba=ficha`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-indigo-600 hover:underline"
+                            title={l.insumos!.join(', ')}
+                          >
+                            🧾 insumos ({l.insumos!.length}): {l.insumos!.slice(0, 3).join(', ')}
+                            {l.insumos!.length > 3 ? '…' : ''}
+                          </a>
+                        ) : (
+                          <a
+                            href={`/cadastros/produtos/${l.produtoId}?aba=ficha`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-amber-700 hover:underline"
+                          >
+                            + cadastrar insumos (sem ficha técnica)
+                          </a>
+                        )}
+                      </div>
+                    )}
                   </td>
                   <td className="px-3 py-1.5 text-slate-600">{l.categoria ?? '—'}</td>
                   <td className="px-3 py-1.5 text-right font-mono font-semibold text-slate-900">{num(l.vendido7d)}</td>
@@ -216,6 +248,11 @@ export function SugestaoClient({ filialId, linhas, fornecedores, fornecedoresPor
                           {l.ultEntradaQtd != null ? num(l.ultEntradaQtd) : '—'}
                         </span>
                         <span className="ml-1 text-[10px] text-slate-400">{dataBr(l.ultEntradaData)}</span>
+                        {l.ultEntradaEmbalagemQtd != null && (
+                          <div className="text-[10px] text-slate-500">
+                            = {num(l.ultEntradaEmbalagemQtd)} {l.ultEntradaEmbalagemUnidade ?? ''} na nota
+                          </div>
+                        )}
                         {l.ultEntradaFornecedor && (
                           <div className="truncate text-[10px] text-slate-400" title={l.ultEntradaFornecedor}>
                             {l.ultEntradaFornecedor}

@@ -767,6 +767,7 @@ export default async function ProdutoDetalhePage(props: {
               />
             )}
             <AbaFicha
+              filialId={produto.filialId}
               produtoId={id}
               produtoTipo={produto.tipo}
               soUsadoEm={soUsadoEm}
