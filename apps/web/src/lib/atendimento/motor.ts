@@ -30,6 +30,7 @@ import { medirOcupacaoHoje } from './ocupacao';
 import { consultarMareTexto } from './mare';
 import { consultarCotacoesFornecedor, cadastrarFornecedorProspect } from './fornecedor';
 import { listarOpcoesOrcamento, gerarOrcamentoEvento } from './orcamento';
+import { casasComAtendente, acharCasa, linkPassagem, passagemRecebida, type OutraCasa, type PassagemRecebida } from './outras-casas';
 
 const DEBOUNCE_MS = 6_000;
 const HISTORICO_MAX = 30;
@@ -521,6 +522,23 @@ export async function processarEntrada(params: {
 
     const numerosEquipe = config.numerosEquipe ?? [];
 
+    // PASSAGEM ENTRE CASAS (14/10/2026): as outras casas com atendente própria
+    // (pra passar o assunto de lá) e, se esta pessoa chegou pelo link de uma
+    // delas, o fim da conversa de lá. Best-effort: falhou, segue como antes.
+    let outrasCasas: OutraCasa[] = [];
+    let passagem: PassagemRecebida | null = null;
+    if (modo === 'cliente') {
+      try {
+        [outrasCasas, passagem] = await Promise.all([
+          casasComAtendente(entrada.filialId),
+          passagemRecebida({ filialId: entrada.filialId, phoneNumberId: entrada.phoneNumberId, telefone: entrada.telefone }),
+        ]);
+      } catch (e) {
+        console.error('[nina] passagem entre casas falhou:', e instanceof Error ? e.message : e);
+      }
+    }
+    let passouPara: { casa: OutraCasa; link: string } | null = null;
+
     let audioEnviado = false;
     const executores = {
       enviarAudioVoz: async (textoFala: string) => {
@@ -647,6 +665,16 @@ export async function processarEntrada(params: {
         }
         return r;
       },
+      passarParaOutraCasa: async (casa: string, resumo: string) => {
+        const destino = acharCasa(outrasCasas, casa);
+        if (!destino) {
+          return `Não achei a casa "${casa}". As casas com atendente própria são: ${outrasCasas.map((c) => c.filialNome).join(', ') || 'nenhuma'}. Chame de novo com um desses nomes, ou responda com o que você sabe.`;
+        }
+        const link = linkPassagem(destino, filialNome, resumo);
+        passouPara = { casa: destino, link };
+        console.log('[nina] passagem', filialNome, '→', destino.filialNome, registro.conversaId);
+        return `LINK PRONTO pra falar com ${destino.atendente}, do ${destino.filialNome}: ${link}\nNa resposta: diga com carinho que o ${destino.filialNome} tem atendimento próprio com ${destino.atendente}, cole o link EXATAMENTE como está (sem markdown, sem encurtar) e diga que é só tocar e mandar a mensagem que já vai escrita — ${destino.atendente} recebe o resumo e continua dali. NÃO transfira pra equipe por isso. Se a conversa tem assunto do ${filialNome} ainda aberto, siga com ele normalmente.`;
+      },
       transferir: async (motivo: string, resumo: string) => {
         await db
           .update(schema.atendimentoConversa)
@@ -692,6 +720,8 @@ export async function processarEntrada(params: {
           duasCasas: /prainha bar/i.test(filialNome),
           imagem,
           imagemJaRespondida,
+          outrasCasas,
+          passagem,
         });
       } catch (e1) {
         console.error('[nina] geracao tentativa 1 falhou:', e1 instanceof Error ? e1.message : e1);
@@ -718,6 +748,8 @@ export async function processarEntrada(params: {
           duasCasas: /prainha bar/i.test(filialNome),
           imagem,
           imagemJaRespondida,
+          outrasCasas,
+          passagem,
         });
         } catch (e2) {
           // FAILOVER DE MOTOR (domingo 06/09: 8 falhas em rajada no pico —
@@ -743,6 +775,8 @@ export async function processarEntrada(params: {
             imagem,
             imagemJaRespondida,
             forcarModelo: alternativo,
+            outrasCasas,
+            passagem,
           });
         }
       }
@@ -796,6 +830,8 @@ export async function processarEntrada(params: {
     if (
       !transferiu &&
       !leadRegistrado &&
+      // Passou pra outra casa: "o Otávio continua com você" não é promessa da equipe daqui.
+      !passouPara &&
       texto &&
       // Inclui a promessa de "colega": "já chamei um colega, ele te responde"
       // saiu SEM transferir e a cliente esperou 2h no vácuo (hospedagem, 26/08).
@@ -826,6 +862,16 @@ export async function processarEntrada(params: {
         .filter((m) => m.direcao === 'saida')
         .reduce((s, m) => s + contarEmojis(m.corpo ?? ''), 0);
       texto = podarEmojis(texto, Math.max(0, 1 - jaUsados));
+      // Passagem pedida e o link não saiu inteiro (o modelo encurtou, mudou o
+      // texto do ?text= ou esqueceu): tira o pedaço errado e cola o link certo.
+      const passagemFeita = passouPara as { casa: OutraCasa; link: string } | null;
+      if (passagemFeita && !texto.includes(passagemFeita.link)) {
+        const numeroDestino = passagemFeita.casa.numero;
+        texto = texto
+          .replace(new RegExp(`(https?://)?(api\\.)?wa\\.me/${numeroDestino}\\S*`, 'g'), '')
+          .trim();
+        texto = `${texto}\n\n${passagemFeita.link}`;
+      }
       // ANTI-PAPAGAIO (caso Gleice 24/08): mensagem IGUAL a uma saída recente
       // não sai de novo — silêncio é melhor que eco de robô (a cliente mandou
       // figurinha e ouviu o mesmo "aproveitem o aniversário" pela 2ª vez).

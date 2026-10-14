@@ -79,6 +79,8 @@ export interface ExecutoresFerramentas {
   remarcarReserva: (dados: DadosRemarcarReserva) => Promise<string>;
   cancelarReserva: (dados: { data: string | null; telefoneReserva: string | null; cpfReserva: string | null }) => Promise<string>;
   localizarReserva: (dados: DadosLocalizarReserva) => Promise<string>;
+  /** Passa a conversa pra atendente de OUTRA casa do grupo (link wa.me). */
+  passarParaOutraCasa?: (casa: string, resumo: string) => Promise<string>;
   /** Passa a reserva pro telefone desta conversa e reenvia a confirmação. */
   corrigirTelefoneReserva?: (dados: { data: string | null; telefoneReserva: string | null; cpfReserva: string | null }) => Promise<string>;
   cadastrarFornecedor: (dados: {
@@ -140,6 +142,8 @@ function montarSystemPrompt(params: {
   /** true = número compartilhado que atende Prainha Bar E Tabuará (o número
    *  histórico). false = número dedicado de UMA casa (ex.: Tabuará próprio). */
   duasCasas?: boolean;
+  /** Outras casas do grupo com atendente própria no WhatsApp (passagem). */
+  outrasCasas?: { filialNome: string; atendente: string }[];
 }): string {
   const { nomeAtendente, filialNome, persona, conhecimento, espacos, primeiraResposta, retomada } = params;
   // Cardápio online da CASA (a Tabuará tem o dela) — nunca o link fixo do Prainha.
@@ -159,6 +163,20 @@ function montarSystemPrompt(params: {
     : '';
   const blocoRetomada = retomada
     ? `\n\n🚨 SITUAÇÃO ESPECIAL — CONVERSA DEVOLVIDA PRA VOCÊ:\nA equipe te devolveu esta conversa com uma pergunta do cliente SEM resposta. No histórico você (ou a equipe) prometeu "confirmar e retornar" — esse retorno é AGORA, e é SEU:\n- RESOLVA a pergunta pendente: PRIMEIRO releia os blocos de "O QUE VOCÊ SABE" — a resposta costuma já estar lá (a base foi atualizada DEPOIS da sua promessa); se for preço/prato/mesa/vaga, use as ferramentas. Responda com a informação CONCRETA.\n- Se você prometeu "confirmar com a equipe" algo que AGORA está nos blocos: a confirmação já aconteceu — VOCÊ é o retorno. Entregue como boa notícia ("confirmei aqui: pode sim!").\n- É PROIBIDO prometer retorno de novo, dizer "a equipe vai te responder" ou repetir "vou confirmar". Só transfira se NEM os blocos NEM as ferramentas tiverem a resposta.\n- Comece a resposta reconhecendo a espera com uma palavrinha ("prontinho!", "confirmei aqui") e entregue a resposta.`
+    : '';
+
+  // PASSAGEM ENTRE CASAS (dono, 14/10/2026): cada casa com número próprio tem
+  // atendente própria; assunto de lá vai pra ela, com o resumo, pelo link.
+  const outras = params.outrasCasas ?? [];
+  const blocoOutrasCasas = outras.length
+    ? `
+PASSAR PRA ATENDENTE DE OUTRA CASA — estas casas do grupo têm WhatsApp e atendente próprios:
+${outras.map((c) => `- ${c.filialNome}: ${c.atendente}`).join('\n')}
+- Quando a pessoa quiser tratar de assunto de uma DELAS (reserva, evento, cardápio, preço, dúvida que você não tem nos blocos), chame passar_para_outra_casa com a casa e o resumo. A ferramenta devolve um link: cole o link na resposta e diga que é só tocar e mandar a mensagem que já vai escrita — quem atende lá recebe a conversa e continua dali, sem a pessoa repetir nada.
+- Pra assunto de outra casa, isso vale MAIS que transferir pra equipe daqui. Pergunta rápida que ESTÁ nos blocos (endereço, horário) você pode responder e, se a conversa for seguir sobre aquela casa, já oferecer a passagem.
+- Nunca passe assunto do ${filialNome} — esse é seu. Se a pessoa falar das duas casas, resolva a sua parte aqui e passe só a parte da outra.
+- Não diga que a pessoa "vai ser chamada": é ela que toca no link. Não invente número; use só o link da ferramenta.
+`
     : '';
 
   const blocos = conhecimento
@@ -211,7 +229,7 @@ DE QUAL CASA A PESSOA FALA:
 `
     : `
 A OUTRA CASA DO GRUPO: se perguntarem de outra casa do grupo Prainha que não o ${filialNome}, responda só o que estiver nos blocos abaixo; sem a informação, indique o contato dela ou transfira pra equipe.
-`}
+`}${blocoOutrasCasas}
 O QUE VOCÊ SABE — sua ÚNICA fonte de verdade:
 ${blocos}
 
@@ -590,6 +608,26 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
+      name: 'passar_para_outra_casa',
+      description:
+        'Passa a pessoa pra atendente de OUTRA casa do grupo (a lista está no prompt, em "PASSAR PRA ATENDENTE DE OUTRA CASA"). Devolve um link wa.me que abre a conversa no WhatsApp daquela casa com a mensagem já escrita — cole o link na resposta. Use quando o assunto for daquela casa (reserva, evento, cardápio, dúvida). Nunca pra assunto da sua própria casa.',
+      parameters: {
+        type: 'object',
+        properties: {
+          casa: { type: 'string', description: 'nome da outra casa (ex.: "Tabuará", "Prainha Bar", "Prainha Mar")' },
+          resumo: {
+            type: 'string',
+            description:
+              'o que a pessoa quer, em 1 frase curta NA VOZ DELA — vai escrito na mensagem que ela manda pra lá (ex.: "Quero reservar uma mesa pra 6 no sábado à noite.")',
+          },
+        },
+        required: ['casa', 'resumo'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'transferir_para_humano',
       description:
         'Pausa você e chama a equipe pra assumir a conversa. Use quando não souber responder, o cliente pedir uma pessoa, ou for assunto delicado.',
@@ -858,6 +896,10 @@ export async function gerarResposta(params: {
   imagemJaRespondida?: boolean;
   /** Força um modelo específico (failover de motor) — ignora a env. */
   forcarModelo?: string;
+  /** Outras casas com atendente própria — sem nenhuma, a ferramenta de passagem sai. */
+  outrasCasas?: { filialNome: string; atendente: string }[];
+  /** A pessoa chegou pelo link de passagem de outra casa: o fim da conversa de lá. */
+  passagem?: { deAtendente: string; deCasa: string; mensagens: MsgHistorico[] } | null;
 }): Promise<RespostaNina> {
   // Motor por env: ATENDIMENTO_MODELO começando com 'claude' usa a Anthropic
   // (obediência melhor ao prompt longo da Nina — loops e regras ignoradas do
@@ -960,11 +1002,34 @@ Como usar, SEM EXCEÇÃO:
     }
   }
 
+  // VEIO PASSADA DE OUTRA CASA (14/10/2026): a pessoa tocou no link que a
+  // atendente de lá mandou. O fim daquela conversa entra por último pra quem
+  // recebe continuar do ponto — sem pedir de novo o que ela já contou.
+  if (modo === 'cliente' && params.passagem && params.passagem.mensagens.length > 0) {
+    const p = params.passagem;
+    const trecho = p.mensagens
+      .map((m) => {
+        const quem = m.direcao === 'entrada' ? 'Cliente' : m.autor === 'equipe' ? 'Equipe' : p.deAtendente;
+        const corpo = (m.corpo ?? '').trim() || `[${m.tipo}]`;
+        return `${quem}: ${corpo.slice(0, 500)}`;
+      })
+      .join('\n');
+    mensagens.push({
+      role: 'system',
+      content: `ESTA PESSOA VEIO PASSADA DE OUTRA CASA: ela estava falando com ${p.deAtendente}, do ${p.deCasa}, e foi encaminhada pra você (${params.nomeAtendente}, do ${params.filialNome}) pelo link. Fim daquela conversa:\n${trecho}\n\nComo seguir: na primeira resposta, diga numa palavrinha que recebeu o recado do ${p.deCasa} e já responda o que ela quer — NÃO peça de novo o que ela já disse lá (nome, data, número de pessoas), use. Responda só com o que você sabe do ${params.filialNome} (seus blocos e ferramentas). Assunto do ${p.deCasa} continua sendo de lá.`,
+    });
+  }
+
   let transferiu = false;
   let leadRegistrado = false;
   let usouFerramenta = false;
 
-  const ferramentas = modo === 'fornecedor' ? [...FERRAMENTAS, ...FERRAMENTAS_FORNECEDOR.filter((f) => f.type === 'function' && f.function.name === 'consultar_cotacoes_fornecedor')] : FERRAMENTAS;
+  const ferramentasBase = modo === 'fornecedor' ? [...FERRAMENTAS, ...FERRAMENTAS_FORNECEDOR.filter((f) => f.type === 'function' && f.function.name === 'consultar_cotacoes_fornecedor')] : FERRAMENTAS;
+  // Passagem só com outra casa ligada e executor presente (e nunca no modo fornecedor).
+  const podePassar = modo === 'cliente' && (params.outrasCasas?.length ?? 0) > 0 && !!params.executores.passarParaOutraCasa;
+  const ferramentas = podePassar
+    ? ferramentasBase
+    : ferramentasBase.filter((f) => !(f.type === 'function' && f.function.name === 'passar_para_outra_casa'));
 
   // 5 rodadas: da pra consultar disponibilidade, criar a reserva e ainda
   // fechar com texto (cada tool call consome uma rodada).
@@ -1119,6 +1184,10 @@ Como usar, SEM EXCEÇÃO:
           });
         } else if (tc.function.name === 'consultar_estorno_reserva') {
           resultado = await params.executores.consultarEstorno();
+        } else if (tc.function.name === 'passar_para_outra_casa') {
+          resultado = podePassar
+            ? await params.executores.passarParaOutraCasa!(String(args.casa ?? ''), String(args.resumo ?? ''))
+            : 'Passagem indisponível aqui — responda com o que você sabe ou transfira pra equipe.';
         } else if (tc.function.name === 'transferir_para_humano') {
           resultado = await params.executores.transferir(
             String(args.motivo ?? 'não informado'),
