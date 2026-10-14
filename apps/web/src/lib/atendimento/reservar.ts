@@ -24,6 +24,7 @@ import { estornarReservaSePago } from '@/lib/reservas/estorno';
 import { queryPayment } from '@/lib/pagamento-online';
 import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
 import { textoMesas } from '@/lib/reservas/mesas-juntadas';
+import { plantaDoEspaco, saoVizinhas } from '@/lib/reservas/vizinhas';
 import { foraDaJanelaAtendimento, horaMaximaDoDia } from '@/lib/reservas/atendimento';
 import { ligacaoDaReserva } from '@/lib/cliente-unico';
 import { membroPorTelefone } from '@/lib/fidelidade/membro';
@@ -668,18 +669,32 @@ async function validarSlotEAlocarMesa(p: {
   // Tenta juntar DUAS mesas livres (par de menor capacidade que atende).
   // Casa que não emenda mesa (cfg.juntarMesas === false) pula isso: grupo que
   // não cabe numa mesa só é assunto da equipe, não do sistema.
+  // Só junta mesa ENCOSTADA (do lado, na frente, atrás) — regra do dono
+  // 14/10/2026: não dá pra juntar a 1 com a 20. Vizinhas = a mesma planta da
+  // tela de Reservas (lib/reservas/vizinhas). Até aqui a Nina emendava par
+  // longe (Areia 1+8, 5+21, 1+18).
+  const planta = plantaDoEspaco(p.filialId, areaCfg.nome, mesas.map((m) => String(m.numero)));
   let par: [(typeof livres)[number], (typeof livres)[number]] | null = null;
+  let parLonge = false;
   if (p.cfg.juntarMesas !== false && limite - ocupadas.size >= 2) {
     for (let i = 0; i < livres.length; i++) {
       for (let j = i + 1; j < livres.length; j++) {
         const soma = livres[i].lugares + livres[j].lugares;
-        if (soma >= p.pessoas && (!par || soma < par[0].lugares + par[1].lugares)) {
+        if (soma < p.pessoas) continue;
+        if (!saoVizinhas(planta.vizinhas, String(livres[i].numero), String(livres[j].numero))) {
+          parLonge = true;
+          continue;
+        }
+        if (!par || soma < par[0].lugares + par[1].lugares) {
           par = [livres[i], livres[j]];
         }
       }
     }
   }
   if (par) return { areaCfg, mesa: String(par[0].numero), mesaJuntada: String(par[1].numero) };
+  if (parLonge) {
+    return `${areaCfg.nome} não tem duas mesas livres ENCOSTADAS uma na outra pra ${p.pessoas} pessoas em ${dataBr(p.data)} (só se junta mesa vizinha; as livres estão separadas). Ofereça outra área ou outro dia, ou transfira pra equipe.`;
+  }
 
   if (p.cfg.juntarMesas === false) {
     const maior = ordenadas.length ? ordenadas[ordenadas.length - 1].lugares : 0;
