@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useEffect, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { LerPeloCelular } from './ler-pelo-celular';
+import { marcarPainel, painelLigado } from './sessao-celular';
 
 interface Resp {
   ok?: boolean;
@@ -21,6 +22,14 @@ export function TrazerPorChaveForm({ filialId }: { filialId: string }) {
   const [msg, setMsg] = useState<{ tipo: 'ok' | 'erro'; texto: string } | null>(null);
   const digitos = chave.replace(/\D/g, '');
   const [celular, setCelular] = useState(false);
+
+  // voltou da nota que o celular abriu: o painel do QR reabre sozinho
+  useEffect(() => {
+    if (painelLigado(filialId)) setCelular(true);
+  }, [filialId]);
+  useEffect(() => {
+    if (celular) marcarPainel(filialId, true);
+  }, [celular, filialId]);
 
   async function trazer(e: React.FormEvent) {
     e.preventDefault();
@@ -79,13 +88,24 @@ export function TrazerPorChaveForm({ filialId }: { filialId: string }) {
         <span className="text-[11px] text-slate-400">{digitos.length}/44</span>
         <button
           type="button"
-          onClick={() => setCelular((v) => !v)}
+          onClick={() => {
+            if (celular) marcarPainel(filialId, false);
+            setCelular((v) => !v);
+          }}
           className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
         >
           📱 Ler pelo celular
         </button>
       </div>
-      {celular && <LerPeloCelular filialId={filialId} onFechar={() => setCelular(false)} />}
+      {celular && (
+        <LerPeloCelular
+          filialId={filialId}
+          onFechar={() => {
+            marcarPainel(filialId, false);
+            setCelular(false);
+          }}
+        />
+      )}
       {msg && (
         <p className={`mt-1 text-[11px] ${msg.tipo === 'ok' ? 'text-emerald-700' : 'text-rose-600'}`}>
           {msg.texto}

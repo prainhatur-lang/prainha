@@ -10,6 +10,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import QRCode from 'qrcode-svg';
 import { brl } from '@/lib/format';
+import { guardarSessao, sessaoGuardada } from './sessao-celular';
 
 interface Chegou {
   id: string;
@@ -26,21 +27,6 @@ interface Lida {
   emitNome: string | null;
   valorTotal: string | null;
   origem: string | null;
-}
-
-// o mesmo QR vale pra várias notas: guardado aqui, quem volta da nota aberta
-// continua com o mesmo link (o celular não precisa ler outro QR)
-const CHAVE_SESSAO = 'nota-chave-sessao:';
-const SOBRA_MIN_MS = 30 * 60 * 1000;
-
-function sessaoGuardada(filialId: string): { url: string; e: number } | null {
-  try {
-    const s = JSON.parse(localStorage.getItem(CHAVE_SESSAO + filialId) ?? 'null') as { url?: string; e?: number } | null;
-    if (s?.url && s.e && s.e * 1000 - Date.now() > SOBRA_MIN_MS) return { url: s.url, e: s.e };
-  } catch {
-    // sem localStorage — gera outro
-  }
-  return null;
 }
 
 export function LerPeloCelular({ filialId, onFechar }: { filialId: string; onFechar: () => void }) {
@@ -89,11 +75,7 @@ export function LerPeloCelular({ filialId, onFechar }: { filialId: string; onFec
         setUrl(u);
         setLinkE(d.e);
         setDesde(d.agora ?? new Date().toISOString());
-        try {
-          localStorage.setItem(CHAVE_SESSAO + filialId, JSON.stringify({ url: u, e: d.e }));
-        } catch {
-          // sem localStorage — só não reaproveita o QR
-        }
+        guardarSessao(filialId, u, d.e);
       } catch (err) {
         if (vivo) setErro((err as Error).message);
       }

@@ -16,6 +16,7 @@ import { fornecedoresParaLancar } from '@/lib/fornecedor-unico';
 import { urlFotoPedido } from '@/lib/pedido-sem-nota';
 import { confrontoDaNota } from '@/lib/confronto-pedido-nota';
 import { ConfrontoPedido } from './confronto-pedido';
+import { CelularLeuOutra } from './celular-leu-outra';
 
 export const dynamic = 'force-dynamic';
 
@@ -352,6 +353,7 @@ export default async function NotaDetalhePage(props: {
             ← Notas de entrada
           </Link>
         </nav>
+        <CelularLeuOutra filialId={nota.filialId} notaId={nota.id} />
 
         <div className="mt-2 flex items-start justify-between gap-4">
           <div>
