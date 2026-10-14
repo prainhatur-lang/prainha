@@ -7,7 +7,7 @@ import { negarSemPerm } from '@/lib/exigir-perm';
 import { randomBytes } from 'node:crypto';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq, inArray, max } from 'drizzle-orm';
+import { and, eq, inArray, isNull, max, sql } from 'drizzle-orm';
 import { garantirFornecedorNaFilial } from '@/lib/fornecedor-unico';
 
 interface Body {
@@ -18,8 +18,12 @@ interface Body {
     produtoId: string;
     quantidade: number;
     observacao: string | null;
+    /** Opcional: unidade da lista (cx, fardo...). Sem ela, vale a do produto. */
+    unidade?: string | null;
   }>;
   fornecedorIds: string[];
+  /** Opcional: itens da Lista da semana (lista_compra_item) que viraram esta cotação. */
+  listaCompraItemIds?: string[];
 }
 
 export async function POST(req: Request) {
@@ -123,7 +127,7 @@ export async function POST(req: Request) {
       cotacaoId,
       produtoId: i.produtoId,
       quantidade: String(i.quantidade),
-      unidade: unidadePorProduto.get(i.produtoId) ?? 'un',
+      unidade: i.unidade?.trim().slice(0, 10) || (unidadePorProduto.get(i.produtoId) ?? 'un'),
       descricao: descricaoPorProduto.get(i.produtoId) ?? null,
       marcasAceitas: (marcasPorProduto.get(i.produtoId) ?? []).join('|') || null,
       observacao: i.observacao,
@@ -139,6 +143,36 @@ export async function POST(req: Request) {
       status: 'PENDENTE' as const,
     })),
   );
+
+  // Lista da semana: marca os itens que viraram esta cotação e, quando a lista
+  // inteira já foi cotada, fecha a lista como COTADA.
+  if (body.listaCompraItemIds?.length) {
+    const marcados = await db
+      .update(schema.listaCompraItem)
+      .set({ cotacaoId })
+      .where(
+        and(
+          inArray(schema.listaCompraItem.id, body.listaCompraItemIds),
+          sql`${schema.listaCompraItem.listaId} IN (SELECT id FROM lista_compra WHERE filial_id = ${body.filialId})`,
+        ),
+      )
+      .returning({ listaId: schema.listaCompraItem.listaId });
+    for (const listaId of new Set(marcados.map((m) => m.listaId))) {
+      const faltam = await db
+        .select({ id: schema.listaCompraItem.id })
+        .from(schema.listaCompraItem)
+        .where(
+          and(eq(schema.listaCompraItem.listaId, listaId), isNull(schema.listaCompraItem.cotacaoId)),
+        )
+        .limit(1);
+      if (faltam.length === 0) {
+        await db
+          .update(schema.listaCompra)
+          .set({ status: 'COTADA' })
+          .where(eq(schema.listaCompra.id, listaId));
+      }
+    }
+  }
 
   return NextResponse.json({ id: cotacaoId, numero });
 }

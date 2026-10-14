@@ -279,3 +279,52 @@ export const pedidoCompraItem = pgTable(
     produtoIdx: index('idx_pedido_compra_item_produto').on(t.produtoId),
   }),
 );
+
+/** Lista de compra da semana (sugestão salva). Nasce da lista que a cozinha
+ *  manda (lista da Marcia) ou da sugestão montada pelo histórico das listas
+ *  anteriores. Não convoca ninguém: a tela /compras/sugestao/semana mostra a
+ *  lista por categoria e, no clique, vira cotação (fluxo existente).
+ *  status: ABERTA | COTADA */
+export const listaCompra = pgTable(
+  'lista_compra',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    /** Data da lista (YYYY-MM-DD, BRT) */
+    data: varchar('data', { length: 10 }).notNull(),
+    titulo: text('titulo'),
+    /** LISTA_COZINHA (veio da cozinha) | HISTORICO (montada pelo sistema) */
+    origem: varchar('origem', { length: 20 }).notNull().default('LISTA_COZINHA'),
+    status: varchar('status', { length: 12 }).notNull().default('ABERTA'),
+    criadoPor: uuid('criado_por'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    filialIdx: index('idx_lista_compra_filial').on(t.filialId, t.data),
+  }),
+);
+
+export const listaCompraItem = pgTable(
+  'lista_compra_item',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    listaId: uuid('lista_id')
+      .notNull()
+      .references(() => listaCompra.id, { onDelete: 'cascade' }),
+    produtoId: uuid('produto_id').references(() => produto.id, { onDelete: 'set null' }),
+    /** Como veio escrito na lista (ex.: "Bombril 20 un") */
+    textoOriginal: text('texto_original'),
+    quantidade: numeric('quantidade', { precision: 14, scale: 4 }),
+    unidade: varchar('unidade', { length: 10 }),
+    observacao: text('observacao'),
+    /** Grupo da cotação: PROTEINAS | MERCEARIA | HORTIFRUTI | LIMPEZA */
+    grupo: varchar('grupo', { length: 20 }),
+    /** Cotação gerada a partir deste item (quando já virou cotação) */
+    cotacaoId: uuid('cotacao_id').references(() => cotacao.id, { onDelete: 'set null' }),
+    ordem: integer('ordem'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    listaIdx: index('idx_lista_compra_item_lista').on(t.listaId),
+  }),
+);

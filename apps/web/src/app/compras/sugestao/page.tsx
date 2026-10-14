@@ -324,6 +324,12 @@ export default async function SugestaoCompraPage(props: { searchParams: Promise<
           <p className="mt-0.5 text-xs text-slate-500">
             {filial.nome} · {linhas.length} produto(s) · base: venda real dos últimos 7 dias + estoque mínimo
           </p>
+          <a
+            href={`/compras/sugestao/semana?filialId=${filial.id}`}
+            className="mt-1 inline-block text-xs font-medium text-blue-700 underline"
+          >
+            📋 Lista da semana da cozinha (sugestão salva + histórico das listas) →
+          </a>
         </div>
 
         {filiais.length > 1 && (

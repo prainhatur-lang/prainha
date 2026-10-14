@@ -172,6 +172,7 @@ export const MENU_AREAS: MenuArea[] = [
         label: 'Compras',
         links: [
           { label: 'Sugestão de compra', href: '/compras/sugestao', perm: 'cotacao.read' },
+          { label: 'Lista da semana (cozinha)', href: '/compras/sugestao/semana', perm: 'cotacao.read' },
           { label: 'Cotações', href: '/cotacao', perm: 'cotacao.read' },
           { label: 'Pedidos de compra', href: '/compras/pedidos', perm: 'pedido_compra.read' },
           {
