@@ -1,5 +1,6 @@
 // POST /api/notas/ler-chave-foto
 // Body: multipart/form-data com 'foto' (JPG reduzido pela tela) + 'filialId'
+//       ou, da câmera do celular (/nota-chave, sem login), 'f' 'e' 's' do link assinado
 //
 // Reserva da câmera da Entrada de notas: quando o código de barras do DANFE
 // não sai na foto (borrado, amassado, cortado), a IA lê os 44 números impressos
@@ -11,6 +12,7 @@ import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
 import { chaveNfeValida } from '@/lib/nfe-distribuicao';
+import { validarLinkNotaChave } from '@/lib/nota-chave-link';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -24,15 +26,18 @@ A chave tem 44 números e costuma estar impressa logo abaixo do código de barra
 Responda SÓ com os 44 números, sem espaços nem pontos. Não invente número: se algum não estiver legível, responda apenas ILEGIVEL.`;
 
 export async function POST(req: Request) {
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-
   if (!(req.headers.get('content-type') ?? '').includes('multipart/form-data')) {
     return NextResponse.json({ error: 'use multipart/form-data' }, { status: 400 });
   }
   const form = await req.formData();
-  const filialId = (form.get('filialId') as string | null) ?? '';
+  // celular pelo link assinado: a filial vem do próprio link
+  const peloLink = form.has('s')
+    ? validarLinkNotaChave(form.get('f'), form.get('e'), form.get('s'))
+    : null;
+  if (form.has('s') && !peloLink) {
+    return NextResponse.json({ error: 'link vencido — gere outro QR na Entrada de notas' }, { status: 401 });
+  }
+  const filialId = peloLink ?? (form.get('filialId') as string | null) ?? '';
   const foto = form.get('foto');
   if (!/^[0-9a-f-]{36}$/i.test(filialId)) {
     return NextResponse.json({ error: 'filialId invalido' }, { status: 400 });
@@ -42,14 +47,19 @@ export async function POST(req: Request) {
   if (!MIMES.has(mime)) return NextResponse.json({ error: 'envie uma foto JPG ou PNG' }, { status: 400 });
   if (foto.size > MAX_SIZE) return NextResponse.json({ error: 'foto acima de 4 MB' }, { status: 413 });
 
-  // mesmo acesso de quem traz a nota da SEFAZ
-  const [link] = await db
-    .select({ role: schema.usuarioFilial.role })
-    .from(schema.usuarioFilial)
-    .where(and(eq(schema.usuarioFilial.usuarioId, user.id), eq(schema.usuarioFilial.filialId, filialId)))
-    .limit(1);
-  if (!link || link.role !== 'DONO') {
-    return NextResponse.json({ error: 'so DONO pode buscar XML na SEFAZ' }, { status: 403 });
+  // mesmo acesso de quem traz a nota da SEFAZ (o link assinado só o DONO gera)
+  if (!peloLink) {
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    const [link] = await db
+      .select({ role: schema.usuarioFilial.role })
+      .from(schema.usuarioFilial)
+      .where(and(eq(schema.usuarioFilial.usuarioId, user.id), eq(schema.usuarioFilial.filialId, filialId)))
+      .limit(1);
+    if (!link || link.role !== 'DONO') {
+      return NextResponse.json({ error: 'so DONO pode buscar XML na SEFAZ' }, { status: 403 });
+    }
   }
 
   const key = process.env.ANTHROPIC_API_KEY;

@@ -128,6 +128,11 @@ export async function proxy(request: NextRequest) {
   // /nota-boleto/[token] eh pagina mobile pra enviar foto do boleto da NFe
   // (compartilhada via WhatsApp/SMS, sem login).
   const isNotaBoletoPublico = path.startsWith('/nota-boleto/');
+  // /nota-chave eh a camera do celular que le a chave de acesso do DANFE
+  // (QR da Entrada de notas; sem login — o link eh assinado com HMAC e
+  // vence em 24 h). /zxing/ eh o leitor de codigo de barras do iPhone (.wasm)
+  // que essa pagina carrega.
+  const isNotaChavePublico = path === '/nota-chave' || path.startsWith('/zxing/');
   // /agente-release/* sao bundles do agente local baixados pelo PowerShell
   // direto do PC da filial (.ps1 atualizador) — sem sessao do navegador.
   const isAgenteRelease = path.startsWith('/agente-release/');
@@ -173,6 +178,7 @@ export async function proxy(request: NextRequest) {
     isOpPublica ||
     isCozinheiroPublico ||
     isNotaBoletoPublico ||
+    isNotaChavePublico ||
     isAgenteRelease ||
     isAvaliarPublico ||
     isReservarPublico ||
