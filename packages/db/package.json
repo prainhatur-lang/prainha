@@ -185,7 +185,8 @@
     "migrate:nota-item-sem-vinculo-auto": "tsx scripts/migrate-nota-item-sem-vinculo-auto.ts",
     "migrate:nota-fotos-extras": "tsx scripts/migrate-nota-fotos-extras.ts",
     "migrate:avaliacao-pedido": "tsx scripts/migrate-avaliacao-pedido.ts",
-    "migrate:nota-pagamento-xml": "tsx scripts/migrate-nota-pagamento-xml.ts"
+    "migrate:nota-pagamento-xml": "tsx scripts/migrate-nota-pagamento-xml.ts",
+    "migrate:nota-chave-leitura": "tsx scripts/migrate-nota-chave-leitura.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",

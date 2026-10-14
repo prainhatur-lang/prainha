@@ -134,6 +134,27 @@ export const notaCompraBoletoPendente = pgTable(
   }),
 );
 
+/** Cada chave que a câmera do celular leu (/nota-chave). O computador que
+ *  mostrou o QR acompanha pelo link (link_e) e abre a nota sozinho — também
+ *  quando ela já estava no sistema (aí não aparece como "nota nova"). */
+export const notaChaveLeitura = pgTable(
+  'nota_chave_leitura',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    /** validade do link do QR (epoch s) — identifica de qual QR veio a leitura */
+    linkE: integer('link_e').notNull(),
+    chave: varchar('chave', { length: 44 }).notNull(),
+    notaCompraId: uuid('nota_compra_id').references(() => notaCompra.id, { onDelete: 'set null' }),
+    /** COMPLETA | RESUMO | JA_EXISTE | NAO_ENCONTRADA | BLOQUEIO */
+    status: varchar('status', { length: 20 }),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    linkIdx: index('idx_nota_chave_leitura_link').on(t.filialId, t.linkE),
+  }),
+);
+
 /** Duplicatas (parcelas de cobranca) extraidas do XML da NFe.
  *  Vem de <cobr><dup>. Cada linha vira (potencialmente) uma conta_pagar
  *  ao lancar a nota no estoque. Pode estar vazia se a NFe e a vista. */

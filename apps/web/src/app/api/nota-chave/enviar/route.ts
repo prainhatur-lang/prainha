@@ -34,6 +34,11 @@ export async function POST(req: Request) {
       .from(schema.notaCompra)
       .where(and(eq(schema.notaCompra.filialId, filialId), eq(schema.notaCompra.chave, chave)))
       .limit(1);
+    // o computador do QR acompanha por aqui e abre a nota sozinho
+    await db
+      .insert(schema.notaChaveLeitura)
+      .values({ filialId, linkE: Number(body.e), chave, notaCompraId: nota?.id ?? null, status: r.status })
+      .catch((err) => console.error('[nota-chave] gravar leitura', err));
     return NextResponse.json({ ok: true, ...r, nota: nota ?? null });
   } catch (e) {
     return NextResponse.json({ error: `erro trazendo a nota: ${(e as Error).message}` }, { status: 500 });

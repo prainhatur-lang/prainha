@@ -18,6 +18,30 @@ interface Chegou {
   valorTotal: string | null;
   origem: string | null;
 }
+interface Lida {
+  id: string;
+  notaId: string | null;
+  status: string | null;
+  numero: string | null;
+  emitNome: string | null;
+  valorTotal: string | null;
+  origem: string | null;
+}
+
+// o mesmo QR vale pra várias notas: guardado aqui, quem volta da nota aberta
+// continua com o mesmo link (o celular não precisa ler outro QR)
+const CHAVE_SESSAO = 'nota-chave-sessao:';
+const SOBRA_MIN_MS = 30 * 60 * 1000;
+
+function sessaoGuardada(filialId: string): { url: string; e: number } | null {
+  try {
+    const s = JSON.parse(localStorage.getItem(CHAVE_SESSAO + filialId) ?? 'null') as { url?: string; e?: number } | null;
+    if (s?.url && s.e && s.e * 1000 - Date.now() > SOBRA_MIN_MS) return { url: s.url, e: s.e };
+  } catch {
+    // sem localStorage — gera outro
+  }
+  return null;
+}
 
 export function LerPeloCelular({ filialId, onFechar }: { filialId: string; onFechar: () => void }) {
   const router = useRouter();
@@ -27,10 +51,21 @@ export function LerPeloCelular({ filialId, onFechar }: { filialId: string; onFec
   const [erro, setErro] = useState('');
   const [copiado, setCopiado] = useState(false);
   const [chegaram, setChegaram] = useState<Chegou[]>([]);
+  const [linkE, setLinkE] = useState(0);
+  const [lidas, setLidas] = useState<Lida[]>([]);
+  const [abrindo, setAbrindo] = useState('');
 
   useEffect(() => {
     let vivo = true;
     (async () => {
+      const guardada = sessaoGuardada(filialId);
+      const noCelularJa = window.matchMedia('(pointer: coarse)').matches && window.innerWidth < 768;
+      if (guardada && !noCelularJa) {
+        setUrl(guardada.url);
+        setLinkE(guardada.e);
+        setDesde(new Date().toISOString());
+        return;
+      }
       try {
         const r = await fetch('/api/nota-chave/link', {
           method: 'POST',
@@ -52,7 +87,13 @@ export function LerPeloCelular({ filialId, onFechar }: { filialId: string; onFec
           return;
         }
         setUrl(u);
+        setLinkE(d.e);
         setDesde(d.agora ?? new Date().toISOString());
+        try {
+          localStorage.setItem(CHAVE_SESSAO + filialId, JSON.stringify({ url: u, e: d.e }));
+        } catch {
+          // sem localStorage — só não reaproveita o QR
+        }
       } catch (err) {
         if (vivo) setErro((err as Error).message);
       }
@@ -62,20 +103,35 @@ export function LerPeloCelular({ filialId, onFechar }: { filialId: string; onFec
     };
   }, [filialId]);
 
-  // pergunta a cada 5 s o que entrou desde que o QR abriu
+  // pergunta a cada 3 s o que entrou desde que o QR abriu; a nota que o
+  // celular acabou de ler abre sozinha (nova ou que já estava no sistema)
   useEffect(() => {
     if (!desde) return;
     let vivo = true;
     let visto = '';
-    const t = setInterval(async () => {
+    let base: Set<string> | null = null; // leituras que já existiam quando o painel abriu
+    async function verificar() {
       if (document.hidden) return;
       try {
-        const r = await fetch(
-          `/api/nota-chave/chegaram?${new URLSearchParams({ filialId, desde })}`,
-          { cache: 'no-store' },
-        );
-        const d = (await r.json().catch(() => ({}))) as { ok?: boolean; notas?: Chegou[] };
+        const q = new URLSearchParams({ filialId, desde });
+        if (linkE) q.set('e', String(linkE));
+        const r = await fetch(`/api/nota-chave/chegaram?${q}`, { cache: 'no-store' });
+        const d = (await r.json().catch(() => ({}))) as { ok?: boolean; notas?: Chegou[]; lidas?: Lida[] };
         if (!vivo || !d.ok || !d.notas) return;
+        const ls = d.lidas ?? [];
+        if (base === null) {
+          base = new Set(ls.map((l) => l.id));
+        } else {
+          const vistas = base;
+          const nova = ls.find((l) => !vistas.has(l.id) && l.notaId);
+          ls.forEach((l) => vistas.add(l.id));
+          if (nova?.notaId) {
+            setAbrindo(nova.emitNome ?? 'nota');
+            router.push(`/movimento/entrada-notas/${nova.notaId}`);
+            return;
+          }
+        }
+        setLidas(ls);
         const assinatura = d.notas.map((n) => `${n.id}:${n.origem}`).join(',');
         if (assinatura === visto) return;
         visto = assinatura;
@@ -84,12 +140,38 @@ export function LerPeloCelular({ filialId, onFechar }: { filialId: string; onFec
       } catch {
         // sem rede agora — tenta no próximo
       }
-    }, 5000);
+    }
+    void verificar();
+    const t = setInterval(verificar, 3000);
     return () => {
       vivo = false;
       clearInterval(t);
     };
-  }, [desde, filialId, router]);
+  }, [desde, filialId, linkE, router]);
+
+  // o que o celular leu (inclusive nota que já existia) + o que entrou de novo
+  const lista = useMemo(() => {
+    const vistos = new Set<string>();
+    const out: Array<Chegou & { jaExistia?: boolean }> = [];
+    for (const l of lidas) {
+      if (!l.notaId || vistos.has(l.notaId)) continue;
+      vistos.add(l.notaId);
+      out.push({
+        id: l.notaId,
+        numero: l.numero,
+        emitNome: l.emitNome,
+        valorTotal: l.valorTotal,
+        origem: l.origem,
+        jaExistia: l.status === 'JA_EXISTE',
+      });
+    }
+    for (const n of chegaram) {
+      if (vistos.has(n.id)) continue;
+      vistos.add(n.id);
+      out.push(n);
+    }
+    return out;
+  }, [lidas, chegaram]);
 
   const qrSvg = useMemo(() => {
     if (!url) return '';
@@ -159,20 +241,28 @@ export function LerPeloCelular({ filialId, onFechar }: { filialId: string; onFec
               <p className="mt-1 text-[10px] text-slate-400">O link vale 24 horas.</p>
             </div>
 
-            {chegaram.length === 0 ? (
-              <p className="text-[11px] text-slate-500">Esperando o celular ler a primeira nota...</p>
+            {abrindo && (
+              <p className="rounded bg-emerald-100 px-2 py-1 text-[12px] font-semibold text-emerald-800">
+                ✓ O celular leu — abrindo a nota de {abrindo}...
+              </p>
+            )}
+            {lista.length === 0 ? (
+              <p className="text-[11px] text-slate-500">
+                Esperando o celular ler a primeira nota... quando ler, a nota abre sozinha aqui.
+              </p>
             ) : (
               <div>
-                <p className="text-[11px] font-semibold text-slate-800">Chegaram agora ({chegaram.length}):</p>
+                <p className="text-[11px] font-semibold text-slate-800">Chegaram agora ({lista.length}):</p>
                 <ul className="mt-1 space-y-0.5">
-                  {chegaram.map((n) => {
+                  {lista.map((n) => {
                     const resumo = (n.origem ?? '').startsWith('SEFAZ_DFE_RESUMO');
                     return (
                       <li key={n.id} className={`text-[11px] ${resumo ? 'text-amber-700' : 'text-emerald-700'}`}>
                         {resumo ? '⚠' : '✓'} {n.emitNome ?? 'Nota'}
                         {n.numero ? ` · NF ${n.numero}` : ''}
                         {n.valorTotal ? ` · ${brl(n.valorTotal)}` : ''}
-                        {resumo ? ' — resumo, o XML vem na próxima consulta' : ''}{' '}
+                        {resumo ? ' — resumo, o XML vem na próxima consulta' : ''}
+                        {'jaExistia' in n && n.jaExistia ? ' — já estava no sistema' : ''}{' '}
                         <Link
                           href={`/movimento/entrada-notas/${n.id}`}
                           className="font-semibold text-sky-700 underline hover:text-sky-900"

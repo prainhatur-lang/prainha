@@ -51,5 +51,26 @@ export async function GET(req: Request) {
     )
     .orderBy(desc(schema.notaCompra.atualizadoEm))
     .limit(30);
-  return NextResponse.json({ ok: true, notas });
+
+  // &e= (validade do link do QR): o que o celular desse QR leu — inclusive
+  // nota que já estava no sistema. A mais nova primeiro.
+  const linkE = Number(url.searchParams.get('e'));
+  const lidas = Number.isInteger(linkE) && linkE > 0
+    ? await db
+        .select({
+          id: schema.notaChaveLeitura.id,
+          notaId: schema.notaChaveLeitura.notaCompraId,
+          status: schema.notaChaveLeitura.status,
+          numero: schema.notaCompra.numero,
+          emitNome: schema.notaCompra.emitNome,
+          valorTotal: schema.notaCompra.valorTotal,
+          origem: schema.notaCompra.origemImportacao,
+        })
+        .from(schema.notaChaveLeitura)
+        .leftJoin(schema.notaCompra, eq(schema.notaCompra.id, schema.notaChaveLeitura.notaCompraId))
+        .where(and(eq(schema.notaChaveLeitura.filialId, filialId), eq(schema.notaChaveLeitura.linkE, linkE)))
+        .orderBy(desc(schema.notaChaveLeitura.criadoEm))
+        .limit(30)
+    : [];
+  return NextResponse.json({ ok: true, notas, lidas });
 }
