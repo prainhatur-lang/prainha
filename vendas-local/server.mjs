@@ -3288,6 +3288,40 @@ async function registrarAutor(itemCod, it) {
       ON CONFLICT (item_codigo) DO NOTHING`;
   } catch (e) { console.error('[autor] item ' + itemCod + ': ' + e.message); }
 }
+// QUEM LANÇOU cada item, pro celular do garçom e pra maquininha (dono, 14/10:
+// "não mostra quem lançou os pratos — o ideal é mostrar em tudo, inclusive na
+// maquininha"). Mesma régua do caixa (apiCaixaConta): o garçom do Consumer
+// (comanda_item.colaborador_nome) vem antes de quem estava logado na nossa
+// tela/LIO (item_autor). Vale pros dois bancos: comanda_item espelha o
+// ITENSPEDIDO com o MESMO código, e item_autor é gravado na hora do lançamento
+// (o item recém-lançado já sai com o nome mesmo antes do espelho chegar).
+// Devolve Map(item_codigo → { quem, quem_txt }); quem_txt já vem pronto pra
+// tela ("👤 Matheus" / "📱 pedido pela mesa"). Erro aqui nunca derruba a conta.
+function primeiroNomeAutor(s) {
+  const partes = String(s || '').trim().split(/\s+/);
+  let n = partes[0] || '';
+  if (n.length < 4 && partes[1]) n += ' ' + partes[1];
+  return n;
+}
+async function autoresDosItens(cods) {
+  const m = new Map();
+  const cs = [...new Set((cods || []).map(Number).filter((c) => c > 0))];
+  if (!cs.length) return m;
+  try {
+    const nossos = await sql`SELECT item_codigo, COALESCE(NULLIF(nome,''), login) AS quem
+      FROM item_autor WHERE item_codigo = ANY(${cs})`;
+    for (const r of nossos) if (r.quem) m.set(Number(r.item_codigo), String(r.quem));
+    const consumer = await sql`SELECT item_codigo, colaborador_nome AS quem
+      FROM comanda_item WHERE item_codigo = ANY(${cs}) AND COALESCE(colaborador_nome,'') <> ''`;
+    for (const r of consumer) m.set(Number(r.item_codigo), String(r.quem));
+  } catch (e) { console.error('[autor] leitura: ' + e.message); }
+  const out = new Map();
+  for (const [cod, quem] of m) {
+    const cli = quem.trim().toUpperCase().startsWith('CLIENTE');
+    out.set(cod, { quem, quem_txt: cli ? '📱 pedido pela mesa' : '👤 ' + primeiroNomeAutor(quem) });
+  }
+  return out;
+}
 // Maior CODIGO de ITENSPEDIDO que este servidor já viu ANTES de cada INSERT:
 // o recém-inserido é sempre maior que isso, então "2 linhas iguais no mesmo
 // carrinho" e "outro garçom lançando o mesmo na mesma mesa" não se confundem.
@@ -4882,7 +4916,7 @@ async function jaPedidoDe(contaCodigo) {
 // aparecia em lugar nenhum pro cliente: ele tinha pedido, o item existia, e a
 // tela dizia que não havia nada. Agora sai em blocos: primeiro a mesa, depois
 // cada comanda com o número, pra dar pra saber de quem foi o quê.
-async function apiJaPedido(numero) {
+async function apiJaPedido(numero, comAutor = false) {
   const n = Number(numero);
   const c = (await sql`SELECT codigo FROM comanda WHERE numero=${n} AND fechada_em IS NULL AND cancelada_em IS NULL ORDER BY codigo DESC LIMIT 1`)[0];
   const grupos = [];
@@ -4902,6 +4936,15 @@ async function apiJaPedido(numero) {
         WHERE numero=${Number(v.comanda)} AND fechada_em IS NULL`)[0];
       grupos.push({ numero: Number(v.comanda), tipo: 'comanda',
         nome: idc?.nome_curto || v.nome_curto || null, itens: its });
+    }
+  }
+  // quem lançou: só pra sessão de garçom/caixa (a tela do cliente no QR lê
+  // esta mesma rota e não precisa do nome de ninguém)
+  if (comAutor) {
+    const aut = await autoresDosItens(grupos.flatMap((g) => g.itens.map((i) => i.item_codigo)));
+    for (const g of grupos) for (const i of g.itens) {
+      const a = aut.get(Number(i.item_codigo));
+      if (a) { i.quem = a.quem; i.quem_txt = a.quem_txt; }
     }
   }
   // `itens` continua saindo achatado pra não quebrar quem já consumia assim
@@ -5187,20 +5230,20 @@ async function apiVendaEnviar(body) {
 // ---- API de CONTA / PAGAMENTO (Fase 2) ----
 // A conta lê do Consumer (fonte da verdade do total e do que já foi pago) —
 // assim nunca cobramos a mais por causa de espelho atrasado.
-async function apiConta(numero, appLio = false) {
+async function apiConta(numero, appLio = false, comAutor = false) {
   const n = Number(numero);
   if (!(n >= 1 && n <= NUMERO_MAX)) return { ok: false, erro: 'número inválido' };
   const ped = await fbAcharPedido(n);
   if (!ped) return { ok: false, erro: 'nenhuma comanda aberta com o número ' + n };
   let it, cab;
   if (nativo()) {
-    it = { ok: true, rows: (await sql`SELECT nome, quantidade, valor_total, tipo FROM comanda_item
+    it = { ok: true, rows: (await sql`SELECT item_codigo, nome, quantidade, valor_total, tipo FROM comanda_item
       WHERE comanda_codigo=${Number(ped)} AND cancelado_em IS NULL ORDER BY item_codigo, id`)
-      .map((x) => ({ NOME: x.nome, QTD: x.quantidade, VT: x.valor_total, TIPO: x.tipo })) };
+      .map((x) => ({ NOME: x.nome, QTD: x.quantidade, VT: x.valor_total, TIPO: x.tipo, COD: x.item_codigo })) };
     const h = await pgCabecalhoPedido(ped);
     cab = { ok: true, rows: [{ VALORTOTAL: h.T, TOTALSERVICO: h.S }] };
   } else {
-    it = await qi(`SELECT TRIM(NOMEPRODUTO) NOME, QUANTIDADE QTD, VALORTOTAL VT, CODIGOITEMPEDIDOTIPO TIPO
+    it = await qi(`SELECT TRIM(NOMEPRODUTO) NOME, QUANTIDADE QTD, VALORTOTAL VT, CODIGOITEMPEDIDOTIPO TIPO, CODIGO COD
       FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL ORDER BY CODIGO`);
     if (!it.ok) throw new Error('FB itens: ' + it.err);
     cab = await qi(`SELECT VALORTOTAL, TOTALSERVICO, NUMERO FROM PEDIDOS WHERE CODIGO=${ped}`);
@@ -5225,9 +5268,13 @@ async function apiConta(numero, appLio = false) {
   const cs = nativo() ? { ok: true, rows: [{ V: (await pgCabecalhoPedido(ped)).CS }] }
     : await qi(`SELECT FIRST 1 CONTASOLICITADA V FROM PEDIDOS WHERE CODIGO=${ped}`);
   const contaPedida = cs.ok && cs.rows.length && String(cs.rows[0].V || '').trim().toUpperCase() === 'S';
+  // quem lançou cada item (maquininha / sessão de garçom): campos A MAIS no
+  // item — quem não pediu recebe a conta exatamente como antes
+  const autores = comAutor ? await autoresDosItens(it.rows.map((x) => x.COD)) : null;
+  const autorDe = (x) => { const a = autores && autores.get(Number(x.COD)); return a ? { quem: a.quem, quem_txt: a.quem_txt } : {}; };
   return {
     ok: true, numero: n, mesa, pedido_fb: ped, conta_pedida: contaPedida,
-    itens: it.rows.map((x) => ({ nome: x.NOME, qtd: Number(x.QTD), valor: Number(x.VT), tipo: Number(x.TIPO) })),
+    itens: it.rows.map((x) => ({ nome: x.NOME, qtd: Number(x.QTD), valor: Number(x.VT), tipo: Number(x.TIPO), ...autorDe(x) })),
     total, servico, pago: +pago.toFixed(2), saldo: +(total - pago).toFixed(2),
     pagamentos: await sql`SELECT id, forma, valor, origem, nsu, status, criado_em FROM venda_pagamento WHERE pedido_fb=${ped} ORDER BY id`,
   };
@@ -17304,7 +17351,8 @@ async function pintaConsumo(){
         '<span class="n">'+esc(i.nome)+
         (i.observacao?'<small class="ob">✎ '+esc(i.observacao)+'</small>':'')+
         (i.complementos&&i.complementos.length?'<small class="ob">+ '+i.complementos.map(esc).join(' · ')+'</small>':'')+
-        (quando?'<small class="hr">'+quando+'</small>':'')+'</span>'+
+        (quando?'<small class="hr">'+quando+'</small>':'')+
+        (i.quem_txt?'<small class="hr">'+esc(i.quem_txt)+'</small>':'')+'</span>'+
         '<span class="st">'+EST_G[i.estado]+'</span></div>';
     }).join('');
   }).join('');
@@ -30312,7 +30360,10 @@ const server = http.createServer(async (req, res) => {
       // Abriu a mesa = o garçom foi até lá → limpa o 🔔 dela (o app não tem
       // botão "Vou lá"; abrir a conta É o atendimento). Fire-and-forget.
       atenderChamadoGarcom(n, 'conta-aberta').catch(() => {});
-      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiConta(n, /Dalvik/i.test(String(req.headers['user-agent'] || '')))));
+      const lio = /Dalvik/i.test(String(req.headers['user-agent'] || ''));
+      // quem lançou o item: vai pra maquininha e pra sessão de garçom/caixa
+      const comAutor = lio || !!(await garcomDaRequisicao(req, u).catch(() => null));
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiConta(n, lio, comAutor)));
     }
     // ⚠️ EXIGE SESSÃO. Até 31/08 esta rota chamava apiContaPagar com o corpo
     // CRU e sem autenticação nenhuma — e o Funnel a expõe na internet. Como
@@ -30419,7 +30470,12 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/venda/identificar') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaIdentificar(u.searchParams.get('cpf') || '', u.searchParams.get('tel') || ''))); }
     if (p === '/api/observacoes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiObservacoes(u.searchParams.get('p') || 0))); }
     if (p === '/api/mesa/sessao') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaSessao(u.searchParams.get('n'), u.searchParams.get('c'), u.searchParams.get('t')))); }
-    if (p === '/api/ja-pedido') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiJaPedido(u.searchParams.get('n') || 0))); }
+    if (p === '/api/ja-pedido') {
+      // com sessão de garçom/caixa (celular do garçom) vem também quem lançou
+      // cada item; a tela do cliente no QR chama sem sessão e recebe igual antes
+      const comAutor = !!(await garcomDaRequisicao(req, u).catch(() => null));
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiJaPedido(u.searchParams.get('n') || 0, comAutor)));
+    }
     if (p === '/api/venda/abertas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaAbertas())); }
     if (p === '/api/historico') {
       const a = u.searchParams.get('area');
