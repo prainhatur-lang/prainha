@@ -58,10 +58,26 @@ function acharNoDestino(
   );
 }
 
-function buscar(lista: ProdOpc[], q: string, max = 12): ProdOpc[] {
-  const ws = norm(q).split(' ').filter(Boolean);
-  if (!ws.length) return [];
-  return lista.filter((p) => !p.inativo && ws.every((w) => norm(p.nome).includes(w))).slice(0, max);
+/** Busca por palavras. Ordem: nome que começa com o que foi digitado, depois
+ *  todas as palavras no começo de uma palavra do nome, depois o resto; no
+ *  empate, o nome mais curto (o mais próximo do digitado). Antes cortava nos
+ *  10 primeiros em ordem alfabética e "agua mi" escondia "Agua Mineral SEM gas"
+ *  atrás das Acquissima/Minalba (14/10). */
+function buscar(lista: ProdOpc[], q: string, max = 40): { itens: ProdOpc[]; total: number } {
+  const nq = norm(q);
+  const ws = nq.split(' ').filter(Boolean);
+  if (!ws.length) return { itens: [], total: 0 };
+  const achados = lista
+    .filter((p) => !p.inativo)
+    .map((p) => ({ p, n: norm(p.nome) }))
+    .filter(({ n }) => ws.every((w) => n.includes(w)))
+    .map(({ p, n }) => {
+      const palavras = n.split(' ');
+      const nota = n.startsWith(nq) ? 0 : ws.every((w) => palavras.some((x) => x.startsWith(w))) ? 1 : 2;
+      return { p, nota, len: n.length };
+    })
+    .sort((a, b) => a.nota - b.nota || a.len - b.len);
+  return { itens: achados.slice(0, max).map((a) => a.p), total: achados.length };
 }
 
 export function NovaTransferenciaForm(props: {
@@ -206,8 +222,8 @@ export function NovaTransferenciaForm(props: {
     );
   }
 
-  const achados = buscar(props.produtosOrigem, busca);
-  const achadosDest = buscar(listaDestino, buscaDest, 10);
+  const { itens: achados, total: totalAchados } = buscar(props.produtosOrigem, busca);
+  const { itens: achadosDest, total: totalAchadosDest } = buscar(listaDestino, buscaDest);
 
   return (
     <div className="mt-6 space-y-4">
@@ -270,6 +286,11 @@ export function NovaTransferenciaForm(props: {
                 </button>
               </li>
             ))}
+            {totalAchados > achados.length && (
+              <li className="px-3 py-1.5 text-xs text-slate-500">
+                mostrando {achados.length} de {totalAchados} — digite mais pra afinar
+              </li>
+            )}
           </ul>
         )}
       </div>
@@ -366,6 +387,11 @@ export function NovaTransferenciaForm(props: {
                               </button>
                             </li>
                           ))}
+                          {totalAchadosDest > achadosDest.length && (
+                            <li className="px-3 py-1.5 text-xs text-slate-500">
+                              mostrando {achadosDest.length} de {totalAchadosDest} — digite mais pra afinar
+                            </li>
+                          )}
                           <li>
                             <button
                               type="button"
