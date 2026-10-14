@@ -344,20 +344,37 @@ export async function catalogoDaFilial(filialId: string): Promise<CatalogoPedido
 
 /** Lê a foto/PDF do pedido. Lança erro com a razão quando não consegue. */
 export async function lerPedido(buf: Buffer, mime: string, nome: string, cat: CatalogoPedido): Promise<PedidoLido> {
+  return lerPedidoPaginas([{ buf, mime }], nome, cat);
+}
+
+/**
+ * Um pedido em várias fotos (ex.: hortifruti que entrega em 3 notinhas): a IA
+ * lê todas numa chamada só e devolve UM pedido com os itens de todas.
+ */
+export async function lerPedidoPaginas(
+  paginas: Array<{ buf: Buffer; mime: string }>,
+  nome: string,
+  cat: CatalogoPedido,
+): Promise<PedidoLido> {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error('ANTHROPIC_API_KEY não configurada');
-  const data = buf.toString('base64');
-  const arquivo: Bloco =
-    mime === 'application/pdf'
+  const arquivos: Bloco[] = paginas.map(({ buf, mime }) => {
+    const data = buf.toString('base64');
+    return mime === 'application/pdf'
       ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data } }
       : { type: 'image', source: { type: 'base64', media_type: mime, data } };
+  });
+  const varias =
+    paginas.length > 1
+      ? `\n\nATENÇÃO: são ${paginas.length} fotos/arquivos do MESMO pedido — o fornecedor entregou uma compra só em vários papéis (notinhas, romaneios ou páginas). Devolva UM JSON só: "itens" com os itens de TODOS os papéis, na ordem das fotos (não junte linhas iguais de papéis diferentes); "numero" com os números dos papéis separados por " / "; "total" e "desconto" = a SOMA dos papéis; "data" = a data mais recente; "vencimentos" = todos os prazos escritos, e a soma deles tem que dar o total. Se algum papel for de OUTRO fornecedor, diga isso em "observacao".`
+      : '';
   const listaForn = cat.fornecedores.map((f, i) => `F${i + 1}|${f.nome}${f.cnpj ? `|${f.cnpj}` : ''}`).join('\n');
   const listaProd = cat.produtos.map((p, i) => `P${i + 1}|${p.nome}|${p.unidade}`).join('\n');
   const blocos: Bloco[] = [
-    arquivo,
+    ...arquivos,
     {
       type: 'text',
-      text: `Arquivo: ${nome}. Hoje é ${hojeBr()}.\n\nFornecedores cadastrados:\n${listaForn || '(nenhum)'}\n\nCatálogo de insumos:\n${listaProd || '(nenhum)'}\n\nDevolva o JSON do pedido.`,
+      text: `Arquivo: ${nome}. Hoje é ${hojeBr()}.${varias}\n\nFornecedores cadastrados:\n${listaForn || '(nenhum)'}\n\nCatálogo de insumos:\n${listaProd || '(nenhum)'}\n\nDevolva o JSON do pedido.`,
     },
   ];
 
@@ -435,6 +452,8 @@ export async function gravarPedido(opts: {
   cat: CatalogoPedido;
   hash: string;
   storagePath: string;
+  /** demais fotos do mesmo pedido (a 1ª é storagePath) */
+  fotosExtras?: string[];
 }): Promise<ResultadoPedido> {
   const { filialId, lido, cat, hash, storagePath } = opts;
   const pendencias: string[] = [];
@@ -574,6 +593,7 @@ export async function gravarPedido(opts: {
       xmlStoragePath: storagePath,
       xmlHash: hash,
       origemImportacao: ORIGEM_PEDIDO_FOTO,
+      ...(opts.fotosExtras?.length ? { fotosExtras: opts.fotosExtras } : {}),
     })
     .returning({ id: schema.notaCompra.id });
   const notaCompraId = nova!.id;

@@ -72,6 +72,8 @@ export const notaCompra = pgTable(
     // XML
     xmlStoragePath: text('xml_storage_path'),
     xmlHash: varchar('xml_hash', { length: 64 }),
+    /** Pedido sem nota em várias fotos: a 1ª fica em xmlStoragePath, as demais aqui, na ordem. */
+    fotosExtras: text('fotos_extras').array(),
 
     // Boleto: quando a NFe nao traz <cobr><dup> (compra a vista, ou
     // fornecedor nao preencheu), o user pode anexar um boleto digitalizado

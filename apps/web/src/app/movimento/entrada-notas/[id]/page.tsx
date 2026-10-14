@@ -363,6 +363,19 @@ export default async function NotaDetalhePage(props: {
                     ver a foto do pedido
                   </a>
                 )}
+                {(nota.fotosExtras ?? []).map((p, i) =>
+                  urlFotoPedido(p) ? (
+                    <a
+                      key={p}
+                      href={urlFotoPedido(p)!}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="ml-2 font-medium text-sky-700 underline"
+                    >
+                      foto {i + 2}
+                    </a>
+                  ) : null,
+                )}
               </div>
             ) : (
               <div className="mt-1 font-mono text-[10px] text-slate-400">{nota.chave}</div>

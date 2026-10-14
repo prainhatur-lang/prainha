@@ -25,17 +25,17 @@ interface Resultado {
 const brl = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
 /** Reduz a foto pra caber no limite de envio (lado maior 2200px, JPEG). */
-async function reduzirFoto(file: File): Promise<File> {
+async function reduzirFoto(file: File, lado = 2200, qualidade = 0.85): Promise<File> {
   if (!file.type.startsWith('image/')) return file;
   try {
     const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
-    const escala = Math.min(1, 2200 / Math.max(bmp.width, bmp.height));
+    const escala = Math.min(1, lado / Math.max(bmp.width, bmp.height));
     if (escala === 1 && file.size < 1_500_000 && file.type === 'image/jpeg') return file;
     const canvas = document.createElement('canvas');
     canvas.width = Math.round(bmp.width * escala);
     canvas.height = Math.round(bmp.height * escala);
     canvas.getContext('2d')!.drawImage(bmp, 0, 0, canvas.width, canvas.height);
-    const blob = await new Promise<Blob | null>((ok) => canvas.toBlob(ok, 'image/jpeg', 0.85));
+    const blob = await new Promise<Blob | null>((ok) => canvas.toBlob(ok, 'image/jpeg', qualidade));
     if (!blob) return file;
     return new File([blob], file.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' });
   } catch {
@@ -47,16 +47,35 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
   const scanRef = useRef<HTMLInputElement>(null);
+  const paginaScanRef = useRef<HTMLInputElement>(null);
+  const paginaArqRef = useRef<HTMLInputElement>(null);
+  // Um pedido em várias fotos (hortifruti que entrega em 3 notinhas)
+  const [paginas, setPaginas] = useState<File[]>([]);
   const [selecionada, setSelecionada] = useState(filialId);
   const [lancarDireto, setLancarDireto] = useState(true);
   const [andamento, setAndamento] = useState<string | null>(null);
   const [resultados, setResultados] = useState<Resultado[]>([]);
 
   async function enviarUm(f: File): Promise<Resultado> {
-    const foto = await reduzirFoto(f);
+    return enviar([f]);
+  }
+
+  /** Uma foto = um pedido (como sempre); várias = UM pedido com os itens de todas. */
+  async function enviar(fs: File[]): Promise<Resultado> {
+    const f = fs.length === 1 ? fs[0]! : new File([], fs.map((x) => x.name).join(' + '));
+    let fotos: File[];
+    if (fs.length === 1) {
+      fotos = [await reduzirFoto(fs[0]!)];
+    } else {
+      // Várias fotos têm que caber juntas nos 4 MB: reduz mais e, se ainda passar, mais um pouco.
+      fotos = await Promise.all(fs.map((x) => reduzirFoto(x, 1800, 0.8)));
+      if (fotos.reduce((s, x) => s + x.size, 0) > 3_800_000) {
+        fotos = await Promise.all(fs.map((x) => reduzirFoto(x, 1400, 0.7)));
+      }
+    }
     const form = new FormData();
     form.set('filialId', selecionada);
-    form.set('arquivo', foto);
+    for (const foto of fotos) form.append('arquivo', foto);
     const r = await fetch('/api/notas/pedido-foto', { method: 'POST', body: form });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) {
@@ -144,6 +163,28 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
     router.refresh();
   }
 
+  async function enviarPaginas() {
+    if (!paginas.length) return;
+    setAndamento(`Lendo as ${paginas.length} fotos como um pedido só… (leva até 2 minutos)`);
+    let r: Resultado;
+    try {
+      r = await enviar(paginas);
+    } catch (err) {
+      r = { arquivo: paginas.map((x) => x.name).join(' + '), ok: false, titulo: (err as Error).message, detalhes: [] };
+    }
+    setResultados((ant) => [...ant, r]);
+    if (r.ok) setPaginas([]);
+    setAndamento(null);
+    router.refresh();
+  }
+
+  function addPaginas(e: React.ChangeEvent<HTMLInputElement>) {
+    const novos = Array.from(e.target.files ?? []);
+    if (novos.length) setPaginas((ant) => [...ant, ...novos]);
+    if (paginaScanRef.current) paginaScanRef.current.value = '';
+    if (paginaArqRef.current) paginaArqRef.current.value = '';
+  }
+
   const enviando = andamento !== null;
 
   return (
@@ -213,6 +254,80 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
             {enviando ? 'aguarde…' : 'ou escolher arquivo já escaneado (foto ou PDF)'}
           </div>
         </label>
+
+        {/* Um pedido que veio em vários papéis: junta as fotos e manda como UMA entrada */}
+        <div className="rounded-lg border border-sky-200 bg-sky-50 p-3">
+          <div className="text-xs font-semibold text-sky-900">📑 Um pedido em várias notas/fotos</div>
+          <p className="mt-0.5 text-[11px] text-sky-800">
+            Quando o fornecedor entrega uma compra em mais de um papel (ex.: hortifruti com 3 notinhas): fotografe um
+            por um e envie tudo junto — vira UMA entrada com os itens de todos.
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <label className="cursor-pointer">
+              <input
+                ref={paginaScanRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                disabled={enviando}
+                onChange={addPaginas}
+                className="hidden"
+              />
+              <span className="inline-block rounded-md bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-sky-700">
+                📷 {paginas.length ? 'Fotografar mais uma' : 'Fotografar a 1ª'}
+              </span>
+            </label>
+            <label className="cursor-pointer">
+              <input
+                ref={paginaArqRef}
+                type="file"
+                accept="image/*,application/pdf"
+                multiple
+                disabled={enviando}
+                onChange={addPaginas}
+                className="hidden"
+              />
+              <span className="inline-block rounded-md border border-sky-300 bg-white px-3 py-1.5 text-xs text-sky-800 hover:bg-sky-100">
+                escolher arquivos
+              </span>
+            </label>
+          </div>
+          {paginas.length > 0 && (
+            <>
+              <ul className="mt-2 space-y-1">
+                {paginas.map((p, i) => (
+                  <li key={i} className="flex items-center justify-between gap-2 text-[11px] text-sky-900">
+                    <span className="truncate">
+                      Foto {i + 1}: {p.name}
+                    </span>
+                    <button
+                      type="button"
+                      disabled={enviando}
+                      onClick={() => setPaginas((ant) => ant.filter((_, j) => j !== i))}
+                      className="shrink-0 text-rose-700 underline"
+                    >
+                      tirar
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <button
+                type="button"
+                disabled={enviando}
+                onClick={enviarPaginas}
+                className={`mt-2 w-full rounded-md px-3 py-2 text-xs font-semibold ${
+                  enviando ? 'bg-slate-200 text-slate-500' : 'bg-emerald-600 text-white hover:bg-emerald-700'
+                }`}
+              >
+                {enviando
+                  ? 'aguarde…'
+                  : paginas.length === 1
+                    ? 'Enviar esta foto'
+                    : `Enviar as ${paginas.length} fotos como um pedido só`}
+              </button>
+            </>
+          )}
+        </div>
 
         <label className="flex items-start gap-2 text-xs text-slate-600">
           <input

@@ -1,5 +1,7 @@
 // POST /api/notas/pedido-foto
 // Body: multipart/form-data com 'arquivo' (foto JPG/PNG/WEBP ou PDF) + 'filialId'
+//       'arquivo' pode vir repetido: várias fotos do MESMO pedido (hortifruti que
+//       entrega em 3 notinhas) viram UMA entrada — a IA lê todas juntas.
 //
 // Pedido SEM NOTA: guarda a foto, a IA lê fornecedor, itens e valores, e grava
 // como nota_compra (origem PEDIDO_FOTO) + itens + parcela. O estoque e a conta
@@ -22,6 +24,7 @@ import {
   gravarPedido,
   hashArquivo,
   lerPedido,
+  lerPedidoPaginas,
 } from '@/lib/pedido-sem-nota';
 
 export const dynamic = 'force-dynamic';
@@ -29,6 +32,7 @@ export const runtime = 'nodejs';
 export const maxDuration = 180;
 
 const MAX_SIZE = 4 * 1024 * 1024; // a tela já reduz a foto; acima disso a Vercel nem entrega o corpo
+const MAX_PAGINAS = 10;
 
 function extOf(mime: string): string {
   if (mime.includes('pdf')) return 'pdf';
@@ -47,7 +51,8 @@ export async function POST(req: Request) {
   }
   const form = await req.formData();
   const filialId = (form.get('filialId') as string | null) ?? '';
-  const arquivo = form.get('arquivo');
+  const todos = form.getAll('arquivo');
+  const arquivo = todos[0];
   if (!/^[0-9a-f-]{36}$/i.test(filialId)) {
     return NextResponse.json({ error: 'filialId invalido' }, { status: 400 });
   }
@@ -61,6 +66,22 @@ export async function POST(req: Request) {
   if (arquivo.size > MAX_SIZE) {
     return NextResponse.json({ error: 'arquivo acima de 4 MB' }, { status: 413 });
   }
+  // Demais fotos do mesmo pedido (2ª em diante)
+  const extras: Array<{ file: File; mime: string }> = [];
+  for (const x of todos.slice(1)) {
+    if (!(x instanceof File)) continue;
+    const m = x.type.toLowerCase() === 'image/jpg' ? 'image/jpeg' : x.type.toLowerCase();
+    if (!MIMES_PEDIDO.has(m)) {
+      return NextResponse.json({ error: `tipo não suportado em ${x.name} — envie foto JPG/PNG ou PDF` }, { status: 400 });
+    }
+    extras.push({ file: x, mime: m });
+  }
+  if (extras.length + 1 > MAX_PAGINAS) {
+    return NextResponse.json({ error: `no máximo ${MAX_PAGINAS} fotos por pedido` }, { status: 400 });
+  }
+  if (arquivo.size + extras.reduce((s, e) => s + e.file.size, 0) > MAX_SIZE) {
+    return NextResponse.json({ error: 'as fotos juntas passam de 4 MB' }, { status: 413 });
+  }
 
   // RBAC — mesmo critério do upload de XML
   const [link] = await db
@@ -71,7 +92,12 @@ export async function POST(req: Request) {
   if (!link) return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
 
   const buf = Buffer.from(await arquivo.arrayBuffer());
-  const hash = hashArquivo(buf);
+  const bufsExtras = await Promise.all(extras.map(async (e) => Buffer.from(await e.file.arrayBuffer())));
+  // Uma foto: hash do arquivo (como sempre). Várias: hash dos hashes, na ordem —
+  // o mesmo conjunto enviado de novo não duplica.
+  const hash = extras.length
+    ? hashArquivo(Buffer.from([buf, ...bufsExtras].map(hashArquivo).join('|')))
+    : hashArquivo(buf);
 
   const [existente] = await db
     .select({ id: schema.notaCompra.id, emitNome: schema.notaCompra.emitNome })
@@ -86,8 +112,20 @@ export async function POST(req: Request) {
   const cat = await catalogoDaFilial(filialId);
   let lido;
   try {
-    lido = await lerPedido(buf, mime, arquivo.name, cat);
+    lido = extras.length
+      ? await lerPedidoPaginas(
+          [{ buf, mime }, ...extras.map((e, i) => ({ buf: bufsExtras[i]!, mime: e.mime }))],
+          [arquivo.name, ...extras.map((e) => e.file.name)].join(', '),
+          cat,
+        )
+      : await lerPedido(buf, mime, arquivo.name, cat);
   } catch (e) {
+    if (e instanceof NotaServicoLida && extras.length) {
+      return NextResponse.json(
+        { error: 'é uma nota de serviço — envie ela sozinha (uma foto), não junto com outras' },
+        { status: 422 },
+      );
+    }
     // Nota de serviço (NFS-e): sem insumo, vai direto pro contas a pagar.
     if (e instanceof NotaServicoLida) {
       const s = e.lido;
@@ -123,6 +161,18 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: `storage: ${up.error.message}` }, { status: 500 });
   }
 
-  const r = await gravarPedido({ filialId, lido, cat, hash, storagePath });
+  const fotosExtras: string[] = [];
+  for (let i = 0; i < extras.length; i++) {
+    const p = `pedidos-sem-nota/${filialId}/${hash}-p${i + 2}.${extOf(extras[i]!.mime)}`;
+    const upx = await supa.storage
+      .from(BUCKET_PEDIDO)
+      .upload(p, bufsExtras[i]!, { contentType: extras[i]!.mime, upsert: true });
+    if (upx.error) {
+      return NextResponse.json({ error: `storage: ${upx.error.message}` }, { status: 500 });
+    }
+    fotosExtras.push(p);
+  }
+
+  const r = await gravarPedido({ filialId, lido, cat, hash, storagePath, fotosExtras });
   return NextResponse.json({ ok: true, ...r });
 }
