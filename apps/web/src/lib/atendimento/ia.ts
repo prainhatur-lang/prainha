@@ -102,6 +102,8 @@ export interface ExecutoresFerramentas {
   consultarCardapio: (termo: string, casa?: string) => Promise<string>;
   listarOpcoesOrcamento: () => Promise<string>;
   gerarOrcamento: (dados: DadosOrcamentoEvento) => Promise<string>;
+  /** Pedido de delivery (iFood/site) lido ao vivo na loja: situação, hora que saiu e o que fazer. */
+  consultarPedidoDelivery?: (dados: { numero: string | null; nome: string | null }) => Promise<string>;
 }
 
 export interface RespostaNina {
@@ -282,6 +284,10 @@ REGRAS DE VERDADE:
 - RESPOSTA DA EQUIPE NO HISTÓRICO ([UM COLEGA HUMANO DA EQUIPE respondeu...]): aquilo É a resposta oficial da casa pra pergunta que estava pendente — trate como verdade, converse EM CIMA dela ("sim, o que o colega indicou é nossa recomendação") e responda as perguntas seguintes do cliente sobre ela. É PROIBIDO re-prometer "vou chamar um colega" pra algo que a equipe já respondeu, e proibido pedir desculpas dizendo que não sabe — a resposta está ali.
 - Nunca invente preço, horário, promoção nem exceção. Nunca prometa nada em nome da casa.
 - FORA DO HORÁRIO (depois das 19h ou antes das 9h): o Prainha abre 9h–19h. Se o cliente contacta com problema relacionado ao LOCAL (carro no estacionamento, perdeu algo na mesa, etc), avise com carinho: "A gente funciona 9h–19h — seu carro está seguro no nosso estacionamento, você busca amanhã durante o horário. Se é algo na mesa, a equipe verifica pra você amanhã." Aí transfira SOMENTE se o cliente insistir ou se for algo urgente de verdade (vazamento, incêndio, emergência). Se é só dúvida/informação (cardápio, preço, evento), responda normalmente e ofereça vir durante o horário.
+- PEDIDO DE DELIVERY / iFOOD ("cadê meu pedido", "já saiu?", "o entregador não chegou", "o motoboy não acha minha casa") — vale a qualquer hora, inclusive fora do horário: chame consultar_pedido_delivery ANTES de responder e siga o COMO RESPONDER e a AÇÃO que ela devolver; quando ela mandar transferir, transfira NESSA mesma resposta. É PROIBIDO dizer que não tem como falar com o entregador, ou mandar o cliente resolver no app do iFood, sem ter consultado (caso Cíntya, 14/10: o pedido já tinha saído com o nosso motoboy e ela ouviu que a casa não falava com o entregador). Endereço, telefone e nome do motoboy que a ferramenta marcar como USO INTERNO nunca vão pro cliente — só pro resumo da transferência. Peça o número do pedido só quando a ferramenta pedir.${ehTabuara
+    ? ''
+    : `
+- EVENTO À NOITE (Prainha Bar): a casa abre ao público só das 9h às 19h — à noite NÃO tem mesa nem reserva. À noite a casa abre SÓ pra EVENTO FECHADO (Terraço até 50 pessoas, 60 com a varandinha; Gramado; Varandinha de 15 a 20), com orçamento montado pela equipe. Cliente pedindo confraternização, aniversário, jantar ou festa à noite → diga isso com clareza logo de cara (ex.: "à noite a gente não abre pro público, mas abre só pro seu evento, fechado") e siga a coleta do EVENTO GRANDE OU SOB MEDIDA: data (ou dia de semana × fim de semana e época), quantas pessoas, horário, formato (jantar, coquetel, open bar...), espaço e quanto pretende investir. Pra noite NÃO ofereça reserva de mesa nem gere orçamento automático (gerar_orcamento_evento): registre o lead com "evento noturno fechado" e o horário nas observações e transfira pra equipe montar o orçamento.`}
 - Você não se apresenta como robô nem como "virtual" — é só "${nomeAtendente}, do atendimento". MAS se o cliente perguntar DIRETAMENTE se você é robô/IA/pessoa de verdade, não minta: confirme com simpatia e leveza, e ofereça chamar alguém da equipe se preferir.
 
 ESPAÇOS PARA EVENTOS (casamentos, aniversários, confraternizações):
@@ -324,6 +330,7 @@ QUANDO TRANSFERIR (transferir_para_humano):
 LINGUAGEM: diga que vai chamar um colega, passar pra alguém, buscar ajuda de um superior — faça parecer conversação natural, não "mandar pra equipe".
 - Você não sabe a resposta (ou é [PENDENTE]).
 - Cliente pediu falar com uma pessoa, está irritado, ou é assunto delicado (reclamação, acidente, imprensa).
+- PEDIU UMA PESSOA = TRANSFERE NA HORA ("quero falar com alguém", "tem atendente?", "me passa pra um humano"): chame transferir_para_humano NESSA resposta, mesmo que você tenha acabado de registrar o lead ou ainda falte informação — registrar lead NÃO substitui a transferência e ninguém é avisado só pelo lead (caso Rodrigo, 14/10: pediu atendente, a Nina registrou o lead e não chamou ninguém).
 - Assunto de reserva JÁ FEITA que você NÃO resolve sozinha: passar pra outro nome/telefone, problema de pagamento, cancelar LOUNGE PAGO, ou reserva que não aparece nem em localizar_reserva. Mudar horário/dia/pessoas/área e cancelar (área sem taxa) você mesma faz (remarcar_reserva / cancelar_reserva) — não transfira por isso. Reserva feita em OUTRO telefone ou por CPF você ACHA com localizar_reserva — não transfira por isso.
 Depois de transferir, avise em uma frase gentil e NATURAL que alguém vai falar com ela (ex: "já chamo um colega pra continuar", "deixa eu passar pra alguém que pode ajudar melhor"), SEM dizer "mandar pra equipe" ou nome de departamento.
 
@@ -661,6 +668,24 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           },
         },
         required: ['casa', 'resumo'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'consultar_pedido_delivery',
+      description:
+        'Consulta AO VIVO no sistema da loja um pedido de DELIVERY (iFood ou site): se foi aceito, se está na cozinha, se ficou pronto, a HORA QUE SAIU com o motoboy, se o motoboy marcou que chegou, se foi entregue ou cancelado — e devolve COMO RESPONDER e a AÇÃO (inclusive quando transferir). Chame SEMPRE que o cliente perguntar de pedido de entrega/iFood ("cadê meu pedido", "já saiu?", "o entregador não chegou", "o motoboy não acha minha casa") — ANTES de responder. Sem número, ela procura pelo nome e pelo telefone desta conversa.',
+      parameters: {
+        type: 'object',
+        properties: {
+          numero: {
+            type: 'string',
+            description: 'número do pedido se o cliente disse (no iFood aparece como "Pedido #1234"; do site é tipo "S12"). Vazio se não disse.',
+          },
+          nome: { type: 'string', description: 'nome que está no pedido, se o cliente disse. Vazio se não disse.' },
+        },
       },
     },
   },
@@ -1228,6 +1253,13 @@ Como usar, SEM EXCEÇÃO:
           });
         } else if (tc.function.name === 'consultar_estorno_reserva') {
           resultado = await params.executores.consultarEstorno();
+        } else if (tc.function.name === 'consultar_pedido_delivery') {
+          resultado = params.executores.consultarPedidoDelivery
+            ? await params.executores.consultarPedidoDelivery({
+                numero: String(args.numero ?? '').trim() || null,
+                nome: String(args.nome ?? '').trim() || null,
+              })
+            : 'Consulta de pedido indisponível aqui — diga que vai verificar com a equipe e chame transferir_para_humano com o número/nome do pedido.';
         } else if (tc.function.name === 'passar_para_outra_casa') {
           resultado = podePassar
             ? await params.executores.passarParaOutraCasa!(String(args.casa ?? ''), String(args.resumo ?? ''))

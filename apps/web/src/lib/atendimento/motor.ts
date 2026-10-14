@@ -27,6 +27,7 @@ import {
 } from './reservar';
 import { consultarCardapio } from './cardapio';
 import { medirOcupacaoHoje } from './ocupacao';
+import { consultarPedidoDelivery } from './pedido-delivery';
 import { consultarMareTexto } from './mare';
 import { consultarCotacoesFornecedor, cadastrarFornecedorProspect } from './fornecedor';
 import { listarOpcoesOrcamento, gerarOrcamentoEvento } from './orcamento';
@@ -638,6 +639,21 @@ export async function processarEntrada(params: {
           observacoes: dados.observacoes,
         }),
       consultarMesa: (numero: string) => consultarMesa(entrada.filialId, numero),
+      // Pedido de delivery AO VIVO na loja (14/10/2026, caso Cíntya): procura
+      // nesta casa e nas outras do grupo — o cliente do iFood acha o WhatsApp
+      // pelo Instagram e nem sempre cai no número da casa do pedido.
+      consultarPedidoDelivery: (dados: { numero: string | null; nome: string | null }) =>
+        consultarPedidoDelivery({
+          casas: [
+            { filialId: entrada.filialId, filialNome },
+            ...cobertas.map((c) => ({ filialId: c.filialId, filialNome: c.filialNome })),
+            ...outrasCasas.map((c) => ({ filialId: c.filialId, filialNome: c.filialNome })),
+          ],
+          numero: dados.numero,
+          nome: dados.nome,
+          nomePerfil: conversa.nomeCliente,
+          telefoneConversa: entrada.telefone,
+        }),
       consultarMare: async (data: string) => consultarMareTexto(data),
       consultarCotacoesFornecedor: () => consultarCotacoesFornecedor(entrada.telefone),
       remarcarReserva: (dados: import('./ia').DadosRemarcarReserva) =>
