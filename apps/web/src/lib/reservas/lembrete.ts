@@ -10,7 +10,8 @@ function normTelefone(v: string | null): string | null {
   if (!v) return null;
   let d = v.replace(/\D/g, '');
   if (d.length < 10) return null;
-  if (d.length <= 11) d = '55' + d;
+  // "+…" = número de fora já com o DDI (lib/telefone-pais) — americano tem 11 dígitos
+  if (d.length <= 11 && !v.trim().startsWith('+')) d = '55' + d;
   return d;
 }
 

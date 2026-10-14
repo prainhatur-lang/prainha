@@ -10,6 +10,8 @@
 // Modo teste: se RESERVA_OTP_MODO_TESTE === 'true', NAO envia — retorna { modoTeste:true }
 // e o codigo eh devolvido pela API pra testar o fluxo antes da Meta estar configurada.
 
+import { telefoneComDdi } from '@/lib/telefone-pais';
+
 export interface ResultadoOtp {
   enviado: boolean;
   modoTeste: boolean;
@@ -412,7 +414,9 @@ export async function enviarAtualizacaoReserva(
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       messaging_product: 'whatsapp',
-      to: telefone,
+      // reserva do painel gravava o número como digitado ("79 99977-9000"):
+      // sem o 55 a Meta lia outro país. "+…" = de fora, já com DDI.
+      to: telefoneComDdi(telefone),
       type: 'template',
       template: {
         name: template,

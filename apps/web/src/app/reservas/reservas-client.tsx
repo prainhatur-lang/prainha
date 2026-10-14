@@ -7,6 +7,8 @@ import { normalizaBusca } from '@/lib/texto';
 import { brl } from '@/lib/format';
 import { MapaMesas } from './mapa-mesas';
 import { JuntarNoMapa } from './juntar-mapa';
+import { TelefonePaisInput } from '@/components/telefone-pais-input';
+import { separarTelefone, telefoneComDdi, telefoneParaGravar, type PaisTel } from '@/lib/telefone-pais';
 import { parseJuntadas, textoMesas } from '@/lib/reservas/mesas-juntadas';
 
 /** Resposta de /api/reservas/quem — quem é a pessoa do telefone/CPF digitado. */
@@ -116,8 +118,8 @@ function ymdToBr(ymd: string): string {
   return `${d}/${m}/${y}`;
 }
 function whatsappLink(tel: string, nome: string): string {
-  const num = tel.replace(/\D/g, '');
-  const ddi = num.length <= 11 ? `55${num}` : num;
+  // "+…" = número de fora já com o DDI (lib/telefone-pais) — não leva 55
+  const ddi = telefoneComDdi(tel);
   return `https://wa.me/${ddi}?text=${encodeURIComponent(`Olá ${nome}! Sobre sua reserva...`)}`;
 }
 
@@ -1671,6 +1673,9 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, ocupadas, ocupadasCons
   const [filialId, setFilialId] = useState(filialPadrao ?? filiais[0]?.id ?? '');
   const [clienteNome, setNome] = useState('');
   const [clienteTelefone, setTel] = useState('');
+  // País do WhatsApp (dono, 14/10/2026): +55 de saída; gringo troca e o número
+  // segue a numeração de lá. Grava 55+DDD+número ou "+DDI…" (lib/telefone-pais).
+  const [paisTel, setPaisTel] = useState<PaisTel>('BR');
   const [pessoas, setPessoas] = useState(2);
   const [dataR, setData] = useState(dataPadrao);
   const [hora, setHora] = useState('17:00');
@@ -1704,7 +1709,11 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, ocupadas, ocupadasCons
         setQuem(d);
         // Digitou o CPF? O telefone do cadastro entra no lugar — é ele que
         // amarra a reserva à pessoa.
-        if (d.achou && d.por === 'cpf' && d.telefone) setTel(d.telefone);
+        if (d.achou && d.por === 'cpf' && d.telefone) {
+          const t = separarTelefone(d.telefone);
+          setPaisTel(t.cc);
+          setTel(t.texto);
+        }
         if (d.achou && d.nome) setNome((atual) => (atual.trim() ? atual : d.nome!));
       } catch {
         // busca é conveniência — não trava a criação
@@ -1746,7 +1755,7 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, ocupadas, ocupadasCons
       const r = await fetch('/api/reservas', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filialId, clienteNome, clienteTelefone, pessoas, data: dataR, hora, canal, area, mesa, mesasJuntadas: mesa ? juntadas : [], observacao, status: 'pendente' }),
+        body: JSON.stringify({ filialId, clienteNome, clienteTelefone: telefoneParaGravar(paisTel, clienteTelefone) ?? '', pessoas, data: dataR, hora, canal, area, mesa, mesasJuntadas: mesa ? juntadas : [], observacao, status: 'pendente' }),
       });
       if (!r.ok) {
         const d = await r.json().catch(() => ({}));
@@ -1770,7 +1779,18 @@ function NovaReserva({ filiais, dataPadrao, filialPadrao, ocupadas, ocupadasCons
             {filiais.map((f) => <option key={f.id} value={f.id}>{f.nome}</option>)}
           </select>
         )}
-        <input value={clienteTelefone} onChange={(e) => digitarTel(e.target.value)} placeholder="WhatsApp ou CPF — busca quem já é de casa" inputMode="tel" className={`${inp} col-span-2 ${quem?.achou ? 'border-sky-400' : ''}`} />
+        <TelefonePaisInput
+          pais={paisTel}
+          onPais={(cc, texto) => {
+            setPaisTel(cc);
+            digitarTel(texto);
+          }}
+          valor={clienteTelefone}
+          onValor={digitarTel}
+          placeholder={paisTel === 'BR' ? 'WhatsApp (79) 99999-9999 ou CPF' : 'WhatsApp com código de área'}
+          className="col-span-2"
+          inputClassName={`${inp} ${quem?.achou ? 'border-sky-400' : ''}`}
+        />
         <input value={clienteNome} onChange={(e) => setNome(e.target.value)} placeholder="Nome do cliente" className={`${inp} col-span-2`} />
         <input type="number" min={1} value={pessoas} onChange={(e) => setPessoas(Number(e.target.value))} placeholder="Pessoas" className={inp} />
         <input type="date" value={dataR} onChange={(e) => setData(e.target.value)} className={inp} />
