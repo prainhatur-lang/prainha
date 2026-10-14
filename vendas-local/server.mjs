@@ -2628,8 +2628,22 @@ async function apiIfood() {
       itens: p.itens, recebido_em: p.recebido_em, agendado_para: p.agendado_para,
       confirmado: !!p.confirmado_em, despachado: !!p.despachado_em,
       concluido: !!p.concluido_em, cancelado: !!p.cancelado_em, cancel_pedido: !!p.cancel_pedido_em,
+      // Horários (14/10/2026): a Nina compara a hora que saiu com a hora que o
+      // cliente reclamou — rota longa ou "cheguei" sem entrega vira humano.
+      confirmado_em: p.confirmado_em || null, despachado_em: p.despachado_em || null,
+      saiu_em: p.saiu_em || null, chegou_em: p.chegou_em || null,
+      concluido_em: p.concluido_em || null, cancelado_em: p.cancelado_em || null,
+      entregador: p.entregador || null, previsto_em: ifoodPrevisto(p),
     })),
   };
+}
+
+/** Previsão de entrega que o iFood mostrou ao cliente (vem no pedido). */
+function ifoodPrevisto(p) {
+  try {
+    const o = typeof p.payload === 'string' ? JSON.parse(p.payload) : p.payload;
+    return o?.delivery?.deliveryDateTime || o?.takeout?.takeoutDateTime || null;
+  } catch { return null; }
 }
 
 const IFOOD_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
