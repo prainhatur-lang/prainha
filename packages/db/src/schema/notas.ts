@@ -13,6 +13,7 @@ import {
   numeric,
   index,
   unique,
+  jsonb,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { filial } from './tenant';
@@ -83,6 +84,10 @@ export const notaCompra = pgTable(
      *  Ao clicar Confirmar lancamento, esse path eh transferido pra
      *  conta_pagar.boleto_storage_path e este campo eh limpo. */
     boletoPendentePath: text('boleto_pendente_path'),
+    /** O que o XML diz do pagamento: { lidoEm, parcelas (qtd de <cobr><dup>),
+     *  formas: [{ tPag, vPag, indPag }] } de <pag><detPag>. NULL = XML ainda
+     *  não lido pra isso (nota da SEFAZ de antes de 14/10/2026). */
+    pagamentoXml: jsonb('pagamento_xml'),
 
     // Metadata
     // UPLOAD | SEFAZ_DFE | SEFAZ_DFE_RESUMO | SEFAZ_DFE_RESUMO_CIENTE (23 chars — por isso 40, não 20)

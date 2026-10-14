@@ -296,6 +296,10 @@ async function inserirNfeCompleta(
     );
   }
 
+  // Parcelas (<cobr><dup>) e forma de pagamento (<pag>) do XML — sem isso o
+  // "Lançar no estoque" pedia boleto de nota que já traz o vencimento.
+  await gravarPagamentoXml(filialId, notaCompraId, nfe);
+
   // Auto-match com pedido_compra (cotacao -> pedido -> NF -> estoque)
   if (fornecedorId && nfe.dataEmissao) {
     try {
@@ -312,6 +316,115 @@ async function inserirNfeCompleta(
   }
 
   return upgrade ? 'ATUALIZADA' : 'INSERIDA';
+}
+
+/** Grava as parcelas de <cobr><dup> em nota_compra_duplicata (só se a nota
+ *  ainda não tem nenhuma — não duplica nem mexe em parcela que já virou conta)
+ *  e o resumo do pagamento em nota_compra.pagamento_xml. Até 14/10/2026 a nota
+ *  que vinha da SEFAZ jogava isso fora; só o upload de XML gravava. */
+async function gravarPagamentoXml(
+  filialId: string,
+  notaCompraId: string,
+  nfe: ReturnType<typeof parseNfeXml>,
+): Promise<number> {
+  let gravadas = 0;
+  const dups = nfe.duplicatas.filter((d) => d.vencimento != null && d.valor > 0);
+  if (dups.length > 0) {
+    const [ja] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(schema.notaCompraDuplicata)
+      .where(eq(schema.notaCompraDuplicata.notaCompraId, notaCompraId));
+    if (!ja || Number(ja.n) === 0) {
+      await db.insert(schema.notaCompraDuplicata).values(
+        dups.map((d) => ({
+          filialId,
+          notaCompraId,
+          numero: d.numero,
+          dataVencimento: d.vencimento as string,
+          valor: String(d.valor),
+        })),
+      );
+      gravadas = dups.length;
+    }
+  }
+  await db
+    .update(schema.notaCompra)
+    .set({
+      pagamentoXml: {
+        lidoEm: new Date().toISOString(),
+        parcelas: dups.length,
+        formas: nfe.pagamentos,
+      },
+    })
+    .where(eq(schema.notaCompra.id, notaCompraId));
+  return gravadas;
+}
+
+export interface ResultadoPagamentoXml {
+  status: 'LIDO' | 'JA_LIDO' | 'SEM_XML' | 'FORA_DO_PRAZO' | 'BLOQUEIO' | 'NAO_SEFAZ';
+  motivo: string;
+  /** Parcelas gravadas agora (0 se o XML não traz <cobr>). */
+  parcelasGravadas: number;
+}
+
+/** Nota completa que veio da SEFAZ antes de 14/10/2026 não tem as parcelas
+ *  nem a forma de pagamento (o XML não era guardado). Consulta a chave UMA vez
+ *  (consChNFe, gasta 1 das ~20/h do CNPJ; a SEFAZ só entrega até 90 dias) e
+ *  grava. Depois de lida, `pagamento_xml` fica preenchido e não consulta mais. */
+export async function lerPagamentoXmlPorChave(opts: {
+  notaCompraId: string;
+  uf?: string;
+}): Promise<ResultadoPagamentoXml> {
+  const [nota] = await db
+    .select({
+      id: schema.notaCompra.id,
+      filialId: schema.notaCompra.filialId,
+      chave: schema.notaCompra.chave,
+      origem: schema.notaCompra.origemImportacao,
+      pagamentoXml: schema.notaCompra.pagamentoXml,
+      idadeDias: sql<number>`(extract(epoch from now() - coalesce(${schema.notaCompra.dataAutorizacao}, ${schema.notaCompra.dataEmissao})) / 86400)::float8`,
+    })
+    .from(schema.notaCompra)
+    .where(eq(schema.notaCompra.id, opts.notaCompraId))
+    .limit(1);
+  const r0 = { parcelasGravadas: 0 };
+  if (!nota) return { ...r0, status: 'SEM_XML', motivo: 'nota não encontrada' };
+  if (nota.pagamentoXml != null) return { ...r0, status: 'JA_LIDO', motivo: 'XML já lido' };
+  if (nota.origem !== 'SEFAZ_DFE') {
+    return { ...r0, status: 'NAO_SEFAZ', motivo: 'nota não veio completa da SEFAZ' };
+  }
+  if (Number(nota.idadeDias) > 89) {
+    return { ...r0, status: 'FORA_DO_PRAZO', motivo: 'SEFAZ só entrega o XML até 90 dias' };
+  }
+
+  const uf = (opts.uf ?? 'SE').toUpperCase();
+  const cUF = UF_CODIGO[uf];
+  if (!cUF) throw new Error(`UF invalida: ${uf}`);
+  const row = await findActiveCertForFilial(nota.filialId);
+  if (!row) throw new Error('filial sem certificado A1 disponivel (nem proprio nem compartilhado)');
+  const r = await consultarPorChave({
+    pfxBytes: await baixarPfx(row.pfxStoragePath),
+    senhaPfx: decifrarSenha(row.senhaCifrada),
+    cnpj: row.filialCnpj,
+    cUF,
+    chave: nota.chave,
+    tpAmb: 1,
+  });
+  if (r.cStat === '656') {
+    return { ...r0, status: 'BLOQUEIO', motivo: `${r.cStat} ${r.xMotivo}` };
+  }
+  const completa = r.docs.find((d) => d.tipo === 'NFE_COMPLETA' && d.chave === nota.chave);
+  if (!completa) {
+    return { ...r0, status: 'SEM_XML', motivo: `${r.cStat} ${r.xMotivo}`.trim() || 'SEFAZ não devolveu o XML' };
+  }
+  let nfe;
+  try {
+    nfe = parseNfeXml(completa.xml);
+  } catch {
+    return { ...r0, status: 'SEM_XML', motivo: 'XML veio mas não deu pra ler' };
+  }
+  const parcelasGravadas = await gravarPagamentoXml(nota.filialId, nota.id, nfe);
+  return { status: 'LIDO', motivo: 'XML lido', parcelasGravadas };
 }
 
 /** Insere um stub de NFe a partir do resumo (resNFe). */

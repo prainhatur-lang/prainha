@@ -47,6 +47,17 @@ export interface NfeParseada {
   /** Duplicatas (parcelas) extraidas de <cobr><dup>. Vazio se a NFe nao
    *  tem <cobr> (compra a vista, ou fornecedor nao preencheu). */
   duplicatas: NfeDuplicata[];
+  /** Formas de pagamento de <pag><detPag> (tPag 01 dinheiro, 03/04 cartão,
+   *  15 boleto, 17 Pix, 90 sem pagamento...). Vazio se o XML não tem <pag>. */
+  pagamentos: NfePagamento[];
+}
+
+export interface NfePagamento {
+  /** Código da forma (2 dígitos). */
+  tPag: string;
+  vPag: number;
+  /** '0' à vista | '1' a prazo | null (campo é opcional no XML). */
+  indPag: string | null;
 }
 
 /** Uma parcela do boleto/duplicata extraida do XML. */
@@ -233,6 +244,27 @@ export function parseNfeXml(xml: string): NfeParseada {
       .filter((d) => d.valor > 0 && d.vencimento != null);
   }
 
+  // Forma de pagamento (NF-e 4.0): <pag><detPag> tPag / vPag / indPag
+  // (uma por forma). Na 3.10 era <pag> repetido com tPag/vPag direto.
+  const pag = inf.pag as unknown;
+  const pagArr = Array.isArray(pag) ? pag : pag ? [pag] : [];
+  const pagamentos: NfePagamento[] = [];
+  for (const p of pagArr) {
+    const r = p as Record<string, unknown>;
+    const det = r.detPag ?? (r.tPag != null ? r : null);
+    const detArr = Array.isArray(det) ? det : det ? [det] : [];
+    for (const d of detArr) {
+      const x = d as Record<string, unknown>;
+      const tPag = nullableS(x.tPag);
+      if (!tPag) continue;
+      pagamentos.push({
+        tPag: tPag.padStart(2, '0'),
+        vPag: nullableN(x.vPag) ?? 0,
+        indPag: nullableS(x.indPag) ?? nullableS(r.indPag),
+      });
+    }
+  }
+
   // Situação via protocolo
   let situacao: string | null = null;
   let protocolo: string | null = null;
@@ -287,5 +319,6 @@ export function parseNfeXml(xml: string): NfeParseada {
 
     itens,
     duplicatas,
+    pagamentos,
   };
 }

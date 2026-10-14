@@ -27,6 +27,40 @@ interface OcrBoleto {
   observacao: string | null;
 }
 
+/** nota_compra.pagamento_xml: o que o XML diz do pagamento. */
+export interface PagamentoXml {
+  lidoEm?: string;
+  parcelas?: number;
+  formas?: { tPag: string; vPag: number; indPag: string | null }[];
+}
+
+interface CategoriaSugerida {
+  id: string;
+  /** Texto curto de onde veio (ex: "a mesma da última nota deste fornecedor"). */
+  fonte: string;
+}
+
+const NOME_TPAG: Record<string, string> = {
+  '01': 'Dinheiro',
+  '02': 'Cheque',
+  '03': 'Cartão de crédito',
+  '04': 'Cartão de débito',
+  '05': 'Crédito loja',
+  '10': 'Vale alimentação',
+  '11': 'Vale refeição',
+  '12': 'Vale presente',
+  '13': 'Vale combustível',
+  '15': 'Boleto',
+  '16': 'Depósito',
+  '17': 'Pix',
+  '18': 'Transferência',
+  '19': 'Fidelidade',
+  '90': 'Sem pagamento',
+  '99': 'Outros',
+};
+// Formas que já saíram pagas na entrega (não geram conta a pagar).
+const TPAG_PAGO = new Set(['01', '03', '04', '10', '11', '12', '13', '16', '17', '18', '19', '90']);
+
 interface BoletoPendente {
   id: string;
   storagePath: string;
@@ -46,6 +80,9 @@ export function BotoesCabecalho({
   duplicatas,
   categorias,
   temFornecedor,
+  categoriaSugerida = null,
+  pagamentoXml = null,
+  lerPagamentoXml = false,
 }: {
   notaId: string;
   totalItens: number;
@@ -55,6 +92,10 @@ export function BotoesCabecalho({
   duplicatas: Duplicata[];
   categorias: Categoria[];
   temFornecedor: boolean;
+  categoriaSugerida?: CategoriaSugerida | null;
+  pagamentoXml?: PagamentoXml | null;
+  /** Nota da SEFAZ sem parcelas gravadas: ao abrir o modal lê o XML pela chave. */
+  lerPagamentoXml?: boolean;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -177,6 +218,10 @@ export function BotoesCabecalho({
           duplicatasPendentes={duplicatasPendentes}
           categorias={categorias}
           temFornecedor={temFornecedor}
+          categoriaSugerida={categoriaSugerida}
+          pagamentoXml={pagamentoXml}
+          lerPagamentoXml={lerPagamentoXml}
+          onXmlLido={() => start(() => router.refresh())}
           onSuccess={(texto) => {
             setMsg({ tipo: 'ok', texto });
             setModalLancar(false);
@@ -200,9 +245,13 @@ function ModalLancar({
   notaId,
   totalMapeados,
   jaLancados,
-  duplicatasPendentes,
+  duplicatasPendentes: duplicatasIniciais,
   categorias,
   temFornecedor,
+  categoriaSugerida,
+  pagamentoXml,
+  lerPagamentoXml,
+  onXmlLido,
   onSuccess,
   onFechar,
 }: {
@@ -212,14 +261,31 @@ function ModalLancar({
   duplicatasPendentes: Duplicata[];
   categorias: Categoria[];
   temFornecedor: boolean;
+  categoriaSugerida: CategoriaSugerida | null;
+  pagamentoXml: PagamentoXml | null;
+  lerPagamentoXml: boolean;
+  onXmlLido: () => void;
   onSuccess: (texto: string) => void;
   onFechar: () => void;
 }) {
   const pendentes = totalMapeados - jaLancados;
+  // Nota da SEFAZ de antes de 14/10 não tinha as parcelas do XML: lê agora
+  // pela chave. Trouxe parcela → vira CASO 1 (não pede boleto, só confirma).
+  const [dupsLidas, setDupsLidas] = useState<Duplicata[] | null>(null);
+  const [pagXml, setPagXml] = useState<PagamentoXml | null>(pagamentoXml);
+  const [lendoXml, setLendoXml] = useState(lerPagamentoXml);
+  const [avisoXml, setAvisoXml] = useState<string | null>(null);
+  const duplicatasPendentes = dupsLidas ?? duplicatasIniciais;
   const temDuplicatasXml = duplicatasPendentes.length > 0;
   const totalDuplicatas = duplicatasPendentes.reduce((s, d) => s + Number(d.valor || 0), 0);
 
-  const [categoriaId, setCategoriaId] = useState('');
+  const [categoriaId, setCategoriaId] = useState(() => {
+    const sug = categoriaSugerida?.id;
+    if (!sug) return '';
+    const c = categorias.find((x) => x.id === sug);
+    // Só pré-seleciona se a categoria aparece no select (DESPESA/P/sem tipo).
+    return c && (c.tipo == null || c.tipo === 'DESPESA' || c.tipo === 'P') ? sug : '';
+  });
   const [modoSemDup, setModoSemDup] = useState<ModoSemDup>('avista');
   const [parcelas, setParcelas] = useState<ParcelaForm[]>([
     { dataVencimento: '', valor: '' },
@@ -242,6 +308,38 @@ function ModalLancar({
   } | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!lerPagamentoXml) return;
+    let cancelado = false;
+    (async () => {
+      try {
+        const r = await fetch(`/api/nota-compra/${notaId}/pagamento-xml`, { method: 'POST' });
+        const d = await r.json().catch(() => ({}));
+        if (cancelado) return;
+        if (!r.ok) {
+          setAvisoXml(`Não deu pra ler o XML na SEFAZ: ${d.error ?? `HTTP ${r.status}`}`);
+          return;
+        }
+        if (d.pagamentoXml) setPagXml(d.pagamentoXml as PagamentoXml);
+        const novas = ((d.duplicatas ?? []) as Duplicata[]).filter((x) => !x.jaCriadaContaPagar);
+        if (novas.length > 0) setDupsLidas(novas);
+        if (d.status !== 'LIDO' && d.status !== 'JA_LIDO') {
+          setAvisoXml(`Não deu pra ler o XML na SEFAZ: ${d.motivo}`);
+        }
+        if (d.status === 'LIDO') onXmlLido();
+      } catch (e) {
+        if (!cancelado) setAvisoXml(`Não deu pra ler o XML na SEFAZ: ${(e as Error).message}`);
+      } finally {
+        if (!cancelado) setLendoXml(false);
+      }
+    })();
+    return () => {
+      cancelado = true;
+    };
+    // Uma vez por abertura do modal.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Polling: enquanto user esta na opcao "celular" e ja gerou token, fica
   // verificando a cada 4s os boletos pendentes (com OCR ja processado).
@@ -322,7 +420,15 @@ function ModalLancar({
   const podeConfirmar =
     (!precisaCategoria || categoriaId !== '') &&
     parcelasValidas &&
+    !lendoXml &&
     !loading;
+
+  // Forma de pagamento que o XML informa (<pag>), quando não há parcelas.
+  const formasXml = pagXml?.formas ?? [];
+  const xmlDizPago = formasXml.length > 0 && formasXml.every((f) => TPAG_PAGO.has(f.tPag));
+  const textoFormasXml = formasXml
+    .map((f) => `${NOME_TPAG[f.tPag] ?? `forma ${f.tPag}`}${f.vPag > 0 ? ` ${brl(f.vPag)}` : ''}${f.indPag === '1' ? ' (a prazo)' : ''}`)
+    .join(' + ');
 
   function setParcela(i: number, campo: keyof ParcelaForm, valor: string) {
     setParcelas((arr) => arr.map((p, j) => (j === i ? { ...p, [campo]: valor } : p)));
@@ -472,8 +578,14 @@ function ModalLancar({
           </p>
         </div>
 
+        {lendoXml && (
+          <div className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-xs text-sky-900">
+            🔎 Lendo a cobrança no XML da nota (SEFAZ)…
+          </div>
+        )}
+
         {/* === CASO 1: NFe traz duplicatas no XML === */}
-        {temDuplicatasXml && (
+        {!lendoXml && temDuplicatasXml && (
           <div className="rounded-lg border border-sky-200 bg-sky-50 p-3">
             <h3 className="text-xs font-semibold text-sky-900">
               💰 Contas a pagar (do XML)
@@ -501,12 +613,21 @@ function ModalLancar({
         )}
 
         {/* === CASO 2: NFe não tem duplicatas === */}
-        {!temDuplicatasXml && (
+        {!lendoXml && !temDuplicatasXml && (
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-3">
             <div>
               <h3 className="text-xs font-semibold text-amber-900">
                 ℹ A NFe não traz cobrança no XML
               </h3>
+              {formasXml.length > 0 && (
+                <p className="mt-0.5 text-[11px] font-medium text-amber-900">
+                  O XML diz: {textoFormasXml}
+                  {xmlDizPago && modoSemDup === 'avista' && ' — pago na entrega, é só confirmar.'}
+                </p>
+              )}
+              {avisoXml && (
+                <p className="mt-0.5 text-[10px] text-slate-500">{avisoXml}</p>
+              )}
               <p className="mt-0.5 text-[10px] text-amber-800">
                 Como você quer registrar o pagamento?
               </p>
@@ -580,6 +701,9 @@ function ModalLancar({
                 <option key={c.id} value={c.id}>{c.descricao}</option>
               ))}
             </select>
+            {categoriaSugerida && categoriaId === categoriaSugerida.id && (
+              <p className="mt-1 text-[10px] text-slate-500">↺ {categoriaSugerida.fonte}</p>
+            )}
             {opcoesCategoria.length === 0 && (
               <p className="mt-1 text-[10px] text-amber-700">
                 Nenhuma categoria DESPESA. Sincronize o plano de contas do Consumer.

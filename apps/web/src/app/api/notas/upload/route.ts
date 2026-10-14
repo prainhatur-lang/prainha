@@ -183,6 +183,16 @@ export async function POST(req: Request) {
       await db.insert(schema.notaCompraDuplicata).values(dups);
     }
   }
+  await db
+    .update(schema.notaCompra)
+    .set({
+      pagamentoXml: {
+        lidoEm: new Date().toISOString(),
+        parcelas: nfe.duplicatas.filter((d) => d.vencimento != null && d.valor > 0).length,
+        formas: nfe.pagamentos,
+      },
+    })
+    .where(eq(schema.notaCompra.id, notaCompraId));
 
   return NextResponse.json({
     ok: true,

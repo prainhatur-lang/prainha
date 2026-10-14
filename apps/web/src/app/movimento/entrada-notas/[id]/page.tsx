@@ -8,7 +8,7 @@ import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDate, maskCnpj } from '@/lib/format';
 import { ItemRow } from './item-row';
-import { BotoesCabecalho } from './botoes-cabecalho';
+import { BotoesCabecalho, type PagamentoXml } from './botoes-cabecalho';
 import { VincularFornecedorBtn } from './vincular-fornecedor';
 import { ConferirNota } from './conferir-nota';
 import { lerConferenciaNota } from '@/lib/nota-conferencia';
@@ -258,6 +258,53 @@ export default async function NotaDetalhePage(props: {
     .orderBy(asc(schema.categoriaConta.descricao))
     .limit(2000);
 
+  // Plano de contas já vem com o da última nota deste fornecedor (senão a
+  // última conta dele; senão o da última nota lançada na casa) — dono 14/10.
+  const ordemCp = sql`coalesce(${schema.contaPagar.criadoEm}, ${schema.contaPagar.dataCadastro}, ${schema.contaPagar.sincronizadoEm}) desc nulls last`;
+  const [catFornecedor] = nota.fornecedorId
+    ? await db
+        .select({
+          id: schema.contaPagar.categoriaId,
+          deNota: sql<boolean>`${schema.contaPagar.notaCompraId} is not null`,
+        })
+        .from(schema.contaPagar)
+        .where(
+          and(
+            eq(schema.contaPagar.filialId, nota.filialId),
+            eq(schema.contaPagar.fornecedorId, nota.fornecedorId),
+            sql`${schema.contaPagar.categoriaId} is not null`,
+            isNull(schema.contaPagar.dataDelete),
+          ),
+        )
+        .orderBy(sql`(${schema.contaPagar.notaCompraId} is not null) desc`, ordemCp)
+        .limit(1)
+    : [];
+  const [catCasa] = catFornecedor
+    ? []
+    : await db
+        .select({ id: schema.contaPagar.categoriaId })
+        .from(schema.contaPagar)
+        .where(
+          and(
+            eq(schema.contaPagar.filialId, nota.filialId),
+            sql`${schema.contaPagar.notaCompraId} is not null`,
+            sql`${schema.contaPagar.categoriaId} is not null`,
+            isNull(schema.contaPagar.dataDelete),
+          ),
+        )
+        .orderBy(ordemCp)
+        .limit(1);
+  const categoriaSugerida = catFornecedor?.id
+    ? {
+        id: catFornecedor.id,
+        fonte: catFornecedor.deNota
+          ? 'a mesma da última nota deste fornecedor'
+          : 'a mesma da última conta deste fornecedor',
+      }
+    : catCasa?.id
+      ? { id: catCasa.id, fonte: 'a mesma da última nota lançada na casa' }
+      : null;
+
   // Conferência de recebimento (nota diz X, chegou Y)
   const conferencia = await lerConferenciaNota(id);
   const faltasConferencia = itens
@@ -433,6 +480,13 @@ export default async function NotaDetalhePage(props: {
               tipo: c.tipo,
             }))}
             temFornecedor={nota.fornecedorId != null}
+            categoriaSugerida={categoriaSugerida}
+            pagamentoXml={(nota.pagamentoXml as PagamentoXml | null) ?? null}
+            lerPagamentoXml={
+              nota.origemImportacao === 'SEFAZ_DFE' &&
+              nota.pagamentoXml == null &&
+              duplicatas.length === 0
+            }
           />
         </div>
 
