@@ -748,6 +748,11 @@ export interface ParEncontro {
   bDeveA: number;
   aDeveB: number;
   transferencias: string[];
+  /** Parte de bDeveA/aDeveB que veio de boleto pago por uma casa pra conta
+   *  da outra (pagamento_entre_casas) — o resto é transferência. */
+  bDeveAPagamentos: number;
+  aDeveBPagamentos: number;
+  pagamentos: string[];
   /** quem paga a diferença (null = empatou) */
   devedora: string | null;
   credora: string | null;
@@ -775,8 +780,26 @@ async function saldosContas(exec: ExecDb, contaIds: string[]): Promise<Map<strin
   return m;
 }
 
-/** Monta os pares de casas com transferências ABERTAS na competência.
- *  Só entra par em que o usuário tem acesso às duas casas. */
+/** Monta os pares de casas com transferências ABERTAS na competência — e os
+ *  boletos que uma casa pagou pela outra (pagamento_entre_casas ABERTO, a
+ *  casa da conta deve pra casa que pagou). Só entra par em que o usuário tem
+ *  acesso às duas casas. */
+function novoPar(a: string, b: string): ParEncontro {
+  return {
+    a,
+    b,
+    bDeveA: 0,
+    aDeveB: 0,
+    transferencias: [],
+    bDeveAPagamentos: 0,
+    aDeveBPagamentos: 0,
+    pagamentos: [],
+    devedora: null,
+    credora: null,
+    liquido: 0,
+  };
+}
+
 export async function previaEncontro(
   userId: string,
   competencia: string,
@@ -797,8 +820,27 @@ export async function previaEncontro(
         eq(schema.transferenciaFilial.status, 'ABERTA'),
       ),
     );
-  if (!abertas.length) return [];
-  const acesso = await filiaisComAcesso(userId, [...new Set(abertas.flatMap((t) => [t.origem, t.destino]))]);
+  const pagamentos = await exec
+    .select({
+      id: schema.pagamentoEntreCasas.id,
+      pagadora: schema.pagamentoEntreCasas.filialPagadoraId,
+      devedora: schema.pagamentoEntreCasas.filialDevedoraId,
+      valor: schema.pagamentoEntreCasas.valor,
+    })
+    .from(schema.pagamentoEntreCasas)
+    .where(
+      and(
+        eq(schema.pagamentoEntreCasas.competencia, competencia),
+        eq(schema.pagamentoEntreCasas.status, 'ABERTO'),
+      ),
+    );
+  if (!abertas.length && !pagamentos.length) return [];
+  const acesso = await filiaisComAcesso(userId, [
+    ...new Set([
+      ...abertas.flatMap((t) => [t.origem, t.destino]),
+      ...pagamentos.flatMap((x) => [x.pagadora, x.devedora]),
+    ]),
+  ]);
   const saldos = await saldosContas(
     exec,
     abertas.map((t) => t.contaPagarId).filter((x): x is string => !!x),
@@ -811,7 +853,7 @@ export async function previaEncontro(
     const k = `${a}|${b}`;
     const p =
       pares.get(k) ??
-      ({ a, b, bDeveA: 0, aDeveB: 0, transferencias: [], devedora: null, credora: null, liquido: 0 } as ParEncontro);
+      novoPar(a, b);
     const saldo = t.contaPagarId ? (saldos.get(t.contaPagarId) ?? 0) : Number(t.valorTotal);
     // destino deve pra origem
     if (t.destino === b) p.bDeveA += saldo;
@@ -819,9 +861,28 @@ export async function previaEncontro(
     p.transferencias.push(t.id);
     pares.set(k, p);
   }
+  for (const x of pagamentos) {
+    if (!acesso.has(x.pagadora) || !acesso.has(x.devedora) || x.pagadora === x.devedora) continue;
+    const [a, b] = x.pagadora < x.devedora ? [x.pagadora, x.devedora] : [x.devedora, x.pagadora];
+    const k = `${a}|${b}`;
+    const p = pares.get(k) ?? novoPar(a, b);
+    const v = Number(x.valor);
+    // a casa da conta deve pra casa que pagou
+    if (x.devedora === b) {
+      p.bDeveA += v;
+      p.bDeveAPagamentos += v;
+    } else {
+      p.aDeveB += v;
+      p.aDeveBPagamentos += v;
+    }
+    p.pagamentos.push(x.id);
+    pares.set(k, p);
+  }
   for (const p of pares.values()) {
     p.bDeveA = Math.round(p.bDeveA * 100) / 100;
     p.aDeveB = Math.round(p.aDeveB * 100) / 100;
+    p.bDeveAPagamentos = Math.round(p.bDeveAPagamentos * 100) / 100;
+    p.aDeveBPagamentos = Math.round(p.aDeveBPagamentos * 100) / 100;
     const d = Math.round((p.bDeveA - p.aDeveB) * 100) / 100;
     p.liquido = Math.abs(d);
     if (d > 0) {
@@ -861,8 +922,20 @@ export async function fecharEncontro(opts: {
         ),
       )
       .for('update');
+    await tx
+      .select({ id: schema.pagamentoEntreCasas.id })
+      .from(schema.pagamentoEntreCasas)
+      .where(
+        and(
+          eq(schema.pagamentoEntreCasas.competencia, competencia),
+          eq(schema.pagamentoEntreCasas.status, 'ABERTO'),
+        ),
+      )
+      .for('update');
     const pares = await previaEncontro(userId, competencia, tx);
-    if (!pares.length) throw new RecusaTransf('nenhuma transferência em aberto nessa competência');
+    if (!pares.length) {
+      throw new RecusaTransf('nenhuma transferência nem boleto pago pela outra casa em aberto nessa competência');
+    }
 
     const agora = new Date();
     const resultado: Array<{ devedora: string; credora: string; liquido: number; contaPagarId: string | null }> = [];
@@ -882,7 +955,7 @@ export async function fecharEncontro(opts: {
             valor: p.liquido.toFixed(2),
             competencia,
             descricao: `Encontro de contas ${compLabel(competencia)} — pagar ${nomes.get(credora) ?? 'outra casa'}`,
-            observacao: `${nomes.get(devedora)} recebeu R$ ${(devedora === p.b ? p.bDeveA : p.aDeveB).toFixed(2)} e enviou R$ ${(devedora === p.b ? p.aDeveB : p.bDeveA).toFixed(2)} em transferências`,
+            observacao: observacaoEncontro(p, devedora, nomes),
             origem: 'ENCONTRO_CONTAS',
             parcela: 1,
             totalParcelas: 1,
@@ -938,15 +1011,39 @@ export async function fecharEncontro(opts: {
         await recalcularAgregado(tx, c.id, Number(c.valor));
       }
 
-      await tx
-        .update(schema.transferenciaFilial)
-        .set({ status: 'COMPENSADA', encontroId: enc?.id ?? null })
-        .where(inArray(schema.transferenciaFilial.id, p.transferencias));
+      if (p.transferencias.length) {
+        await tx
+          .update(schema.transferenciaFilial)
+          .set({ status: 'COMPENSADA', encontroId: enc?.id ?? null })
+          .where(inArray(schema.transferenciaFilial.id, p.transferencias));
+      }
+      if (p.pagamentos.length) {
+        await tx
+          .update(schema.pagamentoEntreCasas)
+          .set({ status: 'COMPENSADO', encontroId: enc?.id ?? null })
+          .where(inArray(schema.pagamentoEntreCasas.id, p.pagamentos));
+      }
 
       resultado.push({ devedora, credora, liquido: p.liquido, contaPagarId });
     }
     return resultado;
   });
+}
+
+/** Observação da conta da diferença. Sem boleto pago pela outra casa, igual
+ *  a de sempre ("recebeu R$ x e enviou R$ y em transferências"). */
+function observacaoEncontro(p: ParEncontro, devedora: string, nomes: Map<string, string>): string {
+  const ehB = devedora === p.b;
+  const recebeu = ehB ? p.bDeveA : p.aDeveB;
+  const enviou = ehB ? p.aDeveB : p.bDeveA;
+  const base = `${nomes.get(devedora)} recebeu R$ ${recebeu.toFixed(2)} e enviou R$ ${enviou.toFixed(2)} em transferências`;
+  if (!p.pagamentos.length) return base;
+  const pagosPelaOutra = ehB ? p.bDeveAPagamentos : p.aDeveBPagamentos;
+  const pagouDaOutra = ehB ? p.aDeveBPagamentos : p.bDeveAPagamentos;
+  return (
+    `${base} (contando R$ ${pagosPelaOutra.toFixed(2)} de boletos dela pagos pela outra casa` +
+    ` e R$ ${pagouDaOutra.toFixed(2)} de boletos da outra casa que ela pagou)`
+  );
 }
 
 /** Mesmo cálculo de api/financeiro/contas/[id]/baixas (valor_pago = principal

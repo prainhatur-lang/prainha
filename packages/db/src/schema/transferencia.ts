@@ -121,6 +121,50 @@ export const encontroContas = pgTable(
   }),
 );
 
+/** Boleto que uma casa pagou com o dinheiro dela pra uma conta lançada em
+ *  OUTRA casa (o Inter do Bar pagou a tinta da Mar). Decisão do dono
+ *  (14/10/2026): a conta fica na casa dela, baixada normalmente, e quem teve a
+ *  conta paga fica devendo pra quem pagou — entra no encontro de contas do mês
+ *  do pagamento, junto com as transferências. */
+export const pagamentoEntreCasas = pgTable(
+  'pagamento_entre_casas',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    /** Casa de onde saiu o dinheiro (credora no encontro) */
+    filialPagadoraId: uuid('filial_pagadora_id')
+      .notNull()
+      .references(() => filial.id, { onDelete: 'cascade' }),
+    /** Casa da conta (devedora no encontro) */
+    filialDevedoraId: uuid('filial_devedora_id')
+      .notNull()
+      .references(() => filial.id, { onDelete: 'cascade' }),
+    /** Conta a pagar da devedora que o pagamento quitou (uuid raw — evita ciclo de import) */
+    contaPagarId: uuid('conta_pagar_id'),
+    /** INTER_BOLETO = lido da API de pagamentos do Inter da pagadora */
+    origem: varchar('origem', { length: 20 }).notNull().default('INTER_BOLETO'),
+    /** codigoTransacao do Inter — o mesmo pagamento não entra duas vezes */
+    codigoExterno: text('codigo_externo'),
+    /** Dia em que o banco pagou */
+    data: date('data').notNull(),
+    /** YYYY-MM — mês do encontro de contas (o do pagamento) */
+    competencia: varchar('competencia', { length: 7 }).notNull(),
+    /** O que saiu do banco da pagadora (com juros) */
+    valor: numeric('valor', { precision: 14, scale: 2 }).notNull(),
+    descricao: text('descricao'),
+    /** ABERTO | COMPENSADO | CANCELADO */
+    status: varchar('status', { length: 12 }).notNull().default('ABERTO'),
+    encontroId: uuid('encontro_id'),
+    criadoPor: uuid('criado_por'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    canceladoPor: uuid('cancelado_por'),
+    canceladoEm: timestamp('cancelado_em', { withTimezone: true }),
+  },
+  (t) => ({
+    codigoUq: unique('uq_pag_casas_codigo').on(t.filialPagadoraId, t.codigoExterno),
+    compIdx: index('idx_pag_casas_comp').on(t.competencia, t.status),
+  }),
+);
+
 /** DE/PARA de produto entre casas: o mesmo item com nome diferente em cada
  *  casa ("Picanha Black Angus" no Bar = "Picanha Angus kg" na Mar). Gravado
  *  sozinho a cada transferência (as duas direções), e é o primeiro lugar onde

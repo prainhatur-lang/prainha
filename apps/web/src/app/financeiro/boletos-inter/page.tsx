@@ -12,7 +12,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
-import { and, eq, gte, inArray, isNull, lte } from 'drizzle-orm';
+import { and, eq, inArray, ne } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDate, int } from '@/lib/format';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
@@ -21,7 +21,21 @@ import {
   resolverCredenciaisInterPagamentos,
   type InterPagamento,
 } from '@/lib/inter';
+import {
+  casarBoletos,
+  centavos,
+  contasDaJanela,
+  pagamentoAgendado,
+  pagamentoCancelado,
+} from '@/lib/boletos-inter';
+import { compLabel } from '@/lib/transferencia';
 import { BaixarBoleto, BaixarBoletosLote, type BoletoBaixa } from './baixar-boletos';
+import {
+  DesfazerEncontro,
+  LancarEncontro,
+  LancarEncontroLote,
+  type BoletoEncontro,
+} from './entre-casas';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -34,16 +48,6 @@ interface SP {
 }
 
 type Situacao = 'paga' | 'aberta' | 'sem';
-
-const soDigitos = (v: string | null | undefined) => (v ?? '').replace(/\D/g, '');
-const centavos = (v: number | string | null | undefined) => Math.round(Number(v ?? 0) * 100);
-
-/** Soma dias a um YYYY-MM-DD sem passar por fuso. */
-function somaDias(ymd: string, n: number): string {
-  const d = new Date(`${ymd}T12:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + n);
-  return d.toISOString().slice(0, 10);
-}
 
 export default async function BoletosInterPage(props: { searchParams: Promise<SP> }) {
   const supabase = await createClient();
@@ -77,7 +81,7 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
   }
 
   // CANCELADO, AGENDADO_CANCELADO etc.: o dinheiro não saiu
-  const cancelado = (p: InterPagamento) => (p.statusPagamento ?? '').includes('CANCEL');
+  const cancelado = pagamentoCancelado;
   const cancelados = pagamentos.filter(cancelado).length;
   const validos = pagamentos
     .filter((p) => !cancelado(p))
@@ -85,70 +89,57 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
 
   // Contas a pagar da casa numa janela larga em volta do período (o boleto pode
   // ter sido lançado com vencimento bem antes ou depois do dia em que foi pago).
+  // Todas as casas que o usuário acessa: o boleto de uma casa pode ter sido
+  // pago pela conta do Inter da outra.
   const contas =
     escolhida && validos.length > 0
-      ? await db
-          .select({
-            id: schema.contaPagar.id,
-            filialId: schema.contaPagar.filialId,
-            valor: schema.contaPagar.valor,
-            dataVencimento: schema.contaPagar.dataVencimento,
-            dataPagamento: schema.contaPagar.dataPagamento,
-            valorPago: schema.contaPagar.valorPago,
-            jurosMulta: schema.contaPagar.jurosMulta,
-            origem: schema.contaPagar.origem,
-            descricao: schema.contaPagar.descricao,
-            fornecedorNome: schema.fornecedor.nome,
-            fornecedorCnpj: schema.fornecedor.cnpjOuCpf,
-          })
-          .from(schema.contaPagar)
-          .leftJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.contaPagar.fornecedorId))
-          .where(
-            and(
-              // todas as casas que o usuário acessa: o boleto de uma casa pode ter
-              // sido pago pela conta do Inter da outra
-              inArray(
-                schema.contaPagar.filialId,
-                filiais.map((f) => f.id),
-              ),
-              isNull(schema.contaPagar.dataDelete),
-              gte(schema.contaPagar.dataVencimento, somaDias(dataIni, -60)),
-              lte(schema.contaPagar.dataVencimento, somaDias(dataFim, 60)),
-            ),
-          )
+      ? await contasDaJanela(
+          filiais.map((f) => f.id),
+          dataIni,
+          dataFim,
+        )
       : [];
 
-  // Casa cada boleto com UMA conta: mesmo valor (o do título ou o pago, com
-  // juros) e mesmo CNPJ do fornecedor; sem CNPJ batendo, mesmo valor e mesmo
-  // vencimento. Conta já usada não casa de novo. Procura primeiro na casa dona
-  // da conta do Inter; a conta de OUTRA casa só ganha quando bate valor + CNPJ +
-  // vencimento, ou quando a casa não tem nenhuma candidata.
+  // Casa cada boleto com UMA conta — regra em lib/boletos-inter (casarBoletos).
   const nomeFilial = new Map(filiais.map((f) => [f.id, f.nome]));
-  const usadas = new Set<string>();
-  const linhas = validos.map((p) => {
-    const valores = new Set([centavos(p.valorNominal), centavos(p.valorPago)]);
-    const cnpj = soDigitos(p.cpfCnpjBeneficiario);
-    const candidatas = contas.filter((c) => !usadas.has(c.id) && valores.has(centavos(c.valor)));
-    const daCasa = candidatas.filter((c) => c.filialId === escolhida?.id);
-    const deFora = candidatas.filter((c) => c.filialId !== escolhida?.id);
-    const mesmoCnpj = (c: (typeof contas)[number]) =>
-      !!cnpj && soDigitos(c.fornecedorCnpj) === cnpj;
-    const mesmoVenc = (c: (typeof contas)[number]) =>
-      c.dataVencimento === p.dataVencimentoTitulo ||
-      c.dataVencimento === p.dataVencimentoDigitada;
-    const conta =
-      daCasa.find((c) => mesmoCnpj(c) && mesmoVenc(c)) ??
-      deFora.find((c) => mesmoCnpj(c) && mesmoVenc(c)) ??
-      daCasa.find(mesmoCnpj) ??
-      daCasa.find(mesmoVenc) ??
-      deFora.find(mesmoCnpj) ??
-      deFora.find(mesmoVenc) ??
-      null;
+  const casadas = casarBoletos(validos, contas, escolhida?.id);
+
+  // Boletos de outra casa já lançados no encontro de contas (pagamento_entre_casas)
+  const codigosFora = validos.filter((_, i) => {
+    const c = casadas[i];
+    return c && c.filialId !== escolhida?.id;
+  });
+  const noEncontro = new Map(
+    escolhida && codigosFora.length > 0
+      ? (
+          await db
+            .select({
+              id: schema.pagamentoEntreCasas.id,
+              codigo: schema.pagamentoEntreCasas.codigoExterno,
+              status: schema.pagamentoEntreCasas.status,
+              competencia: schema.pagamentoEntreCasas.competencia,
+            })
+            .from(schema.pagamentoEntreCasas)
+            .where(
+              and(
+                eq(schema.pagamentoEntreCasas.filialPagadoraId, escolhida.id),
+                inArray(
+                  schema.pagamentoEntreCasas.codigoExterno,
+                  codigosFora.map((p) => p.codigoTransacao),
+                ),
+                ne(schema.pagamentoEntreCasas.status, 'CANCELADO'),
+              ),
+            )
+        ).map((r) => [r.codigo, r])
+      : [],
+  );
+
+  const linhas = validos.map((p, i) => {
+    const conta = casadas[i] ?? null;
     const outraCasa =
       conta && conta.filialId !== escolhida?.id
         ? (nomeFilial.get(conta.filialId) ?? 'outra casa')
         : null;
-    if (conta) usadas.add(conta.id);
     const situacao: Situacao = !conta ? 'sem' : conta.dataPagamento ? 'paga' : 'aberta';
     // Baixa pronta pra conta em aberto: quita o saldo na data em que o banco
     // pagou; o que o banco pagou acima do saldo entra como juros. Conta do
@@ -177,7 +168,18 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
     }
     // juros/multa: o que o banco pagou acima do valor do título
     const jurosBanco = Math.max(0, centavos(p.valorPago) - centavos(p.valorNominal)) / 100;
-    return { p, conta, situacao, baixa, conferir, jurosBanco, outraCasa };
+    // conta de outra casa paga por este Inter: vai pro encontro de contas
+    const encontro = outraCasa ? (noEncontro.get(p.codigoTransacao) ?? null) : null;
+    const paraEncontro: BoletoEncontro | null =
+      conta && outraCasa && !encontro && !pagamentoAgendado(p) && p.dataPagamento
+        ? {
+            codigo: p.codigoTransacao,
+            contaId: conta.id,
+            valor: Number(p.valorPago ?? p.valorNominal ?? 0),
+            rotulo: `${p.nomeBeneficiario ?? conta.fornecedorNome ?? 'boleto'} venc. ${conta.dataVencimento.split('-').reverse().join('/')}`,
+          }
+        : null;
+    return { p, conta, situacao, baixa, conferir, jurosBanco, outraCasa, encontro, paraEncontro };
   });
   const podeBaixar = await podeUsuario(user.id, 'conta_pagar.marcar_pago');
   const lote = podeBaixar
@@ -206,6 +208,10 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
     (s, l) => s + Number(l.p.valorPago ?? l.p.valorNominal ?? 0),
     0,
   );
+  const loteEncontro = podeBaixar
+    ? deOutraCasa.map((l) => l.paraEncontro).filter((x): x is BoletoEncontro => !!x)
+    : [];
+  const jaNoEncontro = deOutraCasa.filter((l) => l.encontro);
   const visiveis = ver === 'todos' ? linhas : linhas.filter((l) => l.situacao === ver);
 
   function href(next: Partial<SP>): string {
@@ -374,15 +380,28 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                 )}
 
                 {deOutraCasa.length > 0 && (
-                  <p className="mt-3 rounded-xl border border-violet-200 bg-violet-50 p-3 text-xs text-violet-900">
+                  <div className="mt-3 rounded-xl border border-violet-200 bg-violet-50 p-3 text-xs text-violet-900">
                     <span className="font-semibold">
                       {int(deOutraCasa.length)}{' '}
                       {deOutraCasa.length === 1 ? 'boleto' : 'boletos'} ({brl(totalOutraCasa)})
                     </span>{' '}
                     {deOutraCasa.length === 1 ? 'foi pago' : 'foram pagos'} por esta conta do Inter,
                     mas a conta está lançada em outra casa. Estão marcados na lista e ficam fora do
-                    botão de baixar todos.
-                  </p>
+                    botão de baixar todos.{' '}
+                    A conta fica na casa dela (baixada lá) e a casa da conta fica devendo pra esta no{' '}
+                    <Link href="/movimento/transferencias/encontro" className="font-medium underline">
+                      encontro de contas
+                    </Link>{' '}
+                    do mês do pagamento.
+                    {jaNoEncontro.length > 0 &&
+                      ` ${int(jaNoEncontro.length)} já ${jaNoEncontro.length === 1 ? 'está lançado' : 'estão lançados'} no encontro.`}
+                    <LancarEncontroLote
+                      filialId={escolhida.id}
+                      dataIni={dataIni}
+                      dataFim={dataFim}
+                      boletos={loteEncontro}
+                    />
+                  </div>
                 )}
 
                 <BaixarBoletosLote boletos={lote} />
@@ -420,7 +439,7 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                           </td>
                         </tr>
                       ) : (
-                        visiveis.map(({ p, conta, situacao, baixa, conferir, jurosBanco, outraCasa }) => (
+                        visiveis.map(({ p, conta, situacao, baixa, conferir, jurosBanco, outraCasa, encontro, paraEncontro }) => (
                           <tr key={p.codigoTransacao} className="border-t border-slate-100">
                             <td className="px-4 py-2 font-mono text-xs text-slate-700">
                               {p.dataPagamento ? formatDate(p.dataPagamento) : '—'}
@@ -476,6 +495,32 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                               {outraCasa && (
                                 <span className="ml-1.5 rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-800">
                                   conta da {outraCasa}
+                                </span>
+                              )}
+                              {encontro && (
+                                <span className="ml-1.5 whitespace-nowrap rounded bg-violet-700 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                                  ⚖️ {encontro.status === 'COMPENSADO' ? 'compensado no' : 'no'} encontro{' '}
+                                  {compLabel(encontro.competencia)}
+                                </span>
+                              )}
+                              {podeBaixar && encontro?.status === 'ABERTO' && (
+                                <DesfazerEncontro
+                                  id={encontro.id}
+                                  rotulo={`${p.nomeBeneficiario ?? 'o boleto'} (${brl(p.valorPago ?? p.valorNominal)})`}
+                                />
+                              )}
+                              {podeBaixar && paraEncontro && (
+                                <LancarEncontro
+                                  filialId={escolhida.id}
+                                  dataIni={dataIni}
+                                  dataFim={dataFim}
+                                  boleto={paraEncontro}
+                                  casaDaConta={outraCasa ?? 'outra casa'}
+                                />
+                              )}
+                              {outraCasa && !encontro && pagamentoAgendado(p) && (
+                                <span className="ml-1.5 text-[10px] text-slate-500">
+                                  agendado — lança no encontro depois de pago
                                 </span>
                               )}
                               {podeBaixar && baixa && <BaixarBoleto boleto={baixa} />}

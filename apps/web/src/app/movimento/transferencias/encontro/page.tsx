@@ -1,11 +1,13 @@
 // Encontro de contas mensal das transferências entre casas: por par de casas,
-// quanto cada uma recebeu da outra e quem paga a diferença.
+// quanto cada uma recebeu da outra e quem paga a diferença. Desde 14/10/2026
+// entra também o boleto de uma casa pago pelo Inter da outra
+// (pagamento_entre_casas, lançado em /financeiro/boletos-inter).
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { exigirPerm } from '@/lib/exigir-perm';
 import { db, schema } from '@concilia/db';
-import { desc, eq } from 'drizzle-orm';
+import { asc, desc, eq, inArray } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl } from '@/lib/format';
 import { hojeBr } from '@/lib/datas';
@@ -39,6 +41,34 @@ export default async function EncontroPage(props: { searchParams: Promise<{ comp
     .from(schema.encontroContas)
     .where(eq(schema.encontroContas.competencia, comp))
     .orderBy(desc(schema.encontroContas.criadoEm));
+  // boletos pagos por uma casa pra conta da outra que entram nesse encontro
+  const idsPag = pares.flatMap((p) => p.pagamentos);
+  const boletos = idsPag.length
+    ? await db
+        .select()
+        .from(schema.pagamentoEntreCasas)
+        .where(inArray(schema.pagamentoEntreCasas.id, idsPag))
+        .orderBy(asc(schema.pagamentoEntreCasas.data))
+    : [];
+  // outros meses com coisa em aberto (o encontro mostra um mês por vez)
+  const outrosMeses = [
+    ...new Set([
+      ...(
+        await db
+          .selectDistinct({ c: schema.transferenciaFilial.competencia })
+          .from(schema.transferenciaFilial)
+          .where(eq(schema.transferenciaFilial.status, 'ABERTA'))
+      ).map((r) => r.c),
+      ...(
+        await db
+          .selectDistinct({ c: schema.pagamentoEntreCasas.competencia })
+          .from(schema.pagamentoEntreCasas)
+          .where(eq(schema.pagamentoEntreCasas.status, 'ABERTO'))
+      ).map((r) => r.c),
+    ]),
+  ]
+    .filter((c) => c !== comp)
+    .sort();
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -51,7 +81,12 @@ export default async function EncontroPage(props: { searchParams: Promise<{ comp
         <p className="mt-1 text-sm text-slate-600">
           Compensa as transferências em aberto de cada par de casas. As contas a pagar das transferências
           são baixadas por compensação e fica uma conta só com a diferença, na casa que deve — essa é
-          paga de verdade (Pix/TED) em Contas a pagar.
+          paga de verdade (Pix/TED) em Contas a pagar. Entram também os boletos de uma casa que o Inter
+          da outra pagou (lançados em{' '}
+          <Link href="/financeiro/boletos-inter" className="text-sky-700 hover:underline">
+            Boletos pagos no Inter
+          </Link>
+          ): a casa da conta deve pra casa que pagou.
         </p>
 
         <div className="mt-4 flex items-center gap-3 text-sm">
@@ -59,11 +94,24 @@ export default async function EncontroPage(props: { searchParams: Promise<{ comp
           <span className="font-semibold text-slate-800">Competência {compLabel(comp)}</span>
           <Link href={`/movimento/transferencias/encontro?comp=${compProx}`} className="rounded border border-slate-300 bg-white px-2 py-1 hover:bg-slate-50">→</Link>
         </div>
+        {outrosMeses.length > 0 && (
+          <p className="mt-2 text-xs text-slate-500">
+            Também em aberto:{' '}
+            {outrosMeses.map((c, i) => (
+              <span key={c}>
+                {i > 0 && ' · '}
+                <Link href={`/movimento/transferencias/encontro?comp=${c}`} className="text-sky-700 hover:underline">
+                  {compLabel(c)}
+                </Link>
+              </span>
+            ))}
+          </p>
+        )}
 
         <h2 className="mt-6 text-sm font-semibold uppercase tracking-wide text-slate-500">Em aberto</h2>
         {pares.length === 0 ? (
           <p className="mt-2 rounded-xl border border-slate-200 bg-white p-6 text-center text-sm text-slate-400">
-            Nenhuma transferência em aberto em {compLabel(comp)}.
+            Nenhuma transferência nem boleto pago pela outra casa em aberto em {compLabel(comp)}.
           </p>
         ) : (
           <>
@@ -74,10 +122,20 @@ export default async function EncontroPage(props: { searchParams: Promise<{ comp
                     <div>
                       <span className="text-slate-500">{nome.get(p.b)} recebeu de {nome.get(p.a)}:</span>{' '}
                       <b>{brl(p.bDeveA)}</b>
+                      {p.bDeveAPagamentos > 0 && (
+                        <span className="block text-xs text-violet-700">
+                          sendo {brl(p.bDeveAPagamentos)} de boletos pagos pela {nome.get(p.a)}
+                        </span>
+                      )}
                     </div>
                     <div>
                       <span className="text-slate-500">{nome.get(p.a)} recebeu de {nome.get(p.b)}:</span>{' '}
                       <b>{brl(p.aDeveB)}</b>
+                      {p.aDeveBPagamentos > 0 && (
+                        <span className="block text-xs text-violet-700">
+                          sendo {brl(p.aDeveBPagamentos)} de boletos pagos pela {nome.get(p.b)}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <p className="mt-3 text-base">
@@ -90,10 +148,42 @@ export default async function EncontroPage(props: { searchParams: Promise<{ comp
                       <>✅ Empatou — ninguém deve nada</>
                     )}
                   </p>
-                  <p className="mt-1 text-xs text-slate-400">{p.transferencias.length} transferência(s)</p>
+                  <p className="mt-1 text-xs text-slate-400">
+                    {p.transferencias.length} transferência(s)
+                    {p.pagamentos.length > 0 && ` · ${p.pagamentos.length} boleto(s) pago(s) pela outra casa`}
+                  </p>
                 </div>
               ))}
             </div>
+            {boletos.length > 0 && (
+              <div className="mt-4 overflow-x-auto rounded-xl border border-violet-200 bg-white">
+                <p className="border-b border-violet-100 bg-violet-50 px-3 py-2 text-xs font-semibold text-violet-900">
+                  Boletos pagos por uma casa pra conta da outra
+                </p>
+                <table className="w-full text-sm">
+                  <tbody>
+                    {boletos.map((x) => (
+                      <tr key={x.id} className="border-t border-slate-100 first:border-t-0">
+                        <td className="px-3 py-2 whitespace-nowrap text-xs">{x.data.split('-').reverse().join('/')}</td>
+                        <td className="px-3 py-2 text-xs">
+                          {x.contaPagarId ? (
+                            <Link href={`/financeiro/conta/${x.contaPagarId}`} className="hover:underline">
+                              {x.descricao}
+                            </Link>
+                          ) : (
+                            x.descricao
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-xs text-slate-500 whitespace-nowrap">
+                          {nome.get(x.filialDevedoraId)} deve pra {nome.get(x.filialPagadoraId)}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono text-xs whitespace-nowrap">{brl(x.valor)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
             <FecharEncontroButton competencia={comp} hoje={hoje} />
           </>
         )}
