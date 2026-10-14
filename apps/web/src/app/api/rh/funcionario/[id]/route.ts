@@ -40,6 +40,10 @@ const Body = z.object({
   /** Filiais ADICIONAIS (além da lotação principal) onde a pessoa também
    *  bate ponto — quem circula entre lojas. Substitui a lista inteira. */
   filiaisExtras: z.array(z.string().uuid()).max(10).optional(),
+  /** Sem `filiaisExtras`: refaz o vínculo da folha (fornecedor + acordo +
+   *  conta) nas marcações JÁ gravadas, sem substituir a lista. O formulário
+   *  manda isso quando as caixinhas não mudaram. */
+  revincularExtras: z.boolean().optional(),
 });
 
 async function carregar(id: string, userId: string) {
@@ -120,7 +124,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     set.observacao = [check.fn.observacao, `religado em ${dmy(hojeBr())}${antes}`].filter(Boolean).join(' · ');
   }
 
-  if (Object.keys(set).length === 1 && d.filiaisExtras === undefined) {
+  if (Object.keys(set).length === 1 && d.filiaisExtras === undefined && !d.revincularExtras) {
     return NextResponse.json({ error: 'nada pra atualizar' }, { status: 400 });
   }
 
@@ -154,6 +158,13 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
           // na outra loja, "fora da folha semanal".
           vinculos = await garantirVinculoFolhaNasFiliais(tx, id, filiaisExtras);
         }
+      } else if (d.revincularExtras) {
+        const gravadas = await tx
+          .select({ filialId: schema.funcionarioFilialExtra.filialId })
+          .from(schema.funcionarioFilialExtra)
+          .where(eq(schema.funcionarioFilialExtra.funcionarioId, id));
+        const lista = gravadas.map((g) => g.filialId).filter((fid) => fid !== check.fn.filialId);
+        if (lista.length > 0) vinculos = await garantirVinculoFolhaNasFiliais(tx, id, lista);
       }
     });
     return NextResponse.json({ id, ok: true, vinculos });

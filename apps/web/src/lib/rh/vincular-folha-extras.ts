@@ -4,6 +4,7 @@
 
 import { schema } from '@concilia/db';
 import { and, eq, isNull, sql } from 'drizzle-orm';
+import { contasPorCpf, temConta } from './conta-da-pessoa';
 
 type Tx = Parameters<Parameters<typeof import('@concilia/db').db.transaction>[0]>[0];
 
@@ -12,6 +13,8 @@ export interface ResultadoVinculo {
   fornecedorId: string;
   fornecedorCriado: boolean;
   clienteVinculado: boolean;
+  /** Casa de onde a conta/PIX foi copiada (null = já tinha ou não achou). */
+  contaCopiadaDe: string | null;
 }
 
 /** Garante fornecedor + fornecedor_folha ativos em cada filial extra, casando
@@ -77,7 +80,11 @@ export async function garantirVinculoFolhaNasFiliais(
 
   for (const filialId of filiaisExtras) {
     const [existente] = await tx
-      .select({ id: schema.fornecedor.id })
+      .select({
+        id: schema.fornecedor.id,
+        chavePix: schema.fornecedor.chavePix,
+        bancoConta: schema.fornecedor.bancoConta,
+      })
       .from(schema.fornecedor)
       .where(
         and(
@@ -95,6 +102,26 @@ export async function garantirVinculoFolhaNasFiliais(
         .values({ filialId, nome: fn.nome, cnpjOuCpf: fn.cpf })
         .returning({ id: schema.fornecedor.id });
       fornecedorId = novo.id;
+    }
+
+    // Conta/PIX vai junto: sem isso o pagamento da outra casa saía "sem conta
+    // cadastrada" e tinha que ser digitado de novo (dono, 14/10/2026). Só
+    // preenche quem está vazio — conta já digitada nesta casa manda.
+    let contaCopiadaDe: string | null = null;
+    if (!temConta(existente)) {
+      const conta = (await contasPorCpf([fn.cpf], filialId)).get(fn.cpf);
+      if (conta) {
+        await tx
+          .update(schema.fornecedor)
+          .set({
+            chavePix: conta.chavePix,
+            bancoNome: conta.bancoNome,
+            bancoAgencia: conta.bancoAgencia,
+            bancoConta: conta.bancoConta,
+          })
+          .where(eq(schema.fornecedor.id, fornecedorId));
+        contaCopiadaDe = conta.filialNome;
+      }
     }
 
     // CPF do cliente pode estar formatado (000.000.000-00) — compara dígitos.
@@ -142,6 +169,7 @@ export async function garantirVinculoFolhaNasFiliais(
       fornecedorId,
       fornecedorCriado: !existente,
       clienteVinculado: Boolean(cli),
+      contaCopiadaDe,
     });
   }
 

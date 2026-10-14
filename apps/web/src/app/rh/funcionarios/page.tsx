@@ -16,6 +16,8 @@ import { and, asc, eq, exists, inArray, isNull, or, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { FUNCOES_TALENTO } from '@concilia/db/schema';
 import { FuncionariosManager } from './manager';
+import { contasPorCpf, temConta } from '@/lib/rh/conta-da-pessoa';
+import { diasAtrasBr } from '@/lib/datas';
 
 export const dynamic = 'force-dynamic';
 
@@ -47,6 +49,11 @@ export default async function FuncionariosPage(props: { searchParams: Promise<SP
   const filialId = filialSelecionada.id;
 
   // Lotação principal AQUI ou vínculo extra pra cá (quem circula entre lojas).
+  // Também entra quem está NA FOLHA daqui (mesmo CPF) ou bateu ponto aqui nos
+  // últimos 60 dias sem estar marcado: a marcação some quando alguém desmarca,
+  // e a pessoa sumia da lista com folha pra receber aqui (Regina/Prainha Mar,
+  // 14/10/2026 — "ela não aparece como funcionária").
+  const desdePonto = diasAtrasBr(60);
   const funcionarios = await db
     .select()
     .from(schema.funcionario)
@@ -63,6 +70,22 @@ export default async function FuncionariosPage(props: { searchParams: Promise<SP
                 eq(schema.funcionarioFilialExtra.filialId, filialId),
               ),
             ),
+        ),
+        and(
+          eq(schema.funcionario.ativo, true),
+          or(
+            sql`(${schema.funcionario.cpf} is not null and exists (
+              select 1 from fornecedor fo
+              join fornecedor_folha ff on ff.fornecedor_id = fo.id
+              where fo.filial_id = ${filialId} and fo.data_delete is null and ff.ativo
+                and regexp_replace(coalesce(fo.cnpj_ou_cpf, ''), '[^0-9]', '', 'g') = ${schema.funcionario.cpf}
+            ))`,
+            sql`exists (
+              select 1 from ponto_batida pb
+              where pb.funcionario_id = ${schema.funcionario.id} and pb.filial_id = ${filialId}
+                and pb.excluida_em is null and pb.dia_operacional >= ${desdePonto}
+            )`,
+          ),
         ),
       ),
     )
@@ -138,6 +161,17 @@ export default async function FuncionariosPage(props: { searchParams: Promise<SP
         .where(inArray(schema.fornecedorFolha.fornecedorId, fornIds))
     : [];
   const pagamentoPorFornecedor = new Map(pagamentosRows.map((r) => [r.fornecedorId, r]));
+
+  // Conta/PIX que a pessoa já tem em OUTRA casa — vem preenchida no
+  // formulário quando a daqui está vazia (salvar grava aqui também).
+  const cpfsSemConta = funcionarios
+    .filter((f) => {
+      if (!f.cpf) return false;
+      const fornId = fornecedorNaFilial.get(f.id);
+      return !temConta(fornId ? pagamentoPorFornecedor.get(fornId) : null);
+    })
+    .map((f) => f.cpf as string);
+  const contasOutraCasa = await contasPorCpf(cpfsSemConta, filialId);
 
   // Resumo do acordo nas OUTRAS lojas (só leitura — pra ver de relance que a
   // pessoa é gerente fixo lá e diarista aqui, por exemplo).
@@ -285,6 +319,9 @@ export default async function FuncionariosPage(props: { searchParams: Promise<SP
               temColaborador: !!f.colaboradorId,
               temUsuarioOperacao: !!f.usuarioOperacaoId,
               filiaisExtras: extrasPorFuncionario.get(f.id) ?? [],
+              naoMarcadoAqui:
+                f.filialId !== filialId && !(extrasPorFuncionario.get(f.id) ?? []).includes(filialId),
+              contaOutraCasa: f.cpf ? contasOutraCasa.get(f.cpf) ?? null : null,
             };
           })}
           cargos={[...FUNCOES_TALENTO]}

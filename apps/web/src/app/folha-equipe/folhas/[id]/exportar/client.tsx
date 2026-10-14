@@ -10,6 +10,8 @@ interface Linha {
   bancoAgencia: string | null;
   bancoConta: string | null;
   chavePix: string | null;
+  /** Conta/PIX veio do cadastro da pessoa em outra casa (o daqui estava vazio). */
+  contaDeOutraCasa?: string | null;
   bruto: number;
   acrescimos: number;
   descontos: number;
@@ -145,6 +147,14 @@ export function ExportarClient({ folhaId, filialNome, labelSemana, linhas }: Pro
                   </td>
                   <td className="px-2 py-2 text-xs text-slate-700">
                     {l.chavePix ?? <span className="text-slate-300">—</span>}
+                    {l.contaDeOutraCasa && (
+                      <span
+                        className="block text-[10px] text-indigo-600"
+                        title="Nesta casa a conta estava vazia — veio do cadastro da pessoa na outra casa"
+                      >
+                        conta do cadastro: {l.contaDeOutraCasa}
+                      </span>
+                    )}
                   </td>
                   <td className="px-2 py-2 text-right font-mono font-bold">
                     {brl(l.liquido)}

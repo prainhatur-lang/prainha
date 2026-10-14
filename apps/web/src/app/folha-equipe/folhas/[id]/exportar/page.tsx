@@ -81,6 +81,7 @@ export default async function ExportarFolhaPage(props: {
     bancoAgencia: string | null;
     bancoConta: string | null;
     chavePix: string | null;
+    contaDeOutraCasa: string | null;
     bruto: number;
     acrescimos: number;
     descontos: number;
@@ -100,6 +101,7 @@ export default async function ExportarFolhaPage(props: {
         bancoAgencia: p?.bancoAgencia ?? null,
         bancoConta: p?.bancoConta ?? null,
         chavePix: p?.chavePix ?? null,
+        contaDeOutraCasa: p?.contaDeOutraCasa ?? null,
         bruto: 0,
         acrescimos: 0,
         descontos: 0,

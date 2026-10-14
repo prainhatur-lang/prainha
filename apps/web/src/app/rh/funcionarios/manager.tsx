@@ -62,6 +62,18 @@ interface Funcionario {
   temUsuarioOperacao: boolean;
   /** Filiais ADICIONAIS onde também bate ponto (quem circula entre lojas). */
   filiaisExtras: string[];
+  /** Lotação em outra loja e SEM marcação pra esta — aparece aqui porque está
+   *  na folha daqui ou bateu ponto aqui. O tablet daqui não reconhece. */
+  naoMarcadoAqui?: boolean;
+  /** Conta/PIX que a pessoa tem em outra casa — preenche o formulário quando
+   *  a daqui está vazia. */
+  contaOutraCasa?: {
+    chavePix: string | null;
+    bancoNome: string | null;
+    bancoAgencia: string | null;
+    bancoConta: string | null;
+    filialNome: string;
+  } | null;
 }
 
 interface Props {
@@ -331,6 +343,14 @@ function VinculoBadges({ f, filialId }: { f: Funcionario; filialId: string }) {
           🏠 {f.filialPrincipalNome}
         </span>
       )}
+      {f.naoMarcadoAqui && (
+        <span
+          className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-800 ring-1 ring-amber-200"
+          title="Está na folha desta loja ou bateu ponto aqui, mas não está marcada em 'também bate ponto em' — o ponto daqui não reconhece. Se continua vindo, marque no cadastro."
+        >
+          ⚠ não marcada aqui
+        </span>
+      )}
       {f.temColaborador && (
         <span className="rounded-full bg-orange-50 px-2 py-0.5 text-[10px] font-medium text-orange-700 ring-1 ring-orange-200">
           Cozinha
@@ -493,6 +513,9 @@ function FuncionarioForm({
   const [filiaisExtras, setFiliaisExtras] = useState<string[]>(funcionario?.filiaisExtras ?? []);
   // --- Pagamento (folha) — unificado no cadastro ---
   const pg = funcionario?.pagamento ?? null;
+  // Conta vazia nesta casa: vem a que a pessoa tem na outra (salvar grava aqui).
+  const contaDeFora = !(pg?.chavePix || pg?.bancoConta) ? funcionario?.contaOutraCasa ?? null : null;
+  const contaIni = contaDeFora ?? pg;
   const [papel, setPapel] = useState(pg?.papel ?? '');
   const [diaristaModelo, setDiaristaModelo] = useState(pg?.diaristaModelo ?? 'por_hora');
   const [diaristaTaxaHora, setDiaristaTaxaHora] = useState(pg?.diaristaTaxaHoraOverride ?? '');
@@ -501,20 +524,24 @@ function FuncionarioForm({
   const [gerenteValorDia, setGerenteValorDia] = useState(pg?.gerenteValorFixoDia ?? '');
   const [bonusSemanal, setBonusSemanal] = useState(pg?.bonusFixoSemanal ?? '');
   const [bonusDia, setBonusDia] = useState(pg?.bonusPorDia ?? '');
-  const [chavePix, setChavePix] = useState(pg?.chavePix ?? '');
-  const [bancoNome, setBancoNome] = useState(pg?.bancoNome ?? '');
-  const [bancoAgencia, setBancoAgencia] = useState(pg?.bancoAgencia ?? '');
-  const [bancoConta, setBancoConta] = useState(pg?.bancoConta ?? '');
+  const [chavePix, setChavePix] = useState(contaIni?.chavePix ?? '');
+  const [bancoNome, setBancoNome] = useState(contaIni?.bancoNome ?? '');
+  const [bancoAgencia, setBancoAgencia] = useState(contaIni?.bancoAgencia ?? '');
+  const [bancoConta, setBancoConta] = useState(contaIni?.bancoConta ?? '');
   // como a pessoa recebe: PIX ou depósito em conta (o cadastro já diz qual é)
   // Papel de CLIENTE é escolha, não consequência: "cadastrar um vendedor não
   // quer dizer que ele SEJA cliente" (dono). Já vinculado = marcado e travado.
   const [tambemCliente, setTambemCliente] = useState(funcionario?.temCliente ?? false);
   const [formaPagamento, setFormaPagamento] = useState<'pix' | 'banco'>(
-    pg?.bancoNome || pg?.bancoConta ? 'banco' : 'pix',
+    contaIni?.bancoNome || contaIni?.bancoConta ? 'banco' : 'pix',
   );
   const [desligando, setDesligando] = useState(false);
   const [motivoDesligamento, setMotivoDesligamento] = useState('');
   const [salvando, setSalvando] = useState(false);
+
+  const extrasIniciais = funcionario?.filiaisExtras ?? [];
+  const extrasMudaram =
+    filiaisExtras.length !== extrasIniciais.length || filiaisExtras.some((id) => !extrasIniciais.includes(id));
 
   function toggleFilialExtra(id: string) {
     setFiliaisExtras((atual) => (atual.includes(id) ? atual.filter((x) => x !== id) : [...atual, id]));
@@ -548,7 +575,16 @@ function FuncionarioForm({
         cargoRegistro: cargoRegistro.trim() || null,
         cbo: cbo.trim() || null,
         matriculaFolha: matriculaFolha.trim() || null,
-        ...(editar ? { precisaRevisao: false, filiaisExtras } : { tambemCliente }),
+        // Lista de extras só vai quando mudou aqui: formulário aberto há tempo
+        // mandava a lista velha e apagava marcação feita por outra pessoa
+        // nesse meio-tempo. Sem mudança, o servidor só refaz o vínculo da folha
+        // das marcações que já estão gravadas (como antes).
+        ...(editar
+          ? {
+              precisaRevisao: false,
+              ...(extrasMudaram ? { filiaisExtras } : { revincularExtras: true }),
+            }
+          : { tambemCliente }),
       };
       const res = await fetch(editar ? `/api/rh/funcionario/${funcionario.id}` : '/api/rh/funcionario', {
         method: editar ? 'PATCH' : 'POST',
@@ -937,6 +973,12 @@ function FuncionarioForm({
                   <option value="banco">Depósito em conta</option>
                 </select>
               </label>
+              {contaDeFora && (
+                <p className="col-span-2 rounded-md bg-indigo-50 px-2 py-1 text-[11px] text-indigo-700 sm:col-span-3">
+                  Conta trazida do cadastro em {contaDeFora.filialNome} (aqui estava vazia) — ao salvar, fica
+                  gravada nesta loja também.
+                </p>
+              )}
               {formaPagamento === 'pix' ? (
                 <label className="text-xs text-slate-500">
                   Chave PIX

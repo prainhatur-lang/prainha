@@ -8,6 +8,7 @@
 import { db, schema } from '@concilia/db';
 import { and, eq, gt, inArray, lt } from 'drizzle-orm';
 import type { ConfigFolha, PessoaInput } from './calcular';
+import { contasPorCpf, temConta } from '@/lib/rh/conta-da-pessoa';
 
 export type AjusteTipo = 'desconto' | 'acrescimo' | 'premiacao';
 export type AjustesMap = Map<string, Array<{ tipo: AjusteTipo; valor: number; descricao?: string }>>;
@@ -31,6 +32,9 @@ export interface InputsFolha {
     bancoAgencia?: string | null;
     bancoConta?: string | null;
     chavePix?: string | null;
+    /** Conta/PIX veio do cadastro da pessoa em outra casa (nome da casa) —
+     *  o desta casa estava vazio. */
+    contaDeOutraCasa?: string | null;
   }>;
   pessoas: PessoaInput[];
   horasMap: Map<string, Record<string, number>>;
@@ -73,6 +77,24 @@ export async function montarInputsFolha(folhaSemanaId: string, filialId: string)
     .from(schema.fornecedorFolha)
     .innerJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.fornecedorFolha.fornecedorId))
     .where(and(eq(schema.fornecedor.filialId, filialId), eq(schema.fornecedorFolha.ativo, true)));
+
+  // Quem circula entre casas tem a conta digitada numa só: sem conta aqui,
+  // paga na conta que a pessoa tem na outra casa (mesmo CPF).
+  const semConta = pessoasRows.filter((p) => !temConta(p) && p.cpf);
+  if (semConta.length > 0) {
+    const contas = await contasPorCpf(semConta.map((p) => p.cpf as string), filialId);
+    for (const p of semConta) {
+      const c = contas.get((p.cpf as string).replace(/\D/g, ''));
+      if (!c) continue;
+      Object.assign(p, {
+        chavePix: c.chavePix,
+        bancoNome: c.bancoNome,
+        bancoAgencia: c.bancoAgencia,
+        bancoConta: c.bancoConta,
+        contaDeOutraCasa: c.filialNome,
+      });
+    }
+  }
 
   const horasRows = await db.select().from(schema.folhaHoras).where(eq(schema.folhaHoras.folhaSemanaId, folhaSemanaId));
   const ajustesRows = await db.select().from(schema.folhaAjuste).where(eq(schema.folhaAjuste.folhaSemanaId, folhaSemanaId));
