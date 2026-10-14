@@ -29,6 +29,7 @@ import {
   pagamentoCancelado,
 } from '@/lib/boletos-inter';
 import { compLabel } from '@/lib/transferencia';
+import { casasComConsumerParado } from '@/lib/consumer-contas';
 import { BaixarBoleto, BaixarBoletosLote, type BoletoBaixa } from './baixar-boletos';
 import {
   DesfazerEncontro,
@@ -103,6 +104,13 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
   // Casa cada boleto com UMA conta — regra em lib/boletos-inter (casarBoletos).
   const nomeFilial = new Map(filiais.map((f) => [f.id, f.nome]));
   const casadas = casarBoletos(validos, contas, escolhida?.id);
+  // Conta do Consumer só fica sem botão (baixa no PDV) enquanto o Consumer da
+  // casa manda conta; casa que saiu dele baixa aqui (lib/consumer-contas).
+  const consumerParado = await casasComConsumerParado(
+    casadas.filter((c) => c?.origem === 'CONSUMER').map((c) => c!.filialId),
+  );
+  const baixaNoPdv = (c: (typeof casadas)[number] | null | undefined) =>
+    c?.origem === 'CONSUMER' && !consumerParado.has(c.filialId);
 
   // Boletos de outra casa já lançados no encontro de contas (pagamento_entre_casas)
   const codigosFora = validos.filter((_, i) => {
@@ -143,10 +151,11 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
     const situacao: Situacao = !conta ? 'sem' : conta.dataPagamento ? 'paga' : 'aberta';
     // Baixa pronta pra conta em aberto: quita o saldo na data em que o banco
     // pagou; o que o banco pagou acima do saldo entra como juros. Conta do
-    // Consumer é baixada no PDV (a rota recusa), então fica sem botão.
+    // Consumer é baixada no PDV (a rota recusa), então fica sem botão — menos
+    // na casa que saiu do Consumer.
     let baixa: BoletoBaixa | null = null;
     let conferir = false;
-    if (conta && situacao === 'aberta' && conta.origem !== 'CONSUMER' && p.dataPagamento) {
+    if (conta && situacao === 'aberta' && !baixaNoPdv(conta) && p.dataPagamento) {
       const saldo =
         (centavos(conta.valor) - (centavos(conta.valorPago) - centavos(conta.jurosMulta))) / 100;
       const pagoBanco = Number(p.valorPago ?? p.valorNominal ?? 0);
@@ -199,7 +208,7 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
   // por que uma conta em aberto fica fora do "baixar todas"
   const abertas = linhas.filter((l) => l.situacao === 'aberta');
   const foraLote = {
-    consumer: abertas.filter((l) => l.conta?.origem === 'CONSUMER').length,
+    consumer: abertas.filter((l) => baixaNoPdv(l.conta)).length,
     outraCasa: abertas.filter((l) => l.baixa && l.outraCasa).length,
     conferir: abertas.filter((l) => l.baixa && !l.outraCasa && l.conferir).length,
   };
@@ -529,7 +538,7 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                                   vencimento diferente, confira
                                 </span>
                               )}
-                              {situacao === 'aberta' && conta?.origem === 'CONSUMER' && (
+                              {situacao === 'aberta' && baixaNoPdv(conta) && (
                                 <span className="ml-1.5 text-[10px] text-slate-500">
                                   conta do Consumer, baixa no PDV
                                 </span>

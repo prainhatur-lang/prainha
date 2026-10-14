@@ -676,6 +676,9 @@ async function mapContasPagar(filialId: string, op: Operacao, chave: string, d: 
     origem: 'CONSUMER',
   };
 
+  // Conta com baixa feita no Concilia (casa que saiu do Consumer, ver
+  // lib/consumer-contas): o pagamento de lá vale, o Consumer não apaga.
+  const temBaixaNuvem = drizzleSql`EXISTS (SELECT 1 FROM conta_pagar_baixa b WHERE b.conta_pagar_id = ${schema.contaPagar.id})`;
   await db.insert(schema.contaPagar).values(row).onConflictDoUpdate({
     target: [schema.contaPagar.filialId, schema.contaPagar.codigoExterno],
     set: {
@@ -686,10 +689,10 @@ async function mapContasPagar(filialId: string, op: Operacao, chave: string, d: 
       totalParcelas: row.totalParcelas,
       dataVencimento: row.dataVencimento,
       valor: row.valor,
-      dataPagamento: row.dataPagamento,
+      dataPagamento: drizzleSql`CASE WHEN ${temBaixaNuvem} THEN ${schema.contaPagar.dataPagamento} ELSE excluded.data_pagamento END`,
       descontos: row.descontos,
-      jurosMulta: row.jurosMulta,
-      valorPago: row.valorPago,
+      jurosMulta: drizzleSql`CASE WHEN ${temBaixaNuvem} THEN ${schema.contaPagar.jurosMulta} ELSE excluded.juros_multa END`,
+      valorPago: drizzleSql`CASE WHEN ${temBaixaNuvem} THEN ${schema.contaPagar.valorPago} ELSE excluded.valor_pago END`,
       codigoReferencia: row.codigoReferencia,
       competencia: row.competencia,
       descricao: row.descricao,

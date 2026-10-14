@@ -10,6 +10,7 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDate } from '@/lib/format';
 import { hojeBr } from '@/lib/datas';
+import { consumerParado } from '@/lib/consumer-contas';
 import { BaixaForm } from './baixa-form';
 import { AcoesConta } from './acoes-conta';
 
@@ -126,6 +127,9 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
         : { label: 'EM ABERTO', cls: 'bg-slate-100 text-slate-700' };
 
   const consumer = conta.origem === 'CONSUMER';
+  // casa que saiu do Consumer: a conta CONSUMER se baixa aqui (lib/consumer-contas)
+  const consumerAqui = consumer && (await consumerParado(conta.filialId));
+  const pagaNoConsumer = consumer && !!conta.dataPagamento && baixas.length === 0;
   const categoria = [categoriaPaiNome, conta.categoriaNome].filter(Boolean).join(' → ') || '—';
   const lancamento = conta.dataCadastro
     ? new Date(conta.dataCadastro).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })
@@ -264,7 +268,7 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
                       {b.criadoPor ? autores.get(b.criadoPor) ?? '?' : '—'}
                     </td>
                     <td className="py-1.5 text-right">
-                      {!consumer && <BaixaForm contaId={conta.id} estornarId={b.id} />}
+                      {(!consumer || consumerAqui) && <BaixaForm contaId={conta.id} estornarId={b.id} />}
                     </td>
                   </tr>
                 ))}
@@ -272,12 +276,23 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
             </table>
           )}
 
-          {consumer ? (
+          {consumer && !consumerAqui ? (
             <p className="mt-3 rounded bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
               Conta do Consumer: a baixa é feita no PDV da loja e sincroniza sozinha.
             </p>
+          ) : pagaNoConsumer ? (
+            <p className="mt-3 rounded bg-emerald-50 px-3 py-2 text-[11px] text-emerald-700">
+              Conta paga no Consumer da loja.
+            </p>
           ) : saldo > 0.005 ? (
-            <BaixaForm contaId={conta.id} saldo={saldo} vencimento={conta.dataVencimento} />
+            <>
+              {consumerAqui && (
+                <p className="mt-3 rounded bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
+                  Conta que veio do Consumer. A loja não usa mais o Consumer, então a baixa é feita aqui.
+                </p>
+              )}
+              <BaixaForm contaId={conta.id} saldo={saldo} vencimento={conta.dataVencimento} />
+            </>
           ) : (
             <p className="mt-3 rounded bg-emerald-50 px-3 py-2 text-[11px] text-emerald-700">
               Conta quitada. 🎉

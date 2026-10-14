@@ -4,6 +4,10 @@
 // Regras:
 //  - só contas nascidas na nuvem (origem != CONSUMER): as do PDV são pagas no
 //    Consumer e o sync sobrescreveria o agregado aqui.
+//    Exceção (14/10/2026): casa que parou de mandar conta do Consumer
+//    (lib/consumer-contas) baixa a conta CONSUMER aqui — a não ser que o
+//    próprio Consumer já tenha marcado paga. O sync não mexe mais no
+//    pagamento de conta que tem baixa daqui (concilia-mappers).
 //  - agregado recalculado a cada mudança: valor_pago = soma das baixas;
 //    data_pagamento = data da última baixa quando soma >= valor (quitada),
 //    NULL enquanto houver saldo (parcial fica "em aberto" nos filtros).
@@ -13,6 +17,7 @@ import { z } from 'zod';
 import { and, asc, eq } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
 import { exigirPermApi } from '@/lib/exigir-perm';
+import { consumerParado } from '@/lib/consumer-contas';
 
 export const dynamic = 'force-dynamic';
 
@@ -33,13 +38,26 @@ async function carregarConta(id: string, userId: string) {
       filialId: schema.contaPagar.filialId,
       valor: schema.contaPagar.valor,
       origem: schema.contaPagar.origem,
+      dataPagamento: schema.contaPagar.dataPagamento,
       dataDelete: schema.contaPagar.dataDelete,
     })
     .from(schema.contaPagar)
     .where(eq(schema.contaPagar.id, id))
     .limit(1);
   if (!conta || conta.dataDelete) return { erro: NextResponse.json({ error: 'conta não encontrada' }, { status: 404 }) };
-  if (conta.origem === 'CONSUMER') {
+  if (conta.origem === 'CONSUMER' && (await consumerParado(conta.filialId))) {
+    // Consumer da casa parado: baixa aqui, menos se o Consumer já pagou
+    const [daqui] = await db
+      .select({ id: schema.contaPagarBaixa.id })
+      .from(schema.contaPagarBaixa)
+      .where(eq(schema.contaPagarBaixa.contaPagarId, conta.id))
+      .limit(1);
+    if (conta.dataPagamento && !daqui) {
+      return {
+        erro: NextResponse.json({ error: 'conta já paga no Consumer da loja' }, { status: 400 }),
+      };
+    }
+  } else if (conta.origem === 'CONSUMER') {
     return {
       erro: NextResponse.json(
         { error: 'conta do Consumer: a baixa é feita no PDV e sincroniza sozinha' },
