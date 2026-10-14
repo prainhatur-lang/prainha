@@ -566,6 +566,30 @@ object Api {
         )
     }
 
+    // -------- VENDA DIRETA (ticket): sem mesa, paga na hora --------
+
+    /** POST /api/lio/ticket/abrir. previa=true só devolve os dois totais
+     *  (total_com / total_sem 10%) e não grava nada; senão abre o ticket e
+     *  devolve ticket_id + o total que a maquininha tem que cobrar. */
+    @Throws(IOException::class)
+    fun ticketAbrir(base: String, token: String, itens: JSONArray, servico: Boolean, previa: Boolean): JSONObject {
+        val j = try {
+            postJson("$base/api/lio/ticket/abrir", token, JSONObject()
+                .put("itens", itens).put("servico", servico).put("previa", previa))
+        } catch (e: IOException) {
+            if ((e.message ?: "").contains("404"))
+                throw IOException("Servidor da loja desatualizado (sem venda de ticket) — rode a atualização do vendas-local")
+            throw e
+        }
+        if (!j.optBoolean("ok") && j.optBoolean("sem_sessao")) throw SemSessao()
+        return j
+    }
+
+    /** GET /api/lio/tickets — tickets de hoje (do garçom; todos=true pra todos). */
+    @Throws(IOException::class)
+    fun ticketsHoje(base: String, token: String, todos: Boolean = false): JSONObject =
+        getJson("$base/api/lio/tickets" + (if (todos) "?todos=1" else ""), token)
+
     // -------- ações da mesa: transferir / vincular comanda / identificar --------
 
     /** Junta/move: comanda→mesa muda só o vínculo; mesa→mesa move TODOS os

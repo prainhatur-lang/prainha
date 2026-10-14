@@ -164,6 +164,7 @@ object Recuperacao {
         "conta" -> (if (ref.startsWith("COMANDA")) "Comanda " else "Mesa ") + destino.optInt("numero")
         "rateio" -> "Mesa + comandas ($ref)"
         "entrega" -> "Entrega " + destino.optString("display_id").ifBlank { destino.optInt("ped").toString() }
+        "ticket" -> "Ticket " + destino.optInt("ticket_id") + " (reimprima em 🎟 Ticket)"
         else -> ref
     }
 
@@ -212,6 +213,16 @@ object Recuperacao {
                 for (p in pagos) {
                     out.add(carimbar(Api.bodyPagamento(0, p)
                         .put("ped", ped)
+                        .put("descricao", p.descricao)
+                        .put("adquirente", Pagamento.ADQUIRENTE)))
+                }
+            }
+            "ticket" -> {
+                val tid = destino.optInt("ticket_id", 0)
+                if (tid <= 0) return out
+                for (p in pagos) {
+                    out.add(carimbar(Api.bodyPagamento(0, p)
+                        .put("ticket_id", tid)
                         .put("descricao", p.descricao)
                         .put("adquirente", Pagamento.ADQUIRENTE)))
                 }

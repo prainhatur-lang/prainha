@@ -25,6 +25,10 @@ import org.json.JSONObject
 class ProdutosActivity : AppCompatActivity() {
 
     private var numero = 0
+    /** VENDA DIRETA: sem mesa — revisa, escolhe com/sem 10%, cobra na hora e
+     *  imprime um ticket por unidade (ver Ticket). A mesa segue igual. */
+    private var ticket = false
+    private var cobrandoTicket = false
 
     private data class ItemCarrinho(
         val codigoPdv: Int,
@@ -57,6 +61,7 @@ class ProdutosActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_produtos)
         numero = intent.getIntExtra("numero", 0)
+        ticket = intent.getBooleanExtra("ticket", false)
 
         buscaIn = findViewById(R.id.busca)
         chipsBox = findViewById(R.id.chips)
@@ -67,7 +72,14 @@ class ProdutosActivity : AppCompatActivity() {
         enviarBtn = findViewById(R.id.enviar)
 
         findViewById<TextView>(R.id.tituloProdutos).text =
-            if (Session.ehComanda(this, numero)) "Lançar · Comanda $numero" else "Lançar · Mesa $numero"
+            if (ticket) "🎟 Ticket · venda direta"
+            else if (Session.ehComanda(this, numero)) "Lançar · Comanda $numero" else "Lançar · Mesa $numero"
+        if (ticket) {
+            enviarBtn.text = "💳 COBRAR"
+            findViewById<Button>(R.id.voltarProdutos).text = "‹ Voltar"
+            // a cobrança é daqui mesmo: já liga o serviço da maquininha
+            if (Pagamento.configured() && !Pagamento.pronto) Pagamento.bind(this, onReady = { }, onError = { })
+        }
         findViewById<Button>(R.id.voltarProdutos).setOnClickListener { finish() }
 
         lista.adapter = adapter
@@ -370,7 +382,7 @@ class ProdutosActivity : AppCompatActivity() {
                     .setNegativeButton("Não") { _, _ -> revisarCarrinho() }
                     .show()
             }
-            .setPositiveButton("✔ ENVIAR") { _, _ -> enviar() }
+            .setPositiveButton(if (ticket) "💳 COBRAR" else "✔ ENVIAR") { _, _ -> if (ticket) ticketPrevia() else enviar() }
             .setNegativeButton("Continuar lançando", null)
             .show()
     }
@@ -418,6 +430,222 @@ class ProdutosActivity : AppCompatActivity() {
                     enviarBtn.text = "ENVIAR"
                     Toast.makeText(this, e.message ?: "Falha ao enviar", Toast.LENGTH_LONG).show()
                 }
+            }
+        }.start()
+    }
+
+    // ---- VENDA DIRETA (ticket) ----
+
+    private fun itensJson(): JSONArray {
+        val itens = JSONArray()
+        carrinho.forEach {
+            val o = JSONObject().put("codigo_pdv", it.codigoPdv).put("qtd", it.qtd)
+            if (it.obs != null) o.put("obs", it.obs)
+            if (it.respostas.isNotEmpty()) o.put("respostas", JSONArray(it.respostas))
+            itens.put(o)
+        }
+        return itens
+    }
+
+    private fun ticketOcupado(on: Boolean, txt: String = "💳 COBRAR") {
+        cobrandoTicket = on
+        enviarBtn.isEnabled = !on
+        enviarBtn.text = txt
+    }
+
+    /** Preço do servidor (com e sem 10%) e o garçom escolhe — o 10% é opcional. */
+    private fun ticketPrevia() {
+        if (carrinho.isEmpty() || cobrandoTicket) return
+        val tk = Session.token(this) ?: return finish()
+        ticketOcupado(true, "Calculando…")
+        val base = Session.servidor(this)
+        Thread {
+            try {
+                val j = Api.ticketAbrir(base, tk, itensJson(), servico = false, previa = true)
+                runOnUiThread {
+                    ticketOcupado(false)
+                    if (!j.optBoolean("ok")) {
+                        Toast.makeText(this, j.optString("erro").ifBlank { "Falha ao calcular" }, Toast.LENGTH_LONG).show()
+                        return@runOnUiThread
+                    }
+                    val com = j.optDouble("total_com", 0.0)
+                    val sem = j.optDouble("total_sem", 0.0)
+                    val svc = j.optDouble("valor_servico_10", 0.0)
+                    val taxa = j.optDouble("taxa", 10.0)
+                    val taxaTxt = if (taxa % 1.0 == 0.0) taxa.toInt().toString() else taxa.toString()
+                    val n = carrinho.sumOf { it.qtd }
+                    val b = AlertDialog.Builder(this)
+                        .setTitle("🎟 $n ticket(s) — atendimento $taxaTxt%?")
+                        .setMessage("Itens: ${Cupom.brl(sem)}\nServiço $taxaTxt%: ${Cupom.brl(svc)}\n\n" +
+                            "COM $taxaTxt%: ${Cupom.brl(com)}\nSEM $taxaTxt%: ${Cupom.brl(sem)}\n\nO $taxaTxt% é opcional — pergunte ao cliente.")
+                        .setNegativeButton("Voltar", null)
+                    if (svc > 0) {
+                        b.setPositiveButton("Com $taxaTxt% · ${Cupom.brl(com)}") { _, _ -> ticketCobrar(true) }
+                        b.setNeutralButton("Sem $taxaTxt% · ${Cupom.brl(sem)}") { _, _ -> ticketCobrar(false) }
+                    } else {
+                        b.setPositiveButton("Cobrar ${Cupom.brl(sem)}") { _, _ -> ticketCobrar(false) }
+                    }
+                    b.show()
+                }
+            } catch (e: Api.SemSessao) {
+                runOnUiThread { Toast.makeText(this, e.message, Toast.LENGTH_LONG).show(); finish() }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    ticketOcupado(false)
+                    Toast.makeText(this, e.message ?: "Falha ao calcular", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+    /** Abre o ticket no servidor (nada vai pra cozinha ainda) e cobra na
+     *  maquininha. A conta, os itens e o KDS só nascem quando o pagamento
+     *  registra (POST /api/lio/pagar com ticket_id). */
+    private fun ticketCobrar(servico: Boolean) {
+        val tk = Session.token(this) ?: return finish()
+        if (!Pagamento.pronto) {
+            Toast.makeText(this, "Maquininha não conectada — o ticket só é vendido na maquininha", Toast.LENGTH_LONG).show()
+            if (Pagamento.configured()) Pagamento.bind(this, onReady = { }, onError = { })
+            return
+        }
+        ticketOcupado(true, "Abrindo…")
+        val base = Session.servidor(this)
+        Thread {
+            try {
+                val j = Api.ticketAbrir(base, tk, itensJson(), servico = servico, previa = false)
+                val id = j.optInt("ticket_id", 0)
+                val totalCents = Math.round(j.optDouble("total", 0.0) * 100)
+                if (!j.optBoolean("ok") || id <= 0 || totalCents <= 0) {
+                    runOnUiThread {
+                        ticketOcupado(false)
+                        Toast.makeText(this, j.optString("erro").ifBlank { "Falha ao abrir o ticket" }, Toast.LENGTH_LONG).show()
+                    }
+                    return@Thread
+                }
+                val linhas = mutableListOf<Linha>()
+                val arr = j.optJSONArray("itens") ?: JSONArray()
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    linhas.add(Linha("${o.optInt("qtd", 1)}x " + o.optString("nome"), Math.round(o.optDouble("valor", 0.0) * 100)))
+                }
+                val svcCents = Math.round(j.optDouble("valor_servico", 0.0) * 100)
+                if (svcCents > 0) linhas.add(Linha("Serviço", svcCents))
+                // só manda as linhas pro pedido da maquininha se fecham com o total
+                val linhasOk = if (linhas.sumOf { it.valorCentavos } == totalCents) linhas else emptyList()
+                val ref = "TICKET-$id"
+                val destino = JSONObject().put("tipo", "ticket").put("ticket_id", id)
+                runOnUiThread {
+                    ticketOcupado(true, "Na maquininha…")
+                    Pagamento.cobrar(
+                        ref = ref,
+                        linhas = linhasOk,
+                        valorCentavos = totalCents,
+                        onInicio = { },
+                        onPago = { pedidoLio, pagamentos -> ticketRegistrar(j, pagamentos, pedidoLio) },
+                        onCancelado = {
+                            Recuperacao.evento(this, "cancelado", JSONObject().put("ref", ref).put("valor", totalCents / 100.0))
+                            runOnUiThread {
+                                ticketOcupado(false)
+                                Toast.makeText(this, "Pagamento cancelado", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        onErro = { m ->
+                            Recuperacao.evento(this, "erro", JSONObject().put("ref", ref).put("valor", totalCents / 100.0).put("erro", m))
+                            runOnUiThread {
+                                ticketOcupado(false)
+                                Toast.makeText(this, m, Toast.LENGTH_LONG).show()
+                            }
+                        },
+                        destino = destino,
+                    )
+                }
+            } catch (e: Api.SemSessao) {
+                runOnUiThread { Toast.makeText(this, e.message, Toast.LENGTH_LONG).show(); finish() }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    ticketOcupado(false)
+                    Toast.makeText(this, e.message ?: "Falha ao abrir o ticket", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
+    // Aprovado → fila de pendentes ANTES (igual à conta), registro com retry.
+    // O ticket imprime de qualquer jeito: o dinheiro já foi aprovado e, se a
+    // rede caiu, a fila reenvia e o servidor monta a conta depois.
+    private fun ticketRegistrar(t: JSONObject, pagamentos: List<PagamentoLio>, pedidoLio: String) {
+        val id = t.optInt("ticket_id", 0)
+        if (pagamentos.isEmpty()) {
+            EmAndamento.marcarPago(this, pedidoLio)
+            Recuperacao.evento(this, "vazio", JSONObject().put("pedido_lio", pedidoLio).put("ticket_id", id))
+            runOnUiThread {
+                ticketOcupado(false)
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                AlertDialog.Builder(this)
+                    .setTitle("⚠️ Não cobre de novo ainda")
+                    .setMessage("A maquininha avisou que o pagamento passou, mas não devolveu os dados da transação.\n\n" +
+                        "Vou conferir direto no terminal. Se aprovado, o ticket $id entra sozinho — " +
+                        "reimprima em 🎟 Ticket → Reimprimir. NÃO passe o cartão/Pix de novo antes disso.")
+                    .setPositiveButton("OK") { _, _ -> finish() }
+                    .setCancelable(false)
+                    .show()
+            }
+            return
+        }
+        val tk = Session.token(this)
+        val base = Session.servidor(this)
+        Thread {
+            var registrou = true
+            var ultimoErro: String? = null
+            for (p in pagamentos) {
+                val body = Api.bodyPagamento(0, p)
+                    .put("ticket_id", id)
+                    .put("descricao", p.descricao)
+                    .put("adquirente", Pagamento.ADQUIRENTE)
+                val fid = Pendentes.adicionar(this, body)
+                if (p === pagamentos.last()) EmAndamento.fechar(this, pedidoLio)
+                var okEste = false
+                for (tentativa in 1..3) {
+                    try {
+                        if (tk == null) throw Api.SemSessao()
+                        val r = Api.lioPagar(base, tk, body)
+                        if (r.ok || r.jaRegistrado) { okEste = true; Pendentes.remover(this, fid) }
+                        else ultimoErro = r.erro
+                        break
+                    } catch (e: Api.SemSessao) {
+                        ultimoErro = e.message
+                        break
+                    } catch (e: Exception) {
+                        ultimoErro = e.message
+                        try { Thread.sleep(2000L * tentativa) } catch (_: InterruptedException) { }
+                    }
+                }
+                if (!okEste) registrou = false
+            }
+            val total = pagamentos.sumOf { it.valorCentavos }
+            val p0 = pagamentos.first()
+            runOnUiThread {
+                carrinho.clear()
+                atualizarCarrinho()
+                ticketOcupado(false)
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                // comprovante da maquininha já saiu; agora os tickets, um por unidade
+                Ticket.imprimir(this, t, onOk = { }, onErro = { m -> runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_LONG).show() } })
+                val msg = StringBuilder("Recebido ${Cupom.brl(total / 100.0)}\n${p0.forma.uppercase()} ${p0.bandeira}" +
+                    (if (p0.nsu.isNotBlank()) " · NSU ${p0.nsu}" else "") +
+                    "\n\n🎟 Ticket $id impresso.")
+                if (!registrou) msg.append("\n\n⚠️ APROVADO na maquininha mas ainda não registrado no sistema" +
+                    (ultimoErro?.let { " ($it)" } ?: "") + ". Ficou na fila — reenvie na tela de mesas.")
+                AlertDialog.Builder(this)
+                    .setTitle(if (registrou) "✅ Ticket pago" else "⚠️ Pago — registro pendente")
+                    .setMessage(msg.toString())
+                    .setPositiveButton("Nova venda") { _, _ -> }
+                    .setNeutralButton("🖨 Imprimir de novo") { _, _ ->
+                        Ticket.imprimir(this, t, onOk = { }, onErro = { m -> runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_LONG).show() } })
+                    }
+                    .setNegativeButton("Sair") { _, _ -> finish() }
+                    .setCancelable(false)
+                    .show()
             }
         }.start()
     }

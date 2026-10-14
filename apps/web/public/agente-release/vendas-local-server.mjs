@@ -682,6 +682,15 @@ async function initSchema() {
     caixa_codigo integer, quando timestamptz DEFAULT now(), login text,
     informado jsonb, esperado jsonb, dif_dinheiro numeric, obs text)`;
   await sql`CREATE TABLE IF NOT EXISTS produto_tempo (codigo_pdv integer PRIMARY KEY, minutos_extra integer NOT NULL)`;
+  // VENDA DE TICKET na maquininha (dono, 14/10): o carrinho que o garçom montou
+  // e o 10% escolhido, ANTES de cobrar. A conta no PDV só nasce quando o
+  // dinheiro já passou (ver apiTicketPagar) — ticket desistido não deixa conta.
+  await sql`CREATE TABLE IF NOT EXISTS ticket_venda (id bigserial PRIMARY KEY,
+    criado_em timestamptz DEFAULT now(), login text, nome_usuario text,
+    itens jsonb NOT NULL, servico boolean NOT NULL DEFAULT false,
+    valor_itens numeric NOT NULL, valor_servico numeric NOT NULL, total numeric NOT NULL,
+    status text NOT NULL DEFAULT 'aberto', pedido_fb integer, pago_em timestamptz,
+    nsu text, forma text, erro text)`;
   // QUEM BAIXOU: foto de quem tocou "Pronto"/"Entregue", com o que foi baixado.
   // Sem login no KDS, a foto é a única referência de quem apertou — é o que
   // permite apurar baixa indevida e resolver "entregaram na mesa errada".
@@ -5855,6 +5864,8 @@ async function apiLioTrilha(dias) {
   return { ok: true, dias: d, linhas };
 }
 async function apiLioPagar(body, garcom) {
+  // Pagamento de TICKET (venda direta): monta a conta e entra pelo mesmo caminho.
+  if (body.ticket_id != null && body._ticket !== true) return apiTicketPagar(body, garcom);
   // PIX no menu da LIO chega com nsu (cieloCode) VAZIO e o número em authCode
   // (ver apiLioPagarSemTrava). Sem isto a trava em voo era pulada e o reenvio
   // do app gravava o MESMO Pix duas vezes — mesa 8 em 05/09/2026, NSU 2798123
@@ -5938,6 +5949,11 @@ async function apiLioPagarSemTrava(body, garcom) {
   const r = await apiContaPagar({
     numero: n, ped: body.ped, forma, valor, modo: 'manual', origem: 'lio-sdk', pix_online: true,
     permitir_servico: true, caixa_codigo: caixaCodigo, caixa_sistema: true,
+    // TICKET: a conta nasce DEPOIS da cobrança, de propósito (só existe se
+    // pagou) — a trava "dinheiro de antes da conta não entra" barraria todo
+    // ticket. `_ticket` só é posto aqui dentro (apiTicketPagar); a rota apaga
+    // o que vier de fora, igual ao forcar_conta.
+    ...(body._ticket === true ? { forcar_conta: true } : {}),
     // QUANDO a maquininha cobrou. Sem isto a trava de hora fica cega neste
     // caminho (que é justamente o da fila do app reenviando cobrança velha):
     // _id é o carimbo que o app põe ao enfileirar, aprovado_em vem do terminal.
@@ -5963,9 +5979,192 @@ async function apiLioPagarSemTrava(body, garcom) {
       if (!f.ok) console.error(`[lio] mesa ${r.transferida ? r.transferida.numero : n} quitada mas NÃO fechou: ${f.erro || '?'}`);
     } catch (e) { r.fechada = false; console.error(`[lio] mesa ${n} quitada mas NÃO fechou: ${e.message}`); }
     // entrega (número 0 + pedido explícito) recebida na porta
-    if (n === 0 && Number(body.ped) > 0) await deliveryPagoNaPorta(Number(body.ped), garcom.login).catch((e) => console.error('[entrega] pago na porta:', e.message));
+    if (n === 0 && Number(body.ped) > 0 && body._ticket !== true) await deliveryPagoNaPorta(Number(body.ped), garcom.login).catch((e) => console.error('[entrega] pago na porta:', e.message));
   }
   return r;
+}
+
+// ═══════════════ TICKET (venda direta na maquininha) ═══════════════
+// Dono, 14/10: além de vender NA MESA (igual sempre), o garçom pode vender
+// TICKET — escolhe o que o cliente quer, cobra na hora (Pix/crédito/débito),
+// sai o comprovante da Cielo e depois um ticket por unidade, que o cliente
+// leva pro bar ou pro balcão de petiscos. O 10% é OPCIONAL no ticket: o
+// garçom escolhe "com 10%" ou "sem 10%" na hora de cobrar.
+//
+// Ordem: abrir (servidor confere preço e devolve o total) → cobrar na LIO →
+// /api/lio/pagar com ticket_id. A CONTA só nasce quando o dinheiro chega
+// (NUMERO 0 + pedido explícito, o mesmo caminho da entrega): ticket que o
+// cliente desistiu de pagar não deixa conta aberta nem item no KDS.
+const ticketEmVoo = new Map(); // ticket_id -> promise (reenvio da fila do app espera o primeiro)
+async function ticketCalcular(pedidos) {
+  const lista = Array.isArray(pedidos) ? pedidos : [];
+  if (!lista.length) return { ok: false, erro: 'sem itens' };
+  if (lista.length > 40) return { ok: false, erro: 'itens demais num ticket só' };
+  const itens = [];
+  let soma = 0, base = 0;
+  for (const p of lista) {
+    const cat = (await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_servico
+      FROM produto_local WHERE codigo_pdv=${Number(p.codigo_pdv)}`)[0];
+    if (!cat) return { ok: false, erro: 'produto ' + p.codigo_pdv + ' não está no catálogo' };
+    const qtd = Math.max(1, Math.min(99, Math.floor(Number(p.qtd) || 1)));
+    const cods = Array.isArray(p.respostas) ? p.respostas.map(Number).filter(Boolean) : [];
+    let opcoes = [], precoOpc = 0;
+    if (cods.length) {
+      const ops = await sql`SELECT codigo, nome, preco FROM wizard_opcao WHERE codigo = ANY(${cods})`;
+      const porCod = new Map(ops.map((x) => [Number(x.codigo), x]));
+      opcoes = cods.map((c) => porCod.get(c)).filter(Boolean);
+      precoOpc = opcoes.reduce((s, o) => s + Number(o.preco || 0), 0);
+    }
+    let obs = String(p.obs || '').trim().slice(0, 200);
+    if (!obs && opcoes.length) obs = opcoes.map((o) => o.nome).join(' | ');
+    const area = nativo() ? await pgAreaDoItem(cat.nome, cat.area_codigo) : cat.area_codigo;
+    const vt = +((Number(cat.preco) + precoOpc) * qtd).toFixed(2);
+    soma += vt;
+    if (!(nativo() && cat.sem_servico === true)) base += vt;
+    itens.push({ codigo_pdv: Number(cat.codigo_pdv), produto_codigo: cat.produto_codigo, nome: cat.nome,
+      tamanho: cat.tamanho, preco: Number(cat.preco), qtd, obs, respostas: cods,
+      opcoes: opcoes.map((o) => o.nome), area_codigo: area == null ? null : Number(area), valor: vt });
+  }
+  const as = itens.some((i) => i.area_codigo != null)
+    ? await sql`SELECT codigo, nome FROM area WHERE codigo = ANY(${[...new Set(itens.map((i) => i.area_codigo).filter((a) => a != null))]})`
+    : [];
+  const nomeArea = new Map(as.map((a) => [Number(a.codigo), String(a.nome || '').trim()]));
+  for (const i of itens) i.area_nome = (i.area_codigo != null && nomeArea.get(i.area_codigo)) || 'BAR';
+  soma = +soma.toFixed(2);
+  // MESMA conta do fbAtualizarTotal/pgAtualizarTotal (arredonda a soma, não item a item)
+  const svc = TAXA_SERVICO > 0 && base > 0 ? +(base * TAXA_SERVICO / 100).toFixed(2) : 0;
+  return { ok: true, itens, valor_itens: soma, valor_servico_10: svc,
+    total_com: +(soma + svc).toFixed(2), total_sem: soma, taxa: TAXA_SERVICO };
+}
+/** POST /api/lio/ticket/abrir {itens, servico, previa?}. Com previa:true só
+ *  devolve os dois totais (com e sem 10%) — nada é gravado. */
+async function apiTicketAbrir(body, g) {
+  const c = await ticketCalcular(body.itens);
+  if (!c.ok) return c;
+  if (body.previa === true) return { ...c, ok: true };
+  const servico = body.servico === true;
+  const total = servico ? c.total_com : c.total_sem;
+  if (!(total > 0)) return { ok: false, erro: 'ticket sem valor' };
+  const [t] = await sql`INSERT INTO ticket_venda (login, nome_usuario, itens, servico, valor_itens, valor_servico, total)
+    VALUES (${g.login}, ${g.nome || g.login}, ${JSON.stringify(c.itens)}, ${servico}, ${c.valor_itens},
+      ${servico ? c.valor_servico_10 : 0}, ${total}) RETURNING id`;
+  console.log(`[ticket] #${t.id} aberto por ${g.login} · ${c.itens.length} linha(s) · R$ ${total.toFixed(2)} ${servico ? 'com' : 'sem'} 10%`);
+  return { ok: true, ticket_id: Number(t.id), itens: c.itens, valor_itens: c.valor_itens,
+    valor_servico: servico ? c.valor_servico_10 : 0, servico, total, loja: LOJA_NOME };
+}
+/** Cria (uma vez só) a conta do ticket com os itens. Devolve o pedido. */
+async function ticketMontarConta(t) {
+  const rotulo = 'TICKET ' + t.id;
+  let ped = Number(t.pedido_fb) || 0;
+  if (!ped) {
+    if (nativo()) {
+      ped = await pgCriarPedido(0);
+      await pgIdentificarPedido(ped, { nome: rotulo });
+    } else {
+      const achar = async () => {
+        const r = await q(`SELECT FIRST 1 CODIGO FROM PEDIDOS WHERE NUMERO=0 AND NOME='${fbEsc(rotulo)}'
+          AND DATAFECHAMENTO IS NULL AND DATADELETE IS NULL
+          AND DATAABERTURA > DATEADD(-1 DAY TO CURRENT_TIMESTAMP) ORDER BY CODIGO DESC`);
+        if (!r.ok) throw new Error(r.err);
+        return r.rows.length ? Number(r.rows[0].CODIGO) : null;
+      };
+      ped = await achar() || 0; // reenvio depois de uma queda no meio: a conta já pode existir
+      if (!ped) {
+        const ins = await fbInserirSemDuplicar(`INSERT INTO PEDIDOS (NUMERO, DATAABERTURA, CODIGOPEDIDOORIGEM, VALORENTREGA, QUANTIDADEPESSOAS, ICMSDESONDIMINUIVALORNF, TAG, CONTASOLICITADA, IMPRESSAOSOLICITADA, VALORTOTAL, SUBTOTALPAGO, NOME)
+          VALUES (0, CURRENT_TIMESTAMP, ${VENDA_ORIGEM_FB}, 0, 1, 0, '', 'N', 'N', 0, 0, '${fbEsc(rotulo)}')`,
+          achar, { rotulo: 'conta do ' + rotulo });
+        if (!ins.ok) throw new Error('FB criar conta do ticket: ' + ins.err);
+        ped = ins.achou || await achar().catch(() => null) || 0;
+        if (!ped) throw new Error('FB criar conta do ticket: inserido mas não encontrado');
+      }
+    }
+    await sql`UPDATE ticket_venda SET pedido_fb=${ped} WHERE id=${t.id}`;
+  }
+  // itens: só se a conta ainda está vazia (reenvio não lança de novo)
+  const jaTem = nativo()
+    ? Number((await sql`SELECT count(*)::int n FROM comanda_item WHERE comanda_codigo=${ped} AND cancelado_em IS NULL`)[0].n) > 0
+    : await (async () => {
+      const r = await q(`SELECT COUNT(*) N FROM ITENSPEDIDO WHERE CODIGOPEDIDO=${ped} AND DATADELETE IS NULL`);
+      if (!r.ok) throw new Error('FB itens do ticket: ' + r.err);
+      return Number(r.rows[0]?.N) > 0;
+    })();
+  if (!jaTem) {
+    // sem 10%: a decisão fica registrada ANTES do total ser calculado — o
+    // fbAtualizarTotal respeita o "tirou" igual faz quando o caixa tira
+    if (!t.servico) {
+      await sql`INSERT INTO servico_ajuste (login, numero, pedido_fb, acao, valor, motivo)
+        VALUES (${t.login}, 0, ${ped}, 'tirou', 0, ${'ticket ' + t.id + ' sem 10%'})`;
+    }
+    const itens = typeof t.itens === 'string' ? JSON.parse(t.itens) : (t.itens || []);
+    for (const it of itens) {
+      const linha = { ...it, login: t.login, nome_usuario: t.nome_usuario || t.login,
+        obs: [it.obs, rotulo].filter(Boolean).join(' | ') };
+      const cod = await fbInserirItem(ped, linha);
+      if (cod && it.respostas?.length) await fbGravarRespostas(ped, cod, linha);
+    }
+  }
+  await fbAtualizarTotal(ped);
+  if (!jaTem) await fbJobCozinha(ped).catch((e) => console.error('[ticket] job cozinha:', e.message));
+  espelho().catch(() => {});
+  return ped;
+}
+async function apiTicketPagar(body, garcom) {
+  const id = Number(body.ticket_id);
+  if (!(id > 0)) return { ok: false, erro: 'ticket inválido' };
+  const emVoo = ticketEmVoo.get(id);
+  if (emVoo) { await emVoo.catch(() => null); }
+  const p = (async () => {
+    const [t] = await sql`SELECT * FROM ticket_venda WHERE id=${id}`;
+    if (!t) return { ok: false, erro: 'ticket ' + id + ' não existe nesta loja' };
+    // ticket se paga UMA vez, inteiro: reenvio da fila (mesmo Pix sem NSU) não grava de novo
+    if (t.status === 'pago') {
+      const itens = typeof t.itens === 'string' ? JSON.parse(t.itens) : (t.itens || []);
+      return { ok: true, ja_registrado: true, quitada: true, ticket_id: id, pedido_fb: Number(t.pedido_fb) || null,
+        itens, total: Number(t.total), servico: t.servico, valor_servico: Number(t.valor_servico),
+        loja: LOJA_NOME, criado_em: t.criado_em, garcom: t.nome_usuario || t.login };
+    }
+    const valor = +Number(body.valor || 0).toFixed(2);
+    if (Math.abs(valor - Number(t.total)) > 0.009) {
+      console.error(`[ticket] #${id}: cobrado R$ ${valor.toFixed(2)} mas o ticket é R$ ${Number(t.total).toFixed(2)} — registrando o que entrou`);
+    }
+    let ped;
+    try { ped = await ticketMontarConta(t); }
+    catch (e) {
+      await sql`UPDATE ticket_venda SET erro=${String(e.message).slice(0, 300)} WHERE id=${id}`;
+      console.error(`[ticket] #${id} PAGO na maquininha mas a conta não montou: ${e.message}`);
+      return { ok: false, erro: 'Pagamento aprovado, mas não consegui montar a conta do ticket (' + e.message + '). Fica guardado e o app tenta de novo.' };
+    }
+    const r = await apiLioPagar({ ...body, numero: 0, ped, _ticket: true }, garcom);
+    if (r.ok) {
+      await sql`UPDATE ticket_venda SET status=${r.quitada || r.ja_registrado ? 'pago' : 'parcial'},
+        pago_em=COALESCE(pago_em, now()), nsu=COALESCE(nsu, ${String(body.nsu || body.autorizacao || '') || null}),
+        forma=COALESCE(forma, ${String(body.forma || '') || null}), erro=NULL WHERE id=${id}`;
+      // conta quitada que não fechou (falta de centavo, banco lento): fecha agora
+      if (r.ja_registrado) await apiCaixaFechar(0, ped).catch(() => {});
+    } else {
+      await sql`UPDATE ticket_venda SET erro=${String(r.erro || '?').slice(0, 300)} WHERE id=${id}`;
+    }
+    console.log(`[ticket] #${id} · conta ${ped} · ${body.forma} R$ ${valor.toFixed(2)} → ${r.ok ? (r.quitada ? 'pago e fechado' : r.ja_registrado ? 'já registrado' : 'ok, falta ' + r.saldo) : 'ERRO: ' + r.erro}`);
+    const itens = typeof t.itens === 'string' ? JSON.parse(t.itens) : (t.itens || []);
+    return { ...r, ticket_id: id, pedido_fb: ped, itens, total: Number(t.total), servico: t.servico,
+      valor_servico: Number(t.valor_servico), loja: LOJA_NOME, criado_em: t.criado_em, garcom: t.nome_usuario || t.login };
+  })();
+  ticketEmVoo.set(id, p);
+  try { return await p; } finally { if (ticketEmVoo.get(id) === p) ticketEmVoo.delete(id); }
+}
+/** GET /api/lio/tickets — tickets de hoje (dia de Sergipe) pra REIMPRIMIR.
+ *  O garçom vê os dele; ?todos=1 lista os da loja. */
+async function apiTicketsHoje(u, g) {
+  const todos = u.searchParams.get('todos') === '1';
+  const rows = await sql`SELECT id, criado_em, login, nome_usuario, itens, servico, valor_itens, valor_servico,
+      total, status, pedido_fb, pago_em, nsu, forma, erro
+    FROM ticket_venda
+    WHERE criado_em >= date_trunc('day', now() AT TIME ZONE 'America/Maceio') AT TIME ZONE 'America/Maceio'
+      ${todos ? sql`` : sql`AND login=${g.login}`}
+    ORDER BY id DESC LIMIT 200`;
+  return { ok: true, loja: LOJA_NOME, tickets: rows.map((t) => ({ ...t, id: Number(t.id),
+    valor_itens: Number(t.valor_itens), valor_servico: Number(t.valor_servico), total: Number(t.total),
+    itens: typeof t.itens === 'string' ? JSON.parse(t.itens) : t.itens })) };
 }
 
 // FECHAMENTO DO DIA da maquininha: tudo que o app registrou hoje (origem
@@ -30263,6 +30462,7 @@ const server = http.createServer(async (req, res) => {
       // forcar_conta pula a trava de hora: é decisão de gente no caixa olhando
       // o comprovante, nunca coisa que chega pela rede.
       delete body.forcar_conta;
+      delete body._ticket; // idem: só apiTicketPagar põe, nunca a rede
       // Cartão Prainha: o desconto entra na conta antes do recebimento (uma vez só)
       if (body.fid_uso) await lioFidAplicar(body);
       let rl;
@@ -30294,6 +30494,18 @@ const server = http.createServer(async (req, res) => {
       try { await fbAtualizarTotal(ped); espelho().catch(() => {}); } catch (e) { return res.end(JSON.stringify({ ok: false, erro: e.message })); }
       const t = nativo() ? await pgCabecalhoPedido(ped) : (await qi(`SELECT VALORTOTALITENS I, TOTALSERVICO S, VALORTOTAL T FROM PEDIDOS WHERE CODIGO=${ped}`)).rows?.[0] || {};
       return res.end(JSON.stringify({ ok: true, itens: Number(t.I) || 0, servico: Number(t.S) || 0, total: Number(t.T) || 0 }));
+    }
+    // TICKET (venda direta): abrir/prévia e a lista de hoje pra reimprimir
+    if (req.method === 'POST' && p === '/api/lio/ticket/abrir') {
+      const g = await garcomDaRequisicao(req, u);
+      if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
+      const body = await readBody(req);
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTicketAbrir(body, g)));
+    }
+    if (p === '/api/lio/tickets') {
+      const g = await garcomDaRequisicao(req, u);
+      if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTicketsHoje(u, g)));
     }
     // Fechamento do dia da maquininha (leitura; exige garçom logado).
     if (p === '/api/lio/resumo-dia') {

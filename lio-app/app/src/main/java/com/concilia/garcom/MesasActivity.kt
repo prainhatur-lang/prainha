@@ -59,6 +59,9 @@ class MesasActivity : AppCompatActivity() {
             setOnClickListener { startActivity(Intent(this@MesasActivity, EntregasActivity::class.java)) }
         }
         findViewById<Button>(R.id.abrir).setOnClickListener { abrirDigitada() }
+        // VENDA DIRETA (ticket): escolhe os itens, cobra na hora e imprime um
+        // ticket por unidade pra retirar no bar/petiscos — sem mesa nenhuma.
+        findViewById<Button>(R.id.venderTicket).setOnClickListener { dialogTicket() }
         pendentesBanner.setOnClickListener { dialogPendentes() }
 
         lista.adapter = adapter
@@ -261,6 +264,58 @@ class MesasActivity : AppCompatActivity() {
 
     /** Toque no aviso: lista os pendentes e oferece reenviar OU descartar
      *  (descartar = pedido foi cancelado, ex.: teste — não registra nunca). */
+    // 🎟 VENDA DIRETA: vender (tela de itens em modo ticket) ou reimprimir um
+    // ticket pago hoje (papel perdido, impressora sem papel, recuperado).
+    private fun dialogTicket() {
+        AlertDialog.Builder(this)
+            .setTitle("🎟 Ticket · venda direta")
+            .setItems(arrayOf("🎟 Vender ticket", "🖨 Reimprimir ticket de hoje")) { _, i ->
+                if (i == 0) startActivity(Intent(this, ProdutosActivity::class.java).putExtra("ticket", true))
+                else ticketReimprimir()
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    private fun ticketReimprimir() {
+        val tk = Session.token(this) ?: return
+        val base = Session.servidor(this)
+        Thread {
+            try {
+                val j = Api.ticketsHoje(base, tk)
+                val arr = j.optJSONArray("tickets") ?: org.json.JSONArray()
+                val pagos = (0 until arr.length()).mapNotNull { arr.optJSONObject(it) }
+                    .filter { it.optString("status") == "pago" }
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    if (pagos.isEmpty()) {
+                        Toast.makeText(this, "Nenhum ticket pago hoje", Toast.LENGTH_LONG).show()
+                        return@runOnUiThread
+                    }
+                    val rot = pagos.map { t ->
+                        val itens = t.optJSONArray("itens") ?: org.json.JSONArray()
+                        val nomes = (0 until itens.length()).mapNotNull { itens.optJSONObject(it) }
+                            .joinToString(", ") { "${it.optInt("qtd", 1)}x ${it.optString("nome")}" }
+                        "Ticket ${t.optInt("id")} · ${Cupom.horaBr(t.optStringOrNull("pago_em"))} · ${Cupom.brl(t.optDouble("total", 0.0))}\n$nomes"
+                    }.toTypedArray()
+                    AlertDialog.Builder(this)
+                        .setTitle("Reimprimir qual?")
+                        .setItems(rot) { _, i ->
+                            Ticket.imprimir(this, pagos[i], onOk = { },
+                                onErro = { m -> runOnUiThread { Toast.makeText(this, m, Toast.LENGTH_LONG).show() } })
+                        }
+                        .setNegativeButton("Fechar", null)
+                        .show()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    val m = if ((e.message ?: "").contains("404")) "Servidor da loja desatualizado (sem venda de ticket)" else (e.message ?: "Falha")
+                    Toast.makeText(this, m, Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
+    }
+
     private fun dialogPendentes() {
         val itens = Pendentes.listar(this)
         if (itens.isEmpty()) { atualizarPendentes(); return }
