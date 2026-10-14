@@ -54,7 +54,14 @@ function acharNoDestino(
   const salvo = depara[p.id];
   if (salvo && lista.some((d) => d.id === salvo)) return salvo;
   const n = norm(p.nome);
-  const iguais = lista.filter((d) => !d.inativo && norm(d.nome) === n);
+  let iguais = lista.filter((d) => !d.inativo && norm(d.nome) === n);
+  // Mesmas palavras em outra ordem: "Corona Extra Zero Long neck" ×
+  // "Corona extra Long Neck ZERO" (14/10)
+  if (!iguais.length) {
+    const chave = (x: string) => norm(x).split(' ').sort().join(' ');
+    const k = chave(p.nome);
+    iguais = lista.filter((d) => !d.inativo && chave(d.nome) === k);
+  }
   // Nome repetido lá: o que está em uso antes do parado
   const ord = [...iguais.filter((d) => d.emUso !== false), ...iguais.filter((d) => d.emUso === false)];
   return ord.find((d) => d.unidade === p.unidade)?.id ?? ord[0]?.id ?? null;
@@ -250,7 +257,10 @@ export function NovaTransferenciaForm(props: {
     listaDestino.filter((d) => d.emUso === false),
     buscaDest,
   );
-  const mostrarParados = verParados || (achadosDest.length === 0 && totalParadosDest > 0);
+  // Poucos parados batendo com a busca: mostra junto, marcados "parado" (a
+  // Corona Zero da Mar ficava escondida atrás do "mostrar", 14/10)
+  const mostrarParados =
+    verParados || (achadosDest.length === 0 && totalParadosDest > 0) || (totalParadosDest > 0 && totalParadosDest <= 3);
 
   return (
     <div className="mt-6 space-y-4">
