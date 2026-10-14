@@ -341,10 +341,16 @@ export const contaPagarBaixa = pgTable(
     observacao: text('observacao'),
     criadoPor: uuid('criado_por'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    /** Pix do extrato (lancamento_banco) que pagou — baixa feita em
+     *  /financeiro/pix-inter. O mesmo Pix não baixa duas contas. */
+    lancamentoBancoId: uuid('lancamento_banco_id'),
   },
   (t) => ({
     contaIdx: index('idx_cp_baixa_conta').on(t.contaPagarId),
     filialDataIdx: index('idx_cp_baixa_filial_data').on(t.filialId, t.data),
+    lancamentoUq: uniqueIndex('uq_cp_baixa_lancamento')
+      .on(t.lancamentoBancoId)
+      .where(sql`lancamento_banco_id IS NOT NULL`),
   }),
 );
 

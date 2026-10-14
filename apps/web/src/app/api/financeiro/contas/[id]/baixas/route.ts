@@ -14,10 +14,11 @@
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { consumerParado } from '@/lib/consumer-contas';
+import { recalcularAgregado } from '@/lib/conta-pagar-baixa';
 
 export const dynamic = 'force-dynamic';
 
@@ -77,33 +78,6 @@ async function carregarConta(id: string, userId: string) {
     .limit(1);
   if (!acesso) return { erro: NextResponse.json({ error: 'sem acesso à filial' }, { status: 403 }) };
   return { conta };
-}
-
-/** Recalcula valor_pago/juros_multa/data_pagamento a partir das baixas.
- *  Quitação é pelo PRINCIPAL; valor_pago carrega principal + juros (o que
- *  de fato saiu do bolso), juros_multa acumula só os juros. */
-async function recalcularAgregado(contaId: string, valorConta: number) {
-  const baixas = await db
-    .select({
-      data: schema.contaPagarBaixa.data,
-      valor: schema.contaPagarBaixa.valor,
-      juros: schema.contaPagarBaixa.juros,
-    })
-    .from(schema.contaPagarBaixa)
-    .where(eq(schema.contaPagarBaixa.contaPagarId, contaId))
-    .orderBy(asc(schema.contaPagarBaixa.data));
-  const principal = baixas.reduce((s, x) => s + Number(x.valor), 0);
-  const juros = baixas.reduce((s, x) => s + Number(x.juros ?? 0), 0);
-  const quitada = principal >= valorConta - 0.005;
-  await db
-    .update(schema.contaPagar)
-    .set({
-      valorPago: principal + juros > 0 ? (principal + juros).toFixed(2) : null,
-      jurosMulta: juros > 0 ? juros.toFixed(2) : null,
-      dataPagamento: quitada && baixas.length > 0 ? baixas[baixas.length - 1]!.data : null,
-    })
-    .where(eq(schema.contaPagar.id, contaId));
-  return { total: principal, juros, quitada };
 }
 
 export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
