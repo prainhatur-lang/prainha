@@ -848,9 +848,18 @@ function ConfirmarFator({
   return (
     <div className="space-y-4">
       <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-        <p className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
-          Produto interno
-        </p>
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+            Produto interno
+          </p>
+          <button
+            type="button"
+            onClick={onVoltar}
+            className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+          >
+            🔄 trocar produto
+          </button>
+        </div>
         <p className="mt-1 text-sm font-medium text-slate-900">{produto.nome}</p>
         <p className="mt-0.5 font-mono text-[10px] text-slate-500">
           unidade de estoque: <span className="font-semibold">{produto.unidade}</span>
