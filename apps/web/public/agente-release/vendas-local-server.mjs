@@ -3296,7 +3296,7 @@ async function registrarAutor(itemCod, it) {
 // ITENSPEDIDO com o MESMO código, e item_autor é gravado na hora do lançamento
 // (o item recém-lançado já sai com o nome mesmo antes do espelho chegar).
 // Devolve Map(item_codigo → { quem, quem_txt }); quem_txt já vem pronto pra
-// tela ("👤 Matheus" / "📱 pedido pela mesa"). Erro aqui nunca derruba a conta.
+// tela ("👤 Matheus" / "📱 Cliente"). Erro aqui nunca derruba a conta.
 function primeiroNomeAutor(s) {
   const partes = String(s || '').trim().split(/\s+/);
   let n = partes[0] || '';
@@ -3318,7 +3318,7 @@ async function autoresDosItens(cods) {
   const out = new Map();
   for (const [cod, quem] of m) {
     const cli = quem.trim().toUpperCase().startsWith('CLIENTE');
-    out.set(cod, { quem, quem_txt: cli ? '📱 pedido pela mesa' : '👤 ' + primeiroNomeAutor(quem) });
+    out.set(cod, { quem, quem_txt: cli ? '📱 Cliente' : '👤 ' + primeiroNomeAutor(quem) });
   }
   return out;
 }
@@ -26146,7 +26146,7 @@ function primeiroNome(s){
 function autorItem(i){
   if(i.tipo===2||!i.quem)return '';
   var cli=String(i.quem).toUpperCase().indexOf('CLIENTE')===0;
-  var t=cli?'📱 pedido pela mesa':'👤 '+esc(primeiroNome(i.quem));
+  var t=cli?'📱 Cliente':'👤 '+esc(primeiroNome(i.quem));
   return '<small class="mut" style="display:block;padding-left:22px">'+t+'</small>';
 }
 /* ⏱ o relógio do item na conta do caixa. Entregue: cinza, é histórico —
