@@ -5,14 +5,16 @@ import { negarSemPerm } from '@/lib/exigir-perm';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const Body = z.object({
   filialId: z.string().uuid(),
-  cnpjOuCpf: z.string().min(11).max(14).regex(/^\d+$/, 'so digitos'),
+  // Opcional desde 15/10/2026 (cadastro na hora pela conta a pagar — pessoa
+  // física sem o CPF em mãos). Quem manda continua sendo validado.
+  cnpjOuCpf: z.string().min(11).max(14).regex(/^\d+$/, 'so digitos').nullable().optional(),
   nome: z.string().min(1).max(200).trim(),
   razaoSocial: z.string().max(200).nullable().optional(),
   uf: z.string().length(2).nullable().optional(),
@@ -51,14 +53,16 @@ export async function POST(req: Request) {
   if (!link) return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
 
   // Se ja existe fornecedor com mesmo CNPJ na filial, retorna ele em vez de
-  // duplicar (idempotente).
+  // duplicar (idempotente). Sem documento: mesmo nome na filial.
   const [existente] = await db
     .select({ id: schema.fornecedor.id, nome: schema.fornecedor.nome })
     .from(schema.fornecedor)
     .where(
       and(
         eq(schema.fornecedor.filialId, d.filialId),
-        eq(schema.fornecedor.cnpjOuCpf, d.cnpjOuCpf),
+        d.cnpjOuCpf
+          ? eq(schema.fornecedor.cnpjOuCpf, d.cnpjOuCpf)
+          : sql`upper(trim(${schema.fornecedor.nome})) = upper(${d.nome})`,
       ),
     )
     .limit(1);
@@ -71,7 +75,7 @@ export async function POST(req: Request) {
     .values({
       filialId: d.filialId,
       codigoExterno: null,
-      cnpjOuCpf: d.cnpjOuCpf,
+      cnpjOuCpf: d.cnpjOuCpf ?? null,
       nome: d.nome,
       razaoSocial: d.razaoSocial ?? null,
       uf: d.uf ?? null,

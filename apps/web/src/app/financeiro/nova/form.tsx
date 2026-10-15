@@ -30,18 +30,57 @@ export function FornecedorPicker({
   texto,
   onTexto,
   onPick,
+  filialIdCadastro,
 }: {
   fornecedores: Opcao[];
   fornecedorId: string;
   texto: string;
   onTexto: (t: string) => void;
   onPick: (f: Opcao | null) => void;
+  /** Com a filial, "Nenhum fornecedor" oferece cadastrar na hora (15/10/2026). */
+  filialIdCadastro?: string;
 }) {
   const [aberto, setAberto] = useState(false);
+  const [cadastrando, setCadastrando] = useState(false);
+  const [doc, setDoc] = useState('');
+  const [salvando, setSalvando] = useState(false);
+  const [erroCad, setErroCad] = useState<string | null>(null);
+  const [criados, setCriados] = useState<Opcao[]>([]);
+
+  async function cadastrar() {
+    const nome = texto.trim();
+    const digitos = doc.replace(/\D/g, '');
+    if (!nome) return setErroCad('Digite o nome do fornecedor.');
+    if (digitos && digitos.length !== 11 && digitos.length !== 14)
+      return setErroCad('CPF tem 11 dígitos e CNPJ 14 — ou deixe em branco.');
+    setSalvando(true);
+    setErroCad(null);
+    const r = await fetch('/api/fornecedores', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ filialId: filialIdCadastro, nome, cnpjOuCpf: digitos || null }),
+    }).catch(() => null);
+    const d = (await r?.json().catch(() => ({}))) as { id?: string; nome?: string; error?: string };
+    setSalvando(false);
+    if (!r?.ok || !d.id) {
+      setErroCad(
+        r?.status === 403
+          ? 'Sem permissão pra cadastrar fornecedor nesta casa.'
+          : `Não cadastrou: ${d.error ?? r?.status ?? 'sem conexão'}`,
+      );
+      return;
+    }
+    const novo = { id: d.id, nome: d.nome ?? nome };
+    setCriados((c) => [...c, novo]);
+    onTexto(novo.nome);
+    onPick(novo);
+    setCadastrando(false);
+    setDoc('');
+  }
   const termo = normalizar(texto.trim());
   const sugestoes = useMemo(() => {
     if (termo.length < 2) return [];
-    const achados = fornecedores.filter((f) => normalizar(f.nome).includes(termo));
+    const achados = [...criados, ...fornecedores].filter((f) => normalizar(f.nome).includes(termo));
     // quem começa com o termo vem primeiro
     achados.sort(
       (a, b) =>
@@ -49,7 +88,7 @@ export function FornecedorPicker({
         Number(normalizar(a.nome).startsWith(termo)),
     );
     return achados.slice(0, 30);
-  }, [fornecedores, termo]);
+  }, [fornecedores, criados, termo]);
   const escolhido = !!fornecedorId;
 
   return (
@@ -60,6 +99,9 @@ export function FornecedorPicker({
           onTexto(e.target.value);
           onPick(null);
           setAberto(true);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && cadastrando) e.preventDefault();
         }}
         onFocus={() => setAberto(true)}
         onBlur={() => setTimeout(() => setAberto(false), 150)}
@@ -72,6 +114,7 @@ export function FornecedorPicker({
           onClick={() => {
             onTexto('');
             onPick(null);
+            setCadastrando(false);
           }}
           title="Limpar fornecedor"
           className="absolute right-2 top-1/2 mt-0.5 -translate-y-1/2 text-xs text-slate-400 hover:text-slate-700"
@@ -84,6 +127,20 @@ export function FornecedorPicker({
           {sugestoes.length === 0 ? (
             <li className="px-3 py-1.5 text-xs text-slate-500">
               Nenhum fornecedor com “{texto.trim()}”. Apague o campo pra lançar sem fornecedor.
+              {filialIdCadastro && !cadastrando && (
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    setCadastrando(true);
+                    setAberto(false);
+                    setErroCad(null);
+                  }}
+                  className="mt-1.5 block w-full rounded-md bg-emerald-600 px-2 py-1.5 text-left text-xs font-semibold text-white hover:bg-emerald-700"
+                >
+                  + Cadastrar “{texto.trim()}” como fornecedor
+                </button>
+              )}
             </li>
           ) : (
             sugestoes.map((f) => (
@@ -104,6 +161,45 @@ export function FornecedorPicker({
             ))
           )}
         </ul>
+      )}
+      {cadastrando && !escolhido && (
+        <div className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 p-3">
+          <p className="text-xs font-semibold text-emerald-900">Novo fornecedor: {texto.trim() || '—'}</p>
+          <label className="mt-2 block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+            CPF ou CNPJ (se tiver)
+          </label>
+          <input
+            value={doc}
+            onChange={(e) => setDoc(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void cadastrar();
+              }
+            }}
+            inputMode="numeric"
+            placeholder="só números — pode deixar em branco"
+            className={inputCls}
+          />
+          {erroCad && <p className="mt-1 text-xs text-red-700">{erroCad}</p>}
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              onClick={() => void cadastrar()}
+              disabled={salvando}
+              className="rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-50"
+            >
+              {salvando ? 'Cadastrando…' : 'Cadastrar e usar'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setCadastrando(false)}
+              className="rounded-md border border-slate-300 px-3 py-1.5 text-xs text-slate-600 hover:bg-white"
+            >
+              Cancelar
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -266,6 +362,7 @@ export function NovaContaForm({
               texto={fornecedorTexto}
               onTexto={setFornecedorTexto}
               onPick={(f) => setFornecedorId(f?.id ?? '')}
+              filialIdCadastro={filialId}
             />
           </div>
           <div>
