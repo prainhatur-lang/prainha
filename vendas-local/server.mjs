@@ -985,6 +985,12 @@ async function initSchema() {
     numero integer, ped integer, forma text, valor numeric, nsu text,
     resultado text, erro text, extra jsonb)`;
   await sql`CREATE INDEX IF NOT EXISTS ix_lio_trilha_em ON lio_trilha (em)`;
+  // ---- SANGRIA → PORTADOR (15/10/2026) ----
+  // Toda sangria (Consumer ou banco próprio) entra aqui e sobe pra nuvem, que
+  // soma no saldo do portador (Cofre, Elison, Marta… — /financeiro/portadores).
+  await sql`CREATE TABLE IF NOT EXISTS sangria_nuvem (id bigserial PRIMARY KEY,
+    quando timestamptz DEFAULT now(), caixa_codigo bigint, valor numeric, motivo text,
+    leva text, portador_id text, login text, lancou text, nuvem_em timestamptz, nuvem_erro text)`;
 
   await initSchemaNativo();
 }
@@ -12440,6 +12446,7 @@ async function apiCaixaMovimento(body, quem) {
     contasPagar = g.ok && g.rows.length ? Number(g.rows[0].CODIGO) : null;
   }
   const obs = (body.tipo === 'sangria' ? 'levou: ' + leva + ' · ' : '') + motivo + ' · ' + (quem.nome || quem.login);
+  const portadorId = body.tipo === 'sangria' && /^[0-9a-f-]{36}$/i.test(String(body.portador_id || '')) ? String(body.portador_id) : null;
   if (nativo()) {
     // A despesa vira lançamento do caixa e sobe pro Financeiro pela nuvem —
     // aqui não existe CONTASPAGAR (esse módulo é do Concilia, não da loja).
@@ -12455,6 +12462,7 @@ async function apiCaixaMovimento(body, quem) {
     const cp = await comprovanteGaveta(cx, quem, body, valor, motivo, leva);
     // sobe já; se a nuvem não responder, o laço de 5 min reenvia
     if (body.tipo === 'despesa') caixaSaidasSubir().catch((e) => console.error('[caixa-saida] subir:', e.message));
+    if (body.tipo === 'sangria') await sangriaNaFila(cx, valor, motivo, leva, portadorId, quem);
     return { ok: true, tipo: body.tipo, valor, contas_pagar: null, ...cp };
   }
   const campos = ['CODIGOCAIXA', 'CODIGOFORMAPAGAMENTO', 'DATAOPERACAO', m.campo, 'OBSERVACAO', 'TIPO'];
@@ -12462,6 +12470,7 @@ async function apiCaixaMovimento(body, quem) {
   if (contasPagar != null) { campos.push('CODIGOCONTASPAGAR'); vals.push(String(contasPagar)); }
   const ins = await qi(`INSERT INTO CAIXAOPERACAO (${campos.join(', ')}) VALUES (${vals.join(', ')})`);
   if (!ins.ok) return { ok: false, erro: 'FB movimento: ' + ins.err };
+  if (body.tipo === 'sangria') await sangriaNaFila(cx, valor, motivo, leva, portadorId, quem);
   const cp = await comprovanteGaveta(cx, quem, body, valor, motivo, leva);
   return { ok: true, tipo: body.tipo, valor, contas_pagar: contasPagar, ...cp };
 }
@@ -12529,6 +12538,46 @@ async function caixaSaidasSubir() {
   } finally { caixaSaidasSubindo = false; }
 }
 setInterval(() => { caixaSaidasSubir().catch((e) => console.error('[caixa-saida] laço:', e.message)); }, 5 * 60 * 1000).unref();
+/** Sangria = dinheiro que foi pras mãos de um portador. Grava na fila e tenta
+ *  subir já; falha de fila/nuvem nunca derruba a sangria (o dinheiro já saiu). */
+async function sangriaNaFila(cx, valor, motivo, leva, portadorId, quem) {
+  try {
+    await sql`INSERT INTO sangria_nuvem (caixa_codigo, valor, motivo, leva, portador_id, login, lancou)
+      VALUES (${Number(cx.codigo)}, ${Number(valor)}, ${motivo}, ${leva}, ${portadorId}, ${quem.login || null}, ${quem.nome || quem.login || null})`;
+    sangriasSubir().catch((e) => console.error('[sangria] subir:', e.message));
+  } catch (e) { console.error('[sangria] fila:', e.message); }
+}
+let sangriasSubindo = false;
+async function sangriasSubir() {
+  if (sangriasSubindo) return;
+  sangriasSubindo = true;
+  try {
+    const pend = await sql`SELECT id, quando, caixa_codigo, valor, motivo, leva, portador_id, lancou
+      FROM sangria_nuvem WHERE nuvem_em IS NULL ORDER BY id LIMIT 40`;
+    if (!pend.length) return;
+    const sangrias = pend.map((x) => ({ ref: 'q' + x.id, valor: Number(x.valor), quando: new Date(x.quando).toISOString(),
+      motivo: x.motivo || '', leva: x.leva || '', portador_id: x.portador_id || undefined, lancou: x.lancou || '', caixa: String(x.caixa_codigo) }));
+    const d = await caixaSaidaNuvem('POST', { saidas: [], sangrias });
+    const feitas = (d.sangrias_feitas || []).map((r) => Number(String(r).slice(1))).filter((n) => Number.isFinite(n));
+    if (feitas.length) await sql`UPDATE sangria_nuvem SET nuvem_em=now(), nuvem_erro=NULL WHERE id = ANY(${feitas})`;
+    for (const er of d.sangrias_erros || []) {
+      await sql`UPDATE sangria_nuvem SET nuvem_erro=${String(er.erro || '').slice(0, 200)} WHERE id=${Number(String(er.ref).slice(1))}`;
+    }
+    if (feitas.length) console.log('[sangria] ' + feitas.length + ' sangria(s) no portador');
+  } finally { sangriasSubindo = false; }
+}
+setInterval(() => { sangriasSubir().catch((e) => console.error('[sangria] laço:', e.message)); }, 5 * 60 * 1000).unref();
+/** Lista de portadores da casa (vem da nuvem) pros botões da sangria. Guarda a
+ *  última que chegou: sem internet o caixa ainda vê os nomes. */
+let portadoresCache = { em: 0, lista: [] };
+async function apiCaixaPortadores() {
+  if (Date.now() - portadoresCache.em < 60_000 && portadoresCache.lista.length) return { ok: true, portadores: portadoresCache.lista };
+  try {
+    const d = await caixaSaidaNuvem('GET', { portadores: '1' });
+    if (d && Array.isArray(d.portadores)) portadoresCache = { em: Date.now(), lista: d.portadores };
+  } catch (e) { console.error('[sangria] portadores:', e.message); }
+  return { ok: true, portadores: portadoresCache.lista };
+}
 async function apiCaixaFornecedores(qRaw) {
   const t = String(qRaw || '').trim().toUpperCase();
   if (t.length < 2) return { ok: true, fornecedores: [] };
@@ -27431,7 +27480,7 @@ async function usuExcluir(l){
   USU_ED=null;telaUsu(document.getElementById('main'));
 }
 /* ---- gaveta: sangria / despesa / suprimento ---- */
-var MOVT='sangria',FORN=null;
+var MOVT='sangria',FORN=null,PORT=null;
 function telaMov(el){
   MOVT='sangria';FORN=null;
   el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ voltar</button>'+
@@ -27449,7 +27498,7 @@ function telaMov(el){
   setMov('sangria');
 }
 function setMov(t){
-  MOVT=t;FORN=null;
+  MOVT=t;FORN=null;PORT=null;
   ['sangria','despesa','suprimento'].forEach(function(k){var b=document.getElementById('mv-'+k);if(b)b.className='seg'+(k===t?' on':'')});
   var d=document.getElementById('mvdica');
   if(d)d.textContent=t==='sangria'?'Sangria = retirar dinheiro da gaveta pro cofre.'
@@ -27457,10 +27506,27 @@ function setMov(t){
     :'Suprimento = dinheiro ENTRANDO na gaveta (troco, reforço).';
   var x=document.getElementById('mvxtra');
   if(!x)return;
-  if(t==='sangria')x.innerHTML='<input id="mvleva" placeholder="QUEM está levando o dinheiro? (obrigatório)" style="margin-top:8px">';
+  if(t==='sangria'){x.innerHTML='<div id="mvport"></div><input id="mvleva" placeholder="QUEM está levando o dinheiro? (obrigatório)" style="margin-top:8px" oninput="PORT=null;marcaPort()">';carregaPort()}
   else if(t==='despesa')x.innerHTML='<input id="mvfq" placeholder="buscar fornecedor/pessoa… (2+ letras)" style="margin-top:8px" oninput="buscaForn()">'+
     '<div id="mvfl"></div><div id="mvfsel" class="mut" style="margin-top:4px"></div>';
   else x.innerHTML='';
+}
+/* Portadores (Cofre, Elison, Marta…): tocar no nome preenche o "quem leva" e
+   manda o portador certo pra nuvem; digitar à mão continua valendo. */
+var PORTS=[];
+async function carregaPort(){
+  var r;try{r=await jget('/api/caixa/portadores')}catch(e){return}
+  PORTS=(r&&r.portadores)||[];marcaPort();
+}
+function marcaPort(){
+  var el=document.getElementById('mvport');if(!el)return;
+  el.innerHTML=PORTS.length?'<div class="row" style="grid-template-columns:repeat('+Math.min(PORTS.length,4)+',1fr);margin-top:8px">'+
+    PORTS.map(function(p,i){return '<button class="seg'+(PORT===p.id?' on':'')+'" onclick="escolhePort('+i+')">'+(p.tipo==='COFRE'?'🔒 ':'👤 ')+esc(p.nome)+'</button>'}).join('')+'</div>':'';
+}
+function escolhePort(i){
+  var p=PORTS[i];if(!p)return;
+  var l=document.getElementById('mvleva');if(l)l.value=p.nome;
+  PORT=p.id;marcaPort();
 }
 var _fT=null,FORNQ='';
 function buscaForn(){
@@ -27500,6 +27566,7 @@ async function acaoMov(){
   if(MOVT==='sangria'){
     b.quem_leva=((document.getElementById('mvleva')||{}).value||'').trim();
     if(!b.quem_leva){er.textContent='diga QUEM está levando o dinheiro';return}
+    if(PORT)b.portador_id=PORT;
   }
   if(MOVT==='despesa'){
     if(!FORN){er.textContent='busque e escolha quem está recebendo';return}
@@ -30404,6 +30471,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/caixa/servico') return res.end(JSON.stringify(await apiCaixaServico(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/movimento') return res.end(JSON.stringify(await apiCaixaMovimento(await readBody(req), quem)));
       if (p === '/api/caixa/fornecedores') return res.end(JSON.stringify(await apiCaixaFornecedores(u.searchParams.get('q') || '')));
+      if (p === '/api/caixa/portadores') return res.end(JSON.stringify(await apiCaixaPortadores()));
       if (p === '/api/caixa/relatorio') return res.end(JSON.stringify(await apiCaixaRelatorio(u.searchParams.get('data'))));
       if (p === '/api/caixa/avisos-pagamento') return res.end(JSON.stringify(await apiCaixaAvisosPagamento(u.searchParams.get('desde'))));
       // imprimir a conta daqui = a mesma ação do garçom (pede a conta, aplica
