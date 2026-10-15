@@ -179,6 +179,7 @@
     "migrate:evento-ticket": "tsx scripts/migrate-evento-ticket.ts",
     "migrate:extrato-fechamento": "tsx scripts/migrate-extrato-fechamento.ts",
     "migrate:cartao-fatura": "tsx scripts/migrate-cartao-fatura.ts",
+    "migrate:portador": "tsx scripts/migrate-portador.ts",
     "migrate:cartao-rateio": "tsx scripts/migrate-cartao-rateio.ts",
     "migrate:conta-pagar-criado-por": "tsx scripts/migrate-conta-pagar-criado-por.ts",
     "migrate:fornecedor-pix-favorecido": "tsx scripts/migrate-fornecedor-pix-favorecido.ts",

@@ -13,6 +13,12 @@
 //   POST { f, e, s, saidas: [{ ref, valor, quando, motivo, recebedor,
 //          fornecedor_id?, lancou?, caixa? }] } → { ok, feitas: [ref...] }
 //
+// Portadores (Cofre, Elison, Marta… — /financeiro/portadores):
+//   GET  ?f&e&s&portadores=1  → { portadores: [{ id, nome, tipo }] } (lista da sangria)
+//   POST { f, e, s, sangrias: [{ ref, valor, quando, motivo, leva, portador_id?,
+//          lancou?, caixa? }] } → { sangrias_feitas: [ref...] } — vira entrada
+//          no portador (idempotente por 'sangria:<ref>').
+//
 // Idempotente por (filial, codigo_referencia 'caixa:<ref>'): a loja reenvia até
 // receber o ok, e reenviar não duplica. Só CRIA — nunca mexe numa conta que já
 // existe (o financeiro pode ter classificado ou corrigido na mão).
@@ -23,6 +29,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq, isNull } from 'drizzle-orm';
 import { dateToBrYmd } from '@/lib/datas';
 import { fornecedoresParaLancar, garantirFornecedorNaFilial } from '@/lib/fornecedor-unico';
+import { portadoresDaFilial, portadorPeloNome } from '@/lib/portador';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -54,6 +61,10 @@ export async function GET(request: Request) {
   const f = String(u.searchParams.get('f') || '');
   const neg = autoriza(f, Number(u.searchParams.get('e') || 0), String(u.searchParams.get('s') || ''));
   if (neg) return neg;
+  if (u.searchParams.get('portadores')) {
+    const ps = await portadoresDaFilial(f, true);
+    return NextResponse.json({ ok: true, portadores: ps.map((p) => ({ id: p.id, nome: p.nome, tipo: p.tipo })) });
+  }
   const q = semAcento(String(u.searchParams.get('q') || ''));
   if (q.length < 2) return NextResponse.json({ ok: true, fornecedores: [] });
   const todos = await fornecedoresParaLancar(f);
@@ -170,5 +181,57 @@ export async function POST(request: Request) {
       erros.push({ ref, erro: (e as Error).message.slice(0, 200) });
     }
   }
-  return NextResponse.json({ ok: true, feitas, erros });
+
+  // erros da sangria vão numa lista própria: a loja marca `erros` pelo id da despesa
+  const sangriasErros: Array<{ ref: string; erro: string }> = [];
+  const sangriasFeitas = await registrarSangrias(f, Array.isArray(b?.sangrias) ? b.sangrias.slice(0, 50) : [], sangriasErros);
+  return NextResponse.json({ ok: true, feitas, erros, sangrias_feitas: sangriasFeitas, sangrias_erros: sangriasErros });
+}
+
+/** Sangria da gaveta = dinheiro que passou pras mãos de um portador. Vira
+ *  ENTRADA no saldo dele; sem portador reconhecido fica "sem portador" na tela
+ *  (aparece, não some). Só cria — reenviar não duplica. */
+async function registrarSangrias(
+  f: string,
+  lista: unknown[],
+  erros: Array<{ ref: string; erro: string }>,
+): Promise<string[]> {
+  if (!lista.length) return [];
+  const portadores = await portadoresDaFilial(f);
+  const feitas: string[] = [];
+  for (const bruto of lista) {
+    const s = (bruto ?? {}) as Record<string, unknown>;
+    const ref = String(s.ref ?? '').trim().slice(0, 40);
+    if (!ref) continue;
+    try {
+      const valor = Math.round(Number(s.valor) * 100) / 100;
+      const quando = new Date(String(s.quando || ''));
+      if (!(valor > 0) || !Number.isFinite(quando.getTime())) { erros.push({ ref, erro: 'valor/data inválidos' }); continue; }
+      const leva = String(s.leva ?? '').trim().slice(0, 120);
+      const pid = String(s.portador_id ?? '');
+      const porId = UUID.test(pid) ? portadores.find((p) => p.id === pid) : undefined;
+      const port = porId ?? portadorPeloNome(portadores, leva);
+      const motivo = String(s.motivo ?? '').trim().slice(0, 300);
+      const lancou = String(s.lancou ?? '').trim().slice(0, 80);
+      const caixa = String(s.caixa ?? '').trim().slice(0, 30);
+      await db
+        .insert(schema.portadorMovimento)
+        .values({
+          filialId: f,
+          portadorId: port?.id ?? null,
+          data: dateToBrYmd(quando),
+          tipo: 'SANGRIA',
+          valor: valor.toFixed(2),
+          descricao: [motivo, caixa ? `caixa ${caixa}` : '', lancou ? `lançou ${lancou}` : ''].filter(Boolean).join(' · '),
+          quemLevou: leva || null,
+          codigoReferencia: `sangria:${ref}`,
+          criadoEm: quando,
+        })
+        .onConflictDoNothing();
+      feitas.push(ref);
+    } catch (e) {
+      erros.push({ ref, erro: (e as Error).message.slice(0, 200) });
+    }
+  }
+  return feitas;
 }

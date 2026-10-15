@@ -55,3 +55,4 @@ export * from './evento-ticket';
 export * from './tripadvisor';
 export * from './extrato-fechamento';
 export * from './cartao-fatura';
+export * from './portador';
