@@ -13,7 +13,8 @@
 
 import { db, schema } from '@concilia/db';
 import type { AreaReserva, ReservaConfig } from '@concilia/db/schema';
-import { and, eq, gte, sql } from 'drizzle-orm';
+import { and, eq, gte, ne, sql } from 'drizzle-orm';
+import { nomeDaCasa } from './outras-casas';
 import { randomBytes } from 'node:crypto';
 import { hojeBr, horaAgoraBr } from '@/lib/datas';
 import { hashCpf, spcConfigurado } from '@/lib/spc';
@@ -369,6 +370,74 @@ function rotuloPago(r: { pagamentoStatus: string | null; pagamentoValor: string 
   return r.pagamentoStatus === 'pago' ? ` — LOUNGE PAGO (R$ ${Number(r.pagamentoValor ?? 0).toFixed(2)}, sem tolerância de horário, a mesa é do cliente o dia todo)` : '';
 }
 
+/** Última tentativa antes do "não achei": a reserva pode estar em OUTRA casa
+ *  do grupo. Caso 15/10/2026: o número do Prainha Bar também atende o Tabuará
+ *  ("duas casas"), a cliente mandou o CPF de uma reserva de aniversário no
+ *  Tabuará e a Nina, que só procurava na casa da conversa, respondeu duas vezes
+ *  "não encontrei, me passe o telefone ou o CPF". Procura pelos mesmos
+ *  identificadores (informados, trocados de papel e o telefone da conversa).
+ *  Só informa: remarcar/cancelar continuam presos à casa da conversa. */
+async function avisoReservaOutraCasa(
+  filialId: string,
+  p: { telefoneConversa: string; telefoneReserva?: string | null; cpfReserva?: string | null },
+): Promise<string | null> {
+  const tel = (p.telefoneReserva ?? '').replace(/\D/g, '');
+  const cpf = (p.cpfReserva ?? '').replace(/\D/g, '');
+  const chaves: Array<{ cpf: string } | { suf: string }> = [];
+  if (cpf.length === 11) chaves.push({ cpf });
+  if (tel.length === 11) chaves.push({ cpf: tel });
+  if (tel.length >= 8) chaves.push({ suf: tel.slice(-8) });
+  if (cpf.length >= 10) chaves.push({ suf: cpf.slice(-8) });
+  const conversa = p.telefoneConversa.replace(/\D/g, '');
+  if (conversa.length >= 8) chaves.push({ suf: conversa.slice(-8) });
+  if (chaves.length === 0) return null;
+
+  const [atual] = await db
+    .select({ organizacaoId: schema.filial.organizacaoId })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, filialId))
+    .limit(1);
+  if (!atual) return null;
+
+  for (const chave of chaves) {
+    const filtroIdent =
+      'cpf' in chave
+        ? sql`regexp_replace(coalesce(${schema.reserva.clienteCpf}, ''), '\\D', '', 'g') = ${chave.cpf}`
+        : sql`right(regexp_replace(${schema.reserva.clienteTelefone}, '\\D', '', 'g'), 8) = ${chave.suf}`;
+    const achadas = await db
+      .select({
+        casa: schema.filial.nome,
+        data: schema.reserva.data,
+        hora: schema.reserva.hora,
+        area: schema.reserva.area,
+        pessoas: schema.reserva.pessoas,
+        nome: schema.reserva.clienteNome,
+        pagamentoStatus: schema.reserva.pagamentoStatus,
+        pagamentoValor: schema.reserva.pagamentoValor,
+      })
+      .from(schema.reserva)
+      .innerJoin(schema.filial, eq(schema.filial.id, schema.reserva.filialId))
+      .where(
+        and(
+          eq(schema.filial.organizacaoId, atual.organizacaoId),
+          ne(schema.reserva.filialId, filialId),
+          filtroIdent,
+          sql`${schema.reserva.status} IN ('pendente', 'confirmada')`,
+          sql`${schema.reserva.data} >= current_date`,
+        ),
+      )
+      .orderBy(schema.reserva.data, schema.reserva.hora)
+      .limit(5);
+    if (achadas.length === 0) continue;
+    const linhas = achadas.map(
+      (r) =>
+        `- ${nomeDaCasa(r.casa)}: ${dataBr(String(r.data))} às ${String(r.hora).slice(0, 5)}, ${r.area}, ${r.pessoas} pessoa(s), em nome de ${(r.nome ?? 'cliente').split(' ')[0]}${rotuloPago(r)}`,
+    );
+    return `Nesta casa NÃO há reserva com esse telefone/CPF — mas ACHEI em OUTRA casa do grupo:\n${linhas.join('\n')}\nNÃO diga que a reserva não existe e NÃO peça o telefone/CPF de novo. Confirme com o cliente em UMA frase (casa + primeiro nome + dia + hora) e responda a dúvida dele sobre essa reserva usando o que você sabe daquela casa. Mudar ou cancelar reserva de outra casa você NÃO faz por aqui: se ele pedir, passe pra casa certa (passagem) ou transfira pra equipe com o resumo.`;
+  }
+  return null;
+}
+
 /** Localiza reserva ativa por OUTRO telefone ou por CPF (a reserva foi feita
  *  por outra pessoa/número). Devolve dados suficientes pra Nina CONFIRMAR com
  *  o cliente antes de mexer — sem expor telefone/CPF completo. */
@@ -390,6 +459,8 @@ export async function localizarReservaWhatsApp(p: {
   }
   if (!identValido && !ativas) return 'Identificador inválido: preciso de um telefone com DDD ou um CPF de 11 dígitos. Peça de novo ao cliente.';
   if (!ativas || ativas.length === 0) {
+    const outra = await avisoReservaOutraCasa(p.filialId, { telefoneConversa: p.telefoneConversa, telefoneReserva: p.telefone, cpfReserva: p.cpf });
+    if (outra) return outra;
     return 'Nenhuma reserva ativa (de hoje em diante) nesse telefone/CPF. Confira o número com o cliente (DDD + 9 dígitos) ou peça o CPF de quem fez a reserva. Se ele garantir que existe e nada aparecer, transfira pra equipe.';
   }
   const linhas = ativas.map((r) => {
@@ -423,6 +494,8 @@ export async function cancelarReservaWhatsApp(p: {
   if (ativas === null) return 'Telefone/CPF inválido — confira com o cliente ou transfira pra equipe.';
 
   if (ativas.length === 0) {
+    const outra = await avisoReservaOutraCasa(p.filialId, { telefoneConversa: p.telefone, telefoneReserva: p.telefoneReserva, cpfReserva: p.cpfReserva });
+    if (outra) return outra;
     return 'Nenhuma reserva ativa encontrada neste telefone (pode já ter sido cancelada ou liberada por atraso). Se o cliente garantir que tem, transfira pra equipe.';
   }
 
@@ -959,6 +1032,8 @@ export async function remarcarReservaWhatsApp(p: {
   }
   if (ativas === null) return 'Telefone/CPF inválido — confira com o cliente ou transfira pra equipe.';
   if (ativas.length === 0) {
+    const outra = await avisoReservaOutraCasa(p.filialId, { telefoneConversa: p.telefone, telefoneReserva: p.telefoneReserva, cpfReserva: p.cpfReserva });
+    if (outra) return outra;
     return 'Nenhuma reserva ativa neste telefone pra remarcar (pode já ter sido cancelada ou liberada por atraso). Se o cliente garantir que tem, transfira pra equipe.';
   }
 
@@ -1155,6 +1230,8 @@ export async function corrigirTelefoneReservaWhatsApp(p: {
     }
   }
   if (!ativas || ativas.length === 0) {
+    const outra = await avisoReservaOutraCasa(p.filialId, { telefoneConversa: p.telefone, telefoneReserva: p.telefoneReserva, cpfReserva: p.cpfReserva });
+    if (outra) return outra;
     return 'Nenhuma reserva ativa (de hoje em diante) nesse CPF/telefone. Confira o CPF com o cliente; se ele garantir que existe e nada aparecer, transfira pra equipe.';
   }
   const candidatas = p.data ? ativas.filter((r) => String(r.data) === p.data) : ativas;
