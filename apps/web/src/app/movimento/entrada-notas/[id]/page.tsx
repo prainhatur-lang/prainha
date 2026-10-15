@@ -16,6 +16,8 @@ import { fornecedoresParaLancar } from '@/lib/fornecedor-unico';
 import { urlFotoPedido } from '@/lib/pedido-sem-nota';
 import { confrontoDaNota } from '@/lib/confronto-pedido-nota';
 import { ConfrontoPedido } from './confronto-pedido';
+import { sugestoesDoPedido } from '@/lib/sugestao-pedido-nota';
+import { VincularPeloPedidoBtn } from './vincular-pelo-pedido';
 import { CelularLeuOutra } from './celular-leu-outra';
 
 export const dynamic = 'force-dynamic';
@@ -232,6 +234,34 @@ export default async function NotaDetalhePage(props: {
     console.error('[confronto-pedido-nota]', e);
     return null;
   });
+  // Insumo do pedido pra cada item sem vínculo (atalho + vínculo em lote)
+  const sugestoes = confronto ? sugestoesDoPedido(confronto, itens) : new Map();
+  const vinculosSeguros = itens.flatMap((it) => {
+    const sg = sugestoes.get(it.id);
+    if (!sg || sg.fatorSeguro == null || idsLancados.has(it.id)) return [];
+    return [{ itemId: it.id, produtoId: sg.produtoId, fator: sg.fatorSeguro, descricao: it.descricao ?? '—', produtoNome: sg.produtoNome }];
+  });
+  const pedidosSugeridos = [...new Set([...sugestoes.values()].map((sg) => sg.pedidoNumero))].sort((a, b) => a - b);
+
+  // Nota de OUTRA casa (CNPJ do destinatário) — ex.: NF 8939 da LJQO, da Mar,
+  // trazida pelo celular com a Bar selecionada (15/10/2026). Aqui ela não acha
+  // o pedido nem os insumos certos; aponta pra cópia da casa dela.
+  const destDigitos = (nota.destCnpj ?? '').replace(/\D/g, '');
+  const [casaDest] = destDigitos.length === 14
+    ? await db
+        .select({ id: schema.filial.id, nome: schema.filial.nome })
+        .from(schema.filial)
+        .where(and(eq(schema.filial.cnpj, destDigitos), sql`${schema.filial.id} <> ${nota.filialId}`))
+        .limit(1)
+    : [];
+  const [copiaNaCasa] = casaDest && nota.chave
+    ? await db
+        .select({ id: schema.notaCompra.id })
+        .from(schema.notaCompra)
+        .where(and(eq(schema.notaCompra.filialId, casaDest.id), eq(schema.notaCompra.chave, nota.chave)))
+        .limit(1)
+    : [];
+
   const [casa] = confronto
     ? await db
         .select({ nome: schema.filial.nome })
@@ -376,6 +406,26 @@ export default async function NotaDetalhePage(props: {
           </Link>
         </nav>
         <CelularLeuOutra filialId={nota.filialId} notaId={nota.id} />
+
+        {casaDest && (
+          <div className="mt-3 rounded-xl border border-red-300 bg-red-50 p-4 text-sm text-red-900">
+            <p className="font-semibold">⚠ Esta nota é da {casaDest.nome}, não desta casa</p>
+            <p className="mt-1 text-xs">
+              O destinatário da nota é o CNPJ da {casaDest.nome}. O pedido de compra e os insumos certos estão lá —
+              não vincule nem lance por aqui.
+              {copiaNaCasa ? (
+                <>
+                  {' '}
+                  <Link href={`/movimento/entrada-notas/${copiaNaCasa.id}`} className="font-semibold underline">
+                    Abrir a nota na {casaDest.nome} →
+                  </Link>
+                </>
+              ) : (
+                ' Ela ainda não está na entrada de notas de lá.'
+              )}
+            </p>
+          </div>
+        )}
 
         <div className="mt-2 flex items-start justify-between gap-4">
           <div>
@@ -820,6 +870,14 @@ export default async function NotaDetalhePage(props: {
           </div>
         )}
 
+        {(vinculosSeguros.length > 0 || sugestoes.size > 0) && (
+          <VincularPeloPedidoBtn
+            vinculos={vinculosSeguros}
+            pedidos={pedidosSugeridos}
+            outrosSugeridos={sugestoes.size - vinculosSeguros.length}
+          />
+        )}
+
         {/* No celular a tabela não cabe: a coluna "Produto interno" (onde se vincula
             o insumo) ficava cortada e sem como chegar nela. Agora rola pro lado. */}
         <p className="mt-6 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900 md:hidden">
@@ -879,6 +937,7 @@ export default async function NotaDetalhePage(props: {
                       codigo: p.codigoPersonalizado,
                     }))}
                     filialId={nota.filialId}
+                    sugestaoPedido={idsLancados.has(it.id) ? null : (sugestoes.get(it.id) ?? null)}
                   />
                 ))
               )}

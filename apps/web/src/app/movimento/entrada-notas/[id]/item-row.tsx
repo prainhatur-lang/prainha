@@ -89,23 +89,43 @@ function sugerirFator(
   return peloCadastro ?? { fator: 1, explicacao: null };
 }
 
+/** Fator inicial do campo ao escolher o insumo. Insumo em ml/g sem tamanho
+ *  detectado: começa vazio e obriga a responder "a garrafa tem quantos ml?"
+ *  (fator 1 = 1 garrafa virando 1 ml). */
+function fatorSugeridoTexto(descricao: string | null, p: ProdutoOpcao): string {
+  const sug = sugerirFator(descricao, p.unidade, p.volumeMl ?? null);
+  const medida = ['ml', 'l', 'g', 'kg'].includes((p.unidade ?? '').toLowerCase());
+  return medida && sug.fator === 1 ? '' : String(sug.fator);
+}
+
 /** Unidade da nota que é embalagem (caixa, pacote, fardo…), não unidade solta. */
 const UNIDADES_EMBALAGEM = new Set(['CX', 'CXA', 'PAC', 'PCT', 'PC', 'FD', 'FDO', 'FARDO', 'DZ', 'PACK', 'PK', 'KIT', 'EMB', 'BD', 'BDJ', 'SC', 'CJ', 'GF', 'ENG']);
 function ehEmbalagem(unidade: string | null | undefined): boolean {
   return UNIDADES_EMBALAGEM.has((unidade ?? '').trim().toUpperCase().replace(/[^A-Z]/g, ''));
 }
 
+/** Insumo que o pedido de compra deu pra esse item (lib/sugestao-pedido-nota). */
+export interface SugestaoPedidoItem {
+  produtoId: string;
+  produtoNome: string;
+  pedidoNumero: number;
+}
+
 export function ItemRow({
   item,
   produtosDisponiveis,
   filialId,
+  sugestaoPedido,
 }: {
   item: Item;
   produtosDisponiveis: ProdutoOpcao[];
   filialId: string;
+  sugestaoPedido?: SugestaoPedidoItem | null;
 }) {
   const router = useRouter();
   const [modal, setModal] = useState(false);
+  // Abriu pelo atalho do pedido: o modal já vem com o insumo do pedido escolhido
+  const [doPedido, setDoPedido] = useState(false);
   const [corrigir, setCorrigir] = useState(false);
   const [editandoFator, setEditandoFator] = useState(false);
   const [pending, start] = useTransition();
@@ -302,13 +322,28 @@ export function ItemRow({
             )}
           </div>
         ) : (
-          <button
-            type="button"
-            onClick={() => setModal(true)}
-            className="rounded border border-dashed border-slate-300 px-2 py-0.5 text-[10px] text-slate-500 hover:border-slate-500 hover:text-slate-800"
-          >
-            vincular produto
-          </button>
+          <div className="flex flex-col items-start gap-1">
+            <button
+              type="button"
+              onClick={() => setModal(true)}
+              className="rounded border border-dashed border-slate-300 px-2 py-0.5 text-[10px] text-slate-500 hover:border-slate-500 hover:text-slate-800"
+            >
+              vincular produto
+            </button>
+            {sugestaoPedido && !item.lancado && (
+              <button
+                type="button"
+                onClick={() => {
+                  setDoPedido(true);
+                  setModal(true);
+                }}
+                title="Insumo do pedido de compra — confira a conversão e confirme"
+                className="max-w-[220px] truncate rounded bg-indigo-50 px-2 py-0.5 text-left text-[10px] font-medium text-indigo-800 ring-1 ring-indigo-200 hover:bg-indigo-100"
+              >
+                🧾 Pedido #{sugestaoPedido.pedidoNumero}: {sugestaoPedido.produtoNome}
+              </button>
+            )}
+          </div>
         )}
       </td>
 
@@ -317,8 +352,12 @@ export function ItemRow({
           item={item}
           produtosDisponiveis={produtosDisponiveis}
           filialId={filialId}
-          onFechar={() => setModal(false)}
+          onFechar={() => {
+            setModal(false);
+            setDoPedido(false);
+          }}
           onVincular={vincular}
+          produtoInicialId={doPedido ? sugestaoPedido?.produtoId : undefined}
         />
       )}
       {corrigir && (
@@ -466,6 +505,7 @@ function ModalVincular({
   onVincular,
   modo = 'vincular',
   fatorInicial,
+  produtoInicialId,
 }: {
   item: Item;
   produtosDisponiveis: ProdutoOpcao[];
@@ -475,8 +515,11 @@ function ModalVincular({
   /** 'corrigir': item já lançado — sem criar insumo nem desvincular */
   modo?: 'vincular' | 'corrigir';
   fatorInicial?: number;
+  /** Já abre com esse insumo escolhido (atalho do pedido de compra) */
+  produtoInicialId?: string;
 }) {
   const corrigindo = modo === 'corrigir';
+  const produtoInicial = produtoInicialId ? (produtosDisponiveis.find((p) => p.id === produtoInicialId) ?? null) : null;
   const fundoPressionado = useRef(false);
   const [busca, setBusca] = useState((item.descricao ?? '').slice(0, 30));
   const [pending, start] = useTransition();
@@ -489,10 +532,14 @@ function ModalVincular({
 
   // Produto selecionado pra ver/editar fator antes de vincular.
   const [produtoSelecionado, setProdutoSelecionado] = useState<ProdutoOpcao | null>(() =>
-    corrigindo ? (produtosDisponiveis.find((p) => p.id === item.produtoId) ?? null) : null,
+    corrigindo ? (produtosDisponiveis.find((p) => p.id === item.produtoId) ?? null) : produtoInicial,
   );
   const [fatorTexto, setFatorTexto] = useState<string>(() =>
-    corrigindo && fatorInicial ? String(Math.round(fatorInicial * 1e6) / 1e6) : '1',
+    corrigindo && fatorInicial
+      ? String(Math.round(fatorInicial * 1e6) / 1e6)
+      : produtoInicial
+        ? fatorSugeridoTexto(item.descricao, produtoInicial)
+        : '1',
   );
   const [fatorNovo, setFatorNovo] = useState<number | null>(null);
 
@@ -510,11 +557,7 @@ function ModalVincular({
 
   function escolherProduto(p: ProdutoOpcao) {
     setProdutoSelecionado(p);
-    const sug = sugerirFator(item.descricao, p.unidade, p.volumeMl ?? null);
-    // Insumo em ml/g sem tamanho detectado: começa vazio e obriga a responder
-    // "a garrafa tem quantos ml?" (fator 1 = 1 garrafa virando 1 ml).
-    const medida = ['ml', 'l', 'g', 'kg'].includes((p.unidade ?? '').toLowerCase());
-    setFatorTexto(medida && sug.fator === 1 ? '' : String(sug.fator));
+    setFatorTexto(fatorSugeridoTexto(item.descricao, p));
   }
 
   async function confirmarVinculo() {

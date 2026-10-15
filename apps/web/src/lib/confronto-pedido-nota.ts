@@ -77,6 +77,12 @@ export interface LinhaConfronto {
   pedidoId: string;
   pedidoNumero: number;
   produtoNome: string;
+  /** Insumo do item do pedido (pra vincular o item da nota a ele) */
+  produtoId: string;
+  /** Unidade de estoque do insumo do pedido */
+  produtoUnidade: string | null;
+  /** Itens DESTA nota que caíram nessa linha */
+  notaItemIds: string[];
   pedQtd: number;
   pedUnidade: string;
   pedPreco: number;
@@ -99,6 +105,8 @@ export interface LinhaConfronto {
 }
 
 export interface ItemSolto {
+  /** Item da nota (só nos itens desta nota) */
+  notaItemId?: string;
   descricao: string;
   quantidade: number;
   unidade: string | null;
@@ -124,7 +132,15 @@ export interface ConfrontoNota {
   /** Na nota, sem insumo vinculado e sem item de pedido com o mesmo valor */
   semVinculo: ItemSolto[];
   /** Nos pedidos envolvidos e em nota nenhuma do fornecedor */
-  naoVieram: { pedidoNumero: number; produtoNome: string; quantidade: number; unidade: string; total: number }[];
+  naoVieram: {
+    pedidoNumero: number;
+    produtoId: string;
+    produtoUnidade: string | null;
+    produtoNome: string;
+    quantidade: number;
+    unidade: string;
+    total: number;
+  }[];
   /** Pedidos do fornecedor no período que não bateram com nenhum item desta nota */
   pedidosSemItem: PedidoEnvolvido[];
   totalPedido: number;
@@ -200,6 +216,7 @@ export async function confrontoDaNota(notaId: string): Promise<ConfrontoNota | n
       pedidoId: schema.pedidoCompraItem.pedidoCompraId,
       produtoId: schema.pedidoCompraItem.produtoId,
       produtoNome: schema.produto.nome,
+      produtoUnidade: schema.produto.unidadeEstoque,
       quantidade: schema.pedidoCompraItem.quantidade,
       unidade: schema.pedidoCompraItem.unidade,
       precoUnitario: schema.pedidoCompraItem.precoUnitario,
@@ -261,7 +278,7 @@ export async function confrontoDaNota(notaId: string): Promise<ConfrontoNota | n
   const pedidoPorId = new Map(pedidos.map((p) => [p.id, p]));
 
   // item do pedido → linhas de nota que caíram nele
-  type Parte = { notaId: string; descricao: string; qtd: number; unidade: string | null; total: number; porValor: boolean };
+  type Parte = { notaItemId: string; notaId: string; descricao: string; qtd: number; unidade: string | null; total: number; porValor: boolean };
   const caiu = new Map<string, Parte[]>();
   const fechado = new Set<string>(); // item de pedido que já bateu no centavo
   const foraDoPedido: ItemSolto[] = [];
@@ -271,6 +288,7 @@ export async function confrontoDaNota(notaId: string): Promise<ConfrontoNota | n
     .map((inf) => {
       const n = notaPorId.get(inf.notaId)!;
       return {
+        id: inf.id,
         notaId: inf.notaId,
         dia: n.dia,
         produtoId: inf.produtoId,
@@ -291,7 +309,7 @@ export async function confrontoDaNota(notaId: string): Promise<ConfrontoNota | n
       .sort((a, b) => b.ped.dia - a.ped.dia || a.ped.numero - b.ped.numero);
   const aloca = (s: Solto, ipId: string, porValor: boolean) => {
     const l = caiu.get(ipId) ?? [];
-    l.push({ notaId: s.notaId, descricao: s.descricao, qtd: s.qtd, unidade: s.unidade, total: s.total, porValor });
+    l.push({ notaItemId: s.id, notaId: s.notaId, descricao: s.descricao, qtd: s.qtd, unidade: s.unidade, total: s.total, porValor });
     caiu.set(ipId, l);
     s.alocado = true;
   };
@@ -339,7 +357,7 @@ export async function confrontoDaNota(notaId: string): Promise<ConfrontoNota | n
   // 3ª passada — mesmo insumo com valor diferente: é a divergência.
   for (const s of soltos) {
     if (s.alocado) continue;
-    const solto: ItemSolto = { descricao: s.descricao, quantidade: s.qtd, unidade: s.unidade, total: s.total };
+    const solto: ItemSolto = { notaItemId: s.id, descricao: s.descricao, quantidade: s.qtd, unidade: s.unidade, total: s.total };
     const c = s.produtoId
       ? naJanela(s).find(({ ip }) => ip.produtoId === s.produtoId && !fechado.has(ip.id))
       : undefined;
@@ -375,6 +393,9 @@ export async function confrontoDaNota(notaId: string): Promise<ConfrontoNota | n
       pedidoId: ped.id,
       pedidoNumero: ped.numero,
       produtoNome: ip.produtoNome ?? '(sem nome)',
+      produtoId: ip.produtoId,
+      produtoUnidade: ip.produtoUnidade,
+      notaItemIds: desta.map((p) => p.notaItemId),
       pedQtd,
       pedUnidade: ip.unidade,
       pedPreco,
@@ -407,6 +428,8 @@ export async function confrontoDaNota(notaId: string): Promise<ConfrontoNota | n
     .filter((ip) => envolvidos.has(ip.pedidoId) && !(caiu.get(ip.id)?.length))
     .map((ip) => ({
       pedidoNumero: pedidoPorId.get(ip.pedidoId)!.numero,
+      produtoId: ip.produtoId,
+      produtoUnidade: ip.produtoUnidade,
       produtoNome: ip.produtoNome ?? '(sem nome)',
       quantidade: Number(ip.quantidade),
       unidade: ip.unidade,
