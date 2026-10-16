@@ -453,10 +453,74 @@ class ProdutosActivity : AppCompatActivity() {
         enviarBtn.text = txt
     }
 
+    /** Token do vendas-local = login.vence_ms.assinatura — vence nos próximos
+     *  10 min? (a cobrança + o registro do pagamento têm que caber na sessão) */
+    private fun tokenVenceLogo(tk: String): Boolean {
+        val exp = tk.split('.').getOrNull(1)?.toLongOrNull() ?: return false
+        return exp < System.currentTimeMillis() + 10 * 60_000L
+    }
+
+    /** Sessão vencida no ticket: pede o PIN do MESMO login, renova o token e
+     *  segue (o carrinho fica). Sem login salvo → volta pro login de verdade. */
+    private fun ticketRelogar(depois: () -> Unit) {
+        val login = Session.login(this)
+        if (login.isNullOrBlank()) {
+            Session.clear(this)
+            startActivity(android.content.Intent(this, LoginActivity::class.java))
+            finishAffinity()
+            return
+        }
+        val pin = EditText(this).apply {
+            hint = "PIN"
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD
+        }
+        val caixa = LinearLayout(this).apply { setPadding(48, 16, 48, 0); addView(pin) }
+        val d = AlertDialog.Builder(this)
+            .setTitle("Sessão expirou")
+            .setMessage("Digite o PIN de $login pra continuar a venda (o carrinho continua).")
+            .setView(caixa)
+            .setNegativeButton("Cancelar", null)
+            .setPositiveButton("Entrar", null)
+            .create()
+        d.setOnShowListener {
+            val ok = d.getButton(AlertDialog.BUTTON_POSITIVE)
+            ok.setOnClickListener {
+                val p = pin.text.toString().trim()
+                if (p.isEmpty()) { pin.error = "Digite o PIN"; return@setOnClickListener }
+                ok.isEnabled = false
+                val base = Session.servidor(this)
+                Thread {
+                    try {
+                        val r = Api.entrar(base, login, p, null)
+                        val token = r.optString("token", "")
+                        runOnUiThread {
+                            if (r.optBoolean("ok") && token.isNotBlank()) {
+                                Session.save(this, token, login, r.optString("nome", "").ifBlank { Session.nome(this) },
+                                    Session.podeDesconto(this), r.optBoolean("entregas", Session.entregas(this)))
+                                d.dismiss()
+                                depois()
+                            } else {
+                                ok.isEnabled = true
+                                pin.error = r.optString("erro", "").ifBlank { "PIN não confere" }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread { ok.isEnabled = true; pin.error = e.message ?: "Falha ao entrar" }
+                    }
+                }.start()
+            }
+        }
+        d.show()
+    }
+
     /** Preço do servidor (com e sem 10%) e o garçom escolhe — o 10% é opcional. */
     private fun ticketPrevia() {
         if (carrinho.isEmpty() || cobrandoTicket) return
-        val tk = Session.token(this) ?: return finish()
+        val tk = Session.token(this)
+        // Sessão vencida (16 h) ou vencendo: renova AQUI com o PIN, sem perder o
+        // carrinho. Antes o 401 fechava a tela e voltava pras mesas — que abrem
+        // sem login —, e o COBRAR "não fazia nada" (Mar, 16/10).
+        if (tk == null || tokenVenceLogo(tk)) { ticketRelogar { ticketPrevia() }; return }
         ticketOcupado(true, "Calculando…")
         val base = Session.servidor(this)
         Thread {
@@ -488,7 +552,7 @@ class ProdutosActivity : AppCompatActivity() {
                     b.show()
                 }
             } catch (e: Api.SemSessao) {
-                runOnUiThread { Toast.makeText(this, e.message, Toast.LENGTH_LONG).show(); finish() }
+                runOnUiThread { ticketOcupado(false); ticketRelogar { ticketPrevia() } }
             } catch (e: Exception) {
                 runOnUiThread {
                     ticketOcupado(false)
@@ -502,7 +566,8 @@ class ProdutosActivity : AppCompatActivity() {
      *  maquininha. A conta, os itens e o KDS só nascem quando o pagamento
      *  registra (POST /api/lio/pagar com ticket_id). */
     private fun ticketCobrar(servico: Boolean) {
-        val tk = Session.token(this) ?: return finish()
+        val tk = Session.token(this)
+        if (tk == null || tokenVenceLogo(tk)) { ticketRelogar { ticketCobrar(servico) }; return }
         if (!Pagamento.pronto) {
             Toast.makeText(this, "Maquininha não conectada — o ticket só é vendido na maquininha", Toast.LENGTH_LONG).show()
             if (Pagamento.configured()) Pagamento.bind(this, onReady = { }, onError = { })
@@ -560,7 +625,7 @@ class ProdutosActivity : AppCompatActivity() {
                     )
                 }
             } catch (e: Api.SemSessao) {
-                runOnUiThread { Toast.makeText(this, e.message, Toast.LENGTH_LONG).show(); finish() }
+                runOnUiThread { ticketOcupado(false); ticketRelogar { ticketCobrar(servico) } }
             } catch (e: Exception) {
                 runOnUiThread {
                     ticketOcupado(false)
