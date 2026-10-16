@@ -15,6 +15,7 @@ import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
 import { buscarXmlPorChave, importarPorChave } from '@/lib/nfe-distribuicao';
+import { podeUsuario } from '@/lib/permissoes-runtime';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -46,7 +47,9 @@ export async function POST(req: Request) {
       ),
     )
     .limit(1);
-  if (!link || link.role !== 'DONO') {
+  // DONO ou quem dá entrada em nota na casa (nota_compra.create) — o Cauã da
+  // Mar não conseguia trazer a nota pela chave (16/10/2026)
+  if (!link || (link.role !== 'DONO' && !(await podeUsuario(user.id, 'nota_compra.create')))) {
     return NextResponse.json({ error: 'so DONO pode buscar XML na SEFAZ' }, { status: 403 });
   }
 
