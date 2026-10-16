@@ -44,12 +44,6 @@ export async function GET(request: Request) {
   const desde24h = new Date(Date.now() - 24 * 3600 * 1000);
   const desde12h = new Date(Date.now() - 12 * 3600 * 1000);
 
-  const [fil] = await db
-    .select({ reservaConfig: schema.filial.reservaConfig })
-    .from(schema.filial)
-    .where(eq(schema.filial.id, f))
-    .limit(1);
-
   const espera = await db
     .select({
       id: schema.listaEspera.id,
@@ -97,6 +91,23 @@ export async function GET(request: Request) {
     .orderBy(desc(schema.avaliacao.criadoEm))
     .limit(80);
 
+  const { reservas: reservasSaida, areas } = await reservasDoDia(f, hoje);
+  return NextResponse.json({ ok: true, agora: new Date().toISOString(), hoje, areas, espera, avaliacoes, reservas: reservasSaida });
+}
+
+/** Reservas de UMA data + o mapa de mesas com quem está em cada uma — o que
+ *  a tela /reservas da loja mostra. Hoje vem no GET; outro dia (a recepção
+ *  olhando amanhã, o fim de semana) vem pelo POST 'reservas_dia'. Comanda
+ *  aberta no Consumer só conta quando a data é hoje. */
+async function reservasDoDia(f: string, data: string) {
+  const { db, schema } = await import('@concilia/db');
+  const { and, eq, inArray, asc } = await import('drizzle-orm');
+  const [fil] = await db
+    .select({ reservaConfig: schema.filial.reservaConfig })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, f))
+    .limit(1);
+
   const reservas = await db
     .select({
       id: schema.reserva.id,
@@ -122,7 +133,7 @@ export async function GET(request: Request) {
     .where(
       and(
         eq(schema.reserva.filialId, f),
-        eq(schema.reserva.data, hoje),
+        eq(schema.reserva.data, data),
         // no_show entra pra recepção poder DESFAZER um toque errado — o cartão
         // continua na tela do dia marcado em vermelho.
         inArray(schema.reserva.status, ['pendente', 'confirmada', 'sentada', 'no_show']),
@@ -140,12 +151,13 @@ export async function GET(request: Request) {
 
   // MAPA DE MESAS COM OCUPAÇÃO — é o que faz a recepção da loja só conseguir
   // oferecer mesa que existe, que cabe a turma e que está livre. Mesmas duas
-  // travas do painel: mesa presa por reserva ativa de HOJE (pendente,
+  // travas do painel: mesa presa por reserva ativa DO DIA (pendente,
   // confirmada, sentada) e mesa com comanda aberta agora no Consumer
   // (walk-in, sujeito ao atraso do CDC). A checagem final continua sendo o
   // POST daqui (409) — isto é o que a tela mostra.
   const { mesasOcupadasNoConsumer } = await import('@/lib/reservas/mesa-disponivel');
-  const noConsumer = await mesasOcupadasNoConsumer(f);
+  // comanda aberta agora só vale pro dia de hoje — amanhã a mesa está livre
+  const noConsumer = data === hojeBr() ? await mesasOcupadasNoConsumer(f) : new Set<string>();
   const presas = new Map<string, { nome: string; hora: string; pessoas: number }>();
   for (const r of reservas) {
     if (r.status !== 'pendente' && r.status !== 'confirmada' && r.status !== 'sentada') continue;
@@ -175,7 +187,7 @@ export async function GET(request: Request) {
         };
       }),
     }));
-  return NextResponse.json({ ok: true, agora: new Date().toISOString(), hoje, areas, espera, avaliacoes, reservas: reservasSaida });
+  return { reservas: reservasSaida, areas };
 }
 
 const ACOES_ESPERA = new Set(['chamar', 'sentou', 'desistiu', 'voltar']);
@@ -199,6 +211,12 @@ export async function POST(request: Request) {
   }
   if (body.tipo === 'avaliacao_nova') return avaliacaoNova(String(body.f), body as unknown as AvaliacaoNova);
   if (body.tipo === 'espera_nova') return esperaNova(String(body.f), body as unknown as EsperaNova);
+  // Reservas de OUTRO DIA na tela da recepção (setas ◀ ▶ do /reservas da loja).
+  if (body.tipo === 'reservas_dia') {
+    const d = String((body as { data?: string }).data || '');
+    const data = /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : hojeBr();
+    return NextResponse.json({ ok: true, data, hoje: hojeBr(), ...(await reservasDoDia(String(body.f), data)) });
+  }
   // NOVA RESERVA pela recepção da loja — mesmo modelo do painel (/reservas).
   if (body.tipo === 'reserva_mapa') return reservaMapa(String(body.f), body as unknown as { data?: string });
   if (body.tipo === 'reserva_quem') return reservaQuem(String(body.f), body as unknown as { q?: string });

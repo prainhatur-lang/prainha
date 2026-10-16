@@ -20047,6 +20047,9 @@ a.zap{text-decoration:none;font-weight:700;color:#0a7a3d}
 .vazio{padding:46px 16px;text-align:center;color:var(--mut)}
 .erro{margin:14px;padding:11px 14px;border-radius:10px;background:#fff1f1;color:#b91c1c;font-size:14px}
 .barra.sub{top:52px;z-index:4}
+.dia{display:flex;gap:6px;align-items:center}
+.dia input{font:inherit;font-size:15px;padding:8px 10px;border:1px solid var(--line);border-radius:10px}
+.dia .ds{color:var(--mut);font-size:13px;font-weight:600}
 .novo{background:#fff;border-bottom:1px solid var(--line);padding:11px 16px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .novo input{font:inherit;font-size:15px;padding:10px 12px;border:1px solid var(--line);border-radius:10px}
 .novo input#en{flex:2 1 190px;min-width:140px}
@@ -20114,7 +20117,11 @@ a.zap{text-decoration:none;font-weight:700;color:#0a7a3d}
 <input id="q" placeholder="nome, telefone ou mesa" oninput="pinta()" autocomplete="off">
 <button class="seg on" id="f_vem" onclick="filtro(1)">Por chegar</button>
 <button class="seg" id="f_sentada" onclick="filtro(2)">Sentadas</button>
-<button class="seg" id="f_todas" onclick="filtro(3)">Todas</button></div>
+<button class="seg" id="f_todas" onclick="filtro(3)">Todas</button>
+<span class="dia" title="ver as reservas de outro dia"><button class="seg" onclick="diaAnda(-1)" title="dia anterior">&#9664;</button>
+<input id="dia" type="date" onchange="diaVai(this.value)"><span class="ds" id="dia_ds"></span>
+<button class="seg" onclick="diaAnda(1)" title="próximo dia">&#9654;</button>
+<button class="seg" id="b_hoje" onclick="diaVai('')" style="display:none">Hoje</button></span></div>
 <div class="novo" id="novo" style="display:none">
 <input id="en" placeholder="nome de quem chegou" autocomplete="off" onkeydown="if(event.key==='Enter')esperaNovo()">
 <input id="ep" type="number" min="1" value="2" title="quantas pessoas" onkeydown="if(event.key==='Enter')esperaNovo()">
@@ -20147,6 +20154,8 @@ a.zap{text-decoration:none;font-weight:700;color:#0a7a3d}
 <script>
 var R=[],F='vem',AVISO='',E=[],ABA='res',EAV='',AREAS=[],LOJA='${LOJA_NOME}';
 var JUNT={},ABRE={},MEXEU=0,TMR=null;
+// DIA = '' é hoje (o de sempre). Outro dia vem da nuvem pelo /api/reservas?data=
+var DIA='',DSEM=['dom','seg','ter','qua','qui','sex','sáb'];
 // Sessao da RECEPCAO: esta tela mexe na reserva do cliente (mesa, sentou, nao
 // veio) e dispara WhatsApp. O tablet fica no balcao — sem login, qualquer um
 // que passasse podia mexer. Mesmo PIN do caixa/comanda; quem entra e quem esta
@@ -20169,7 +20178,7 @@ function fone(t){
 }
 function cartao(x){
   var hm=String(x.hora||'').split(':'),min=Number(hm[0])*60+Number(hm[1]||0);
-  var ag=new Date(),falta=min-(ag.getHours()*60+ag.getMinutes());
+  var ag=new Date(),falta=DIA?9999:min-(ag.getHours()*60+ag.getMinutes()); // outro dia: sem "atrasada"/"em X min"
   var sentada=x.status==='sentada',faltou=x.status==='no_show';
   var cls=faltou?'fora':(sentada?'sent':(falta<-10?'atras':(falta<=30?'perto':'')));
   var quando=sentada||faltou?'':(falta<0?'atrasada '+(-falta)+' min':(falta<=120?'em '+falta+' min':''));
@@ -20312,9 +20321,9 @@ function botoesRes(x){
        '<button class="seg" data-r="'+x.id+'" data-a="confirmar">&#8617; desfazer</button>';
   else
     b+='<button class="sv" id="rsv'+x.id+'" data-r="'+x.id+'" data-a="mesa" hidden>&#10003; Salvar mesa</button>'+
-       '<button data-r="'+x.id+'" data-a="sentar">&#10003; Sentou</button>'+
+       (diaFuturo()?'':'<button data-r="'+x.id+'" data-a="sentar">&#10003; Sentou</button>')+
        (x.status==='pendente'?'<button class="seg" data-r="'+x.id+'" data-a="confirmar">Confirmar</button>':'')+
-       '<button class="seg" data-r="'+x.id+'" data-a="no_show">&#10005; Não veio</button>'+
+       (diaFuturo()?'':'<button class="seg" data-r="'+x.id+'" data-a="no_show">&#10005; Não veio</button>')+
        '<input class="mn hr" id="rh'+x.id+'" type="time" value="'+esc(x.hora||'')+'">'+
        '<button class="seg" data-r="'+x.id+'" data-a="hora">&#128337; Mudar hora</button>';
   return b+'</div><div class="jt" id="rj'+x.id+'">'+juntaHtml(x)+'</div>';
@@ -20324,7 +20333,7 @@ function aba(k){
   ABA=k;
   document.getElementById('t_res').className='seg'+(k==='res'?' on':'');
   document.getElementById('t_esp').className='seg'+(k==='esp'?' on':'');
-  document.getElementById('tit').textContent=k==='esp'?'⏳ Lista de espera':'📅 Reservas de hoje';
+  document.getElementById('tit').textContent=k==='esp'?'⏳ Lista de espera':tituloDia();
   document.getElementById('subres').style.display=k==='esp'?'none':'';
   document.getElementById('novo').style.display=k==='esp'?'':'none';
   if(k==='esp')nrFechar();
@@ -20476,11 +20485,11 @@ function pintaRes(){
   var nfalt=R.filter(function(x){return x.status==='no_show'}).length;
   document.getElementById('cnt').textContent=R.length
     ?(vem.length+' por chegar ('+pes+' pessoas) · '+nsent+' sentada(s)'+(nfalt?' · '+nfalt+' não veio':''))
-    :'nenhuma reserva hoje';
+    :(DIA?'nenhuma reserva neste dia':'nenhuma reserva hoje');
   if(digitando())return; // digitando mesa/horário: não repinta por baixo
   var app=document.getElementById('app');
   var topo=AVISO?'<div class="erro">'+esc(AVISO)+'</div>':'';
-  if(!L.length){app.className='';app.innerHTML=topo+'<div class="vazio">'+(R.length?'nada com esse filtro':'nenhuma reserva pra hoje')+'</div>';return}
+  if(!L.length){app.className='';app.innerHTML=topo+'<div class="vazio">'+(R.length?'nada com esse filtro':(DIA?'nenhuma reserva pra '+diaNome(DIA):'nenhuma reserva pra hoje'))+'</div>';return}
   app.className='';
   app.innerHTML=topo+'<div class="wrap">'+L.map(cartao).join('')+'</div>';
 }
@@ -20575,8 +20584,36 @@ document.getElementById('app').addEventListener('click',async function(ev){
   }
   carregarEsp();
 });
+// ---- OUTROS DIAS: setas ◀ ▶ e o calendário na barra das reservas ----
+// Hoje continua igual (lista do salão, 30 s). Outro dia mostra as reservas
+// daquela data; num dia que ainda não chegou não tem "Sentou"/"Não veio".
+function diaHoje(){var d=new Date();function z(n){return (n<10?'0':'')+n}return d.getFullYear()+'-'+z(d.getMonth()+1)+'-'+z(d.getDate())}
+function diaFuturo(){return !!DIA&&DIA>diaHoje()}
+function diaNome(ymd){var p=String(ymd).split('-'),d=new Date(+p[0],+p[1]-1,+p[2]);return DSEM[d.getDay()]+' '+p[2]+'/'+p[1]}
+function tituloDia(){return DIA?'📅 Reservas de '+diaNome(DIA):'📅 Reservas de hoje'}
+function diaVai(ymd){
+  if(ymd===diaHoje())ymd='';
+  if(ymd===DIA){diaPinta();return}
+  DIA=ymd||'';R=[];JUNT={};ABRE={};MEXEU=0;
+  diaPinta();
+  $('app').className='vazio';$('app').innerHTML='carregando…';
+  carregarRes();
+}
+function diaAnda(n){
+  var p=String(DIA||diaHoje()).split('-'),d=new Date(+p[0],+p[1]-1,+p[2]+n);
+  function z(k){return (k<10?'0':'')+k}
+  diaVai(d.getFullYear()+'-'+z(d.getMonth()+1)+'-'+z(d.getDate()));
+}
+function diaPinta(){
+  $('dia').value=DIA||diaHoje();
+  $('dia_ds').textContent=DSEM[new Date(+$('dia').value.slice(0,4),+$('dia').value.slice(5,7)-1,+$('dia').value.slice(8,10)).getDay()];
+  $('b_hoje').style.display=DIA?'':'none';
+  if(ABA==='res')$('tit').textContent=tituloDia();
+}
 async function carregarRes(){
-  var d;try{d=await (await fetch('/api/reservas',{headers:hdrs(),cache:'no-store'})).json()}catch(e){AVISO='sem resposta do servidor da loja';return pinta()}
+  var pedido=DIA,d;
+  try{d=await (await fetch('/api/reservas'+(DIA?'?data='+encodeURIComponent(DIA):''),{headers:hdrs(),cache:'no-store'})).json()}catch(e){AVISO='sem resposta do servidor da loja';return pinta()}
+  if(pedido!==DIA)return; // trocou de dia enquanto carregava
   if(d&&d.sem_sessao)return telaLogin('Sua sessão venceu — entre de novo.');
   R=(d&&d.reservas)||[];
   setAreas((d&&d.areas)||AREAS);
@@ -20765,7 +20802,7 @@ async function iniciar(){
   $('barra').style.display='';
   $('eu').innerHTML=esc(s.nome||s.login)+' · <a href="#" onclick="sair();return false">sair</a>';
   $('app').className='vazio';$('app').textContent='carregando…';
-  aba(ABA);
+  aba(ABA);diaPinta();
   await carregar();
   if(!TMR)TMR=setInterval(function(){if(TOK)carregar()},30000);
 }
@@ -30852,7 +30889,11 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/reservas/quem') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiReservaQuem(body))); }
     if (req.method === 'POST' && p === '/api/reservas/nova') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiReservaNova(body, RECEP && (RECEP.nome || RECEP.login)))); }
     if (p === '/api/reservas') {
-      const n = await salaoDaNuvem();
+      // ?data=AAAA-MM-DD = outro dia (setas da tela); sem data = hoje, como sempre
+      const dataPedida = String(u.searchParams.get('data') || '');
+      const n = /^\d{4}-\d{2}-\d{2}$/.test(dataPedida)
+        ? await salaoNuvemPost({ tipo: 'reservas_dia', data: dataPedida })
+        : await salaoDaNuvem();
       const reservas = ((n && n.ok && n.reservas) || []).map((r) => ({
         id: r.id,
         hora: String(r.hora || '').slice(0, 5), nome: r.nome, pessoas: r.pessoas, area: r.area,
