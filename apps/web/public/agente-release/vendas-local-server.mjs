@@ -4064,6 +4064,11 @@ async function apiImpressoraTeste(body) {
 // mantém o Consumer capaz de emitir a NFC-e enquanto a Fase 3 não chega.
 // NÃO fecha o pedido — quem fecha/emite a nota segue sendo o Consumer.
 const FORMA = { DINHEIRO: 1, CREDITO: 3, DEBITO: 4, PIX_MANUAL: 18, PIX_ONLINE: 21, IFOOD_ONLINE: 14 };
+// Pix/TED que caiu DIRETO na conta da casa, sem maquininha (evento pago pela
+// agência — Tabuará 15/10/2026). É a forma 19 do Consumer, "Transferência
+// bancária, Carteira Digital": a conciliação já tira ela da conferência com a
+// Cielo e o dinheiro se confere no extrato do banco.
+FORMA.TRANSFERENCIA = 19;
 async function fbCaixaAberto() {
   if (nativo()) {
     const [c] = await sql`SELECT codigo FROM caixa_local WHERE fechado_em IS NULL ORDER BY codigo DESC LIMIT 1`;
@@ -5665,6 +5670,9 @@ async function apiContaPagarSemTrava(body) {
     // Pedido de canal: o cliente pagou no aplicativo e o dinheiro vem no
     // repasse. Registra a origem certa e NÃO movimenta caixa.
     ifood: { cod: FORMA.IFOOD_ONLINE, nome: 'iFood Online' },
+    // Pix/TED direto na conta do banco (sem maquininha, sem NSU) — a prova é
+    // a foto do comprovante do banco, que apiCaixaReceberManual exige.
+    transferencia: { cod: FORMA.TRANSFERENCIA, nome: 'Transferência bancária' },
   };
   const fp = MAPA[forma];
   if (!fp) return { ok: false, erro: 'forma inválida' };
@@ -6603,7 +6611,7 @@ async function nfceDocSugerido(numero, ped) {
   if (mc?.cpf && soDig(mc.cpf).length === 11) return soDig(mc.cpf);
   return null;
 }
-const NFCE_TPAG = { 1: '01', 3: '03', 4: '04', 18: '20', 21: '17' }; // Consumer -> tPag da NFe
+const NFCE_TPAG = { 1: '01', 3: '03', 4: '04', 18: '20', 21: '17', 19: '18' }; // Consumer -> tPag da NFe (19 → 18 Transferência bancária)
 function nfceTBand(bandeira) {
   const b = String(bandeira || '').toLowerCase();
   if (b.includes('visa')) return '01';
@@ -9062,6 +9070,10 @@ async function caixaMaquininhaConfere(cod, usados = new Set()) {
       canal.n++; canal.total = Math.round((canal.total + valor) * 100) / 100;
       continue;
     }
+    // Pix/TED direto na conta (forma 19) também não passa na maquininha: não
+    // tem NSU nem par na Cielo — confere-se no extrato do banco. Sem isto o
+    // caixa onde ele caísse nunca fecharia (16/10/2026).
+    if (Number(p.F) === FORMA.TRANSFERENCIA) continue;
 
     // a) registro interno do app da LIO — o caminho de sempre
     if (nsu) {
@@ -10364,6 +10376,9 @@ const FORMA_NOME = {
   [FORMA.PIX_MANUAL]: 'Pix',
   [FORMA.PIX_ONLINE]: 'Pix',
   [FORMA.IFOOD_ONLINE]: 'iFood Online',
+  // nome igual ao do Consumer: é por ele que a conciliação da nuvem tira a
+  // forma da conferência com a Cielo (FORMAS_EXCLUIR_OPERADORA)
+  [FORMA.TRANSFERENCIA]: 'Transferência bancária, Carteira Digital',
 };
 
 let pedidoNativoNuvemRodando = false;
@@ -12022,6 +12037,9 @@ const FORMAS_MANUAIS = {
   credito: { codigo: FORMA.CREDITO, nome: 'Crédito', foto: true, nsu: true },
   debito: { codigo: FORMA.DEBITO, nome: 'Débito', foto: true, nsu: true },
   pix: { codigo: FORMA.PIX_MANUAL, nome: 'Pix', foto: true, nsu: true },
+  // Pix/TED que caiu direto na conta da casa: não passou na maquininha, então
+  // não tem NSU — o comprovante do banco é a prova (foto obrigatória).
+  transferencia: { codigo: FORMA.TRANSFERENCIA, nome: 'Pix na conta', foto: true, nsu: false },
 };
 /** Nome da forma pelo código — o modo próprio não tem FORMASPAGAMENTO. */
 function nomeFormaLocal(codigo) {
@@ -26561,7 +26579,10 @@ function pinta(el){
   // ENTREGA: o pedido é do canal (iFood/hub) — aqui o caixa só RECEBE e fecha.
   // Lançar item, transferir de mesa e "pedir conta" não existem nesse mundo, e
   // botão que não faz sentido é botão que alguém aperta por engano.
-  if(!ehEntrega()){
+  // 💰 Pagamento ABERTO = a tela é só de pagar (pedido do dono 16/10/2026):
+  // Pedir itens / Transferir / Pedir conta somem até fechar o ▴ de novo.
+  var soPagar=PAGON&&c.falta>0;
+  if(!ehEntrega()&&!soPagar){
     if(PODE.lancar)h+='<button class="big o" onclick="lancarCx()">🍽 Pedir itens</button>';
     h+='<div class="row"><button class="big" style="margin-top:0;background:#475569" onclick="transfCx()">⇄ Transferir</button>'+
        '<button class="big" style="margin-top:0;background:#8a6d0b" onclick="pedirContaCx(this)">🔒 Pedir conta</button></div>';
@@ -26578,6 +26599,8 @@ function pinta(el){
       // A maquininha às vezes recebe e NÃO baixa a comanda. Aqui o caixa
       // registra o que entrou, com a foto do comprovante — e pode ser parcial.
       h+='<button class="big" style="margin-top:6px;background:#0369a1" onclick="irTela(\\'manual\\')">🧾 Recebimento manual (com comprovante)</button>';
+      // Pix/TED que caiu direto na conta da casa (forma 19, sem NSU)
+      h+='<button class="big" style="margin-top:6px;background:#155e75" onclick="MAN.forma=\\'transferencia\\';irTela(\\'manual\\')">🏦 Pix na conta / Transferência (com comprovante)</button>';
       // PEDIDO DE CANAL: o cliente já pagou no app e o dinheiro vem no repasse.
       // Só aparece em entrega, que é onde isso existe — numa mesa seria porta
       // aberta pra sumir dinheiro do caixa como "pago no iFood".
@@ -26606,9 +26629,9 @@ function manParar(){ if(MAN.poll){clearInterval(MAN.poll);MAN.poll=null} }
 function telaManual(el){
   manParar(); MAN.token=null; MAN.foto=null; MAN.arquivo=null;
   var c=CONTA||{};
-  var formas=[['dinheiro','💵 Dinheiro'],['pix','📲 Pix'],['credito','💳 Crédito'],['debito','💳 Débito']];
+  var formas=[['dinheiro','💵 Dinheiro'],['pix','📲 Pix'],['credito','💳 Crédito'],['debito','💳 Débito'],['transferencia','🏦 Pix na conta']];
   var chips=formas.map(function(f){
-    return '<button class="seg'+(MAN.forma===f[0]?' on':'')+'" onclick="manForma(\\''+f[0]+'\\')">'+f[1]+'</button>';
+    return '<button class="seg'+(MAN.forma===f[0]?' on':'')+'" data-f="'+f[0]+'" onclick="manForma(\\''+f[0]+'\\')">'+f[1]+'</button>';
   }).join('');
   el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="manParar();irTela(\\'conta\\')">◂ voltar</button>'+
     '<div class="card"><div class="tit" style="margin-top:0">Recebimento manual · mesa '+MESA+'</div>'+
@@ -26638,14 +26661,17 @@ function manForma(f){
   MAN.forma=f; MAN.foto=null; MAN.arquivo=null; MAN.token=null; MAN.dados=null; manParar();
   var chips=document.getElementById('mchips');
   if(chips)Array.prototype.forEach.call(chips.children,function(b){
-    b.classList.toggle('on', b.textContent.toLowerCase().indexOf(f==='dinheiro'?'dinheiro':f==='pix'?'pix':f==='credito'?'crédito':'débito')>=0);
+    // pelo data-f: "Pix na conta" também contém "pix" no texto
+    b.classList.toggle('on', b.getAttribute('data-f')===f);
   });
   var box=document.getElementById('mcomp'); if(!box)return;
   // Cartão/Pix: o caixa só tira a foto — valor e NSU saem do papel. Os campos
   // só aparecem se a leitura falhar ou se ele tocar em "corrigir" (30/09).
   var mvb=document.getElementById('mvbox'), mv0=document.getElementById('mv');
-  if(mvb)mvb.style.display=f==='dinheiro'?'':'none';
-  if(mv0&&f!=='dinheiro')mv0.value='';
+  // Pix na conta: o comprovante do banco nem sempre é legível pela IA — o
+  // valor fica à vista pra digitar (e a foto preenche se conseguir ler)
+  if(mvb)mvb.style.display=(f==='dinheiro'||f==='transferencia')?'':'none';
+  if(mv0&&f!=='dinheiro'&&f!=='transferencia')mv0.value='';
   if(f==='dinheiro'){ box.innerHTML='<div class="mut" style="margin-top:10px">Dinheiro não precisa de comprovante — entra na sua gaveta.</div>'; manEstado(); return }
   // NSU: cartão manual SEM o NSU não tem par na conciliação e o caixa não
   // fecha sozinho (caso do pedido 158633, 20/08). O número está impresso no
@@ -26656,12 +26682,16 @@ function manForma(f){
     ? '<div id="mnsubox" style="display:none"><div class="mut" style="margin-top:12px"><b>NSU do comprovante (obrigatório)</b> — número impresso no papel da maquininha'+(f==='pix'?' (o Pix daqui sempre passa por ela)':'')+'</div>'+
       '<input id="mnsu" inputmode="numeric" autocomplete="off" placeholder="a foto costuma preencher sozinha" style="margin-top:6px"></div>'
     : '';
-  box.innerHTML=nsuHtml+
+  var transfHtml=f==='transferencia'
+    ? '<div class="mut" style="margin-top:12px">Pix ou TED que caiu <b>direto na conta da casa</b>, sem passar na maquininha. Não tem NSU — anexe o <b>comprovante do banco</b> (o do cliente serve).</div>'
+    : '';
+  box.innerHTML=nsuHtml+transfHtml+
     '<div class="mut" style="margin-top:12px"><b>Comprovante (obrigatório)</b></div>'+
     '<div class="row" style="margin-top:6px">'+
       '<button class="seg" onclick="manCamera()">📷 Câmera do tablet</button>'+
       '<button class="seg" onclick="manCelular()">📱 Pelo meu celular</button>'+
-    '</div><div id="mcbox"></div>';
+      '<button class="seg" onclick="manArquivo()">📎 Arquivo (foto ou PDF)</button>'+
+    '</div><input type="file" id="marq" accept="image/*,application/pdf" style="display:none" onchange="manArquivoLido(this)"><div id="mcbox"></div>';
   manEstado();
 }
 /* Câmera do tablet: só existe em contexto seguro (https). Se não der, avisa e
@@ -26674,7 +26704,7 @@ function manCampos(mostrar){
 }
 function manDescartar(){
   manParar();
-  if(MAN.forma!=='dinheiro'){var mv=document.getElementById('mv');if(mv)mv.value='';manCampos(false)}
+  if(MAN.forma!=='dinheiro'&&MAN.forma!=='transferencia'){var mv=document.getElementById('mv');if(mv)mv.value='';manCampos(false)}
   if(MAN.stream){MAN.stream.getTracks().forEach(function(t){t.stop()});MAN.stream=null}
   var campo=document.getElementById('mnsu');
   var nsuIa=MAN.dados&&MAN.dados.nsu?String(MAN.dados.nsu).replace(/\\D/g,''):'';
@@ -26707,15 +26737,20 @@ async function manClicar(){
   c.getContext('2d').drawImage(v,0,0,c.width,c.height);
   MAN.foto=c.toDataURL('image/jpeg',0.8);
   if(MAN.stream){MAN.stream.getTracks().forEach(function(t){t.stop()});MAN.stream=null}
-  var box=document.getElementById('mcbox');
-  box.innerHTML='<img src="'+MAN.foto+'" style="width:100%;border-radius:12px;margin-top:8px">'+
+  await manFotoPronta();
+}
+/* Daqui pra baixo é igual pra foto da câmera e pra arquivo: mostra, sobe e
+   deixa a IA ler valor/NSU. */
+async function manFotoPronta(){
+  var box=document.getElementById('mcbox'); if(!box)return;
+  box.innerHTML='<img src="'+MAN.foto+'" style="width:100%;max-height:420px;object-fit:contain;border-radius:12px;margin-top:8px">'+
     '<div class="mut">✓ foto pronta · lendo o comprovante…</div>';
   manEstado();
   // sobe agora (em vez de só na confirmação) pra IA ler e preencher o NSU
   var r=await jpost('/api/caixa/comprovante-foto',{numero:MESA,forma:MAN.forma,foto:MAN.foto,
     valor:numBr((document.getElementById('mv')||{}).value)});
   if(r&&r.ok){MAN.arquivo=r.arquivo;MAN.foto=null;MAN.token=r.token;manLido(r.arquivo,r.dados,'tablet')}
-  else{box.innerHTML='<img src="'+MAN.foto+'" style="width:100%;border-radius:12px;margin-top:8px">'+
+  else{box.innerHTML='<img src="'+MAN.foto+'" style="width:100%;max-height:420px;object-fit:contain;border-radius:12px;margin-top:8px">'+
     '<div class="mut">✓ foto pronta</div><button class="seg" onclick="manDescartar()">🗑 apagar foto</button> <button class="seg" onclick="manCamera()">tirar outra</button>'}
   manEstado();
 }
@@ -26726,7 +26761,7 @@ async function manClicar(){
 function manLido(arquivo, d, origem){
   var box=document.getElementById('mcbox'); if(!box)return;
   MAN.dados=d||null;
-  var img='<img src="/foto/'+esc(arquivo)+'" style="width:100%;border-radius:12px;margin-top:8px">';
+  var img='<img src="/foto/'+esc(arquivo)+'" style="width:100%;max-height:420px;object-fit:contain;border-radius:12px;margin-top:8px">';
   var vindo='<div class="mut">✓ comprovante '+(origem==='tablet'?'anexado':'recebido do celular')+'</div>';
   if(origem==='lendo'){
     box.innerHTML=img+'<div class="mut">✓ comprovante recebido do celular · 🔎 lendo NSU e valor…</div>'+
@@ -26735,7 +26770,7 @@ function manLido(arquivo, d, origem){
   }
   if(!d||d.confianca==='erro'){
     manCampos(true);
-    box.innerHTML=img+vindo+'<div class="mut">não consegui ler o papel — digite o valor e o NSU acima'+
+    box.innerHTML=img+vindo+'<div class="mut">não consegui ler o papel — digite o valor'+(MAN.forma==='transferencia'?'':' e o NSU')+' acima'+
       (d&&d.observacao?' ('+esc(d.observacao)+')':'')+'</div>'+
       '<button class="seg" onclick="manDescartar()">🗑 apagar foto</button> <button class="seg" onclick="manCamera()">tirar outra</button>';
     return;
@@ -26747,7 +26782,7 @@ function manLido(arquivo, d, origem){
   var vLido=d.valor, vDig=numBr((document.getElementById('mv')||{}).value);
   var avisos='';
   if(d.via==='loja')avisos+='<div style="color:#0f8a3e;font-weight:600">✅ VIA LOJA</div>';
-  else if(d.via==='cliente')avisos+='<div style="color:var(--red);font-weight:600">⚠️ é a VIA DO CLIENTE — a via da loja é a que prova o recebimento</div>';
+  else if(d.via==='cliente'&&MAN.forma!=='transferencia')avisos+='<div style="color:var(--red);font-weight:600">⚠️ é a VIA DO CLIENTE — a via da loja é a que prova o recebimento</div>';
   // o papel manda: valor e NSU entram sozinhos. Faltou algum? abre os campos.
   if(vLido!=null)manUsarValor(vLido);
   if(vLido==null||(campo&&!nsu)){manCampos(true);
@@ -26765,6 +26800,68 @@ function manLido(arquivo, d, origem){
       (d.dataHora?'<div class="mut">'+esc(d.dataHora)+'</div>':'')+
       avisos+
     '</div><button class="seg" onclick="manDescartar()">🗑 apagar foto</button> <button class="seg" onclick="manCamera()">tirar outra</button>';
+}
+/* COMPROVANTE POR ARQUIVO (16/10/2026): o Pix que cai direto na conta chega
+   como print/PDF baixado do banco, não como papel da maquininha. Imagem vai
+   reduzida pra ≤1280px em JPEG (o servidor aceita até 900 KB); PDF vira a
+   imagem da 1ª página pelo pdf.js (cdnjs, só carrega quando usa) — daí segue
+   o mesmo caminho da foto, com a mesma leitura. */
+function manArquivo(){
+  manDescartar();
+  var i=document.getElementById('marq'); if(i){i.value='';i.click()}
+}
+function manCanvasJpeg(src,w,h){
+  var k=Math.min(1,1280/Math.max(w||1280,h||1280));
+  var c=document.createElement('canvas'); c.width=Math.round((w||1280)*k); c.height=Math.round((h||1280)*k);
+  var g=c.getContext('2d'); g.fillStyle='#fff'; g.fillRect(0,0,c.width,c.height);
+  g.drawImage(src,0,0,c.width,c.height);
+  var q=0.8, u=c.toDataURL('image/jpeg',q);
+  while(u.length>1150000&&q>0.4){q-=0.15;u=c.toDataURL('image/jpeg',q)}
+  return u;
+}
+function manPdfJs(){
+  if(window.pdfjsLib)return Promise.resolve(window.pdfjsLib);
+  return new Promise(function(ok,erro){
+    var s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    s.onload=function(){
+      if(!window.pdfjsLib)return erro(new Error('pdf.js não carregou'));
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+      ok(window.pdfjsLib);
+    };
+    s.onerror=function(){erro(new Error('sem internet pra abrir PDF'))};
+    document.head.appendChild(s);
+  });
+}
+async function manArquivoLido(inp){
+  var f=inp&&inp.files&&inp.files[0]; if(!f)return;
+  var box=document.getElementById('mcbox'); if(!box)return;
+  box.innerHTML='<div class="mut" style="margin-top:8px">abrindo '+esc(f.name||'arquivo')+'…</div>';
+  try{
+    var ehPdf=/pdf/i.test(f.type)||/[.]pdf$/i.test(f.name||'');
+    if(ehPdf){
+      var lib=await manPdfJs();
+      var buf=await f.arrayBuffer();
+      var doc=await lib.getDocument({data:buf}).promise;
+      var pg=await doc.getPage(1);
+      var vp0=pg.getViewport({scale:1});
+      var vp=pg.getViewport({scale:Math.min(3,1600/Math.max(vp0.width,vp0.height))});
+      var cv=document.createElement('canvas'); cv.width=vp.width; cv.height=vp.height;
+      var g=cv.getContext('2d'); g.fillStyle='#fff'; g.fillRect(0,0,cv.width,cv.height);
+      await pg.render({canvasContext:g,viewport:vp}).promise;
+      MAN.foto=manCanvasJpeg(cv,cv.width,cv.height);
+    }else{
+      var url=URL.createObjectURL(f);
+      var img=await new Promise(function(ok,erro){var im=new Image();im.onload=function(){ok(im)};im.onerror=function(){erro(new Error('não é uma imagem'))};im.src=url});
+      MAN.foto=manCanvasJpeg(img,img.naturalWidth,img.naturalHeight);
+      URL.revokeObjectURL(url);
+    }
+  }catch(e){
+    MAN.foto=null;
+    box.innerHTML='<div class="err" style="display:block">não consegui abrir o arquivo ('+esc(e.message||'erro')+'). Tire um print e mande como imagem, ou use a câmera.</div>';
+    manEstado(); return;
+  }
+  await manFotoPronta();
 }
 function manUsarValor(v){
   var mv=document.getElementById('mv'); if(!mv)return;
@@ -27793,7 +27890,7 @@ function devReset(){devParar();CFOTO={token:null,arquivo:null,foto:null,poll:nul
 function devFotoHtml(){
   if(CFOTO.arquivo||CFOTO.foto)return '<div class="card" style="margin-top:10px;border:1.5px solid #16a34a">'+
     '<div class="mut"><b style="color:#16a34a">✓ foto do produto devolvido recebida</b></div>'+
-    '<img src="'+(CFOTO.foto||('/foto/'+CFOTO.arquivo))+'" style="width:100%;border-radius:12px;margin-top:8px">'+
+    '<img src="'+(CFOTO.foto||('/foto/'+CFOTO.arquivo))+'" style="width:100%;max-height:420px;object-fit:contain;border-radius:12px;margin-top:8px">'+
     '<button type="button" class="seg" style="margin-top:8px" onclick="devReset();pintaMain()">tirar outra</button></div>';
   return '<div class="card" style="margin-top:10px;border:1.5px solid #f59e0b">'+
     '<div class="mut"><b>📷 Foto do produto devolvido (obrigatória)</b> — mostre a garrafa/lata que voltou.</div>'+
