@@ -281,6 +281,46 @@ export default async function ListaSemanaPage(props: { searchParams: Promise<SP>
     (fornPorGrupo[g] ??= []).push(String(r.fornecedor_id));
   }
 
+  // Fornecedor de categoria "Pescados" (mariscos, catados, camarão) entra
+  // marcado na cotação de proteínas mesmo sem ter ido na última — sem repetir
+  // número de WhatsApp que já está na lista (1 convite por número).
+  const pescados = (await db.execute(sql`
+    SELECT f.id,
+           COALESCE(
+             (SELECT v.whatsapp FROM vendedor_fornecedor vf JOIN vendedor v ON v.id = vf.vendedor_id
+               WHERE vf.fornecedor_id = f.id AND v.ativo AND v.whatsapp IS NOT NULL
+               ORDER BY vf.principal DESC LIMIT 1),
+             NULLIF(f.fone_whatsapp, ''), NULLIF(f.fone_principal, '')
+           ) AS zap
+    FROM fornecedor f
+    WHERE f.filial_id = ${filial.id}
+      AND f.ativo_compras AND f.data_delete IS NULL
+      AND f.categoria_compras = 'Pescados'
+  `)) as unknown as Row[];
+  if (pescados.length) {
+    const ja = new Set(fornPorGrupo.PROTEINAS ?? []);
+    const zapsJa = (await db.execute(sql`
+      SELECT DISTINCT COALESCE(
+        (SELECT v.whatsapp FROM vendedor_fornecedor vf JOIN vendedor v ON v.id = vf.vendedor_id
+          WHERE vf.fornecedor_id = f.id AND v.ativo AND v.whatsapp IS NOT NULL
+          ORDER BY vf.principal DESC LIMIT 1),
+        NULLIF(f.fone_whatsapp, ''), NULLIF(f.fone_principal, '')
+      ) AS zap
+      FROM fornecedor f
+      WHERE f.id = ANY(ARRAY[${sql.join([...ja, '00000000-0000-0000-0000-000000000000'].map((x) => sql`${x}`), sql`, `)}]::uuid[])
+    `)) as unknown as Row[];
+    const so = (z: unknown) => String(z ?? '').replace(/\D/g, '').slice(-8);
+    const zaps = new Set(zapsJa.map((r) => so(r.zap)).filter(Boolean));
+    for (const p of pescados) {
+      const id = String(p.id);
+      const z = so(p.zap);
+      if (ja.has(id) || (z && zaps.has(z))) continue;
+      (fornPorGrupo.PROTEINAS ??= []).push(id);
+      ja.add(id);
+      if (z) zaps.add(z);
+    }
+  }
+
   const fornecedores = await db
     .select({
       id: schema.fornecedor.id,
