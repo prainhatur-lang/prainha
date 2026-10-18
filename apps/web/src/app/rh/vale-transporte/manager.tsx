@@ -59,7 +59,17 @@ export function ValeTransporteManager(p: Props) {
     return { valorDia, dias: d, previsto, acerto, pagar: Math.max(0, Math.round((previsto + acerto) * 100) / 100) };
   };
 
+  // 6% sobre a base (lib/rh/vale-transporte.ts), nunca mais que o VT recebido.
+  // Fica gravado quando a quinzena seguinte é paga; até lá é ao vivo.
+  const desconto = (l: LinhaVt) => {
+    if (l.paga?.descontoValor != null) return { valor: l.paga.descontoValor, gravado: true };
+    const base = l.baseDesconto?.valor ?? 0;
+    const v = Math.round(Math.max(0, Math.min(base * 0.06, calc(l).pagar)) * 100) / 100;
+    return { valor: v, gravado: false };
+  };
+
   const total = comVt.reduce((s, l) => s + calc(l).pagar, 0);
+  const totalDesconto = comVt.reduce((s, l) => s + desconto(l).valor, 0);
 
   async function enviar(body: unknown) {
     setSalvando(true);
@@ -121,7 +131,7 @@ export function ValeTransporteManager(p: Props) {
 
   const linhaEdicao = (l: LinhaVt) => (
     <tr key={`${l.funcionarioId}-ed`} className="bg-amber-50">
-      <td colSpan={7} className="px-3 py-3">
+      <td colSpan={8} className="px-3 py-3">
         <div className="flex flex-wrap items-end gap-3 text-sm">
           <label className="flex flex-col">
             <span className="text-xs text-slate-500">VT por dia (ida + volta)</span>
@@ -183,6 +193,11 @@ export function ValeTransporteManager(p: Props) {
           <div className="mt-1 text-lg font-bold text-slate-900">
             {brl(total)} <span className="text-sm font-normal text-slate-500">· {comVt.length} pessoa(s)</span>
           </div>
+          <div className="mt-0.5 text-xs text-slate-600">
+            Desconto de 6% no salário: <b className="tabular-nums">{brl(totalDesconto)}</b> · custo da casa{' '}
+            <b className="tabular-nums">{brl(total - totalDesconto)}</b>
+            {emAndamento && <span className="text-slate-400"> · intermitente parcial até o fim da quinzena</span>}
+          </div>
         </div>
         {p.podePagar && (
           <div className="flex gap-2">
@@ -220,13 +235,14 @@ export function ValeTransporteManager(p: Props) {
               <th className="px-3 py-2 text-right">Previsto</th>
               <th className="px-3 py-2">Acerto da quinzena anterior</th>
               <th className="px-3 py-2 text-right">A pagar</th>
+              <th className="px-3 py-2 text-right">Desconto 6%</th>
               <th className="px-3 py-2 text-center">Ponto nesta quinzena</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {comVt.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-3 py-6 text-center text-slate-500">
+                <td colSpan={8} className="px-3 py-6 text-center text-slate-500">
                   Ninguém com VT cadastrado. Abra “pessoas sem VT” abaixo e informe o valor do dia.
                 </td>
               </tr>
@@ -287,6 +303,19 @@ export function ValeTransporteManager(p: Props) {
                     )}
                   </td>
                   <td className="px-3 py-2 text-right font-semibold tabular-nums">{brl(c.pagar)}</td>
+                  <td className="px-3 py-2 text-right">
+                    {(() => {
+                      const ds = desconto(l);
+                      return (
+                        <div>
+                          <span className="tabular-nums text-slate-800">{brl(ds.valor)}</span>
+                          <div className="text-[11px] text-slate-400">
+                            {ds.gravado ? 'gravado' : l.baseDesconto ? l.baseDesconto.como : 'sem salário no cadastro'}
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </td>
                   <td className="px-3 py-2 text-center tabular-nums text-slate-600">
                     {p.hoje < p.quinzena.inicio ? '—' : `${l.diasPontoAtual} dia(s)`}
                   </td>
@@ -341,7 +370,9 @@ export function ValeTransporteManager(p: Props) {
       <p className="text-xs text-slate-500">
         Como funciona: paga adiantado os dias previstos × VT do dia. Na quinzena seguinte, os dias que o ponto mostrou
         (qualquer casa) são comparados com os dias pagos — o que foi pago a mais é abatido, o que faltou é acrescentado.
-        Corrigir o ponto depois muda o acerto da próxima quinzena enquanto ela não for gravada como paga.
+        Corrigir o ponto depois muda o acerto da próxima quinzena enquanto ela não for gravada como paga. Desconto
+        de 6% no salário: CLT sobre metade do salário (proporcional aos dias na casa), intermitente sobre as horas do
+        ponto × valor da hora, nunca mais que o VT recebido; fica gravado quando a quinzena seguinte é paga.
       </p>
     </div>
   );

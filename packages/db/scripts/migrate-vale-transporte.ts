@@ -58,6 +58,11 @@ async function main() {
   await sql.unsafe(`ALTER TABLE vt_quinzena_item ENABLE ROW LEVEL SECURITY`);
   console.log('[ok] vt_quinzena_item');
 
+  // Desconto de 6% no salário (18/10/2026): gravado quando a quinzena seguinte é paga.
+  await sql.unsafe(`ALTER TABLE vt_quinzena_item ADD COLUMN IF NOT EXISTS desconto_base numeric(10,2)`);
+  await sql.unsafe(`ALTER TABLE vt_quinzena_item ADD COLUMN IF NOT EXISTS desconto_valor numeric(10,2)`);
+  console.log('[ok] vt_quinzena_item.desconto_*');
+
   await sql.end();
   console.log('Pronto.');
 }

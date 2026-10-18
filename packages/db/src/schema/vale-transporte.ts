@@ -61,6 +61,11 @@ export const vtQuinzenaItem = pgTable(
     acertoAnterior: numeric('acerto_anterior', { precision: 10, scale: 2 }).notNull().default('0'),
     /** max(0, previsto + acerto). O que sobrar negativo carrega pra seguinte. */
     valorPago: numeric('valor_pago', { precision: 10, scale: 2 }).notNull(),
+    /** Desconto de 6% no salário desta quinzena (base e valor). Gravado quando
+     *  a quinzena SEGUINTE é paga — aí as horas do intermitente já fecharam.
+     *  NULL = ainda ao vivo. */
+    descontoBase: numeric('desconto_base', { precision: 10, scale: 2 }),
+    descontoValor: numeric('desconto_valor', { precision: 10, scale: 2 }),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

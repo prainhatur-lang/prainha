@@ -2,17 +2,19 @@
 //   pessoa   VT da pessoa (valor do dia ida+volta, dias por semana, ativo)
 //   pagar    grava a quinzena como paga (o servidor recalcula previsto e acerto;
 //            da tela só vêm os dias previstos de cada um)
+//            e congela o desconto de 6% da quinzena anterior (já terminada)
 //   reabrir  apaga a quinzena paga — só se a seguinte ainda não foi paga,
-//            senão o acerto da seguinte perde a base
+//            senão o acerto da seguinte perde a base; o desconto da anterior
+//            volta a ser lido ao vivo
 // Não mexe em folha, ponto nem contas a pagar.
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { negarSemPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
-import { montarQuinzenaVt, quinzenaDe, quinzenaSeguinte, valorPagar } from '@/lib/rh/vale-transporte';
+import { montarQuinzenaVt, quinzenaAnterior, quinzenaDe, quinzenaSeguinte, valorPagar } from '@/lib/rh/vale-transporte';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -95,9 +97,23 @@ export async function POST(req: Request) {
     if (pagaSeg) {
       return NextResponse.json({ error: 'a quinzena seguinte já foi paga; reabra ela primeiro' }, { status: 409 });
     }
-    await db
-      .delete(schema.vtQuinzena)
-      .where(and(eq(schema.vtQuinzena.filialId, d.filialId), eq(schema.vtQuinzena.dataInicio, q.inicio)));
+    const ant = quinzenaAnterior(q);
+    await db.transaction(async (tx) => {
+      await tx
+        .delete(schema.vtQuinzena)
+        .where(and(eq(schema.vtQuinzena.filialId, d.filialId), eq(schema.vtQuinzena.dataInicio, q.inicio)));
+      const [qAnt] = await tx
+        .select({ id: schema.vtQuinzena.id })
+        .from(schema.vtQuinzena)
+        .where(and(eq(schema.vtQuinzena.filialId, d.filialId), eq(schema.vtQuinzena.dataInicio, ant.inicio)))
+        .limit(1);
+      if (qAnt) {
+        await tx
+          .update(schema.vtQuinzenaItem)
+          .set({ descontoBase: null, descontoValor: null })
+          .where(eq(schema.vtQuinzenaItem.quinzenaId, qAnt.id));
+      }
+    });
     return NextResponse.json({ ok: true });
   }
 
@@ -133,6 +149,30 @@ export async function POST(req: Request) {
       .returning({ id: schema.vtQuinzena.id });
     if (!criada) return null;
     await tx.insert(schema.vtQuinzenaItem).values(itens.map((i) => ({ ...i, quinzenaId: criada.id })));
+    // A anterior já terminou: o desconto de 6% dela fica gravado.
+    const [qAnt] = await tx
+      .select({ id: schema.vtQuinzena.id })
+      .from(schema.vtQuinzena)
+      .where(and(eq(schema.vtQuinzena.filialId, d.filialId), eq(schema.vtQuinzena.dataInicio, vt.anterior.inicio)))
+      .limit(1);
+    if (qAnt) {
+      for (const l of vt.linhas) {
+        if (!l.anterior) continue;
+        await tx
+          .update(schema.vtQuinzenaItem)
+          .set({
+            descontoBase: (l.anterior.baseDesconto?.valor ?? 0).toFixed(2),
+            descontoValor: l.anterior.desconto.toFixed(2),
+          })
+          .where(
+            and(
+              eq(schema.vtQuinzenaItem.quinzenaId, qAnt.id),
+              eq(schema.vtQuinzenaItem.funcionarioId, l.funcionarioId),
+              isNull(schema.vtQuinzenaItem.descontoValor),
+            ),
+          );
+      }
+    }
     return itens.reduce((s, i) => s + Number(i.valorPago), 0);
   });
   if (total === null) return NextResponse.json({ error: 'quinzena já está paga' }, { status: 409 });

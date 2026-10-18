@@ -11,11 +11,19 @@
 // sem escala fixa → "dias por semana" do VT da pessoa; sem isso → os dias que
 // ela trabalhou na quinzena anterior. A tela deixa editar antes de pagar.
 // Dias trabalhados: ponto próprio (qualquer casa) e, antes da virada, o Stelanto.
+//
+// Desconto de 6% (Lei 7.418/85): sai do salário, limitado ao VT que a pessoa
+// recebeu na quinzena. Base: CLT mensal = metade do salário (proporcional aos
+// dias na casa); intermitente = valor da hora × horas do ponto na quinzena —
+// por isso o desconto é lido ao vivo e só fecha quando a quinzena termina.
 
 import { db, schema } from '@concilia/db';
 import { and, asc, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
 import { jornadaNoDia, minutosPrevistos, type VigenciaJornada } from '@/lib/rh/banco-horas';
 import { somarDias } from '@/lib/rh/dia-operacional';
+import { calcularDia } from '@/lib/rh/calcular-ponto';
+
+export const DESCONTO_VT = 0.06;
 
 export interface Quinzena {
   inicio: string;
@@ -59,6 +67,11 @@ export function valorPagar(previsto: number, acerto: number): number {
   return r2(Math.max(0, previsto + acerto));
 }
 
+/** 6% da base, nunca mais que o VT recebido. */
+export function descontoVt(base: number, vtRecebido: number): number {
+  return r2(Math.max(0, Math.min(base * DESCONTO_VT, vtRecebido)));
+}
+
 export type OrigemPrevisao = 'escala' | 'dias_semana' | 'quinzena_anterior' | 'nenhuma';
 
 export interface LinhaVt {
@@ -78,9 +91,14 @@ export interface LinhaVt {
     acertoQueVinha: number;
     valorPago: number;
     saldo: number;
+    /** 6% sobre a quinzena anterior (já terminada). */
+    desconto: number;
+    baseDesconto: { valor: number; como: string } | null;
   } | null;
   /** Dias com batida nesta quinzena (até hoje). */
   diasPontoAtual: number;
+  /** Base do desconto de 6%: CLT = salário/2 proporcional; intermitente = hora × horas do ponto. */
+  baseDesconto: { valor: number; como: string } | null;
   /** Já paga nesta quinzena (valores congelados). */
   paga: {
     valorDia: number;
@@ -88,6 +106,7 @@ export interface LinhaVt {
     valorPrevisto: number;
     acertoAnterior: number;
     valorPago: number;
+    descontoValor: number | null;
   } | null;
 }
 
@@ -136,6 +155,7 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
       regime: schema.funcionario.regimeSalarial,
       dataAdmissao: schema.funcionario.dataAdmissao,
       dataDesligamento: schema.funcionario.dataDesligamento,
+      salarioBase: schema.funcionario.salarioBase,
     })
     .from(schema.funcionario)
     .where(
@@ -149,7 +169,7 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
     return { quinzena: q, anterior: ant, paga: qAtual, anteriorPaga: !!qAnt, seguintePaga: !!qSeg, linhas: [] };
   }
 
-  const [vts, vigRows, batidas, stelanto] = await Promise.all([
+  const [vts, vigRows, batidas, stelanto, batidasQ] = await Promise.all([
     db.select().from(schema.vtPessoa).where(inArray(schema.vtPessoa.funcionarioId, ids)),
     db
       .select({
@@ -194,7 +214,40 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
           sql`${schema.stelantoDia.trabalhadoSeg} > 0`,
         ),
       ),
+    // Horas da quinzena e da anterior (base do desconto do intermitente).
+    db
+      .select({
+        funcionarioId: schema.pontoBatida.funcionarioId,
+        filialId: schema.pontoBatida.filialId,
+        dia: schema.pontoBatida.diaOperacional,
+        quando: schema.pontoBatida.quando,
+        tipo: schema.pontoBatida.tipo,
+      })
+      .from(schema.pontoBatida)
+      .where(
+        and(
+          inArray(schema.pontoBatida.funcionarioId, ids),
+          gte(schema.pontoBatida.diaOperacional, ant.inicio),
+          lte(schema.pontoBatida.diaOperacional, q.fim),
+          isNull(schema.pontoBatida.excluidaEm),
+        ),
+      ),
   ]);
+
+  const porCasaDia = new Map<string, { quando: Date; tipo: 'entrada' | 'saida' }[]>();
+  for (const b of batidasQ) {
+    const k = `${b.funcionarioId}|${b.dia}|${b.filialId}`;
+    const lista = porCasaDia.get(k) ?? [];
+    lista.push({ quando: b.quando, tipo: b.tipo as 'entrada' | 'saida' });
+    porCasaDia.set(k, lista);
+  }
+  // funcionario|início da quinzena → minutos
+  const minQ = new Map<string, number>();
+  for (const [k, lista] of porCasaDia) {
+    const [fid, dia] = k.split('|');
+    const chave = `${fid}|${quinzenaDe(dia).inicio}`;
+    minQ.set(chave, (minQ.get(chave) ?? 0) + calcularDia(lista).totalMin);
+  }
 
   const diasTrab = new Map<string, Set<string>>();
   for (const b of [...batidas, ...stelanto]) {
@@ -241,6 +294,29 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
       }
     }
 
+    const salario = f.salarioBase ? Number(f.salarioBase) : 0;
+    const moeda = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+    const baseDe = (qq: Quinzena): LinhaVt['baseDesconto'] => {
+      if (salario <= 0) return null;
+      if (f.regime === 'clt_mensal') {
+        const dq = diasDaQuinzena(qq);
+        const naCasaQ = dq.filter(naCasa).length;
+        return {
+          valor: r2((salario / 2) * (naCasaQ / dq.length)),
+          como: `salário ${moeda(salario)} ÷ 2${naCasaQ < dq.length ? ` × ${naCasaQ}/${dq.length} dias` : ''}`,
+        };
+      }
+      if (f.regime === 'intermitente_hora') {
+        const min = minQ.get(`${f.id}|${qq.inicio}`) ?? 0;
+        return {
+          valor: r2((min / 60) * salario),
+          como: `${Math.floor(min / 60)}:${String(min % 60).padStart(2, '0')} h × ${moeda(salario)}/h`,
+        };
+      }
+      return null;
+    };
+    const baseDesconto = baseDe(q);
+
     const ia = itemAnt.get(f.id);
     const anterior = ia
       ? (() => {
@@ -255,6 +331,15 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
             acertoQueVinha,
             valorPago,
             saldo: r2(acertoQueVinha + diasPonto * valorDia - valorPago),
+            // Gravado quando a quinzena atual foi paga; até lá, ao vivo.
+            desconto:
+              ia.descontoValor != null
+                ? Number(ia.descontoValor)
+                : descontoVt(baseDe(ant)?.valor ?? 0, valorPago),
+            baseDesconto:
+              ia.descontoBase != null
+                ? { valor: Number(ia.descontoBase), como: 'gravado' }
+                : baseDe(ant),
           };
         })()
       : null;
@@ -271,6 +356,7 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
       origemPrevisao,
       anterior,
       diasPontoAtual: contar(f.id, q),
+      baseDesconto,
       paga: ip
         ? {
             valorDia: Number(ip.valorDia),
@@ -278,6 +364,7 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
             valorPrevisto: Number(ip.valorPrevisto),
             acertoAnterior: Number(ip.acertoAnterior),
             valorPago: Number(ip.valorPago),
+            descontoValor: ip.descontoValor != null ? Number(ip.descontoValor) : null,
           }
         : null,
     };
