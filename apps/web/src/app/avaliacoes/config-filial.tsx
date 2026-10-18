@@ -20,6 +20,8 @@ interface Props {
   corte: number;
   /** Pra onde a nota alta leva o cliente. */
   destino: DestinoAvaliacao;
+  /** IA responde sozinha no Google: 'todas' | 'nota_alta' | 'desligado' */
+  respostaAuto?: string;
   podeConfigurar: boolean;
   stats: Stats | null;
 }
@@ -32,6 +34,7 @@ export function ConfigFilial({
   tripadvisorUrl: tripInicial,
   corte: corteInicial,
   destino: destinoInicial,
+  respostaAuto: respostaAutoInicial = 'todas',
   podeConfigurar,
   stats,
 }: Props) {
@@ -40,6 +43,7 @@ export function ConfigFilial({
   const [trip, setTrip] = useState(tripInicial ?? '');
   const [corte, setCorte] = useState(corteInicial);
   const [destino, setDestino] = useState<DestinoAvaliacao>(destinoInicial);
+  const [respostaAuto, setRespostaAuto] = useState(respostaAutoInicial);
   const router = useRouter();
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -74,6 +78,7 @@ export function ConfigFilial({
           tripadvisorReviewUrl: trip,
           notaCorteGoogle: corte,
           avaliacaoDestino: destino,
+          googleRespostaAuto: respostaAuto,
         }),
       });
       if (!r.ok) {
@@ -202,6 +207,25 @@ export function ConfigFilial({
               obrigado — vale pro QR daqui e pro QR da mesa.
             </p>
           </div>
+          <div>
+            <label className="text-xs font-medium text-slate-600">
+              IA responde sozinha no Google
+            </label>
+            <select
+              value={respostaAuto}
+              onChange={(e) => setRespostaAuto(e.target.value)}
+              className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs focus:border-sky-500 focus:outline-none"
+            >
+              <option value="todas">Sim — todas as avaliações (positivas e negativas)</option>
+              <option value="nota_alta">Só as de 4 e 5 estrelas</option>
+              <option value="desligado">Não — só respondo pelo painel</option>
+            </select>
+            <p className="mt-1 text-[10px] text-slate-400">
+              De hora em hora a IA escreve e publica a resposta das avaliações do Google sem
+              resposta (até 5 por vez), sem repetir o texto das anteriores. Precisa da casa ligada
+              ao Google. No TripAdvisor não dá: ele não deixa publicar por sistema.
+            </p>
+          </div>
           {erro && <p className="text-xs text-rose-600">{erro}</p>}
           <div className="flex gap-2">
             <button
@@ -218,6 +242,7 @@ export function ConfigFilial({
                 setTrip(tripInicial ?? '');
                 setCorte(corteInicial);
                 setDestino(destinoInicial);
+                setRespostaAuto(respostaAutoInicial);
                 setErro(null);
               }}
               className="rounded-md px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-200"

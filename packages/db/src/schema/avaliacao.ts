@@ -79,6 +79,10 @@ export const avaliacaoRespostaIa = pgTable(
     nota: integer('nota'),
     resposta: text('resposta').notNull(),
     criadoPor: uuid('criado_por'),
+    /** Avaliação do Google respondida sozinha pelo cron (id do Google, não o
+     *  texto) e quando a resposta saiu. Nulos = rascunho da tela. */
+    reviewId: varchar('review_id', { length: 200 }),
+    publicadaEm: timestamp('publicada_em', { withTimezone: true }),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({

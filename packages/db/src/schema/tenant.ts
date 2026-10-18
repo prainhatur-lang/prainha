@@ -432,6 +432,9 @@ export const filial = pgTable(
      *  ou 'escolher' (nada abre sozinho, o cliente toca no botão). Os dois
      *  botões aparecem sempre; isto só decide qual abre sozinho. */
     avaliacaoDestino: text('avaliacao_destino').notNull().default('google'),
+    /** Resposta da IA publicada sozinha no Google (cron de hora em hora):
+     *  'todas' | 'nota_alta' (só 4 e 5) | 'desligado'. 18/10/2026. */
+    googleRespostaAuto: varchar('google_resposta_auto', { length: 20 }).notNull().default('todas'),
     /** URL pública da loja (Tailscale Funnel) pra a Conferência de Caixa do web
      *  falar com o vendas-local (assinado). Ex.: https://xxx.ts.net. Null = não
      *  configurada — a conferência dessa filial fica indisponível. */

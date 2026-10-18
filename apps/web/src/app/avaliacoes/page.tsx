@@ -55,6 +55,7 @@ export default async function AvaliacoesPage() {
             tripadvisorReviewUrl: schema.filial.tripadvisorReviewUrl,
             notaCorteGoogle: schema.filial.notaCorteGoogle,
             avaliacaoDestino: schema.filial.avaliacaoDestino,
+            googleRespostaAuto: schema.filial.googleRespostaAuto,
           })
           .from(schema.filial)
           .where(inArray(schema.filial.id, filialIds))
@@ -138,6 +139,7 @@ export default async function AvaliacoesPage() {
                 tripadvisorUrl={f.tripadvisorReviewUrl}
                 corte={f.notaCorteGoogle}
                 destino={normalizarDestino(f.avaliacaoDestino)}
+                respostaAuto={f.googleRespostaAuto}
                 podeConfigurar={podeConfigurar}
                 stats={
                   s

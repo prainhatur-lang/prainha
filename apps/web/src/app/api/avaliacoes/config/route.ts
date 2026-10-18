@@ -9,6 +9,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { DESTINOS_AVALIACAO, type DestinoAvaliacao } from '@/lib/avaliacao-destino';
+import { MODOS_RESPOSTA_AUTO, type ModoRespostaAuto } from '@/lib/google-resposta-auto';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -58,6 +59,15 @@ export async function PUT(request: Request) {
     }
   }
 
+  // Resposta automática no Google (18/10/2026). Ausente = não muda.
+  let respostaAuto: ModoRespostaAuto | undefined;
+  if (body?.googleRespostaAuto !== undefined) {
+    if (!(MODOS_RESPOSTA_AUTO as readonly unknown[]).includes(body.googleRespostaAuto)) {
+      return NextResponse.json({ error: 'resposta automática inválida' }, { status: 400 });
+    }
+    respostaAuto = body.googleRespostaAuto as ModoRespostaAuto;
+  }
+
   const filiais = await filiaisDoUsuario(user.id);
   const filialIds = filiais.map((f) => f.id);
   if (!filialIds.includes(filialId)) {
@@ -71,6 +81,7 @@ export async function PUT(request: Request) {
       tripadvisorReviewUrl: tripadvisorUrl,
       notaCorteGoogle: corte,
       ...(destino ? { avaliacaoDestino: destino } : {}),
+      ...(respostaAuto ? { googleRespostaAuto: respostaAuto } : {}),
     })
     .where(and(eq(schema.filial.id, filialId), inArray(schema.filial.id, filialIds)));
 
