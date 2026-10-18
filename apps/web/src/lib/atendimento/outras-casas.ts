@@ -10,7 +10,7 @@
 // e atendente ativa (atendimento_config.ativo) — a Prainha Mar entra no dia em
 // que tiver número.
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm';
 import type { BlocoConhecimento } from '@concilia/db/schema';
 import type { MsgHistorico } from './ia';
 import { linkCardapio } from './cardapio';
@@ -207,7 +207,8 @@ export async function passagemRecebida(params: {
         eq(schema.atendimentoConversa.telefone, params.telefone),
         ne(schema.atendimentoConversa.filialId, params.filialId),
         eq(schema.atendimentoMensagem.direcao, 'saida'),
-        eq(schema.atendimentoMensagem.autor, 'bot'),
+        // Link mandado pela equipe ("passar pro Tabuará" pelo painel) também vale.
+        inArray(schema.atendimentoMensagem.autor, ['bot', 'equipe']),
         sql`${schema.atendimentoMensagem.corpo} ILIKE ${`%wa.me/${numero}%`}`,
         sql`${schema.atendimentoMensagem.criadoEm} > now() - ${sql.raw(`interval '${JANELA_PASSAGEM}'`)}`,
       ),
