@@ -14,6 +14,7 @@ import { enviarTexto, enviarAudio, marcarLidaComDigitando, baixarMidia } from '.
 import { gerarAudioNina } from './voz';
 import { transcreverAudio } from './transcrever';
 import { avisarEquipe } from './avisos';
+import { responsavelAchadosPerdidos, telefoneResponsavel } from './achados-perdidos';
 import {
   consultarDisponibilidade,
   criarReservaWhatsApp,
@@ -707,6 +708,37 @@ export async function processarEntrada(params: {
         console.log('[nina] passagem', filialNome, '→', destino.filialNome, registro.conversaId);
         return `LINK PRONTO pra falar com ${destino.atendente}, do ${destino.filialNome}: ${link}\nNa resposta: diga com carinho que o ${destino.filialNome} tem atendimento próprio com ${destino.atendente}, cole o link EXATAMENTE como está (sem markdown, sem encurtar) e diga que é só tocar e mandar a mensagem que já vai escrita — ${destino.atendente} recebe o resumo e continua dali. NÃO transfira pra equipe por isso. Se a conversa tem assunto do ${filialNome} ainda aberto, siga com ele normalmente.`;
       },
+      registrarAchadoPerdido: responsavelAchadosPerdidos(entrada.filialId)
+        ? async (dados: { objeto: string; quando: string | null; onde: string | null; detalhes: string | null }) => {
+            const resp = responsavelAchadosPerdidos(entrada.filialId)!;
+            const descricao = [
+              dados.objeto || 'objeto não informado',
+              dados.detalhes,
+              dados.onde ? `onde: ${dados.onde}` : null,
+              dados.quando ? `quando: ${dados.quando}` : null,
+            ]
+              .filter(Boolean)
+              .join(' · ');
+            await db
+              .update(schema.atendimentoConversa)
+              .set({
+                status: 'humano',
+                motivoTransferencia: `Achados e perdidos (${resp.nome}): ${descricao}`.slice(0, 500),
+                atualizadoEm: sql`now()`,
+              })
+              .where(eq(schema.atendimentoConversa.id, registro.conversaId));
+            const telResp = await telefoneResponsavel(resp.funcionarioId);
+            const destinos = [...new Set([...(telResp ? [telResp] : []), ...numerosEquipe])];
+            void avisarEquipe(destinos, {
+              motivo: `Achados e perdidos — ${resp.nome}: ${descricao}`,
+              nomeCliente: conversa.nomeCliente ?? 'sem nome',
+              telefone: entrada.telefone,
+              filial: filialNome,
+            });
+            console.log('[nina] achados e perdidos', filialNome, registro.conversaId, telResp ? 'com telefone' : 'SEM telefone do responsável');
+            return `REGISTRADO e ${resp.nome}, que cuida dos achados e perdidos do ${filialNome}, foi avisado. Na resposta: diga com carinho que o ${resp.nome} já recebeu o recado, vai conferir se o objeto ficou aqui e responde por esta mesma conversa. Não garanta que foi encontrado e não transfira de novo.`;
+          }
+        : undefined,
       transferir: async (motivo: string, resumo: string) => {
         await db
           .update(schema.atendimentoConversa)

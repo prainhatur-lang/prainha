@@ -93,6 +93,8 @@ export interface ExecutoresFerramentas {
     telefoneContato: string | null;
   }) => Promise<string>;
   consultarEstorno: () => Promise<string>;
+  /** Achados e perdidos: anota o objeto, avisa o responsável da casa e passa pra equipe. */
+  registrarAchadoPerdido?: (dados: { objeto: string; quando: string | null; onde: string | null; detalhes: string | null }) => Promise<string>;
   entrarListaEspera: (dados: { nome: string; pessoas: number; area: string | null }) => Promise<string>;
   consultarMesa: (numero: string) => Promise<string>;
   consultarCotacoesFornecedor: () => Promise<string>;
@@ -378,6 +380,7 @@ ${duasCasas
 - LOUNGE PAGO NÃO TEM TOLERÂNCIA DE HORÁRIO: quem pagou o lounge é dono da mesa o dia inteiro. Cliente avisa que vai chegar mais tarde ("compramos pra 10h mas só chegamos 13h"): tranquilize na hora ("pode vir com calma, a mesa é de vocês o dia todo") e, se ele quiser, ajuste o horário com remarcar_reserva (passando o telefone/CPF se a reserva for de outra pessoa). NUNCA diga que a reserva pode ser cancelada por atraso quando é lounge pago.
 - RESERVA PRA HOJE — CORTE DINÂMICO: o corte de hoje acompanha o movimento REAL da casa. SEMPRE consulte consultar_disponibilidade_reserva com a data de hoje antes de negar: a linha "OCUPAÇÃO AGORA" diz se a reserva está liberada até mais tarde (casa com espaço libera até 15h ou 17h) ou se vale a regra padrão (tarde por ordem de chegada). Casa com espaço = VENDA a reserva da tarde com entusiasmo (é pra encher a casa!); casa movimentada = explique com carinho que à tarde é por ordem de chegada e convide a vir direto.
 - ESTORNO/REEMBOLSO de reserva paga ("cadê meu dinheiro?", "não caiu o estorno", "quero o reembolso"): chame consultar_estorno_reserva ANTES de responder — ela acha a reserva, diz se o estorno já saiu e COMO volta. PONTO CRÍTICO: se o pagamento foi no CARTÃO, o valor volta NA FATURA do cartão (até ~30 dias, conforme o banco) e NUNCA como Pix — nesse caso NÃO peça e nem use chave Pix; se o cliente mandar uma, agradeça e explique que não precisa. Pagamento no Pix volta sozinho pra conta de origem, também sem precisar de chave. Só transfira se a ferramenta mandar, ou se o prazo já estourou e o cliente reclama.
+- ACHADOS E PERDIDOS ("esqueci meu celular aí", "perdi os óculos", "alguém achou uma chave?"): se a ferramenta registrar_achado_perdido estiver disponível, chame-a assim que souber o objeto (pergunte quando e onde/mesa numa pergunta só, se faltar). Diga ao cliente que o responsável de achados e perdidos da casa já foi avisado, vai conferir e responde por aqui. NUNCA garanta que o objeto foi encontrado.
 - Outras mudanças (passar pra outro nome/telefone) e PROBLEMA de pagamento (cobrança duplicada, valor errado): transfira pra equipe. Pergunta sobre a REGRA de reembolso não é problema — responda você mesma com a regra acima.
 
 DESPEDIDA COM CARINHO (por texto): cliente elogiou → agradeça de coração e diga que repassa pra equipe; fechamento redondo (reserva criada, orçamento enviado, cliente se despedindo) → encerre com um desejo curtinho ligado ao contexto ("aproveita o pôr do sol lindo", "aproveitem aí juntos", "que a festa seja inesquecível") — criado na hora, nunca fórmula repetida.
@@ -641,6 +644,24 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           area: { type: 'string', description: 'preferência de área se o cliente disser (Areia, Deck Superior...)' },
         },
         required: ['nome', 'pessoas'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'registrar_achado_perdido',
+      description:
+        'ACHADOS E PERDIDOS: cliente esqueceu ou perdeu algo na casa (celular, óculos, chave, documento, bolsa, roupa, brinquedo...) ou achou algo de outra pessoa. Anota o objeto e avisa na hora o responsável de achados e perdidos da casa, que confere e responde por aqui. Chame assim que souber O QUE foi perdido (pergunte quando e onde/mesa só se o cliente ainda não disse, numa pergunta só).',
+      parameters: {
+        type: 'object',
+        properties: {
+          objeto: { type: 'string', description: 'o que foi perdido/esquecido (ex.: "óculos de sol preto Ray-Ban")' },
+          quando: { type: 'string', description: 'dia/horário em que esteve na casa, como o cliente disse (ex.: "ontem à tarde", "sábado 18/10")' },
+          onde: { type: 'string', description: 'área ou mesa (ex.: "Areia, mesa 12", "banheiro")' },
+          detalhes: { type: 'string', description: 'cor, marca, qualquer sinal que ajude a reconhecer' },
+        },
+        required: ['objeto'],
       },
     },
   },
@@ -1095,9 +1116,13 @@ Como usar, SEM EXCEÇÃO:
   const ferramentasBase = modo === 'fornecedor' ? [...FERRAMENTAS, ...FERRAMENTAS_FORNECEDOR.filter((f) => f.type === 'function' && f.function.name === 'consultar_cotacoes_fornecedor')] : FERRAMENTAS;
   // Passagem só com outra casa ligada e executor presente (e nunca no modo fornecedor).
   const podePassar = modo === 'cliente' && (params.outrasCasas?.length ?? 0) > 0 && !!params.executores.passarParaOutraCasa;
-  const ferramentas = podePassar
-    ? ferramentasBase
-    : ferramentasBase.filter((f) => !(f.type === 'function' && f.function.name === 'passar_para_outra_casa'));
+  // Achados e perdidos só onde a casa tem responsável (executor presente).
+  const podeAchados = modo === 'cliente' && !!params.executores.registrarAchadoPerdido;
+  const ferramentas = ferramentasBase.filter(
+    (f) =>
+      !(f.type === 'function' && f.function.name === 'passar_para_outra_casa' && !podePassar) &&
+      !(f.type === 'function' && f.function.name === 'registrar_achado_perdido' && !podeAchados),
+  );
 
   // 5 rodadas: da pra consultar disponibilidade, criar a reserva e ainda
   // fechar com texto (cada tool call consome uma rodada).
@@ -1253,6 +1278,16 @@ Como usar, SEM EXCEÇÃO:
             pessoas: Number(args.pessoas) || 0,
             area: String(args.area ?? '') || null,
           });
+        } else if (tc.function.name === 'registrar_achado_perdido') {
+          resultado = podeAchados
+            ? await params.executores.registrarAchadoPerdido!({
+                objeto: String(args.objeto ?? '').trim(),
+                quando: String(args.quando ?? '').trim() || null,
+                onde: String(args.onde ?? '').trim() || null,
+                detalhes: String(args.detalhes ?? '').trim() || null,
+              })
+            : 'Achados e perdidos sem responsável aqui — anote o objeto e chame transferir_para_humano com o que foi perdido.';
+          if (podeAchados) transferiu = true;
         } else if (tc.function.name === 'consultar_estorno_reserva') {
           resultado = await params.executores.consultarEstorno();
         } else if (tc.function.name === 'consultar_pedido_delivery') {
