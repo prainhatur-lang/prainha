@@ -35,6 +35,7 @@ export * from './delivery-online';
 export * from './cancelamento';
 export * from './rh';
 export * from './rh-escala';
+export * from './vale-transporte';
 export * from './folha-contador';
 export * from './extrato-empresa';
 export * from './escuta';

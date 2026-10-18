@@ -156,6 +156,7 @@
     "migrate:fidelidade-codigo-carteira": "tsx scripts/migrate-fidelidade-codigo-carteira.ts",
     "migrate:campanha-convite": "tsx scripts/migrate-campanha-convite.ts",
     "migrate:whatsapp-nao-enviar": "tsx scripts/migrate-whatsapp-nao-enviar.ts",
+    "migrate:vale-transporte": "tsx scripts/migrate-vale-transporte.ts",
     "migrate:lista-compra": "tsx scripts/migrate-lista-compra.ts",
     "migrate:ifood-nuvem": "tsx scripts/migrate-ifood-nuvem.ts",
     "migrate:ifood-conciliacao": "tsx scripts/migrate-ifood-conciliacao.ts",
