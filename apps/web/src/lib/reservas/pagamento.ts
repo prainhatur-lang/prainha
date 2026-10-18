@@ -23,7 +23,7 @@ export async function marcarReservaPaga(reservaId: string, appOrigin: string): P
       local: reserva.area ?? '',
       pessoas: String(reserva.pessoas),
       linkCancelar: `${appOrigin}/reservar/cancelar/${reserva.cancelToken}`,
-    });
+    }, reserva.filialId);
     // Lounge pago NÃO tem tolerância de 15min (o cron de no-show pula
     // reserva paga) — então não manda o aviso de "cancela sozinha".
   } catch {
@@ -44,7 +44,7 @@ export async function marcarReservaPaga(reservaId: string, appOrigin: string): P
         hora: reserva.hora,
         local: `${filial?.nome ?? ''}${reserva.area ? ' · ' + reserva.area : ''}`,
         token: reserva.cancelToken ?? '',
-      });
+      }, reserva.filialId);
       await db.update(schema.reserva).set({ lembreteConfirmacaoEm: new Date() }).where(eq(schema.reserva.id, reservaId));
     }
   } catch {

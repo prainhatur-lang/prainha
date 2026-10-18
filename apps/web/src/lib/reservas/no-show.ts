@@ -87,7 +87,7 @@ export async function processarNoShowAutomatico(): Promise<ResultadoNoShow> {
         await enviarAtualizacaoReserva(r.telefone, {
           nome: r.nome,
           mensagem: `Sua reserva de ${d}/${m}/${a} às ${r.hora} foi cancelada automaticamente — passou dos ${TOLERANCIA_ANUNCIADA_MIN} minutos de tolerância sem você chegar. Se quiser, é só fazer uma nova reserva ou chamar a gente por aqui! 🌅`,
-        });
+        }, r.filialId);
       }
     } catch (e) {
       falhas.push(`${r.nome} (${r.id}): ${(e as Error).message}`);

@@ -858,6 +858,32 @@ export async function processarEntrada(params: {
       console.error('nina: falha ao gerar resposta', e);
     }
 
+    // PROMESSA SOBRE ASSUNTO DE OUTRA CASA (dono, 18/10/2026): cliente da
+    // Tabuará escreveu no número do Bar "fiz reserva no Tabuará… tá correto?",
+    // a Nina respondeu "vou verificar" e a rede abaixo jogou pra equipe do Bar
+    // — 15 h no vácuo. Quem resolve é a atendente de lá (Otávio): em vez de
+    // transferir aqui, faz a passagem com o link pro número da outra casa.
+    const prometeuRetorno = (t: string) =>
+      /\bvou (verificar|confirmar|perguntar|checar|falar com|ver com)\b|j[aá] (te )?retorno|retorno (em breve|j[aá] j[aá])|\b(chamei|vou chamar|j[aá] chamo|pedi pra?)\s+(um colega|uma colega|algu[eé]m)\b/i.test(t) ||
+      /\bassim que\b[^.!?\n]{0,60}\b(colega|equipe|time|algu[eé]m|pessoal|gerente)\b[^.!?\n]{0,40}\b(confirm|respond|retorn|verific|me pass|me diss)/i.test(t);
+    if (!transferiu && !leadRegistrado && !passouPara && texto && modo === 'cliente' && outrasCasas.length && prometeuRetorno(texto)) {
+      const falasCliente = [...historico.filter((m) => m.direcao === 'entrada').slice(-4).map((m) => m.corpo ?? ''), entrada.corpo ?? ''].join(' ');
+      const norm = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+      const fala = norm(falasCliente);
+      // Nome inteiro da casa ("tabuara", "prainha mar") ou da atendente ("otavio"), palavra inteira; só vale se casar UMA.
+      const citadas = outrasCasas.filter((c) =>
+        [c.filialNome, c.atendente].some((n) => n && new RegExp(`\\b${norm(n).replace(/[^a-z0-9 ]/g, '')}\\b`).test(fala)),
+      );
+      const destino = citadas.length === 1 ? citadas[0] : null;
+      if (destino) {
+        const resumo = (entrada.corpo ?? '').trim() || `Quero falar sobre o ${destino.filialNome}.`;
+        await executores.passarParaOutraCasa(destino.filialNome, resumo);
+        const oQue = /reserv/.test(fala) ? 'ver a sua reserva e resolver direto' : 'resolver direto com você';
+        texto = `Isso é com ${destino.atendente}, que atende o ${destino.filialNome} — consegue ${oQue}. É só tocar no link abaixo e mandar a mensagem que já vai escrita:`;
+        console.log('[nina] promessa virou passagem', filialNome, '→', destino.filialNome, registro.conversaId);
+      }
+    }
+
     // REDE DE SEGURANÇA: prometeu retorno sem transferir = transfere à força.
     // O prompt já proíbe, mas o modelo escorrega (12/08: cliente celíaca ouviu
     // "vou verificar com a equipe e já retorno" e ninguém foi avisado — ficou
@@ -868,6 +894,13 @@ export async function processarEntrada(params: {
       // Passou pra outra casa: "o Otávio continua com você" não é promessa da equipe daqui.
       !passouPara &&
       texto &&
+      // "Vou verificar isso pra você. Pode me passar o telefone?" é ela mesma
+      // pedindo o dado pra consultar (18/10/2026) — não promessa da equipe.
+      // Só vale sem citar equipe/colega/gerente/alguém.
+      !(
+        /\b(me passar|me (informar|dizer|mandar|enviar)|qual (é |o |a )|poderia (me )?(passar|informar))\b[^?]*\?/i.test(texto) &&
+        !/\b(colega|equipe|time|algu[eé]m|pessoal|gerente|respons[aá]vel)\b/i.test(texto)
+      ) &&
       // Inclui a promessa de "colega": "já chamei um colega, ele te responde"
       // saiu SEM transferir e a cliente esperou 2h no vácuo (hospedagem, 26/08).
       (/\bvou (verificar|confirmar|perguntar|checar|falar com|ver com)\b|j[aá] (te )?retorno|retorno (em breve|j[aá] j[aá])|\b(chamei|vou chamar|j[aá] chamo|pedi pra?)\s+(um colega|uma colega|algu[eé]m)\b/i.test(

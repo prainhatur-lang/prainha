@@ -954,8 +954,8 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
       local: areaCfg.nome,
       pessoas: String(pessoas),
       linkCancelar: `https://app.prainhabar.com/reservar/cancelar/${cancelToken}`,
-    });
-    if (ok) await enviarAvisoTolerancia(p.telefone, nome);
+    }, p.filialId);
+    if (ok) await enviarAvisoTolerancia(p.telefone, nome, p.filialId);
     if (p.data === hojeBr() && lembreteReservaConfigurado()) {
       await enviarLembreteReserva(p.telefone, {
         nome: nome.split(' ')[0] || 'tudo bem',
@@ -963,7 +963,7 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
         hora: p.hora,
         local: `${p.filialNome} · ${areaCfg.nome}`,
         token: cancelToken,
-      });
+      }, p.filialId);
     }
   } catch {
     // best-effort — a reserva já está criada
@@ -1117,7 +1117,7 @@ export async function remarcarReservaWhatsApp(p: {
       local: slot.areaCfg.nome,
       pessoas: String(pessoas),
       linkCancelar: alvo.cancelToken ? `https://app.prainhabar.com/reservar/cancelar/${alvo.cancelToken}` : '',
-    });
+    }, p.filialId);
     if (data === hojeBr() && alvo.cancelToken && lembreteReservaConfigurado()) {
       await enviarLembreteReserva(telDestino, {
         nome: nome.split(' ')[0] || 'tudo bem',
@@ -1125,7 +1125,7 @@ export async function remarcarReservaWhatsApp(p: {
         hora,
         local: `${p.filialNome} · ${slot.areaCfg.nome}`,
         token: alvo.cancelToken,
-      });
+      }, p.filialId);
     }
   } catch {
     // best-effort — a remarcação já está gravada
@@ -1276,7 +1276,7 @@ export async function corrigirTelefoneReservaWhatsApp(p: {
       local: alvo.area ?? '',
       pessoas: String(alvo.pessoas),
       linkCancelar: alvo.cancelToken ? `https://app.prainhabar.com/reservar/cancelar/${alvo.cancelToken}` : '',
-    });
+    }, p.filialId);
     if (String(alvo.data) === hojeBr() && alvo.cancelToken && lembreteReservaConfigurado()) {
       await enviarLembreteReserva(novo, {
         nome: nome.split(' ')[0] || 'tudo bem',
@@ -1284,7 +1284,7 @@ export async function corrigirTelefoneReservaWhatsApp(p: {
         hora,
         local: `${p.filialNome} · ${alvo.area ?? ''}`,
         token: alvo.cancelToken,
-      });
+      }, p.filialId);
     }
   } catch {
     // best-effort — a troca já está gravada

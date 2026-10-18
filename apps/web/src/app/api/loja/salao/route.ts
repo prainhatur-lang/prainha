@@ -408,7 +408,7 @@ export async function POST(request: Request) {
     if (mensagem && r.telefone) {
       try {
         const { enviarAtualizacaoReserva } = await import('@/lib/whatsapp-otp');
-        await enviarAtualizacaoReserva(r.telefone, { nome: (r.nome || '').split(' ')[0] || 'tudo bem', mensagem });
+        await enviarAtualizacaoReserva(r.telefone, { nome: (r.nome || '').split(' ')[0] || 'tudo bem', mensagem }, f);
       } catch {
         /* o aviso no zap nunca derruba a ação da recepção */
       }

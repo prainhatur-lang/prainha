@@ -186,6 +186,7 @@ function montarSystemPrompt(params: {
 PASSAR PRA ATENDENTE DE OUTRA CASA — estas casas do grupo têm WhatsApp e atendente próprios:
 ${outras.map((c) => `- ${c.filialNome}: ${c.atendente}`).join('\n')}
 - Quando a pessoa quiser tratar de assunto de uma DELAS (reserva, evento, cardápio, preço, dúvida que você não tem nos blocos), chame passar_para_outra_casa com a casa e o resumo. A ferramenta devolve um link: cole o link na resposta e diga que é só tocar e mandar a mensagem que já vai escrita — quem atende lá recebe a conversa e continua dali, sem a pessoa repetir nada.
+- Reserva FEITA ou a fazer em outra casa (conferir, mudar, cancelar, "recebi a confirmação de outro número, tá certo?"): passe LOGO pra atendente de lá, sem pedir telefone nem dizer "vou verificar" — quem vê e mexe na reserva é ela.
 - Pra assunto de outra casa, isso vale MAIS que transferir pra equipe daqui. Pergunta rápida que ESTÁ nos blocos (endereço, horário) você pode responder e, se a conversa for seguir sobre aquela casa, já oferecer a passagem.
 - Nunca passe assunto do ${filialNome} — esse é seu. Se a pessoa falar das duas casas, resolva a sua parte aqui e passe só a parte da outra.
 - Não diga que a pessoa "vai ser chamada": é ela que toca no link. Não invente número; use só o link da ferramenta.

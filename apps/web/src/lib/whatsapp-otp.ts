@@ -11,6 +11,51 @@
 // e o codigo eh devolvido pela API pra testar o fluxo antes da Meta estar configurada.
 
 import { telefoneComDdi } from '@/lib/telefone-pais';
+import { db, schema } from '@concilia/db';
+import { eq } from 'drizzle-orm';
+
+/** Números que mandam a mensagem de reserva DESTA casa, em ordem: o número da
+ *  própria casa (whatsapp_numero) e, se ele recusar, o WHATSAPP_PHONE_ID de
+ *  sempre (prainha Zap). Dono 18/10/2026: reserva da Tabuará chegava "da
+ *  Prainha Zap" e o cliente achou que era engano. Sem filialId = só o env. */
+async function remetentesDaFilial(filialId?: string | null): Promise<string[]> {
+  const env = process.env.WHATSAPP_PHONE_ID;
+  const ids: string[] = [];
+  if (filialId) {
+    try {
+      const linhas = await db
+        .select({ id: schema.whatsappNumero.phoneNumberId, ativo: schema.whatsappNumero.atendenteAtivo })
+        .from(schema.whatsappNumero)
+        .where(eq(schema.whatsappNumero.filialId, filialId));
+      // O que tem atendente ligada primeiro: é nele que a resposta do cliente vira conversa.
+      linhas.sort((a, b) => Number(b.ativo) - Number(a.ativo));
+      if (linhas[0]) ids.push(linhas[0].id);
+    } catch (e) {
+      console.error('whatsapp: remetente da filial falhou', e instanceof Error ? e.message : e);
+    }
+  }
+  if (env && !ids.includes(env)) ids.push(env);
+  return ids;
+}
+
+/** POST /messages tentando cada remetente; o modelo pode não existir na conta
+ *  (WABA) do número da casa — aí cai no número de sempre. */
+async function postarMensagem(remetentes: string[], corpo: unknown): Promise<Response> {
+  const ver = process.env.WHATSAPP_API_VERSION || 'v21.0';
+  const token = (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META)!;
+  let resp: Response | null = null;
+  for (const [i, phoneId] of remetentes.entries()) {
+    resp = await fetch(`https://graph.facebook.com/${ver}/${phoneId}/messages`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(corpo),
+    });
+    if (resp.ok || i === remetentes.length - 1) return resp;
+    const txt = await resp.clone().text().catch(() => '');
+    console.error(`WhatsApp: número ${phoneId} recusou (${resp.status}), tentando o próximo: ${txt.slice(0, 200)}`);
+  }
+  return resp!;
+}
 
 export interface ResultadoOtp {
   enviado: boolean;
@@ -144,35 +189,29 @@ export function lembreteReservaConfigurado(): boolean {
 export async function enviarLembreteReserva(
   telefone: string,
   vars: { nome: string; data: string; hora: string; local: string; token: string },
+  filialId?: string | null,
 ): Promise<boolean> {
   if (!lembreteReservaConfigurado()) return false;
 
-  const ver = process.env.WHATSAPP_API_VERSION || 'v21.0';
-  const phoneId = process.env.WHATSAPP_PHONE_ID!;
-  const token = (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META)!;
   const template = process.env.WHATSAPP_LEMBRETE_TEMPLATE!;
   const lang = process.env.WHATSAPP_LEMBRETE_LANG || process.env.WHATSAPP_OTP_LANG || 'pt_BR';
 
-  const resp = await fetch(`https://graph.facebook.com/${ver}/${phoneId}/messages`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      to: telefone,
-      type: 'template',
-      template: {
-        name: template,
-        language: { code: lang },
-        components: [
-          {
-            type: 'body',
-            parameters: [vars.nome, vars.data, vars.hora, vars.local].map((t) => ({ type: 'text', text: String(t) })),
-          },
-          { type: 'button', sub_type: 'quick_reply', index: '0', parameters: [{ type: 'payload', payload: `confirmar:${vars.token}` }] },
-          { type: 'button', sub_type: 'quick_reply', index: '1', parameters: [{ type: 'payload', payload: `cancelar:${vars.token}` }] },
-        ],
-      },
-    }),
+  const resp = await postarMensagem(await remetentesDaFilial(filialId), {
+    messaging_product: 'whatsapp',
+    to: telefone,
+    type: 'template',
+    template: {
+      name: template,
+      language: { code: lang },
+      components: [
+        {
+          type: 'body',
+          parameters: [vars.nome, vars.data, vars.hora, vars.local].map((t) => ({ type: 'text', text: String(t) })),
+        },
+        { type: 'button', sub_type: 'quick_reply', index: '0', parameters: [{ type: 'payload', payload: `confirmar:${vars.token}` }] },
+        { type: 'button', sub_type: 'quick_reply', index: '1', parameters: [{ type: 'payload', payload: `cancelar:${vars.token}` }] },
+      ],
+    },
   });
   if (!resp.ok) {
     const txt = await resp.text().catch(() => '');
@@ -391,41 +430,35 @@ export function atualizacaoReservaConfigurada(): boolean {
  *  canal do enviarAtualizacaoReserva, texto livre). Reforça o que já aparece
  *  na tela de confirmação do site: a mesa cancela sozinha depois de
  *  TOLERANCIA_NO_SHOW_MIN min sem o cliente chegar (ver lib/reservas/no-show). */
-export async function enviarAvisoTolerancia(telefone: string, nome: string): Promise<boolean> {
+export async function enviarAvisoTolerancia(telefone: string, nome: string, filialId?: string | null): Promise<boolean> {
   return enviarAtualizacaoReserva(telefone, {
     nome,
     mensagem:
       '⚠️ Atenção: sua mesa fica reservada por até 15 minutos após o horário marcado. Depois disso, a reserva é cancelada automaticamente.',
-  });
+  }, filialId);
 }
 
 export async function enviarAtualizacaoReserva(
   telefone: string,
   vars: { nome: string; mensagem: string },
+  filialId?: string | null,
 ): Promise<boolean> {
   if (!atualizacaoReservaConfigurada()) return false;
-  const ver = process.env.WHATSAPP_API_VERSION || 'v21.0';
-  const phoneId = process.env.WHATSAPP_PHONE_ID!;
-  const token = (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META)!;
   const template = process.env.WHATSAPP_ATUALIZACAO_TEMPLATE!;
   const lang = process.env.WHATSAPP_ATUALIZACAO_LANG || process.env.WHATSAPP_OTP_LANG || 'pt_BR';
-  const resp = await fetch(`https://graph.facebook.com/${ver}/${phoneId}/messages`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      // reserva do painel gravava o número como digitado ("79 99977-9000"):
-      // sem o 55 a Meta lia outro país. "+…" = de fora, já com DDI.
-      to: telefoneComDdi(telefone),
-      type: 'template',
-      template: {
-        name: template,
-        language: { code: lang },
-        components: [
-          { type: 'body', parameters: [vars.nome, vars.mensagem].map((t) => ({ type: 'text', text: String(t) })) },
-        ],
-      },
-    }),
+  const resp = await postarMensagem(await remetentesDaFilial(filialId), {
+    messaging_product: 'whatsapp',
+    // reserva do painel gravava o número como digitado ("79 99977-9000"):
+    // sem o 55 a Meta lia outro país. "+…" = de fora, já com DDI.
+    to: telefoneComDdi(telefone),
+    type: 'template',
+    template: {
+      name: template,
+      language: { code: lang },
+      components: [
+        { type: 'body', parameters: [vars.nome, vars.mensagem].map((t) => ({ type: 'text', text: String(t) })) },
+      ],
+    },
   });
   if (!resp.ok) {
     const txt = await resp.text().catch(() => '');
@@ -442,6 +475,7 @@ export async function enviarAtualizacaoReserva(
 export async function enviarConfirmacaoReserva(
   telefone: string,
   vars: { nome: string; data: string; hora: string; local: string; pessoas: string; linkCancelar: string },
+  filialId?: string | null,
 ): Promise<boolean> {
   const template = process.env.WHATSAPP_CONFIRMACAO_TEMPLATE;
   // Gate proprio (token + phone + template de confirmacao). NAO depende do
@@ -449,25 +483,18 @@ export async function enviarConfirmacaoReserva(
   const tokenEnv = process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META;
   if (!tokenEnv || !process.env.WHATSAPP_PHONE_ID || !template || otpEmModoTeste()) return false;
 
-  const ver = process.env.WHATSAPP_API_VERSION || 'v21.0';
-  const phoneId = process.env.WHATSAPP_PHONE_ID!;
-  const token = (process.env.WHATSAPP_TOKEN || process.env.WHATSAPP_META)!;
   const lang = process.env.WHATSAPP_OTP_LANG || 'pt_BR';
   const ordem = [vars.nome, vars.data, vars.hora, vars.local, vars.pessoas, vars.linkCancelar];
 
-  const resp = await fetch(`https://graph.facebook.com/${ver}/${phoneId}/messages`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      to: telefone,
-      type: 'template',
-      template: {
-        name: template,
-        language: { code: lang },
-        components: [{ type: 'body', parameters: ordem.map((t) => ({ type: 'text', text: String(t) })) }],
-      },
-    }),
+  const resp = await postarMensagem(await remetentesDaFilial(filialId), {
+    messaging_product: 'whatsapp',
+    to: telefone,
+    type: 'template',
+    template: {
+      name: template,
+      language: { code: lang },
+      components: [{ type: 'body', parameters: ordem.map((t) => ({ type: 'text', text: String(t) })) }],
+    },
   });
   return resp.ok;
 }

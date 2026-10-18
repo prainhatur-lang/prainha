@@ -400,7 +400,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       // Vercel pode congelar a function assim que a resposta sai — aguarda
       // o envio (best-effort) em vez de disparar sem esperar.
       try {
-        await enviarAtualizacaoReserva(atual.clienteTelefone, { nome: atual.clienteNome, mensagem });
+        await enviarAtualizacaoReserva(atual.clienteTelefone, { nome: atual.clienteNome, mensagem }, atual.filialId);
       } catch (e) {
         console.error('Erro enviando atualizacao de reserva:', (e as Error).message);
       }

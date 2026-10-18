@@ -86,7 +86,7 @@ export async function processarLembretesReserva(
         hora: r.hora,
         local: `${r.filialNome}${r.area ? ' · ' + r.area : ''}`,
         token,
-      });
+      }, r.filialId);
       await db
         .update(schema.reserva)
         .set({ lembreteConfirmacaoEm: sql`now()` })

@@ -377,8 +377,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
       local: espaco,
       pessoas: String(pessoas),
       linkCancelar: `${origin}/reservar/cancelar/${cancelToken}`,
-    });
-    if (confirmacaoZap) await enviarAvisoTolerancia(telefone, nome);
+    }, filial.id);
+    if (confirmacaoZap) await enviarAvisoTolerancia(telefone, nome, filial.id);
   } catch {
     // nao bloqueia a reserva se a confirmacao falhar
   }
@@ -395,7 +395,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
         hora,
         local: `${filial.nome}${espaco ? ' · ' + espaco : ''}`,
         token: cancelToken,
-      });
+      }, filial.id);
       if (nova?.id) {
         await db
           .update(schema.reserva)
