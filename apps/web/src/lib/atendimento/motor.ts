@@ -736,7 +736,12 @@ export async function processarEntrada(params: {
               filial: filialNome,
             });
             console.log('[nina] achados e perdidos', filialNome, registro.conversaId, telResp ? 'com telefone' : 'SEM telefone do responsável');
-            return `REGISTRADO e ${resp.nome}, que cuida dos achados e perdidos do ${filialNome}, foi avisado. Na resposta: diga com carinho que o ${resp.nome} já recebeu o recado, vai conferir se o objeto ficou aqui e responde por esta mesma conversa. Não garanta que foi encontrado e não transfira de novo.`;
+            const dig = telResp ? telResp.replace(/^55/, '') : '';
+            const telFmt = dig.length === 11 ? `(${dig.slice(0, 2)}) ${dig.slice(2, 7)}-${dig.slice(7)}` : dig.length === 10 ? `(${dig.slice(0, 2)}) ${dig.slice(2, 6)}-${dig.slice(6)}` : '';
+            const contato = telFmt
+              ? ` Passe também o contato direto dele, EXATAMENTE assim: "WhatsApp do ${resp.nome}: ${telFmt}" — o cliente pode chamar ali se preferir.`
+              : '';
+            return `REGISTRADO e ${resp.nome}, que cuida dos achados e perdidos do ${filialNome}, foi avisado. Na resposta: diga com carinho que o ${resp.nome} já recebeu o recado, vai conferir se o objeto ficou aqui e responde por esta mesma conversa.${contato} Não garanta que foi encontrado e não transfira de novo.`;
           }
         : undefined,
       transferir: async (motivo: string, resumo: string) => {
