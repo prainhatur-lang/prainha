@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import type { LinhaVt, OrigemPrevisao, Quinzena } from '@/lib/rh/vale-transporte';
+import type { FormaVt, LinhaVt, OrigemPrevisao, Quinzena } from '@/lib/rh/vale-transporte';
 
 const brl = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const sinal = (n: number) => (n > 0 ? `+${brl(n)}` : n < 0 ? `−${brl(-n)}` : brl(0));
@@ -34,7 +34,12 @@ export function ValeTransporteManager(p: Props) {
     Object.fromEntries(p.linhas.map((l) => [l.funcionarioId, l.diasPrevistos])),
   );
   const [editando, setEditando] = useState<string | null>(null);
-  const [form, setForm] = useState({ ativo: true, valorDia: '', diasSemana: '' });
+  const [form, setForm] = useState<{ ativo: boolean; valorDia: string; diasSemana: string; forma: FormaVt }>({
+    ativo: true,
+    valorDia: '',
+    diasSemana: '',
+    forma: 'folha',
+  });
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [mostrarSemVt, setMostrarSemVt] = useState(false);
@@ -61,8 +66,10 @@ export function ValeTransporteManager(p: Props) {
 
   // 6% sobre a base (lib/rh/vale-transporte.ts), nunca mais que o VT recebido.
   // Fica gravado quando a quinzena seguinte é paga; até lá é ao vivo.
+  const formaDe = (l: LinhaVt): FormaVt => l.paga?.forma ?? l.vt?.forma ?? 'folha';
   const desconto = (l: LinhaVt) => {
     if (l.paga?.descontoValor != null) return { valor: l.paga.descontoValor, gravado: true };
+    if (formaDe(l) === 'dinheiro') return { valor: 0, gravado: false };
     const base = l.baseDesconto?.valor ?? 0;
     const v = Math.round(Math.max(0, Math.min(base * 0.06, calc(l).pagar)) * 100) / 100;
     return { valor: v, gravado: false };
@@ -70,6 +77,7 @@ export function ValeTransporteManager(p: Props) {
 
   const total = comVt.reduce((s, l) => s + calc(l).pagar, 0);
   const totalDesconto = comVt.reduce((s, l) => s + desconto(l).valor, 0);
+  const totalDinheiro = comVt.filter((l) => formaDe(l) === 'dinheiro').reduce((s, l) => s + calc(l).pagar, 0);
 
   async function enviar(body: unknown) {
     setSalvando(true);
@@ -98,6 +106,7 @@ export function ValeTransporteManager(p: Props) {
       ativo: l.vt?.ativo ?? true,
       valorDia: l.vt ? String(l.vt.valorDia).replace('.', ',') : '',
       diasSemana: l.vt?.diasSemana ? String(l.vt.diasSemana) : '',
+      forma: l.vt?.forma ?? 'folha',
     });
   }
 
@@ -108,7 +117,7 @@ export function ValeTransporteManager(p: Props) {
       return;
     }
     const ds = form.diasSemana ? Number(form.diasSemana) : null;
-    const ok = await enviar({ acao: 'pessoa', funcionarioId: fid, ativo: form.ativo, valorDia: valor, diasSemana: ds });
+    const ok = await enviar({ acao: 'pessoa', funcionarioId: fid, ativo: form.ativo, valorDia: valor, diasSemana: ds, forma: form.forma });
     if (ok) setEditando(null);
   }
 
@@ -157,6 +166,17 @@ export function ValeTransporteManager(p: Props) {
               ))}
             </select>
           </label>
+          <label className="flex flex-col">
+            <span className="text-xs text-slate-500">Como recebe</span>
+            <select
+              value={form.forma}
+              onChange={(e) => setForm({ ...form, forma: e.target.value as FormaVt })}
+              className="w-56 rounded border border-slate-300 px-2 py-1"
+            >
+              <option value="folha">Na folha — desconta 6% do salário</option>
+              <option value="dinheiro">Em dinheiro — ajuda de custo, sem desconto</option>
+            </select>
+          </label>
           <label className="flex items-center gap-1.5 pb-1">
             <input type="checkbox" checked={form.ativo} onChange={(e) => setForm({ ...form, ativo: e.target.checked })} />
             recebe VT
@@ -192,6 +212,10 @@ export function ValeTransporteManager(p: Props) {
           )}
           <div className="mt-1 text-lg font-bold text-slate-900">
             {brl(total)} <span className="text-sm font-normal text-slate-500">· {comVt.length} pessoa(s)</span>
+          </div>
+          <div className="mt-0.5 text-xs text-slate-600">
+            Na folha: <b className="tabular-nums">{brl(total - totalDinheiro)}</b> · em dinheiro (ajuda de custo):{' '}
+            <b className="tabular-nums">{brl(totalDinheiro)}</b>
           </div>
           <div className="mt-0.5 text-xs text-slate-600">
             Desconto de 6% no salário: <b className="tabular-nums">{brl(totalDesconto)}</b> · custo da casa{' '}
@@ -252,7 +276,16 @@ export function ValeTransporteManager(p: Props) {
               return [
                 <tr key={l.funcionarioId}>
                   <td className="px-3 py-2">
-                    <div className="font-medium text-slate-900">{l.nome}</div>
+                    <div className="font-medium text-slate-900">
+                      {l.nome}
+                      <span
+                        className={`ml-2 rounded px-1.5 py-0.5 text-[10px] font-medium ${
+                          formaDe(l) === 'dinheiro' ? 'bg-amber-100 text-amber-800' : 'bg-blue-50 text-blue-700'
+                        }`}
+                      >
+                        {formaDe(l) === 'dinheiro' ? 'dinheiro' : 'folha'}
+                      </span>
+                    </div>
                     <div className="text-xs text-slate-500">
                       {[l.cargo, l.jornadaNome].filter(Boolean).join(' · ') || '—'}
                       {p.podeEditar && !p.paga && (
@@ -310,7 +343,13 @@ export function ValeTransporteManager(p: Props) {
                         <div>
                           <span className="tabular-nums text-slate-800">{brl(ds.valor)}</span>
                           <div className="text-[11px] text-slate-400">
-                            {ds.gravado ? 'gravado' : l.baseDesconto ? l.baseDesconto.como : 'sem salário no cadastro'}
+                            {ds.gravado
+                              ? 'gravado'
+                              : formaDe(l) === 'dinheiro'
+                                ? 'ajuda de custo — sem desconto'
+                                : l.baseDesconto
+                                  ? l.baseDesconto.como
+                                  : 'sem salário no cadastro'}
                           </div>
                         </div>
                       );
@@ -372,7 +411,8 @@ export function ValeTransporteManager(p: Props) {
         (qualquer casa) são comparados com os dias pagos — o que foi pago a mais é abatido, o que faltou é acrescentado.
         Corrigir o ponto depois muda o acerto da próxima quinzena enquanto ela não for gravada como paga. Desconto
         de 6% no salário: CLT sobre metade do salário (proporcional aos dias na casa), intermitente sobre as horas do
-        ponto × valor da hora, nunca mais que o VT recebido; fica gravado quando a quinzena seguinte é paga.
+        ponto × valor da hora, nunca mais que o VT recebido; fica gravado quando a quinzena seguinte é paga. Quem
+        recebe em dinheiro (ajuda de custo) não tem desconto.
       </p>
     </div>
   );

@@ -28,6 +28,8 @@ const Body = z.discriminatedUnion('acao', [
     ativo: z.boolean(),
     valorDia: z.number().min(0).max(500),
     diasSemana: z.number().int().min(1).max(7).nullable(),
+    // 'folha' = desconta 6% do salário; 'dinheiro' = ajuda de custo, sem desconto.
+    forma: z.enum(['folha', 'dinheiro']).default('folha'),
   }),
   z.object({
     acao: z.literal('pagar'),
@@ -70,6 +72,7 @@ export async function POST(req: Request) {
       ativo: d.ativo,
       valorDia: d.valorDia.toFixed(2),
       diasSemana: d.diasSemana,
+      forma: d.forma,
       atualizadoEm: new Date(),
       atualizadoPor: user.id,
     };
@@ -135,6 +138,7 @@ export async function POST(req: Request) {
         valorPrevisto: previsto.toFixed(2),
         acertoAnterior: acerto.toFixed(2),
         valorPago: valorPagar(previsto, acerto).toFixed(2),
+        forma: l.vt!.forma,
       };
     });
   if (!itens.length) {

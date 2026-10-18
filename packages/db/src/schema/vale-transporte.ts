@@ -25,6 +25,9 @@ export const vtPessoa = pgTable('vt_pessoa', {
   /** Previsão de quem não tem escala fixa (intermitente): dias por semana.
    *  NULL = usa a escala fixa; sem escala, repete os dias da quinzena anterior. */
   diasSemana: integer('dias_semana'),
+  /** 'folha' = VT na folha com desconto de 6% no salário; 'dinheiro' = ajuda
+   *  de custo em dinheiro, sem desconto (escolha do dono 18/10/2026). */
+  forma: varchar('forma', { length: 10 }).notNull().default('folha'),
   atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
   atualizadoPor: uuid('atualizado_por'),
 });
@@ -61,6 +64,8 @@ export const vtQuinzenaItem = pgTable(
     acertoAnterior: numeric('acerto_anterior', { precision: 10, scale: 2 }).notNull().default('0'),
     /** max(0, previsto + acerto). O que sobrar negativo carrega pra seguinte. */
     valorPago: numeric('valor_pago', { precision: 10, scale: 2 }).notNull(),
+    /** Forma no dia do pagamento ('folha' | 'dinheiro'). */
+    forma: varchar('forma', { length: 10 }).notNull().default('folha'),
     /** Desconto de 6% no salário desta quinzena (base e valor). Gravado quando
      *  a quinzena SEGUINTE é paga — aí as horas do intermitente já fecharam.
      *  NULL = ainda ao vivo. */

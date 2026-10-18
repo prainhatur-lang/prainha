@@ -63,6 +63,11 @@ async function main() {
   await sql.unsafe(`ALTER TABLE vt_quinzena_item ADD COLUMN IF NOT EXISTS desconto_valor numeric(10,2)`);
   console.log('[ok] vt_quinzena_item.desconto_*');
 
+  // Forma do VT (18/10/2026): 'folha' (desconta 6%) ou 'dinheiro' (ajuda de custo).
+  await sql.unsafe(`ALTER TABLE vt_pessoa ADD COLUMN IF NOT EXISTS forma varchar(10) NOT NULL DEFAULT 'folha'`);
+  await sql.unsafe(`ALTER TABLE vt_quinzena_item ADD COLUMN IF NOT EXISTS forma varchar(10) NOT NULL DEFAULT 'folha'`);
+  console.log('[ok] forma');
+
   await sql.end();
   console.log('Pronto.');
 }

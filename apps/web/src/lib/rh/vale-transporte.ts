@@ -16,6 +16,7 @@
 // recebeu na quinzena. Base: CLT mensal = metade do salário (proporcional aos
 // dias na casa); intermitente = valor da hora × horas do ponto na quinzena —
 // por isso o desconto é lido ao vivo e só fecha quando a quinzena termina.
+// Quem recebe em DINHEIRO (ajuda de custo) não tem desconto.
 
 import { db, schema } from '@concilia/db';
 import { and, asc, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
@@ -68,6 +69,8 @@ export function valorPagar(previsto: number, acerto: number): number {
 }
 
 /** 6% da base, nunca mais que o VT recebido. */
+export type FormaVt = 'folha' | 'dinheiro';
+
 export function descontoVt(base: number, vtRecebido: number): number {
   return r2(Math.max(0, Math.min(base * DESCONTO_VT, vtRecebido)));
 }
@@ -79,7 +82,7 @@ export interface LinhaVt {
   nome: string;
   cargo: string | null;
   regime: string | null;
-  vt: { ativo: boolean; valorDia: number; diasSemana: number | null } | null;
+  vt: { ativo: boolean; valorDia: number; diasSemana: number | null; forma: FormaVt } | null;
   jornadaNome: string | null;
   diasPrevistos: number;
   origemPrevisao: OrigemPrevisao;
@@ -106,6 +109,7 @@ export interface LinhaVt {
     valorPrevisto: number;
     acertoAnterior: number;
     valorPago: number;
+    forma: FormaVt;
     descontoValor: number | null;
   } | null;
 }
@@ -335,7 +339,9 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
             desconto:
               ia.descontoValor != null
                 ? Number(ia.descontoValor)
-                : descontoVt(baseDe(ant)?.valor ?? 0, valorPago),
+                : ia.forma === 'dinheiro'
+                  ? 0
+                  : descontoVt(baseDe(ant)?.valor ?? 0, valorPago),
             baseDesconto:
               ia.descontoBase != null
                 ? { valor: Number(ia.descontoBase), como: 'gravado' }
@@ -350,7 +356,9 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
       nome: f.nome,
       cargo: f.cargo,
       regime: f.regime,
-      vt: vt ? { ativo: vt.ativo, valorDia: Number(vt.valorDia), diasSemana: vt.diasSemana } : null,
+      vt: vt
+        ? { ativo: vt.ativo, valorDia: Number(vt.valorDia), diasSemana: vt.diasSemana, forma: vt.forma as FormaVt }
+        : null,
       jornadaNome: jAtual?.nome ?? null,
       diasPrevistos,
       origemPrevisao,
@@ -364,6 +372,7 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
             valorPrevisto: Number(ip.valorPrevisto),
             acertoAnterior: Number(ip.acertoAnterior),
             valorPago: Number(ip.valorPago),
+            forma: ip.forma as FormaVt,
             descontoValor: ip.descontoValor != null ? Number(ip.descontoValor) : null,
           }
         : null,
