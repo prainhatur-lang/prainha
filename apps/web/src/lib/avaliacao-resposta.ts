@@ -10,7 +10,9 @@
 //
 // Nada é publicado nem enviado daqui: TripAdvisor não tem API pra resposta do
 // proprietário (só a Central do proprietário) e o WhatsApp sai pelo wa.me, com
-// um toque de quem está respondendo. Esta lib não grava nada.
+// um toque de quem está respondendo. Esta lib não grava nada — a rota guarda
+// as respostas que ela escreveu (`avaliacao_resposta_ia`, só o texto nosso) e
+// manda as últimas em `anteriores` pra a próxima não repetir (18/10/2026).
 import OpenAI from 'openai';
 
 export type CanalResposta = 'tripadvisor' | 'google' | 'whatsapp';
@@ -26,6 +28,9 @@ export interface PedidoResposta {
   nome?: string | null;
   /** o que a casa apurou/quer dizer — ÚNICA fonte de fato além da avaliação */
   orientacao?: string | null;
+  /** respostas que a casa já recebeu da IA (mais recentes primeiro) — pra não
+   *  repetir abertura, frases nem fecho. Só texto nosso. */
+  anteriores?: string[];
 }
 
 export interface RascunhoResposta {
@@ -58,8 +63,18 @@ const PUBLICA = `
 Esta é uma resposta PÚBLICA, que fica na página da casa (TripAdvisor ou Google) e é lida por quem está decidindo se vem — escreva também pra essa pessoa.
 - De 50 a 110 palavras, um ou dois parágrafos.
 - Sem link, sem telefone, sem e-mail, sem propaganda nem convite com oferta: o TripAdvisor recusa resposta com isso. Pra continuar a conversa, convide o cliente a procurar a gerência na casa ou pelos canais oficiais (sem citar número).
-- Nota alta: agradeça, cite o que ele elogiou e convide a voltar. Nota baixa: agradeça o relato, reconheça, responda ao ponto e convide a conversar com a gerência.
+- Nota alta (4 ou 5): calorosa e específica. Pegue um ou dois detalhes concretos do que o cliente contou (o prato, o drink, o pôr do sol, o atendimento, a ocasião que ele comemorou, quem veio junto) e devolva com palavras suas, mostrando que alguém leu de verdade. Se ele elogiou alguém pelo nome, agradeça citando esse nome. Feche convidando a voltar de um jeito que combine com o que ele viveu (outro prato, outro fim de tarde, trazer mais gente) — sem oferta nem promessa.
+- Nota 3: agradeça o que foi bom, reconheça com honestidade o que ficou abaixo, sem desculpa genérica, e convide a dar outra chance.
+- Nota baixa (1 ou 2): primeiro mostre que ouviu — repita com suas palavras o ponto principal dele. Reconheça a experiência sem se defender e sem inventar apuração; diga que o relato foi levado à gerência (só diga que algo já mudou se a orientação da casa disser). Convide a conversar com a gerência na casa. Sem agradecer efusivamente, sem "volte sempre".
+- Nota não informada: deduza o tom pelo texto.
 - Termine assinando "Equipe <nome da casa>". O cadastro pode trazer o nome sem acento ("Tabuara"): escreva na grafia certa ("Tabuará").`;
+
+/** Variedade: cada resposta pública sai diferente das últimas da casa. */
+const VARIAR = `
+Variedade — muito importante: quem lê a página vê várias respostas da casa uma embaixo da outra, e resposta-carimbo passa descaso.
+- Abaixo vem "respostas_anteriores_da_casa": NÃO repita a abertura, as expressões, a estrutura nem o fecho de nenhuma delas. Se elas começam com "Olá, <nome>!", comece diferente (pelo detalhe que o cliente contou, por um agradecimento direto, por uma frase sobre a ocasião). Varie também o jeito de convidar a voltar e a frase antes da assinatura.
+- Evite as muletas de resposta de restaurante: "ficamos muito felizes", "é muito gratificante", "será sempre bem-vindo", "esperamos vê-lo em breve", "sua opinião é muito importante", "agradecemos a preferência". Se usar alguma, que seja uma só e não a mesma da resposta anterior.
+- A assinatura "Equipe <casa>" se mantém; o resto muda.`;
 
 const PARTICULAR = `
 Esta é uma mensagem PARTICULAR de WhatsApp pro cliente que deixou nota baixa na pesquisa da própria casa (ele informou o número pra ser procurado).
@@ -78,6 +93,7 @@ const SCHEMA = {
 } as const;
 
 function montarPedido(p: PedidoResposta): string {
+  const anteriores = (p.anteriores ?? []).map((t) => t.trim()).filter(Boolean).slice(0, 12);
   const onde =
     p.canal === 'tripadvisor' ? 'TripAdvisor' : p.canal === 'google' ? 'Google' : 'pesquisa da casa (QR da mesa)';
   return JSON.stringify({
@@ -87,6 +103,9 @@ function montarPedido(p: PedidoResposta): string {
     cliente: (p.nome ?? '').trim() || 'não informado',
     avaliacao: p.texto,
     orientacao_da_casa: (p.orientacao ?? '').trim() || 'nenhuma — responda só com o que está na avaliação',
+    ...(anteriores.length
+      ? { respostas_anteriores_da_casa: anteriores.map((t) => t.slice(0, 900)) }
+      : {}),
   });
 }
 
@@ -175,7 +194,7 @@ export async function sugerirResposta(p: PedidoResposta): Promise<RascunhoRespos
   if (!anthropicKey && !openaiKey) {
     throw new Error('Nenhuma chave de IA configurada (ANTHROPIC_API_KEY ou OPENAI_API_KEY) na Vercel.');
   }
-  const system = BASE + (p.canal === 'whatsapp' ? PARTICULAR : PUBLICA);
+  const system = BASE + (p.canal === 'whatsapp' ? PARTICULAR : PUBLICA + VARIAR);
   const userMsg = montarPedido(p);
 
   let erroClaude: unknown = null;

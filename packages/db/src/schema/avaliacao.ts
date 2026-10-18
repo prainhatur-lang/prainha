@@ -63,3 +63,25 @@ export const avaliacao = pgTable(
     filialCriadoIdx: index('avaliacao_filial_criado_idx').on(t.filialId, t.criadoEm),
   }),
 );
+
+/** Respostas que a IA escreveu (18/10/2026): só o texto NOSSO, nunca o da
+ *  avaliação (o contrato do TripAdvisor não deixa guardar o conteúdo deles).
+ *  Serve pra próxima resposta não repetir abertura, frases e fecho. */
+export const avaliacaoRespostaIa = pgTable(
+  'avaliacao_resposta_ia',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id')
+      .notNull()
+      .references(() => filial.id, { onDelete: 'cascade' }),
+    /** tripadvisor | google | whatsapp */
+    canal: varchar('canal', { length: 20 }).notNull(),
+    nota: integer('nota'),
+    resposta: text('resposta').notNull(),
+    criadoPor: uuid('criado_por'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    filialIdx: index('idx_avaliacao_resposta_ia_filial').on(t.filialId, t.criadoEm),
+  }),
+);

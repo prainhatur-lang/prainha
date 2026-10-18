@@ -237,6 +237,15 @@ export async function BlocoTripadvisor({ filiais }: { filiais: Array<{ id: strin
                           ver e responder ↗
                         </a>
                       )}
+                      {!a.respondida && (
+                        <a
+                          href={`#responder-ia:${r.filialId}`}
+                          className="ml-3 mt-1 inline-block text-xs font-medium text-sky-700 hover:underline"
+                          title="Abre o quadro da IA com a casa escolhida — copie o texto da avaliação no TripAdvisor e cole lá"
+                        >
+                          ✨ responder com IA
+                        </a>
+                      )}
                     </li>
                   ))}
                 </ul>

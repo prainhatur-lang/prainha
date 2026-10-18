@@ -1,6 +1,8 @@
 // POST /api/avaliacoes/sugerir-resposta — a IA escreve o RASCUNHO da resposta
-// da casa a uma avaliação. Não publica, não envia e não grava nada: devolve o
-// texto pra quem está na tela conferir, ajustar e publicar/enviar.
+// da casa a uma avaliação. Não publica nem envia: devolve o texto pra quem está
+// na tela conferir, ajustar e publicar/enviar. Grava só a resposta que a IA
+// escreveu (`avaliacao_resposta_ia`, nunca o texto da avaliação) e manda as
+// últimas da casa pra próxima não sair repetida (18/10/2026).
 //
 // Dois jeitos de chamar:
 //  - { avaliacaoId, orientacao? } → mensagem particular de WhatsApp pro cliente
@@ -10,7 +12,7 @@
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { sugerirResposta, type PedidoResposta } from '@/lib/avaliacao-resposta';
@@ -41,6 +43,7 @@ export async function POST(request: Request) {
   }
 
   let pedido: PedidoResposta;
+  let filialAlvo: string;
 
   if (typeof body.avaliacaoId === 'string' && body.avaliacaoId) {
     const [av] = await db
@@ -54,6 +57,7 @@ export async function POST(request: Request) {
       .where(and(eq(schema.avaliacao.id, body.avaliacaoId), inArray(schema.avaliacao.filialId, filialIds)))
       .limit(1);
     if (!av) return NextResponse.json({ error: 'avaliação não encontrada' }, { status: 404 });
+    filialAlvo = av.filialId;
     pedido = {
       canal: 'whatsapp',
       casa: filiais.find((f) => f.id === av.filialId)?.nome ?? 'restaurante',
@@ -65,6 +69,7 @@ export async function POST(request: Request) {
   } else {
     const filial = filiais.find((f) => f.id === body.filialId);
     if (!filial) return NextResponse.json({ error: 'casa não encontrada' }, { status: 404 });
+    filialAlvo = filial.id;
     const canal = body.canal === 'google' ? 'google' : body.canal === 'tripadvisor' ? 'tripadvisor' : null;
     if (!canal) return NextResponse.json({ error: 'canal inválido' }, { status: 400 });
     const texto = typeof body.texto === 'string' ? body.texto.trim() : '';
@@ -84,8 +89,36 @@ export async function POST(request: Request) {
     };
   }
 
+  // últimas respostas da IA nessa casa e nesse tipo (pública × WhatsApp)
+  {
+    const canais = pedido.canal === 'whatsapp' ? ['whatsapp'] : ['tripadvisor', 'google'];
+    const ult = await db
+      .select({ resposta: schema.avaliacaoRespostaIa.resposta })
+      .from(schema.avaliacaoRespostaIa)
+      .where(
+        and(
+          eq(schema.avaliacaoRespostaIa.filialId, filialAlvo),
+          inArray(schema.avaliacaoRespostaIa.canal, canais),
+        ),
+      )
+      .orderBy(desc(schema.avaliacaoRespostaIa.criadoEm))
+      .limit(12)
+      .catch(() => []);
+    pedido.anteriores = ult.map((u) => u.resposta);
+  }
+
   try {
     const r = await sugerirResposta(pedido);
+    await db
+      .insert(schema.avaliacaoRespostaIa)
+      .values({
+        filialId: filialAlvo,
+        canal: pedido.canal,
+        nota: pedido.nota,
+        resposta: r.resposta.slice(0, 4000),
+        criadoPor: user.id,
+      })
+      .catch((e) => console.error('[avaliacao] guardar resposta IA falhou:', e));
     return NextResponse.json({ ok: true, resposta: r.resposta, conferir: r.conferir, motor: r.motor });
   } catch (e) {
     console.error('[avaliacao] sugerir-resposta falhou:', e instanceof Error ? e.message : e);

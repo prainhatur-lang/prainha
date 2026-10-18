@@ -5,7 +5,7 @@
 // publica lá. Nada é publicado daqui (o TripAdvisor não tem como um programa
 // publicar a resposta do proprietário) e nada é gravado.
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 type Canal = 'tripadvisor' | 'google';
 
@@ -25,6 +25,28 @@ export function ResponderComIA({ filiais }: { filiais: Array<{ id: string; nome:
   const [resposta, setResposta] = useState('');
   const [conferir, setConferir] = useState<string[]>([]);
   const [copiado, setCopiado] = useState(false);
+  const textoRef = useRef<HTMLTextAreaElement>(null);
+
+  // atalho dos cards do TripAdvisor: #responder-ia:<filialId> escolhe a casa e
+  // põe o cursor na caixa da avaliação (o texto quem cola é a pessoa — contrato
+  // do TripAdvisor não deixa o conteúdo da API ir pra IA)
+  useEffect(() => {
+    function lerHash() {
+      const m = /^#responder-ia:([0-9a-f-]{36})$/i.exec(window.location.hash);
+      if (!m) return;
+      if (filiais.some((f) => f.id === m[1])) setFilialId(m[1]);
+      setCanal('tripadvisor');
+      setResposta('');
+      setConferir([]);
+      setTexto('');
+      setNota('');
+      document.getElementById('responder-ia')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setTimeout(() => textoRef.current?.focus(), 400);
+    }
+    lerHash();
+    window.addEventListener('hashchange', lerHash);
+    return () => window.removeEventListener('hashchange', lerHash);
+  }, [filiais]);
 
   if (filiais.length === 0) return null;
 
@@ -108,6 +130,7 @@ export function ResponderComIA({ filiais }: { filiais: Array<{ id: string; nome:
       <label className="mt-3 flex flex-col gap-1 text-xs text-slate-600">
         Avaliação do cliente
         <textarea
+          ref={textoRef}
           value={texto}
           onChange={(e) => setTexto(e.target.value)}
           rows={4}

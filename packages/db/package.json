@@ -189,6 +189,7 @@
     "migrate:nota-fotos-extras": "tsx scripts/migrate-nota-fotos-extras.ts",
     "migrate:avaliacao-pedido": "tsx scripts/migrate-avaliacao-pedido.ts",
     "migrate:avaliacao-convite": "tsx scripts/migrate-avaliacao-convite.ts",
+    "migrate:avaliacao-resposta-ia": "tsx scripts/migrate-avaliacao-resposta-ia.ts",
     "migrate:nota-pagamento-xml": "tsx scripts/migrate-nota-pagamento-xml.ts",
     "migrate:nota-chave-leitura": "tsx scripts/migrate-nota-chave-leitura.ts",
     "migrate:conta-valor-nota": "tsx scripts/migrate-conta-valor-nota.ts"
