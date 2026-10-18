@@ -916,6 +916,14 @@ export async function processarEntrada(params: {
       }
     }
 
+    // "Vou confirmar a reserva para 4 pessoas e 1 criança, ok?" é ela pedindo
+    // o sim do cliente pra criar — não promessa da equipe. Caso Ismael
+    // (18/10/2026): a rede jogou pra humano, a Nina calou e o "Pode reservar!"
+    // ficou sem resposta e sem reserva. Essa frase (pergunta, sem citar equipe)
+    // sai do texto só pra checagem da promessa; o resto continua valendo.
+    const textoPromessa = (texto ?? '').replace(/[^.!?\n]*\bvou (confirmar|fazer|marcar|criar|garantir) (a |sua |a sua )?reserva\b[^.!?\n]*\?/gi, (frase) =>
+      /\b(colega|equipe|time|algu[eé]m|pessoal|gerente|respons[aá]vel)\b/i.test(frase) ? frase : '',
+    );
     // REDE DE SEGURANÇA: prometeu retorno sem transferir = transfere à força.
     // O prompt já proíbe, mas o modelo escorrega (12/08: cliente celíaca ouviu
     // "vou verificar com a equipe e já retorno" e ninguém foi avisado — ficou
@@ -936,7 +944,7 @@ export async function processarEntrada(params: {
       // Inclui a promessa de "colega": "já chamei um colega, ele te responde"
       // saiu SEM transferir e a cliente esperou 2h no vácuo (hospedagem, 26/08).
       (/\bvou (verificar|confirmar|perguntar|checar|falar com|ver com)\b|j[aá] (te )?retorno|retorno (em breve|j[aá] j[aá])|\b(chamei|vou chamar|j[aá] chamo|pedi pra?)\s+(um colega|uma colega|algu[eé]m)\b/i.test(
-        texto,
+        textoPromessa,
       ) ||
         // "Assim que meu colega confirmar eu te aviso por aqui" (Claudia,
         // 09/10/2026): a conversa foi devolvida pra Nina sem a resposta estar
@@ -952,6 +960,24 @@ export async function processarEntrada(params: {
         )
         .catch(() => {});
       transferiu = true;
+    }
+
+    // LOUNGE SEM LINK (dono, 18/10/2026): a Nina não cria reserva de Lounge
+    // (taxa paga no site) — então TODA resposta sobre Lounge leva o link. Caso
+    // Ismael: perguntou se dava pra trocar a Areia pelo Lounge e ouviu "veja
+    // com a equipe na chegada", sem valor e sem link.
+    if (
+      texto &&
+      !transferiu &&
+      modo === 'cliente' &&
+      /prainha bar/i.test(filialNome) &&
+      /lounge/i.test(texto) &&
+      /lounge/i.test([...historico.filter((m) => m.direcao === 'entrada').slice(-2).map((m) => m.corpo ?? ''), entrada.corpo ?? ''].join(' ')) &&
+      !/reservas\.prainhabar\.com/i.test(texto) &&
+      // Lounge já pago (remarcar/estorno) não é reserva nova.
+      !/\b(pag[oa]|remarq|alterad|ajustad|estorno|reembols)/i.test(texto)
+    ) {
+      texto = `${texto.trimEnd()}\n\nO Lounge tem taxa e é reservado pelo site, com o pagamento na hora: https://reservas.prainhabar.com`;
     }
 
     if (texto) {
