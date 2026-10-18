@@ -607,6 +607,14 @@ async function initSchema() {
   // QUAL CONTA estava na mesa (12/10/2026): so o numero da mesa nao bastou pra
   // achar de quem era a reclamacao da isca que entrou pelo QR da mesa 19.
   await addCol('avaliacao_livre', 'pedido_fb bigint');
+  // O QUE A TELA FEZ DEPOIS DA NOTA ALTA (18/10/2026): 'google' / 'tripadvisor'
+  // (abriu o site — sozinha ou no botão) ou 'agora_nao'. Sobe pra nuvem e
+  // aparece no painel do gerente; convite_nuvem_em = já foi.
+  for (const t of ['avaliacao_livre', 'avaliacao_brinde']) {
+    await addCol(t, 'convite text');
+    await addCol(t, 'convite_em timestamptz');
+    await addCol(t, 'convite_nuvem_em timestamptz');
+  }
   // (A lista de espera da recepção mora na NUVEM — tabela lista_espera, a
   //  mesma do /lista-espera do Concilia. Uma fila só pra casa inteira.)
   await sql`CREATE TABLE IF NOT EXISTS transferencia (id bigserial PRIMARY KEY,
@@ -18760,7 +18768,7 @@ async function apiMesaAvaliar(body) {
   if (!op) {
     let nv = null;
     try { nv = await Promise.race([brindeParaNuvem(reg.id), new Promise((ok) => setTimeout(() => ok(null), 4000))]); } catch {}
-    return { ok: true, brinde: null, ...(await convitesAvaliacao(nv, nota)) };
+    return { ok: true, brinde: null, aval: 'b' + reg.id, ...(await convitesAvaliacao(nv, nota)) };
   }
   const r = await apiVendaEnviar({ numero, itens: [{ codigo_pdv: op.codigo_pdv, qtd: 1, obs: BRINDE_OBS }],
     junto: false, _cliente: true, _brinde: true });
@@ -18776,7 +18784,7 @@ async function apiMesaAvaliar(body) {
   let nv = null;
   // espera a nuvem no máx. 4s (só pelos links do Google/Trip); se demorar, a fila reenvia
   try { nv = await Promise.race([brindeParaNuvem(reg.id), new Promise((ok) => setTimeout(() => ok(null), 4000))]); } catch {}
-  return { ok: true, brinde: op.nome, ...(await convitesAvaliacao(nv, nota)) };
+  return { ok: true, brinde: op.nome, aval: 'b' + reg.id, ...(await convitesAvaliacao(nv, nota)) };
 }
 // NOTA 4-5 TEM QUE CHEGAR NO GOOGLE. O link vinha só na resposta da nuvem, e
 // a tela espera a nuvem no máx. 4s: internet lenta = cliente satisfeito sem
@@ -18849,7 +18857,35 @@ async function apiMesaAvaliacaoLivre(body) {
   }
   let nv = null;
   try { nv = await Promise.race([livreParaNuvem(reg.id), new Promise((ok) => setTimeout(() => ok(null), 4000))]); } catch {}
-  return { ok: true, ...(await convitesAvaliacao(nv, nota)) };
+  return { ok: true, aval: 'l' + reg.id, ...(await convitesAvaliacao(nv, nota)) };
+}
+// QUAL SITE ABRIU (pedido do dono, 18/10/2026: "tem como saber se essas
+// avaliações foram pro Trip ou pro Google?"). A tela do obrigado avisa aqui
+// quando abre o Google/TripAdvisor (sozinha ou no botão) ou quando a pessoa
+// toca em "Agora não". Vem por sendBeacon — a página está saindo pro site.
+// Abrir não quer dizer que publicou: isso só o Google/Trip sabem.
+const CONVITES = new Set(['google', 'tripadvisor', 'agora_nao']);
+async function apiMesaAvaliacaoConvite(body) {
+  const m = /^([lb])(\d+)$/.exec(String(body.aval || ''));
+  const destino = String(body.destino || '');
+  if (!m || !CONVITES.has(destino)) return { ok: false, erro: 'dados inválidos' };
+  const tabela = m[1] === 'l' ? 'avaliacao_livre' : 'avaliacao_brinde';
+  // só a avaliação recém-feita (o QR é público: não deixa mexer em antiga)
+  const r = await sql`UPDATE ${sql(tabela)} SET convite=${destino}, convite_em=now(), convite_nuvem_em=NULL
+    WHERE id=${Number(m[2])} AND criado_em > now() - interval '2 hours' RETURNING id`;
+  if (!r.length) return { ok: false, erro: 'avaliação não encontrada' };
+  conviteParaNuvem(tabela, Number(m[2])).catch(() => {});
+  return { ok: true };
+}
+async function conviteParaNuvem(tabela, id) {
+  if (!FILIAL_ID || !PAGAR_MESA_SECRET) return null;
+  const [a] = await sql`SELECT id, nuvem_id, convite, convite_em FROM ${sql(tabela)}
+    WHERE id=${id} AND convite IS NOT NULL AND convite_nuvem_em IS NULL AND nuvem_id IS NOT NULL`;
+  if (!a) return null; // a avaliação ainda não subiu: a fila manda depois
+  const j = await salaoNuvemPost({ tipo: 'avaliacao_convite', id: String(a.nuvem_id), destino: a.convite,
+    quando: a.convite_em });
+  if (j && j.ok) await sql`UPDATE ${sql(tabela)} SET convite_nuvem_em=now() WHERE id=${id} AND convite=${a.convite}`;
+  return j;
 }
 async function livreParaNuvem(id) {
   if (!FILIAL_ID || !PAGAR_MESA_SECRET) return null;
@@ -18887,6 +18923,11 @@ async function loopBrindeNuvem() {
   for (const p of pend) await brindeParaNuvem(p.id).catch(() => {});
   const livres = await sql`SELECT id FROM avaliacao_livre WHERE nuvem_em IS NULL ORDER BY id LIMIT 20`;
   for (const p of livres) await livreParaNuvem(p.id).catch(() => {});
+  for (const t of ['avaliacao_livre', 'avaliacao_brinde']) {
+    const cv = await sql`SELECT id FROM ${sql(t)} WHERE convite IS NOT NULL AND convite_nuvem_em IS NULL
+      AND nuvem_id IS NOT NULL AND convite_em > now() - interval '3 days' ORDER BY id LIMIT 20`;
+    for (const p of cv) await conviteParaNuvem(t, p.id).catch(() => {});
+  }
 }
 
 // ---- QR CODES das mesas (pra imprimir e colar) ----
@@ -24026,8 +24067,8 @@ async function avEnviarLivre(){
     itens:marc.map(function(i){return i.cod}),itens_txt:marc.map(avItemTxt).join(', ')}); }
   catch(e){ r={ok:false,erro:'Sem conexão. Tente de novo.'} }
   if(!r.ok){bt.disabled=false;bt.textContent='Enviar';alert(r.erro||'Não deu certo. Chame o garçom.');return}
-  var nota=AV.nota; AV=null; AVSEL={}; AVITENS=null;
-  var lk=function(u,t){return u?'<a class="b g" style="text-align:center;text-decoration:none;margin-top:10px" target="_blank" rel="noopener" href="'+esc(u)+'">'+t+'</a>':''};
+  var nota=AV.nota; AV=null; AVSEL={}; AVITENS=null; AVREF=r.aval||null;
+  var lk=avLink;
   if(nota<=3){
     app('<div class="ok"><div class="t">✓ Recebemos</div>'+
       '<div class="mut" style="margin-top:8px">O gerente já foi avisado e vem falar com você. Obrigado por contar — é assim que a gente melhora.</div></div>'+
@@ -24040,7 +24081,7 @@ async function avEnviarLivre(){
       '<div class="tx">Mostre pro mundo o quanto você gostou do nosso espaço! Sua avaliação no Google ou no TripAdvisor ajuda muita gente a descobrir a gente.</div>'+
       avBotoes(r,lk)+avGoAviso(avDest(r).u,avDest(r).n)+'</div>':'')+
     '<button class="b" onclick="inicio()">Voltar ao início</button>');
-  avGoogleAuto(avDest(r).u,3500);
+  avGoogleAuto(avDest(r).u,3500,avDest(r).n);
 }
 // NOTA 4-5 JÁ VAI PRO GOOGLE (pedido do dono, 02/10/2026): o botão sozinho
 // quase ninguém tocava. A tela do obrigado aparece, avisa e abre o Google
@@ -24057,19 +24098,30 @@ function avDest(r){
   return {u:r.google_url||'',n:'Google'};
 }
 function avBotoes(r,lk){
-  var g=lk(r.google_url,'⭐ Avaliar no Google'), t=lk(r.trip_url,'🦉 Avaliar no TripAdvisor');
+  var g=lk(r.google_url,'⭐ Avaliar no Google','google'), t=lk(r.trip_url,'🦉 Avaliar no TripAdvisor','tripadvisor');
   return avDest(r).n==='TripAdvisor'?t+g:g+t;
 }
 function avGoAviso(u,n){
   return u?'<div id="avgo"><div class="mut" style="margin-top:12px">'+(n==='TripAdvisor'?'Abrindo o TripAdvisor pra você avaliar…':'Abrindo o Google pra você avaliar…')+'</div>'+
     '<button class="lnk" onclick="avGoCancela()">Agora não</button></div>':'';
 }
-function avGoogleAuto(u,ms){
+function avGoogleAuto(u,ms,n){
   clearTimeout(AVGO); if(!u)return;
-  AVGO=setTimeout(function(){ if(document.getElementById('avgo'))location.href=u },ms);
+  AVGO=setTimeout(function(){ if(document.getElementById('avgo')){avConvite(n==='TripAdvisor'?'tripadvisor':'google');location.href=u} },ms);
+}
+// QUAL SITE ABRIU vai pro painel do gerente (18/10/2026). AVREF = a avaliação
+// que acabou de ser feita ('l12' sem drink, 'b7' com drink). sendBeacon porque
+// a página está saindo pro Google/Trip e um fetch comum morreria no caminho.
+var AVREF=null;
+function avLink(u,t,k){return u?'<a class="b g" style="text-align:center;text-decoration:none;margin-top:10px" target="_blank" rel="noopener" href="'+esc(u)+'"'+(k?' onclick="avConvite(\\''+k+'\\')"':'')+'>'+t+'</a>':''}
+function avConvite(k){
+  if(!AVREF||!k)return;
+  var b=JSON.stringify({aval:AVREF,destino:k});
+  try{ if(navigator.sendBeacon&&navigator.sendBeacon('/api/mesa/avaliacao-convite',new Blob([b],{type:'application/json'})))return }catch(e){}
+  try{ fetch('/api/mesa/avaliacao-convite',{method:'POST',headers:{'content-type':'application/json'},body:b,keepalive:true}) }catch(e){}
 }
 function avGoCancela(){
-  clearTimeout(AVGO);
+  clearTimeout(AVGO); avConvite('agora_nao');
   var e=document.getElementById('avgo'); if(e&&e.parentNode)e.parentNode.removeChild(e);
 }
 function avNota(n){
@@ -24164,7 +24216,8 @@ async function avEnviar(semDrink){
   }
   // Google/TripAdvisor: convite OPCIONAL e so depois do drink garantido — o
   // drink nunca depende de avaliar la (os dois proibem avaliacao incentivada)
-  var lk=function(u,t){return u?'<a class="b g" style="text-align:center;text-decoration:none;margin-top:10px" target="_blank" rel="noopener" href="'+esc(u)+'">'+t+'</a>':''};
+  AVREF=r.aval||null;
+  var lk=avLink;
   app('<div class="festa"><div class="em">🎉🍹</div><h1>Obrigado pela avaliação!</h1>'+
     (r.brinde?'<div class="mut" style="font-size:16px">Seu <b style="color:var(--ink)">'+esc(r.brinde)+'</b> já foi pedido e chega na sua mesa, por nossa conta.</div>'
       :'<div class="mut" style="font-size:16px">Sua opinião já chegou na gerência. Valeu demais!</div>')+'</div>'+
@@ -24173,7 +24226,7 @@ async function avEnviar(semDrink){
       avBotoes(r,lk)+avGoAviso(avDest(r).u,avDest(r).n)+'</div>':'')+
     '<button class="b" onclick="inicio()">Voltar ao início</button>');
   // um pouco mais de tempo aqui: a pessoa precisa ler que o drink está vindo
-  if(nota>=4)avGoogleAuto(avDest(r).u,5000);
+  if(nota>=4)avGoogleAuto(avDest(r).u,5000,avDest(r).n);
 }
 // ---- cadastro do cliente (tudo opcional) ----
 // telaCadastro({alvo, depois, motivo, exigeDoc})
@@ -29837,6 +29890,7 @@ function secRecl(R){
     var ruim=Number(x.nota)<=3;
     h+='<div class="l"><div class="nm">'+stars(x.nota)+' <b>'+esc(x.nome||'anônimo')+'</b> '+(x.origem?'<span class="tag">'+esc(x.origem)+'</span>':'')+
       ' <span class="tag '+(x.status==='novo'?(ruim?'red':'blue'):(x.status==='em_contato'?'amb':'green'))+'">'+esc(x.status==='em_contato'?'em contato':x.status)+' · '+hm(x.criado_em)+'</span>'+
+      (x.convite_destino==='google'?' <span class="tag blue">⭐ abriu o Google</span>':x.convite_destino==='tripadvisor'?' <span class="tag green">🦉 abriu o TripAdvisor</span>':x.convite_destino==='agora_nao'?' <span class="tag">tocou em Agora não</span>':'')+
       '<small>'+esc(x.comentario||'(sem comentário)')+(x.whatsapp?' · '+esc(x.whatsapp):'')+'</small></div>'+
       (x.status!=='resolvido'?'<div class="row">'+(x.status==='novo'&&x.whatsapp?'<a class="b" style="text-decoration:none;display:inline-block" target="_blank" href="https://wa.me/'+esc(String(x.whatsapp).replace(/[^0-9]/g,''))+'" onclick="aval(\\''+esc(x.id)+'\\',\\'em_contato\\')">💬</a>':'')+
         '<button class="b ok" onclick="aval(\\''+esc(x.id)+'\\',\\'resolvido\\',this)">✔</button></div>':'')+'</div>';
@@ -30959,6 +31013,7 @@ const server = http.createServer(async (req, res) => {
       return res.end(JSON.stringify(await comPracaViva(aq == null || aq === '' ? null : Number(aq), apiChamados))); }
     if (p === '/api/cliente/historico') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiClienteHistorico({ numero: u.searchParams.get('n'), contato: u.searchParams.get('contato') }))); }
     if (p === '/api/mesa/brinde') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaBrinde())); }
+    if (req.method === 'POST' && p === '/api/mesa/avaliacao-convite') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaAvaliacaoConvite(body))); }
     if (req.method === 'POST' && p === '/api/mesa/avaliacao') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaAvaliacaoLivre(body))); }
     if (req.method === 'POST' && p === '/api/mesa/avaliar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaAvaliar(body))); }
     if (req.method === 'POST' && p === '/api/mesa/pedir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaPedir(body))); }

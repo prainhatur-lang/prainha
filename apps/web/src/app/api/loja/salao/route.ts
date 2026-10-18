@@ -85,6 +85,7 @@ export async function GET(request: Request) {
       origem: schema.avaliacao.origem,
       status: schema.avaliacao.status,
       criado_em: schema.avaliacao.criadoEm,
+      convite_destino: schema.avaliacao.conviteDestino,
     })
     .from(schema.avaliacao)
     .where(and(eq(schema.avaliacao.filialId, f), gte(schema.avaliacao.criadoEm, desde24h)))
@@ -196,6 +197,7 @@ const ACOES_ESPERA = new Set(['chamar', 'sentou', 'desistiu', 'voltar']);
 // (regra do Elison, 16/08) — continua só no painel, com login.
 const ACOES_RESERVA = new Set(['sentar', 'confirmar', 'no_show', 'hora', 'mesa', 'pessoas']);
 const STATUS_AVAL = new Set(['em_contato', 'resolvido']);
+const DESTINOS_CONVITE = new Set(['google', 'tripadvisor', 'agora_nao']);
 
 /** POST — ação do gerente na loja: lista de espera (chamar/sentou/desistiu)
  *  ou marcar avaliação como em contato/resolvida. */
@@ -413,6 +415,19 @@ export async function POST(request: Request) {
         /* o aviso no zap nunca derruba a ação da recepção */
       }
     }
+    return NextResponse.json({ ok: true });
+  }
+
+  // O QUE A TELA DO QR FEZ depois da nota alta (18/10/2026): abriu o Google,
+  // abriu o TripAdvisor ou a pessoa tocou em "Agora não". Abrir ≠ publicar.
+  if (body.tipo === 'avaliacao_convite') {
+    const destino = String((body as { destino?: string }).destino || '');
+    if (!DESTINOS_CONVITE.has(destino)) return NextResponse.json({ ok: false, erro: 'destino inválido' }, { status: 400 });
+    const quando = (body as { quando?: string }).quando;
+    await db
+      .update(schema.avaliacao)
+      .set({ conviteDestino: destino, conviteEm: quando && !Number.isNaN(Date.parse(quando)) ? new Date(quando) : new Date() })
+      .where(and(eq(schema.avaliacao.id, id), eq(schema.avaliacao.filialId, f)));
     return NextResponse.json({ ok: true });
   }
 

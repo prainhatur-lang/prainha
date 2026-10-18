@@ -50,6 +50,11 @@ export const avaliacao = pgTable(
     /** Conta (pedido.codigo_externo) que estava na mesa quando a avaliação do QR
      *  foi feita — a loja manda junto. Nulo nas antigas e no QR genérico. */
     pedidoCodigo: integer('pedido_codigo'),
+    /** O que a tela do QR fez depois da nota alta: 'google' | 'tripadvisor'
+     *  (abriu o site — não quer dizer que publicou) | 'agora_nao' (cancelou).
+     *  Nulo = nada registrado. A loja manda (18/10/2026). */
+    conviteDestino: varchar('convite_destino', { length: 20 }),
+    conviteEm: timestamp('convite_em', { withTimezone: true }),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
     atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
   },
