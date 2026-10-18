@@ -5,11 +5,11 @@
 
 import { NextResponse } from 'next/server';
 import { enviarRelatoriosDoDia } from '@/lib/relatorio-diario-envio';
-import { enviarRelatoriosPorCasa } from '@/lib/relatorio-casa-envio';
+import { enviarRelatoriosPorCasa, enviarMesPorCasa } from '@/lib/relatorio-casa-envio';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 export async function GET(req: Request) {
   const auth = req.headers.get('authorization') ?? '';
@@ -17,7 +17,9 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
   const envios = await enviarRelatoriosDoDia();
-  // Quem recebe só uma casa, sem os 10% (Lula → Prainha Mar).
+  // Quem recebe só uma casa, sem os 10% (Lula → Prainha Mar, Lidiane → Tabuará).
   const porCasa = await enviarRelatoriosPorCasa('cron').catch((e) => [{ erro: e instanceof Error ? e.message : String(e) }]);
-  return NextResponse.json({ ok: true, envios, porCasa });
+  // Dia 01: o resultado do mês anterior (só sai uma vez por mês e pessoa).
+  const mes = await enviarMesPorCasa('cron').catch((e) => [{ erro: e instanceof Error ? e.message : String(e) }]);
+  return NextResponse.json({ ok: true, envios, porCasa, mes });
 }

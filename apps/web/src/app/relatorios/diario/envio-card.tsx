@@ -204,7 +204,7 @@ export function EnvioCard({
   const [enviandoCasas, setEnviandoCasas] = useState(false);
   const [msgCasas, setMsgCasas] = useState<{ tom: 'ok' | 'erro'; txt: string } | null>(null);
   async function enviarCasas() {
-    if (!window.confirm('Mandar agora, pra quem recebe só uma casa (Lula → Prainha Mar, sem os 10%), os dias que ainda não foram?')) return;
+    if (!window.confirm('Mandar agora, pra quem recebe só uma casa sem os 10% (Lula → Prainha Mar, Lidiane → Tabuará), os dias que ainda não foram?')) return;
     setEnviandoCasas(true);
     setMsgCasas(null);
     try {
@@ -354,7 +354,7 @@ export function EnvioCard({
               disabled={enviandoCasas}
               className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
             >
-              {enviandoCasas ? 'Enviando…' : 'Enviar pro Lula (Mar, sem 10%)'}
+              {enviandoCasas ? 'Enviando…' : 'Enviar por casa (sem 10%)'}
             </button>
             {msgCasas && (
               <span className={`text-xs ${msgCasas.tom === 'ok' ? 'text-emerald-700' : 'text-rose-700'}`}>{msgCasas.txt}</span>

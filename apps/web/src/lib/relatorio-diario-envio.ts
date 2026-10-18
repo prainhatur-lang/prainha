@@ -377,7 +377,7 @@ export async function registrar(linha: {
   organizacaoId: string;
   dia: string;
   telefone: string;
-  canal: 'modelo' | 'texto' | 'toque';
+  canal: 'modelo' | 'texto' | 'toque' | 'mensal';
   origem: OrigemEnvio;
   ok: boolean;
   erro?: string | null;
@@ -453,6 +453,8 @@ export async function enviarModelo(
   para: string,
   dia: string,
   resumo: string,
+  /** {{1}} no lugar do dia ("setembro/2026" no resumo do mês) */
+  rotulo?: string,
 ): Promise<{ waMessageId: string | null; erro?: string; phoneNumberId: string }> {
   const phoneNumberId = phoneIdPadrao();
   if (!token() || !phoneNumberId) {
@@ -460,7 +462,7 @@ export async function enviarModelo(
   }
   const modelo = await modeloParaEnvio();
   const conhecido = modelo.variaveis != null;
-  const valores = [limpa(rotuloDia(dia), 60), limpa(resumo, 600)];
+  const valores = [limpa(rotulo ?? rotuloDia(dia), 60), limpa(resumo, 600)];
   const nVariaveis = conhecido ? (modelo.variaveis as number) : 2;
 
   const tentar = async (botaoIndice: number | null) => {
