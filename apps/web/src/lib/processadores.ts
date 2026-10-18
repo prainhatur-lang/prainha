@@ -112,6 +112,23 @@ export async function mapearEcParaFilial(
       mapa.set(ec, { filialId, filialNome: nomePorFilial.get(filialId) ?? '' });
     }
   }
+
+  // EC sem historico (ex.: Prainha Mar entrando no EDI da matriz do Bar):
+  // vale o cadastro em filial.taxas.ecs[].codigo. Sem isso o EC inedito caia
+  // na filial da env (Bar). Historico continua tendo precedencia.
+  const semHistorico = ecs.filter((ec) => !porEc.has(ec));
+  if (semHistorico.length > 0) {
+    const cadastradas = await db
+      .select({ id: schema.filial.id, nome: schema.filial.nome, taxas: schema.filial.taxas })
+      .from(schema.filial);
+    for (const ec of semHistorico) {
+      const donas = cadastradas.filter((f) => {
+        const lista = (f.taxas as { ecs?: Array<{ codigo?: string }> } | null)?.ecs;
+        return Array.isArray(lista) && lista.some((e) => String(e?.codigo ?? '').trim() === ec);
+      });
+      if (donas.length === 1) mapa.set(ec, { filialId: donas[0]!.id, filialNome: donas[0]!.nome });
+    }
+  }
   return mapa;
 }
 
