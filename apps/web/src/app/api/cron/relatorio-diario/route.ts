@@ -5,6 +5,7 @@
 
 import { NextResponse } from 'next/server';
 import { enviarRelatoriosDoDia } from '@/lib/relatorio-diario-envio';
+import { enviarRelatoriosPorCasa } from '@/lib/relatorio-casa-envio';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -16,5 +17,7 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
   const envios = await enviarRelatoriosDoDia();
-  return NextResponse.json({ ok: true, envios });
+  // Quem recebe só uma casa, sem os 10% (Lula → Prainha Mar).
+  const porCasa = await enviarRelatoriosPorCasa('cron').catch((e) => [{ erro: e instanceof Error ? e.message : String(e) }]);
+  return NextResponse.json({ ok: true, envios, porCasa });
 }

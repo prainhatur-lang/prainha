@@ -201,6 +201,36 @@ export function EnvioCard({
     setConferencia((c) => (c && c.antes === antes ? { ...c, fase: 'pronto' } : c));
   }
 
+  const [enviandoCasas, setEnviandoCasas] = useState(false);
+  const [msgCasas, setMsgCasas] = useState<{ tom: 'ok' | 'erro'; txt: string } | null>(null);
+  async function enviarCasas() {
+    if (!window.confirm('Mandar agora, pra quem recebe só uma casa (Lula → Prainha Mar, sem os 10%), os dias que ainda não foram?')) return;
+    setEnviandoCasas(true);
+    setMsgCasas(null);
+    try {
+      const r = await fetch('/api/relatorios/diario/enviar-casas', { method: 'POST' });
+      const j = (await r.json().catch(() => null)) as
+        | { error?: string; resultados?: Array<{ nome: string; dia: string; ok: boolean; erro?: string }> }
+        | null;
+      if (!r.ok) {
+        setMsgCasas({ tom: 'erro', txt: j?.error ?? 'Não consegui enviar.' });
+        return;
+      }
+      const res = j?.resultados ?? [];
+      const falha = res.find((x) => !x.ok);
+      setMsgCasas(
+        falha
+          ? { tom: 'erro', txt: `${falha.nome} ${diaCurto(falha.dia)}: ${falha.erro ?? 'não foi'} (${res.filter((x) => x.ok).length} enviados antes)` }
+          : { tom: 'ok', txt: res.length ? `Enviados ${res.length} dias (${diaCurto(res[0].dia)} a ${diaCurto(res[res.length - 1].dia)}).` : 'Nada pendente — todos os dias já foram.' },
+      );
+      router.refresh();
+    } catch {
+      setMsgCasas({ tom: 'erro', txt: 'Sem conexão — tente de novo.' });
+    } finally {
+      setEnviandoCasas(false);
+    }
+  }
+
   async function criarModelo() {
     if (
       !window.confirm(
@@ -317,6 +347,17 @@ export function EnvioCard({
             </button>
             {msg && (
               <span className={`text-xs ${msg.tom === 'ok' ? 'text-emerald-700' : 'text-rose-700'}`}>{msg.txt}</span>
+            )}
+            <button
+              type="button"
+              onClick={enviarCasas}
+              disabled={enviandoCasas}
+              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+            >
+              {enviandoCasas ? 'Enviando…' : 'Enviar pro Lula (Mar, sem 10%)'}
+            </button>
+            {msgCasas && (
+              <span className={`text-xs ${msgCasas.tom === 'ok' ? 'text-emerald-700' : 'text-rose-700'}`}>{msgCasas.txt}</span>
             )}
             {conferencia && recusados.length === 0 && (
               <span className={`text-xs ${conferencia.fase === 'pronto' ? 'text-emerald-700' : 'text-slate-500'}`}>

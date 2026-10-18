@@ -373,7 +373,7 @@ async function destinatarioPorTelefone(from: string): Promise<{ organizacaoId: s
 // Registro
 // ---------------------------------------------------------------------------
 
-async function registrar(linha: {
+export async function registrar(linha: {
   organizacaoId: string;
   dia: string;
   telefone: string;
@@ -449,7 +449,7 @@ const limpa = (s: string, max: number) => s.replace(/\s+/g, ' ').trim().slice(0,
  * O envio se molda ao modelo que existe na Meta: criado na mão sem o botão (04/10
  * deu #132018), vai só o corpo e o detalhe chega respondendo "relatório".
  */
-async function enviarModelo(
+export async function enviarModelo(
   para: string,
   dia: string,
   resumo: string,

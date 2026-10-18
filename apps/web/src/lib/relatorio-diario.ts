@@ -99,6 +99,8 @@ export interface PeriodoDia {
   /** maior nº de contas abertas ao mesmo tempo no período */
   pico: number;
   picoHora: string | null;
+  /** 10% cobrado nas contas do período (pra mostrar o período sem os 10%) */
+  servico?: number;
   /** quem estava no ponto na hora do pico */
   garconsNoPico: number;
   cozinhaNoPico: number;
@@ -495,10 +497,11 @@ export async function montarRelatorioCasa(
         FROM pedido p
        WHERE ${doDia}
     `),
-    q<{ hora: number; contas: number; total: number }>(sql`
+    q<{ hora: number; contas: number; total: number; servico: number }>(sql`
       SELECT extract(hour FROM p.data_abertura AT TIME ZONE ${TZ})::int AS hora,
              count(*)::int AS contas,
-             coalesce(sum(p.valor_total), 0)::float8 AS total
+             coalesce(sum(p.valor_total), 0)::float8 AS total,
+             coalesce(sum(p.total_servico), 0)::float8 AS servico
         FROM pedido p
        WHERE ${doDia}
        GROUP BY 1
@@ -712,7 +715,7 @@ export async function montarRelatorioCasa(
 
   // --- Períodos e pico ---------------------------------------------------------
   const porHora = porHoraRows
-    .map((h) => ({ hora: num(h.hora), contas: num(h.contas), total: num(h.total) }))
+    .map((h) => ({ hora: num(h.hora), contas: num(h.contas), total: num(h.total), servico: num(h.servico) }))
     .sort((a, b) => minutoDaHora(a.hora) - minutoDaHora(b.hora));
   const periodos: PeriodoDia[] = [];
   for (const per of PERIODOS) {
@@ -736,6 +739,7 @@ export async function montarRelatorioCasa(
       nome: per.nome,
       contas,
       total: horasDoPeriodo.reduce((s, h) => s + h.total, 0),
+      servico: horasDoPeriodo.reduce((s, h) => s + h.servico, 0),
       pico,
       picoHora,
       garconsNoPico: presentes(pessoas, picoMin, (p) => p.chave === 'garcom'),
