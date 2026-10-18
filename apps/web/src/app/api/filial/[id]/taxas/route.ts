@@ -28,6 +28,8 @@ const EstabelecimentoSchema = TaxasPorBandeiraSchema.extend({
   rotulo: z.string().max(100).optional(),
   canal: z.string().max(30).optional(),
   prazos: PrazosSchema.optional(),
+  // EC que e' matriz de extrato propria no EDI da Cielo (cron puxa tambem).
+  matriz_edi: z.boolean().optional(),
 });
 
 const Body = z.object({

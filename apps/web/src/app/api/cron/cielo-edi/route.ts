@@ -41,6 +41,22 @@ function classificar(nome: string): Array<'vendas' | 'recebiveis'> {
   return [];
 }
 
+/** ECs cadastrados com matriz_edi=true em filial.taxas.ecs (fora a da env). */
+async function matrizesEdiExtras(daEnv: string): Promise<string[]> {
+  const env = new Set(daEnv.split(',').map((x) => x.trim()));
+  const filiais = await db.select({ taxas: schema.filial.taxas }).from(schema.filial);
+  const out = new Set<string>();
+  for (const f of filiais) {
+    const lista = (f.taxas as { ecs?: Array<{ codigo?: string; matriz_edi?: boolean }> } | null)?.ecs;
+    if (!Array.isArray(lista)) continue;
+    for (const e of lista) {
+      const codigo = String(e?.codigo ?? '').trim();
+      if (e?.matriz_edi === true && codigo && !env.has(codigo)) out.add(codigo);
+    }
+  }
+  return [...out];
+}
+
 export async function GET(req: Request) {
   const auth = req.headers.get('authorization') ?? '';
   if (!process.env.CRON_SECRET || auth !== `Bearer ${process.env.CRON_SECRET}`) {
@@ -61,9 +77,10 @@ export async function GET(req: Request) {
   const inicio = diasAtrasBr(10);
 
   let arquivos;
+  let token: string;
   try {
     // Um token so pra toda a execucao (vale 600s).
-    const token = await obterToken(cred);
+    token = await obterToken(cred);
     arquivos = await gerarLinks(cred, inicio, fim, undefined, token);
   } catch (e) {
     console.error('[cielo-edi]', (e as Error).message);
@@ -71,6 +88,22 @@ export async function GET(req: Request) {
       { ok: false, erro: (e as Error).message, janela: { inicio, fim } },
       { status: 200 },
     );
+  }
+
+  // Matrizes de extrato ALEM da env (ex.: Prainha Mar 3002916694, que no
+  // portal da Cielo virou matriz propria em 18/10 em vez de entrar na do Bar).
+  // Vem do cadastro: filial.taxas.ecs[] com matriz_edi=true. Falha numa
+  // matriz extra nao derruba a da env — so vai pro retorno.
+  const matrizesExtras: Array<{ matriz: string; disponiveis?: number; erro?: string }> = [];
+  for (const matriz of await matrizesEdiExtras(cred.matriz)) {
+    try {
+      const extra = await gerarLinks({ ...cred, matriz }, inicio, fim, undefined, token);
+      arquivos = arquivos.concat(extra);
+      matrizesExtras.push({ matriz, disponiveis: extra.length });
+    } catch (e) {
+      console.error('[cielo-edi]', matriz, (e as Error).message);
+      matrizesExtras.push({ matriz, erro: (e as Error).message });
+    }
   }
 
   // Nome da filial default (a da env) pro auto-split por EC: com hierarquia de
@@ -118,6 +151,7 @@ export async function GET(req: Request) {
     janela: { inicio, fim },
     disponiveis: arquivos.length,
     processados: resultados.length,
+    matrizesExtras,
     resultados,
   });
 }
