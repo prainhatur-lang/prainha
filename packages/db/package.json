@@ -172,6 +172,7 @@
     "migrate:reserva-prainha-mar": "tsx scripts/migrate-reserva-prainha-mar.ts",
     "migrate:produto-sem-servico": "tsx scripts/migrate-produto-sem-servico.ts",
     "migrate:relatorio-diario": "tsx scripts/migrate-relatorio-diario.ts",
+    "migrate:relatorio-destinos-casa": "tsx scripts/migrate-relatorio-destinos-casa.ts",
     "migrate:cancelamento-lancado": "tsx scripts/migrate-cancelamento-lancado.ts",
     "migrate:nfe-cupom": "tsx scripts/migrate-nfe-cupom.ts",
     "migrate:nfe-destinatario": "tsx scripts/migrate-nfe-destinatario.ts",

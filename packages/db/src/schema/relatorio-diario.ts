@@ -8,6 +8,23 @@ import { pgTable, uuid, varchar, text, boolean, date, timestamp, jsonb, index } 
 import { sql } from 'drizzle-orm';
 import { organizacao } from './tenant';
 
+export interface DestinoCasaConfig {
+  nome: string;
+  /** só dígitos, com 55 */
+  telefone: string;
+  filialIds: string[];
+  /** true = faturamento e períodos com os 10%; false = líquido, sem o serviço */
+  comServico: boolean;
+  /** o que vai na mensagem */
+  itens: { faturamento: boolean; contas: boolean; periodos: boolean; picos: boolean };
+  /** todo dia às 07:00, o dia anterior */
+  diario: boolean;
+  /** todo dia 01, o mês anterior */
+  mensal: boolean;
+  /** primeiro dia que a pessoa recebe (YYYY-MM-DD) */
+  desde: string;
+}
+
 export const relatorioDiarioConfig = pgTable('relatorio_diario_config', {
   organizacaoId: uuid('organizacao_id')
     .primaryKey()
@@ -15,6 +32,11 @@ export const relatorioDiarioConfig = pgTable('relatorio_diario_config', {
   ativo: boolean('ativo').notNull().default(true),
   /** Telefones (só dígitos, com DDI 55) que recebem o relatório. */
   telefones: jsonb('telefones').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+  /**
+   * Quem recebe só algumas casas (relatório por casa). NULL = nunca salvo pela
+   * tela → vale a lista fixa de apps/web/src/lib/relatorio-casa-envio.ts.
+   */
+  destinosCasa: jsonb('destinos_casa').$type<DestinoCasaConfig[]>(),
   atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
   atualizadoPor: uuid('atualizado_por'),
 });

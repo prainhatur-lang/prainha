@@ -37,6 +37,8 @@ interface Props {
   diaRotulo: string;
   modelo: Modelo;
   textoModelo: string;
+  /** quem recebe o relatório por casa (pro aviso do botão) */
+  nomesPorCasa?: string[];
 }
 
 const SITUACAO: Record<Modelo['situacao'], { rotulo: string; cor: string }> = {
@@ -51,6 +53,7 @@ const CANAL: Record<string, string> = {
   modelo: 'aviso curto (modelo)',
   texto: 'relatório completo',
   toque: 'pediu o relatório',
+  mensal: 'resultado do mês',
 };
 const ORIGEM: Record<string, string> = {
   cron: 'automático das 07:00',
@@ -75,6 +78,7 @@ export function EnvioCard({
   diaRotulo,
   modelo: modeloInicial,
   textoModelo,
+  nomesPorCasa = [],
 }: Props) {
   const router = useRouter();
   const [ativo, setAtivo] = useState(ativoInicial);
@@ -204,7 +208,7 @@ export function EnvioCard({
   const [enviandoCasas, setEnviandoCasas] = useState(false);
   const [msgCasas, setMsgCasas] = useState<{ tom: 'ok' | 'erro'; txt: string } | null>(null);
   async function enviarCasas() {
-    if (!window.confirm('Mandar agora, pra quem recebe só uma casa sem os 10% (Lula → Prainha Mar, Lidiane → Tabuará), os dias que ainda não foram?')) return;
+    if (!window.confirm(`Mandar agora o relatório por casa${nomesPorCasa.length ? ` (${nomesPorCasa.join(', ')})` : ''}, os dias que ainda não foram?`)) return;
     setEnviandoCasas(true);
     setMsgCasas(null);
     try {
@@ -354,7 +358,7 @@ export function EnvioCard({
               disabled={enviandoCasas}
               className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
             >
-              {enviandoCasas ? 'Enviando…' : 'Enviar por casa (sem 10%)'}
+              {enviandoCasas ? 'Enviando…' : 'Enviar por casa'}
             </button>
             {msgCasas && (
               <span className={`text-xs ${msgCasas.tom === 'ok' ? 'text-emerald-700' : 'text-rose-700'}`}>{msgCasas.txt}</span>

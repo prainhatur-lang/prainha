@@ -34,6 +34,8 @@ import {
   ultimosEnvios,
 } from '@/lib/relatorio-diario-envio';
 import { EnvioCard } from './envio-card';
+import { DestinosCasaCard } from './destinos-casa-card';
+import { destinosDaOrganizacao } from '@/lib/relatorio-casa-envio';
 
 /** "1 mesa", "2 mesas". */
 function pl(n: number, um: string, varios: string): string {
@@ -664,9 +666,14 @@ export default async function RelatorioDiarioPage(props: { searchParams: Promise
     organizacoesDoDono(user.id),
   ]);
   const orgDono = orgsDono[0] ?? null;
-  const [config, envios, modelo] = orgDono
-    ? await Promise.all([lerConfig(orgDono.id), ultimosEnvios(orgDono.id), estadoDoModelo()])
-    : [null, [], null];
+  const [config, envios, modelo, destinosCasa] = orgDono
+    ? await Promise.all([
+        lerConfig(orgDono.id),
+        ultimosEnvios(orgDono.id),
+        estadoDoModelo(),
+        destinosDaOrganizacao(orgDono.id),
+      ])
+    : [null, [], null, []];
 
   const totalPdv = casas.reduce((s, c) => s + c.movimento.total, 0);
   const ticketsEvento = casas.reduce((s, c) => s + ticketsDeEvento(c), 0);
@@ -790,7 +797,18 @@ export default async function RelatorioDiarioPage(props: { searchParams: Promise
             diaRotulo={rotuloDia(dia)}
             modelo={modelo}
             textoModelo={TEXTO_MODELO}
+            nomesPorCasa={destinosCasa.map((d) => d.nome)}
           />
+        )}
+        {orgDono && config && (
+          <section className="mt-6 rounded-xl border border-slate-200 bg-white p-4">
+            <DestinosCasaCard
+              organizacaoId={orgDono.id}
+              destinos={destinosCasa}
+              filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
+              ontem={ultimoDiaFechado()}
+            />
+          </section>
         )}
       </section>
     </main>
