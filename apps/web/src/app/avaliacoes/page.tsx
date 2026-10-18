@@ -15,6 +15,7 @@ import { ConfigFilial } from './config-filial';
 import { normalizarDestino } from '@/lib/avaliacao-destino';
 import { ListaAvaliacoes, type AvaliacaoItem } from './lista';
 import { BlocoTripadvisor } from './tripadvisor';
+import { BlocoEvolucao } from './evolucao';
 import { ResponderComIA } from './responder-ia';
 import { Suspense } from 'react';
 import { BlocoGoogle } from './google';
@@ -152,6 +153,9 @@ export default async function AvaliacoesPage() {
             );
           })}
         </div>
+
+        {/* Evolução: média do QR por semana e nota do TripAdvisor — subindo ou caindo */}
+        <BlocoEvolucao filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))} />
 
         {/* TripAdvisor: nota e últimas avaliações de cada casa (leitura diária) */}
         <BlocoTripadvisor filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))} />
