@@ -216,7 +216,16 @@ Ok 'auto-update.ps1 baixado (auto-atualização pronta pra funcionar)'
 '{ "name":"vendas-local","private":true,"type":"module","dependencies":{"node-firebird":"2.0.2","postgres":"^3.4.4","qrcode-svg":"^1.1.0"} }' |
   Set-Content "$RAIZ\package.json" -Encoding ascii
 if (Test-Path "$RAIZ\node_modules\postgres") { Ok 'dependências já instaladas' }
-else { Write-Host '  instalando dependências...'; $null = (npm install --omit=dev --no-audit --no-fund 2>&1); Ok 'dependências instaladas' }
+else {
+  # npm.cmd, nao npm: com a politica de scripts travada (Telao 19/10) o 'npm' cai no npm.ps1 e
+  # nao roda nada - e o [ok] saia mesmo assim
+  Write-Host '  instalando dependências...'
+  $npm = Join-Path (Split-Path (Get-Command node).Source) 'npm.cmd'
+  if (-not (Test-Path $npm)) { $npm = 'npm.cmd' }
+  $saida = (& $npm install --omit=dev --no-audit --no-fund 2>&1) -join "`n"
+  if (Test-Path "$RAIZ\node_modules\postgres") { Ok 'dependências instaladas' }
+  else { Write-Host $saida; Erro 'npm install falhou. Mande um print deste erro.'; return }
+}
 
 # --- 5. segredos ------------------------------------------------------------
 Passo '5/10  Segredos da rede'
@@ -227,8 +236,9 @@ Write-Host '    Select-String -Path C:\prainha-vendas\start.bat -Pattern "PAGAR_
 # so os segredos da rede e tira o arquivo do caminho - senao a Tabuara subiria com o FILIAL_ID do Bar
 if (Test-Path "$RAIZ\start.bat") {
   $outro = Get-Content "$RAIZ\start.bat" -Raw
-  $fm = [regex]::Match($outro, 'FILIAL_ID=([0-9a-fA-F-]{36})')
-  if ($fm.Success -and $fm.Groups[1].Value -ne $FILIAL) {
+  # 19/10: o do Bar passou batido pelo teste antigo e foi mantido - agora qualquer start.bat
+  # que nao traga o FILIAL_ID da Tabuara e tratado como de outra casa
+  if (-not $outro.Contains("FILIAL_ID=$FILIAL")) {
     $pega = { param($n) $m = [regex]::Match($outro, "$n=([^`"\r\n]+)"); if ($m.Success) { $m.Groups[1].Value.Trim() } else { '' } }
     if (-not $Secret)  { $Secret  = & $pega 'PAGAR_MESA_SECRET' }
     if (-not $Salt)    { $Salt    = & $pega 'CLIENTE_HASH_SALT' }
@@ -316,6 +326,10 @@ Ok 'portas 8790 (app) e 8791 (câmera do KDS) liberadas'
 Passo '7/10  Tarefa PrainhaVendas'
 schtasks /query /tn PrainhaVendas *> $null
 if ($LASTEXITCODE -eq 0) { schtasks /end /tn PrainhaVendas *> $null; schtasks /delete /tn PrainhaVendas /f *> $null }
+# o node filho sobrevive ao /end e seguraria a porta 8790 com a config velha
+Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+  Where-Object { $_.CommandLine -like '*prainha-vendas*server.mjs*' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 schtasks /create /tn PrainhaVendas /tr "cmd /c $RAIZ\start.bat" /sc onstart /ru SYSTEM /rl HIGHEST /f *> $null
 schtasks /run /tn PrainhaVendas *> $null
 Ok 'criada e iniciada (sobe sozinha no boot)'
