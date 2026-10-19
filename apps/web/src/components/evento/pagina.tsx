@@ -6,6 +6,7 @@
 // Regras em @/lib/eventos; o cadastro bate em /api/<slug>.
 
 import Image from 'next/image';
+import { ZapFlutuante } from '@/components/zap-flutuante';
 import { cookies } from 'next/headers';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
@@ -221,6 +222,7 @@ export async function PaginaEvento({ ev }: { ev: Evento }) {
           </p>
         </footer>
       </div>
+      <ZapFlutuante filialId={ev.filialId} />
     </main>
   );
 }

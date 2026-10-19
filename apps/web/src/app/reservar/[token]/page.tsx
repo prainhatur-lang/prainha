@@ -2,6 +2,7 @@
 // Cliente escolhe espaco/data/hora/pessoas, valida WhatsApp por OTP e confirma.
 
 import { notFound } from 'next/navigation';
+import { ZapFlutuante, filialIdPorNome } from '@/components/zap-flutuante';
 import { headers } from 'next/headers';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
@@ -135,6 +136,7 @@ export default async function ReservarPage(props: { params: Promise<{ token: str
           </div>
         </div>
       </div>
+      <ZapFlutuante filialId={filialIdPorNome(filial.nome)} assunto="Quero ajuda com uma reserva." />
     </main>
   );
 }

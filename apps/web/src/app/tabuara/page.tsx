@@ -1,4 +1,5 @@
 import Image from 'next/image';
+import { ZapFlutuante } from '@/components/zap-flutuante';
 import { headers } from 'next/headers';
 import Script from 'next/script';
 import { TabuaraGallery } from '@/components/tabuara-gallery';
@@ -340,6 +341,7 @@ export default async function TabuaraPage() {
       </footer>
 
       <Script src={TA_WIDGET_JS} strategy="afterInteractive" data-loadtrk />
+      <ZapFlutuante filialId="fde37b95-7c7e-4b41-a618-2aba1fbc0de7" />
     </main>
   );
 }

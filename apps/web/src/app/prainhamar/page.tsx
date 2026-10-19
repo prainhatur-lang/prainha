@@ -1,4 +1,5 @@
 import Image from 'next/image';
+import { ZapFlutuante } from '@/components/zap-flutuante';
 import { headers } from 'next/headers';
 import { BAR, COZINHA, type SecaoCardapio } from './cardapio';
 
@@ -288,6 +289,7 @@ export default async function PrainhaMarPage() {
           <p className="text-[#4A5568]/70">Prainha Turismo EIRELI · CNPJ 33.159.574/0003-28</p>
         </div>
       </footer>
+      <ZapFlutuante filialId="e899dae2-38bf-4f3f-9149-7effd059fab8" assunto="Quero falar com a Prainha Mar e Grill." />
     </main>
   );
 }

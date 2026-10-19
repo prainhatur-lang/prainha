@@ -3,6 +3,7 @@
 // o resto (sacola, endereço, agendamento, cupom, pagamento) é o client.
 
 import { notFound } from 'next/navigation';
+import { ZapFlutuante } from '@/components/zap-flutuante';
 import { headers } from 'next/headers';
 import { db, schema } from '@concilia/db';
 import { and, asc, eq } from 'drizzle-orm';
@@ -183,6 +184,7 @@ export default async function DeliveryLojaPage(props: {
       }))}
       agendaInicial={{ dias, asapDisponivel }}
     />
+    <ZapFlutuante filialId={loja.filialId} assunto="Tenho uma dúvida sobre o delivery." acimaDaBarra />
     </div>
   );
 }
