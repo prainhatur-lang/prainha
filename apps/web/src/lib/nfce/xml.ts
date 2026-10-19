@@ -318,9 +318,18 @@ export function montarXmlNfce(dados: DadosNfce): XmlMontado {
   if (vNF <= 0) throw new Error('total da nota zerado — nada a emitir');
 
   // ---- pagamentos ----
-  const pags = dados.pagamentos.filter((p) => r2(p.valor) > 0);
+  let pags = dados.pagamentos.filter((p) => r2(p.valor) > 0);
   if (pags.length === 0) throw new Error('pedido sem pagamentos');
-  const somaPag = r2(pags.reduce((s, p) => s + r2(p.valor), 0));
+  let somaPag = r2(pags.reduce((s, p) => s + r2(p.valor), 0));
+  // Centavo de arredondamento (rateio de serviço/desconto nos itens dá 1–2
+  // centavos a mais que o pago — Tabuará mesa 4, 19/10: 596,08 × 596,09): até
+  // 5 centavos entra no maior pagamento em vez de travar a nota.
+  const faltaCent = r2(vNF - somaPag);
+  if (faltaCent > 0.005 && faltaCent <= 0.05) {
+    const iMaior = pags.reduce((m, p, k) => (r2(p.valor) > r2(pags[m]!.valor) ? k : m), 0);
+    pags = pags.map((p, k) => (k === iMaior ? { ...p, valor: r2(r2(p.valor) + faltaCent) } : p));
+    somaPag = vNF;
+  }
   const vTroco = r2(dados.valorTroco ?? Math.max(0, somaPag - vNF));
   if (somaPag + 0.005 < vNF) {
     throw new Error(
