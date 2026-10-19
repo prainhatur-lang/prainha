@@ -32,7 +32,11 @@ const Body = z.discriminatedUnion('acao', [
   z.object({
     acao: z.literal('config'),
     percentualLucro: z.number().min(0).max(500),
-    aliquotaIss: z.number().min(0).max(5).nullable(),
+    aliquotaIss: z
+      .number()
+      .min(0)
+      .max(5, 'O ISS vai no máximo a 5% (LC 116). Na alíquota do ISS vai só a parte do ISS dentro do Simples, não a alíquota total do DAS.')
+      .nullable(),
     base: z.enum(['proventos_fgts', 'proventos', 'liquido']),
     diaVencimento: z.number().int().min(1).max(31),
   }),
@@ -51,7 +55,10 @@ export async function POST(req: Request) {
   if (semPerm) return semPerm;
 
   const parsed = Body.safeParse(await req.json().catch(() => null));
-  if (!parsed.success) return NextResponse.json({ error: 'dados inválidos' }, { status: 400 });
+  if (!parsed.success) {
+    const msg = parsed.error.issues.find((i) => i.message && !i.message.startsWith('Invalid') && !i.message.startsWith('Too') && !i.message.startsWith('Number'))?.message;
+    return NextResponse.json({ error: msg ?? 'dados inválidos' }, { status: 400 });
+  }
   const body = parsed.data;
 
   const cfg = await configEb();

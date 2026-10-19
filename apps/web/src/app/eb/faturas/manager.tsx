@@ -106,7 +106,7 @@ export function FaturasEbManager(props: {
               className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1" />
           </label>
           <label className="block">
-            <span className="text-xs text-slate-500">Alíquota do ISS — Simples do mês (%)</span>
+            <span className="text-xs text-slate-500">Alíquota do ISS — Simples do mês (%, só a parte do ISS, até 5)</span>
             <input value={aliquota} onChange={(e) => setAliquota(e.target.value)} inputMode="decimal" placeholder="ex.: 3,25"
               className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1" />
           </label>
