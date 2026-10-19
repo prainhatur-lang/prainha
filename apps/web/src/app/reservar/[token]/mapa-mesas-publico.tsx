@@ -132,7 +132,8 @@ function agruparEmRaias<T>(itens: T[], largura: number): T[][] {
  *  mapa-mesas.tsx (admin). */
 function blocosDeAreia<T>(mesas: T[]): T[][][] {
   const blocos: T[][][] = [];
-  for (let i = 0; i < mesas.length; i += 20) blocos.push(agruparEmRaias(mesas.slice(i, i + 20), 5));
+  // Último bloco pode vir incompleto (Areia com 48 desde 11/10): raia vazia não desenha.
+  for (let i = 0; i < mesas.length; i += 20) blocos.push(agruparEmRaias(mesas.slice(i, i + 20), 5).filter((r) => r.length > 0));
   return blocos;
 }
 
@@ -162,7 +163,7 @@ export function MapaAreiaPublico({
       <p className="text-[11px] font-medium uppercase tracking-wide text-[var(--rsv-muted)]">
         Escolher mesa <span className="font-normal normal-case">(opcional — se não escolher, a gente escolhe pra você)</span>
       </p>
-      <p className="mt-0.5 text-[10px] text-[var(--rsv-mesa-off-ink)]">mesas 4, 8, 12, 16, 20 encostam no rio — os próximos 3 blocos de 20 ficam do lado, um depois do outro</p>
+      <p className="mt-0.5 text-[10px] text-[var(--rsv-mesa-off-ink)]">mesas 4, 8, 12, 16, 20 encostam no rio — os outros blocos ficam do lado, um depois do outro</p>
       <div className="mt-2 rounded-lg bg-gradient-to-b from-[var(--rsv-agua)] to-transparent p-2">
         <div className="mb-1.5 text-center text-[10px] font-medium text-[var(--rsv-agua-ink)]">🌊 rio (frente)</div>
         <div className="flex gap-3 overflow-x-auto pb-1">

@@ -80,7 +80,8 @@ function agruparEmRaias<T>(itens: T[], largura: number): T[][] {
  */
 function blocosDeAreia<T>(mesas: T[]): T[][][] {
   const blocos: T[][][] = [];
-  for (let i = 0; i < mesas.length; i += 20) blocos.push(agruparEmRaias(mesas.slice(i, i + 20), 5));
+  // Último bloco pode vir incompleto (Areia com 48 desde 11/10): raia vazia não desenha.
+  for (let i = 0; i < mesas.length; i += 20) blocos.push(agruparEmRaias(mesas.slice(i, i + 20), 5).filter((r) => r.length > 0));
   return blocos;
 }
 
@@ -398,10 +399,10 @@ export function MapaMesas({ filiais, ocupadas, ocupadasConsumer, reservasPorMesa
         const areasComMesa = (f.areas ?? []).filter((a) => (a.mesas?.length ?? 0) > 0);
         const deckArea = areasComMesa.find((a) => a.nome === 'Deck Superior');
         const loungesArea = areasComMesa.find((a) => a.nome === 'Lounges');
-        // Grade de 5 raias (4/8/12/16/20 na frente) só faz sentido pra ESSA
-        // planta específica (60 mesas, múltiplo de 20) — se o número mudar
-        // de novo, cai pro genérico em vez de desenhar raia errada.
-        const areiaArea = areasComMesa.find((a) => a.nome === 'Areia' && (a.mesas?.length ?? 0) % 20 === 0);
+        // Grade de raias de 4 de profundidade (4/8/12/16/20 na frente). Era
+        // múltiplo de 20 (60 mesas); com a Areia em 48 desde 11/10 o mapa
+        // sumia — o último bloco agora sai incompleto.
+        const areiaArea = areasComMesa.find((a) => a.nome === 'Areia' && (a.mesas?.length ?? 0) % 4 === 0);
         // Prainha Mar: Salão + Varanda saem na planta real; o resto segue genérico.
         const marSalao = f.id === FILIAL_MAR ? areasComMesa.find((a) => a.nome === 'Salão') : undefined;
         const marVaranda = f.id === FILIAL_MAR ? areasComMesa.find((a) => a.nome === 'Varanda') : undefined;

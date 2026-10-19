@@ -766,7 +766,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
             selecionada={mesaEscolhida}
             onSelecionar={setMesaEscolhida}
           />
-        ) : espaco === 'Areia' && mesas.length % 20 === 0 && mesas.length > 0 ? (
+        ) : espaco === 'Areia' && mesas.length % 4 === 0 && mesas.length > 0 ? (
           <MapaAreiaPublico mesas={mesas} pessoas={pessoas} selecionada={mesaEscolhida} onSelecionar={setMesaEscolhida} />
         ) : (
           <MapaMesasPublico mesas={mesas} pessoas={pessoas} selecionada={mesaEscolhida} onSelecionar={setMesaEscolhida} />
