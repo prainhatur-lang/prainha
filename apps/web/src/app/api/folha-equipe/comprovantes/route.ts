@@ -7,7 +7,7 @@ import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { createAdminClient } from '@/lib/supabase/server';
 import { exigirPermApi } from '@/lib/exigir-perm';
-import { BUCKET_LOTERICA, PERM_LOTERICA, lerECasar, pastaLoterica } from '@/lib/comprovante-loterica';
+import { BUCKET_LOTERICA, PERM_LOTERICA, filialIdsDoUsuario, lerECasar, pastaLoterica } from '@/lib/comprovante-loterica';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -17,7 +17,12 @@ export async function POST(req: Request) {
   const auth = await exigirPermApi(PERM_LOTERICA);
   if (auth.error) return auth.error;
 
-  const body = (await req.json().catch(() => null)) as { path?: string; nome?: string; contentType?: string } | null;
+  const body = (await req.json().catch(() => null)) as {
+    path?: string;
+    nome?: string;
+    contentType?: string;
+    casa?: string;
+  } | null;
   const path = String(body?.path ?? '');
   const nome = String(body?.nome ?? '').trim();
   if (!path || !nome) return NextResponse.json({ error: 'dados incompletos' }, { status: 400 });
@@ -26,6 +31,12 @@ export async function POST(req: Request) {
   const arquivo = path.slice(pasta.length + 1);
   if (!path.startsWith(`${pasta}/`) || !arquivo || arquivo.includes('/')) {
     return NextResponse.json({ error: 'caminho não confere com o usuário' }, { status: 400 });
+  }
+
+  // casa escolhida no envio (opcional): o lote é todo de uma casa
+  const casa = body?.casa ? String(body.casa) : null;
+  if (casa && !(await filialIdsDoUsuario(auth.user.id)).includes(casa)) {
+    return NextResponse.json({ error: 'sem acesso a essa casa' }, { status: 403 });
   }
 
   const admin = await createAdminClient();
@@ -45,6 +56,7 @@ export async function POST(req: Request) {
       status: 'ERRO',
       erro: 'ainda não foi lido',
       enviadoPor: auth.user.id,
+      casaEscolhida: casa,
     })
     .onConflictDoNothing({ target: schema.comprovanteLoterica.storagePath })
     .returning({ id: schema.comprovanteLoterica.id });

@@ -16,6 +16,10 @@ export const comprovanteLoterica = pgTable(
     id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
     /** Casa da(s) conta(s) casada(s). Nulo enquanto não casou. */
     filialId: uuid('filial_id').references(() => filial.id, { onDelete: 'set null' }),
+    /** Casa que o usuário disse que o depósito é (no envio ou na linha). Quem
+     *  trabalha em várias casas (gerente, cozinha) tem conta de 10% em cada uma
+     *  e o comprovante não diz de qual — com a casa escolhida só procura nela. */
+    casaEscolhida: uuid('casa_escolhida').references(() => filial.id, { onDelete: 'set null' }),
     folhaSemanaId: uuid('folha_semana_id'),
     fornecedorId: uuid('fornecedor_id'),
     /** Conta(s) a pagar que o depósito paga: uma, ou todas as abertas da

@@ -3,6 +3,8 @@
 //  POST   { acao: 'casar' | 'ler' } → procura a conta de novo / relê a foto
 //  POST   { acao: 'escolher', contaId } → casa na mão (depósito na conta de outra pessoa;
 //         contaId pode ser 'a,b' = soma das contas da pessoa na mesma folha)
+//  POST   { acao: 'casa', filialId } → o depósito é dessa casa (vazio = descobrir sozinho)
+//         e procura a conta só nela — quem trabalha em várias casas
 //  DELETE { acao: 'desfazer' } → estorna a baixa (contas voltam a abertas)
 //  DELETE { acao: 'tirar' }    → tira da lista (a foto continua no bucket)
 
@@ -18,6 +20,7 @@ import {
   casarEGravar,
   casarManual,
   desfazerBaixa,
+  escolherCasa,
   filialIdsDoUsuario,
   lerECasar,
 } from '@/lib/comprovante-loterica';
@@ -57,7 +60,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const achado = await carregar(id, auth.user.id);
   if (!achado) return NextResponse.json({ error: 'comprovante não encontrado' }, { status: 404 });
   if (achado.c.status === 'BAIXADO') return NextResponse.json({ error: 'já está baixado — desfaça a baixa antes' }, { status: 400 });
-  const body = (await req.json().catch(() => null)) as { acao?: string; contaId?: string } | null;
+  const body = (await req.json().catch(() => null)) as { acao?: string; contaId?: string; filialId?: string } | null;
+  if (body?.acao === 'casa') {
+    try {
+      const r = await escolherCasa(id, body.filialId ? String(body.filialId) : null, auth.user.id, achado.filiais);
+      return NextResponse.json({ ok: true, ...r });
+    } catch (e) {
+      if (e instanceof RecusaComprovante) return NextResponse.json({ error: e.message }, { status: 400 });
+      throw e;
+    }
+  }
   if (body?.acao === 'escolher') {
     try {
       await casarManual(id, String(body.contaId ?? '').split(','), achado.filiais);

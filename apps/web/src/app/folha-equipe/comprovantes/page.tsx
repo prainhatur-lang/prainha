@@ -9,7 +9,7 @@ import { AppHeader } from '@/components/app-header';
 import { exigirPermPage } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { PERM_LOTERICA, sugestoesPorValor } from '@/lib/comprovante-loterica';
-import { AcoesComprovante, BaixarCasados, EnviarComprovantes, EscolherConta } from './enviar';
+import { AcoesComprovante, BaixarCasados, EnviarComprovantes, EscolherCasa, EscolherConta } from './enviar';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,6 +29,7 @@ export default async function ComprovantesLotericaPage() {
   const filiais = await filiaisDoUsuario(user.id);
   const nomeCasa = new Map(filiais.map((f) => [f.id, f.nome]));
   const ids = filiais.map((f) => f.id);
+  const casas = filiais.map((f) => ({ id: f.id, nome: f.nome }));
 
   const lista = await db
     .select()
@@ -85,7 +86,7 @@ export default async function ComprovantesLotericaPage() {
           na data do depósito. As fotos ficam guardadas.
         </p>
 
-        <EnviarComprovantes />
+        <EnviarComprovantes casas={casas} />
 
         <div className="mt-8">
           <BaixarCasados ids={casados.map((c) => c.id)} total={totalCasados} />
@@ -155,6 +156,9 @@ export default async function ComprovantesLotericaPage() {
                         </div>
                       ))}
                       {c.filialId ? <div className="text-slate-500">{nomeCasa.get(c.filialId) ?? ''}</div> : null}
+                      {c.status !== 'BAIXADO' && c.status !== 'DUPLICADO' && casas.length > 1 ? (
+                        <EscolherCasa id={c.id} atual={c.casaEscolhida} casas={casas} />
+                      ) : null}
                     </td>
                     <td className="px-3 py-2 text-right">
                       <AcoesComprovante id={c.id} status={c.status} />

@@ -265,6 +265,7 @@ export async function casarComprovante(
       folhaSemanaId: schema.contaPagar.folhaSemanaId,
       fornecedorId: schema.contaPagar.fornecedorId,
       pessoa: schema.fornecedor.nome,
+      casa: schema.filial.nome,
       descricao: schema.contaPagar.descricao,
       liquido: sql<string>`(${schema.contaPagar.valor} - COALESCE(${schema.contaPagar.descontos}, 0))::numeric(14,2)`,
       vencimento: schema.contaPagar.dataVencimento,
@@ -272,6 +273,7 @@ export async function casarComprovante(
     })
     .from(schema.contaPagar)
     .leftJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.contaPagar.fornecedorId))
+    .leftJoin(schema.filial, eq(schema.filial.id, schema.contaPagar.filialId))
     .where(
       and(
         inArray(schema.contaPagar.filialId, filialIds),
@@ -331,6 +333,16 @@ export async function casarComprovante(
   }
   const melhor = Math.max(...batem.map((o) => o.parec));
   let topo = batem.filter((o) => o.parec === melhor);
+  // Quem trabalha em mais de uma casa (gerente, cozinha) tem o mesmo valor em
+  // cada uma e o comprovante não diz de qual: a casa é o usuário quem escolhe.
+  const casas = [...new Set(topo.map((o) => o.contas[0]!.filialId))];
+  if (casas.length > 1) {
+    const nomes = casas.map((f) => topo.find((o) => o.contas[0]!.filialId === f)!.contas[0]!.casa ?? '?');
+    return {
+      ok: false,
+      motivo: `${topo[0]!.contas[0]!.pessoa} tem conta de ${brl(lido.valor)} em mais de uma casa (${nomes.join(', ')}) — escolha a casa do depósito`,
+    };
+  }
   if (topo.length > 1) topo = desempatar(topo, ref);
   if (topo.length > 1) {
     const nomes = [...new Set(topo.map((o) => `${o.contas[0]!.pessoa} (venc. ${o.contas[0]!.vencimento.split('-').reverse().join('/')})`))];
@@ -355,8 +367,7 @@ export async function casarComprovante(
  * Mesmo valor e mesmo nome em mais de uma conta. Conta em aberto ganha da que
  * já foi paga no dia por outro caminho; conta velha que ficou aberta (Lilian:
  * R$ 900 em 10/08, 31/08 e 12/10) perde pro vencimento mais perto do depósito.
- * Pessoa em duas casas com o mesmo valor (Paulo Henrique) continua empatada —
- * a tela mostra as opções.
+ * Só desempata dentro da MESMA casa — entre casas quem decide é o usuário.
  */
 function desempatar<T extends { contas: Array<{ vencimento: string; pagaNoDia: boolean }> }>(
   topo: T[],
@@ -427,7 +438,8 @@ export async function casarEGravar(comprovanteId: string, userId: string): Promi
     }
   }
 
-  const filiais = await filialIdsDoUsuario(userId);
+  const todas = await filialIdsDoUsuario(userId);
+  const filiais = c.casaEscolhida ? todas.filter((f) => f === c.casaEscolhida) : todas;
   const r = await casarComprovante(
     { nome: c.nomeLido, valor: Number(c.valor), data: c.dataPagamento, autenticacao: c.autenticacao },
     filiais,
@@ -492,6 +504,35 @@ export async function lerECasar(comprovanteId: string, userId: string): Promise<
 }
 
 export class RecusaComprovante extends Error {}
+
+/** Diz de qual casa é o depósito (ou null = descobrir pelo nome e valor) e
+ *  procura a conta de novo só nela. Comprovante já baixado não muda. */
+export async function escolherCasa(
+  comprovanteId: string,
+  casa: string | null,
+  userId: string,
+  filialIds: string[],
+): Promise<ResultadoComprovante> {
+  if (casa !== null && !filialIds.includes(casa)) throw new RecusaComprovante('sem acesso a essa casa');
+  const r = await db
+    .update(schema.comprovanteLoterica)
+    .set({ casaEscolhida: casa, contaPagarIds: [], status: 'SEM_CONTA', filialId: null, folhaSemanaId: null, fornecedorId: null })
+    .where(
+      and(
+        eq(schema.comprovanteLoterica.id, comprovanteId),
+        inArray(schema.comprovanteLoterica.status, ['CASADO', 'SEM_CONTA']),
+      ),
+    )
+    .returning({ id: schema.comprovanteLoterica.id });
+  if (r.length === 0) {
+    // não lido / repetido: só guarda a casa pra quando ler de novo
+    await db
+      .update(schema.comprovanteLoterica)
+      .set({ casaEscolhida: casa })
+      .where(and(eq(schema.comprovanteLoterica.id, comprovanteId), ne(schema.comprovanteLoterica.status, 'BAIXADO')));
+  }
+  return casarEGravar(comprovanteId, userId);
+}
 
 /**
  * Dá a baixa das contas do comprovante casado: data_pagamento = data do
@@ -627,7 +668,7 @@ export async function desfazerBaixa(comprovanteId: string, filialIds: string[]):
  *  conta sozinha ou a soma das abertas de uma pessoa na mesma folha (comissão
  *  + diária num depósito só). */
 export async function sugestoesPorValor(
-  comprovantes: Array<{ id: string; valor: string | null; dataPagamento: string | null }>,
+  comprovantes: Array<{ id: string; valor: string | null; dataPagamento: string | null; casaEscolhida?: string | null }>,
   filialIds: string[],
 ): Promise<Map<string, ContaCasada[][]>> {
   const out = new Map<string, ContaCasada[][]>();
@@ -695,6 +736,7 @@ export async function sugestoesPorValor(
     const alvo = centavos(Number(c.valor));
     const lista = opcoes.filter(
       (o) =>
+        (!c.casaEscolhida || o[0]!.filialId === c.casaEscolhida) &&
         o.every((k) => !k.pagaEm || k.pagaEm === c.dataPagamento) &&
         o.reduce((s, k) => s + centavos(k.liquido), 0) === alvo,
     );

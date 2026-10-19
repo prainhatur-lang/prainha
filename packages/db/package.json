@@ -184,6 +184,7 @@
     "migrate:extrato-fechamento": "tsx scripts/migrate-extrato-fechamento.ts",
     "migrate:cartao-fatura": "tsx scripts/migrate-cartao-fatura.ts",
     "migrate:comprovante-loterica": "tsx scripts/migrate-comprovante-loterica.ts",
+    "migrate:comprovante-loterica-casa": "tsx scripts/migrate-comprovante-loterica-casa.ts",
     "migrate:portador": "tsx scripts/migrate-portador.ts",
     "migrate:cartao-rateio": "tsx scripts/migrate-cartao-rateio.ts",
     "migrate:conta-pagar-criado-por": "tsx scripts/migrate-conta-pagar-criado-por.ts",

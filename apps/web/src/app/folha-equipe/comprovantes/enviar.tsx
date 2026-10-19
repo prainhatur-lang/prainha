@@ -47,9 +47,10 @@ interface Linha {
   ruim: boolean;
 }
 
-export function EnviarComprovantes() {
+export function EnviarComprovantes({ casas }: { casas: Array<{ id: string; nome: string }> }) {
   const router = useRouter();
   const input = useRef<HTMLInputElement | null>(null);
+  const [casa, setCasa] = useState('');
   const [linhas, setLinhas] = useState<Linha[]>([]);
   const [ocupado, setOcupado] = useState(false);
   const [sobre, setSobre] = useState(false);
@@ -87,6 +88,7 @@ export function EnviarComprovantes() {
             path: passo1.path,
             nome: file.name,
             contentType: file.type,
+            casa: casa || undefined,
           });
           const quem = `${String(r.nome ?? '?')} — ${brl(r.valor)}`;
           if (r.status === 'CASADO') marcar(i, `${quem}: achei a conta ✓`);
@@ -106,6 +108,27 @@ export function EnviarComprovantes() {
 
   return (
     <div className="mt-6">
+      {casas.length > 1 ? (
+        <label className="mb-2 flex flex-wrap items-center gap-2 text-sm text-slate-700">
+          Casa destes comprovantes:
+          <select
+            value={casa}
+            disabled={ocupado}
+            onChange={(e) => setCasa(e.target.value)}
+            className="rounded border border-slate-300 bg-white px-2 py-1 text-sm"
+          >
+            <option value="">descobrir pelo nome e valor</option>
+            {casas.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.nome}
+              </option>
+            ))}
+          </select>
+          <span className="text-xs text-slate-500">
+            escolha quando o lote é de uma casa só — quem trabalha em várias casas casa com a conta certa
+          </span>
+        </label>
+      ) : null}
       <div
         onDragOver={(e) => {
           e.preventDefault();
@@ -288,6 +311,55 @@ export function EscolherConta({
         </button>
       ))}
       {erro ? <div className="text-xs text-red-700">{erro}</div> : null}
+    </div>
+  );
+}
+
+/** De qual casa é o depósito — quem trabalha em várias casas (gerente,
+ *  cozinha) tem conta de 10% em cada uma e o comprovante não diz. */
+export function EscolherCasa({
+  id,
+  atual,
+  casas,
+}: {
+  id: string;
+  atual: string | null;
+  casas: Array<{ id: string; nome: string }>;
+}) {
+  const router = useRouter();
+  const [fazendo, setFazendo] = useState(false);
+  const [erro, setErro] = useState('');
+  async function trocar(filialId: string) {
+    if (fazendo) return;
+    setFazendo(true);
+    setErro('');
+    try {
+      await chamar(`/api/folha-equipe/comprovantes/${id}`, 'POST', { acao: 'casa', filialId: filialId || null });
+      router.refresh();
+    } catch (e) {
+      setErro((e as Error).message);
+    } finally {
+      setFazendo(false);
+    }
+  }
+  return (
+    <div className="mt-1 text-xs text-slate-500">
+      casa do depósito:{' '}
+      <select
+        value={atual ?? ''}
+        disabled={fazendo}
+        onChange={(e) => void trocar(e.target.value)}
+        className="rounded border border-slate-300 bg-white px-1 py-0.5 text-xs text-slate-800"
+      >
+        <option value="">descobrir sozinho</option>
+        {casas.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.nome}
+          </option>
+        ))}
+      </select>
+      {fazendo ? ' procurando…' : null}
+      {erro ? <span className="text-red-700"> {erro}</span> : null}
     </div>
   );
 }
