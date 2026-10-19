@@ -149,7 +149,8 @@ export async function emitirNfseFatura(faturaId: string): Promise<ResultadoEmiss
   let resp: Awaited<ReturnType<typeof chamarSefin>> | null = null;
   for (let tentativa = 0; tentativa < 2; tentativa++) {
     try {
-      assinado = assinarDps(montarDps(dados), pem);
+      // A Sefin exige a declaração com encoding (E1229 sem ela); fica fora da assinatura.
+      assinado = '<?xml version="1.0" encoding="UTF-8"?>' + assinarDps(montarDps(dados), pem);
     } catch (e) {
       return { ok: false, erro: `erro assinando a DPS: ${(e as Error).message}` };
     }
