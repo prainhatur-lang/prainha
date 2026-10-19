@@ -170,12 +170,8 @@ export async function preverFaturas(comp: string, tomadores: string[], cfg: Conf
   });
 }
 
-export function discriminacao(p: PrevisaoFatura, comp: string, municipio: string): string {
-  const horas = p.horas.toLocaleString('pt-BR', { maximumFractionDigits: 2 });
-  return (
-    `Fornecimento de mão de obra — competência ${nomeCompetencia(comp)}: ` +
-    `${p.empregados} empregados, ${horas} horas trabalhadas. ` +
-    `ISS retido pelo tomador (LC 116/2003, art. 6º, §2º, II), recolhido em ${municipio}. ` +
-    `Prestador optante pelo Simples Nacional — sem retenção de INSS, IR, PIS, COFINS e CSLL.`
-  );
+/** Texto da NFS-e — só o mês (pedido do dono 19/10/2026). Horas, empregados e
+ *  ISS retido continuam na fatura/tela e nos campos próprios da nota. */
+export function discriminacao(_p: PrevisaoFatura, comp: string, _municipio: string): string {
+  return `Prestação de serviços referente ao mês ${nomeCompetencia(comp)}`;
 }
