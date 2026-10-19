@@ -4,7 +4,7 @@ import { useState, useTransition, useMemo } from 'react';
 import { flushSync } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { maskCnpj } from '@/lib/format';
-import { normalizaBusca } from '@/lib/texto';
+import { normalizaBusca, palavrasBusca } from '@/lib/texto';
 
 interface FornecedorOpcao {
   id: string;
@@ -46,11 +46,18 @@ export function VincularFornecedorBtn({
   const opcoes = useMemo(() => {
     const b = normalizaBusca(busca);
     if (!b) return fornecedoresDisponiveis.slice(0, 30);
+    // "vitor" acha "VICTOR" (e vice-versa): grafia com/sem C antes do T.
+    const grafia = (s: string) => normalizaBusca(s).replace(/ct/g, 't');
+    // Todas as palavras, em qualquer ordem ("jose victor" acha "JOSE VICTOR DE OLIVEIRA").
+    const palavras = palavrasBusca(busca).map(grafia);
+    // Só compara CNPJ quando o texto tem dígito — sem dígito, ''.includes('')
+    // deixava passar TODO fornecedor e a lista mostrava só os 50 primeiros do A–Z.
+    const digitos = b.replace(/\D/g, '');
     return fornecedoresDisponiveis
       .filter((f) => {
-        const nome = normalizaBusca(f.nome);
-        const cnpj = (f.cnpjOuCpf ?? '').toLowerCase();
-        return nome.includes(b) || cnpj.includes(b.replace(/\D/g, ''));
+        const nome = grafia(f.nome);
+        const cnpj = (f.cnpjOuCpf ?? '').replace(/\D/g, '');
+        return palavras.every((w) => nome.includes(w)) || (digitos.length > 0 && cnpj.includes(digitos));
       })
       .slice(0, 50);
   }, [busca, fornecedoresDisponiveis]);
