@@ -30,6 +30,7 @@ import { consultarCardapio } from './cardapio';
 import { medirOcupacaoHoje } from './ocupacao';
 import { consultarPedidoDelivery } from './pedido-delivery';
 import { consultarMareTexto } from './mare';
+import { consultarTempoTexto } from './clima';
 import { consultarCotacoesFornecedor, cadastrarFornecedorProspect } from './fornecedor';
 import { listarOpcoesOrcamento, gerarOrcamentoEvento } from './orcamento';
 import { casasComAtendente, acharCasa, linkPassagem, passagemRecebida, casasCobertas, acharCasaCoberta, type OutraCasa, type PassagemRecebida, type CasaCoberta } from './outras-casas';
@@ -656,6 +657,7 @@ export async function processarEntrada(params: {
           telefoneConversa: entrada.telefone,
         }),
       consultarMare: async (data: string) => consultarMareTexto(data),
+      consultarTempo: async (data: string) => consultarTempoTexto(data),
       consultarCotacoesFornecedor: () => consultarCotacoesFornecedor(entrada.telefone),
       remarcarReserva: (dados: import('./ia').DadosRemarcarReserva) =>
         remarcarReservaWhatsApp({

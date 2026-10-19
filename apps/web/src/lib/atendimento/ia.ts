@@ -99,6 +99,8 @@ export interface ExecutoresFerramentas {
   consultarMesa: (numero: string) => Promise<string>;
   consultarCotacoesFornecedor: () => Promise<string>;
   consultarMare: (data: string) => Promise<string>;
+  /** Previsão do tempo de Aracaju numa data (Open-Meteo). */
+  consultarTempo?: (data: string) => Promise<string>;
   enviarAudioVoz: (texto: string) => Promise<string>;
   /** casa = outra casa que este número também atende (ex.: "Prainha Mar"); sem casa = a própria. */
   consultarCardapio: (termo: string, casa?: string) => Promise<string>;
@@ -275,6 +277,7 @@ ${blocos}
 REGRAS DE VERDADE:
 - Só afirme o que está acima. Se a informação não está aí, ou o trecho tem [PENDENTE], você NÃO SABE — nesse caso, diga com carinho que vai confirmar com a equipe e use a ferramenta transferir_para_humano.
 - PERGUNTAS SOBRE NATUREZA/GEOGRAFIA (água, clima, maré, flora, fauna, rio): SÓ responda se estiver EXPLICITAMENTE nos blocos acima — nunca invente. Se não tiver, transfira.
+- EXCEÇÃO — TEMPO e MARÉ têm ferramenta: "vai chover?", "como tá o tempo hoje/amanhã/sábado?" → chame consultar_previsao_tempo; maré/rio cheio → consultar_mare. Responda com o que a ferramenta devolver e NÃO transfira por isso.
 - RESPONDA TUDO QUE FOI PERGUNTADO: cliente que manda várias mensagens curtas seguidas ("tem música?" / "saxofone?" / "violino?") fez VÁRIAS perguntas — responda cada uma, na mesma resposta. Escolher uma e ignorar o resto é o mesmo que não ouvir o cliente.
 - AGENDA POR DIA DA SEMANA (música ao vivo, violino, programação): antes de afirmar que "hoje/amanhã tem", olhe o DIA DA SEMANA da data em questão (a data/hora de agora está no fim deste prompt) e confira contra a agenda escrita nos blocos — nunca chute. Se o dia não tem, diga com carinho qual é o próximo dia que tem. Instrumento ou atração que os blocos NÃO citam (sax, banda X): não afirme nem negue — diga o que a agenda tem e que a programação exata do dia a equipe confirma.
 - PREÇOS: você só pode citar valores que estejam ESCRITOS nos blocos acima OU que uma ferramenta retornou NESTA conversa (consultar_cardapio, consultar_disponibilidade_reserva). Fora isso, número nenhum — nem estimativa, nem "a partir de", nem "costuma ser".
@@ -518,6 +521,21 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       name: 'consultar_mare',
       description:
         'TÁBUA DE MARÉ oficial de Aracaju por data: devolve os HORÁRIOS de maré alta (rio cheio) e maré baixa do dia, mais o aviso de maré grande (sizígia). Chame SEMPRE que perguntarem "que horas o rio enche/está cheio/vazio?", sobre banho de rio, visual da água ou maré numa data — nunca responda maré de cabeça.',
+      parameters: {
+        type: 'object',
+        properties: {
+          data: { type: 'string', description: 'YYYY-MM-DD do dia perguntado (hoje se o cliente não disser)' },
+        },
+        required: ['data'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'consultar_previsao_tempo',
+      description:
+        'PREVISÃO DO TEMPO de Aracaju por data (até 15 dias): céu, temperatura mínima/máxima, chance de chuva e os horários com mais chance de chover. Chame SEMPRE que perguntarem "vai chover?", "como está o tempo?", "tá fazendo sol?" — nunca responda clima de cabeça e nunca transfira por causa disso.',
       parameters: {
         type: 'object',
         properties: {
@@ -1231,6 +1249,10 @@ Como usar, SEM EXCEÇÃO:
           resultado = await params.executores.enviarAudioVoz(String(args.texto ?? ''));
         } else if (tc.function.name === 'consultar_mare') {
           resultado = await params.executores.consultarMare(String(args.data ?? ''));
+        } else if (tc.function.name === 'consultar_previsao_tempo') {
+          resultado = params.executores.consultarTempo
+            ? await params.executores.consultarTempo(String(args.data ?? ''))
+            : 'Previsão do tempo indisponível agora.';
         } else if (tc.function.name === 'consultar_mesa') {
           resultado = await params.executores.consultarMesa(String(args.numero ?? ''));
         } else if (tc.function.name === 'remarcar_reserva') {
