@@ -380,6 +380,7 @@ export const MENU_AREAS: MenuArea[] = [
             href: '/folha-equipe/folhas',
             perm: 'folha_equipe.read',
           },
+          { label: 'Comprovantes da lotérica (10%)', href: '/folha-equipe/comprovantes', perm: 'folha_equipe.read' },
           { label: 'Folha do contador', href: '/rh/folha-contador', perm: 'folha_equipe.read' },
           { label: 'Pagamentos da E.B. (extrato)', href: '/rh/folha-contador/pagamentos', perm: 'folha_equipe.read' },
           { label: 'Faturas da E.B. (NFS-e)', href: '/eb/faturas', perm: 'folha_equipe.fechar' },

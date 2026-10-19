@@ -56,5 +56,6 @@ export * from './evento-ticket';
 export * from './tripadvisor';
 export * from './extrato-fechamento';
 export * from './cartao-fatura';
+export * from './comprovante-loterica';
 export * from './portador';
 export * from './nfse';
