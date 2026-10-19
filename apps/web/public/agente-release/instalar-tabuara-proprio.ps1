@@ -62,8 +62,19 @@ if ($node) { Ok "já instalado ($node)" }
 else {
   Write-Host '  instalando (leva alguns minutos)...'
   winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements --silent | Out-Null
-  $env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
-  try { $node = (node -v); Ok "instalado ($node)" } catch { Erro 'Node não entrou no PATH — FECHE e reabra o PowerShell e rode de novo.'; return }
+  # winget ausente/quebrado (Windows recem-instalado): baixa o MSI direto do nodejs.org
+  if (-not (Test-Path 'C:\Program Files\nodejs\node.exe')) {
+    Write-Host '  winget nao instalou; baixando o MSI do nodejs.org...'
+    $msi = Join-Path $env:TEMP 'node-lts-x64.msi'
+    try {
+      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+      Invoke-WebRequest 'https://nodejs.org/dist/v22.11.0/node-v22.11.0-x64.msi' -OutFile $msi -UseBasicParsing
+      Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /qn /norestart" -Wait
+    } catch { Erro "falha ao baixar/instalar o Node: $_" }
+  }
+  $env:Path = 'C:\Program Files\nodejs;' + [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')
+  try { $node = (node -v) } catch {}
+  if ($node) { Ok "instalado ($node)" } else { Erro 'Node nao instalou. Mande um print deste erro.'; return }
 }
 
 # --- 2. PostgreSQL ----------------------------------------------------------
