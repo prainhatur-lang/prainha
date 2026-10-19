@@ -223,6 +223,21 @@ Passo '5/10  Segredos da rede'
 Write-Host '  Estes valores são os MESMOS das outras lojas.'
 Write-Host '  Na máquina da Prainha (0001) rode:' -ForegroundColor DarkGray
 Write-Host '    Select-String -Path C:\prainha-vendas\start.bat -Pattern "PAGAR_MESA_SECRET|CLIENTE_HASH_SALT|CIELO_MERCHANT|SPC_USER|SPC_PASSWORD"' -ForegroundColor DarkGray
+# start.bat copiado de OUTRA casa (19/10: o do Bar foi parar aqui pra pegar o segredo): aproveita
+# so os segredos da rede e tira o arquivo do caminho - senao a Tabuara subiria com o FILIAL_ID do Bar
+if (Test-Path "$RAIZ\start.bat") {
+  $outro = Get-Content "$RAIZ\start.bat" -Raw
+  $fm = [regex]::Match($outro, 'FILIAL_ID=([0-9a-fA-F-]{36})')
+  if ($fm.Success -and $fm.Groups[1].Value -ne $FILIAL) {
+    $pega = { param($n) $m = [regex]::Match($outro, "$n=([^`"\r\n]+)"); if ($m.Success) { $m.Groups[1].Value.Trim() } else { '' } }
+    if (-not $Secret)  { $Secret  = & $pega 'PAGAR_MESA_SECRET' }
+    if (-not $Salt)    { $Salt    = & $pega 'CLIENTE_HASH_SALT' }
+    if (-not $SpcUser) { $SpcUser = & $pega 'SPC_USER' }
+    if (-not $SpcPass) { $SpcPass = & $pega 'SPC_PASSWORD' }
+    Move-Item "$RAIZ\start.bat" "$RAIZ\start-de-outra-casa.bat" -Force
+    Aviso 'start.bat era de outra casa: aproveitei o segredo da rede e guardei como start-de-outra-casa.bat'
+  }
+}
 $jaTem = (Test-Path "$RAIZ\start.bat") -and ((Get-Content "$RAIZ\start.bat" -Raw) -notmatch 'COPIAR')
 if ($jaTem) {
   # start.bat de antes (modo Firebird): troca só BANCO/AGENTE_TOKEN/FB_*
