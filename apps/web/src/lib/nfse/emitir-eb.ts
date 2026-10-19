@@ -16,6 +16,7 @@ import { extrairPem, type PemCert } from '@/lib/sefaz-evento';
 import { assinarDps, idDps, montarDps } from './dps';
 import { chamarSefin, gunzipB64, gzipB64, type AmbienteNfse } from './sefin';
 import { RAZAO_TOMADOR_POR_RAIZ, TOMADOR_FIXO } from '@/lib/eb/faturas';
+import { hojeBr } from '@/lib/datas';
 
 type FiscalEnd = {
   cep?: string;
@@ -117,7 +118,8 @@ export async function emitirNfseFatura(faturaId: string): Promise<ResultadoEmiss
     dhEmi: dhEmiAgora(),
     serie: cfg.serieDps,
     nDps,
-    dCompet: ultimoDiaCompetencia(fat.competencia),
+    // Último dia do mês, mas nunca depois de hoje (a Sefin recusa competência futura).
+    dCompet: [ultimoDiaCompetencia(fat.competenciaNfse ?? fat.competencia), hojeBr()].sort()[0]!,
     prestador: {
       cnpj: cfg.cnpj,
       im: cfg.inscricaoMunicipal as string | null,

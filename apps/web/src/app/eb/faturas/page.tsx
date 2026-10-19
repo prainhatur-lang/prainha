@@ -48,41 +48,45 @@ export default async function FaturasEbPage(props: { searchParams: Promise<{ com
           ne(schema.faturaServico.status, 'CANCELADA'),
         ),
       );
-    const porCasa = new Map(faturas.map((f) => [f.tomadorFilialId, f]));
-    linhas = filiais
-      .map((f) => {
-        const p = prev.find((x) => x.tomadorFilialId === f.id) ?? null;
-        const fat = porCasa.get(f.id) ?? null;
-        if (!p && !fat) return null;
-        return {
-          casaId: f.id,
-          casa: f.nome,
-          municipio: MUNICIPIO_ISS[f.id] ?? 'Aracaju',
-          previsao: p,
-          fatura: fat && {
-            id: fat.id,
-            status: fat.status,
-            empregados: fat.empregados,
-            horas: Number(fat.horas),
-            valorBase: Number(fat.valorBase),
-            percentualLucro: Number(fat.percentualLucro),
-            valorLucro: Number(fat.valorLucro),
-            valorServico: Number(fat.valorServico),
-            aliquotaIss: Number(fat.aliquotaIss),
-            valorIss: Number(fat.valorIss),
-            valorLiquido: Number(fat.valorLiquido),
-            vencimento: fat.vencimento,
-            discriminacao: fat.discriminacao,
-            lancada: !!fat.contaPagarId,
-            nfseChave: fat.nfseChave,
-            nfseNumero: fat.nfseNumero,
-            nfseErro: fat.nfseErro,
-            recebidoEm: fat.recebidoEm,
-            valorRecebido: fat.valorRecebido === null ? null : Number(fat.valorRecebido),
-          },
-        };
-      })
-      .filter((l): l is LinhaFatura => l !== null);
+    // Fatura dividida: a principal fica no cartão da casa e cada parte separada
+    // (complemento_de) ganha um cartão logo abaixo.
+    const porCasa = new Map(faturas.filter((f) => !f.complementoDe).map((f) => [f.tomadorFilialId, f]));
+    const partes = faturas.filter((f) => f.complementoDe);
+    const dadosFatura = (fat: (typeof faturas)[number]) => ({
+      id: fat.id,
+      status: fat.status,
+      empregados: fat.empregados,
+      horas: Number(fat.horas),
+      valorBase: Number(fat.valorBase),
+      percentualLucro: Number(fat.percentualLucro),
+      valorLucro: Number(fat.valorLucro),
+      valorServico: Number(fat.valorServico),
+      aliquotaIss: Number(fat.aliquotaIss),
+      valorIss: Number(fat.valorIss),
+      valorLiquido: Number(fat.valorLiquido),
+      vencimento: fat.vencimento,
+      discriminacao: fat.discriminacao,
+      lancada: !!fat.contaPagarId,
+      nfseChave: fat.nfseChave,
+      nfseNumero: fat.nfseNumero,
+      nfseErro: fat.nfseErro,
+      recebidoEm: fat.recebidoEm,
+      valorRecebido: fat.valorRecebido === null ? null : Number(fat.valorRecebido),
+      competenciaNfse: fat.competenciaNfse,
+      dividida: partes.some((x) => x.complementoDe === fat.id),
+    });
+    linhas = filiais.flatMap((f) => {
+      const p = prev.find((x) => x.tomadorFilialId === f.id) ?? null;
+      const fat = porCasa.get(f.id) ?? null;
+      if (!p && !fat) return [];
+      const base = { casaId: f.id, casa: f.nome, municipio: MUNICIPIO_ISS[f.id] ?? 'Aracaju' };
+      return [
+        { ...base, previsao: p, fatura: fat && dadosFatura(fat) },
+        ...partes
+          .filter((x) => x.tomadorFilialId === f.id)
+          .map((x) => ({ ...base, previsao: null, parte: true, fatura: dadosFatura(x) })),
+      ];
+    });
   }
 
   const [cert] = cfg

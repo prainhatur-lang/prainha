@@ -158,6 +158,7 @@
     "migrate:whatsapp-nao-enviar": "tsx scripts/migrate-whatsapp-nao-enviar.ts",
     "migrate:vale-transporte": "tsx scripts/migrate-vale-transporte.ts",
     "migrate:eb-faturas": "tsx scripts/migrate-eb-faturas.ts",
+    "migrate:fatura-servico-dividir": "tsx scripts/migrate-fatura-servico-dividir.ts",
     "migrate:lista-compra": "tsx scripts/migrate-lista-compra.ts",
     "migrate:ifood-nuvem": "tsx scripts/migrate-ifood-nuvem.ts",
     "migrate:ifood-conciliacao": "tsx scripts/migrate-ifood-conciliacao.ts",

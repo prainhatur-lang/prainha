@@ -93,6 +93,12 @@ export const faturaServico = pgTable(
     contaPagarId: uuid('conta_pagar_id'),
     contaIssId: uuid('conta_iss_id'),
 
+    /** Fatura dividida: esta é a parte separada da fatura principal (mesma casa
+     *  e competência da folha), com a NFS-e em outra competência. */
+    complementoDe: uuid('complemento_de'),
+    /** 'AAAA-MM' da NFS-e quando difere da competência da folha (dCompet). */
+    competenciaNfse: varchar('competencia_nfse', { length: 7 }),
+
     nfseNumeroDps: integer('nfse_numero_dps'),
     nfseNumero: varchar('nfse_numero', { length: 20 }),
     nfseChave: varchar('nfse_chave', { length: 60 }),

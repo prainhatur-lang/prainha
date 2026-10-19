@@ -5,11 +5,13 @@
 //   receber   marca a fatura como recebida pela E.B.
 //   cancelar  cancela a fatura (só sem conta lançada na casa)
 //   emitir    emite a NFS-e Nacional da fatura (lib/nfse/emitir-eb.ts)
+//   dividir   separa parte do valor numa 2ª fatura com NFS-e em outra competência
+//             (ex.: 09/2026 declarado 14.000 no PGDAS, a diferença sai em 10/2026)
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq, ne } from 'drizzle-orm';
+import { and, eq, isNull, ne } from 'drizzle-orm';
 import { negarSemPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import {
@@ -45,7 +47,23 @@ const Body = z.discriminatedUnion('acao', [
   z.object({ acao: z.literal('receber'), faturaId: z.string().uuid(), data: Dia, valor: z.number().positive() }),
   z.object({ acao: z.literal('cancelar'), faturaId: z.string().uuid() }),
   z.object({ acao: z.literal('emitir'), faturaId: z.string().uuid() }),
+  z.object({
+    acao: z.literal('dividir'),
+    faturaId: z.string().uuid(),
+    valorNota: z.number().positive(),
+    competenciaResto: Comp,
+  }),
 ]);
+
+const r2 = (n: number) => Math.round(n * 100) / 100;
+
+/** Partes separadas (vivas) de uma fatura dividida. */
+function complementosVivos(id: string) {
+  return db
+    .select()
+    .from(schema.faturaServico)
+    .where(and(eq(schema.faturaServico.complementoDe, id), ne(schema.faturaServico.status, 'CANCELADA')));
+}
 
 export async function POST(req: Request) {
   const supabase = await createClient();
@@ -97,11 +115,15 @@ export async function POST(req: Request) {
           eq(schema.faturaServico.tomadorFilialId, body.tomadorFilialId),
           eq(schema.faturaServico.competencia, body.competencia),
           ne(schema.faturaServico.status, 'CANCELADA'),
+          isNull(schema.faturaServico.complementoDe),
         ),
       )
       .limit(1);
     if (viva && (viva.status !== 'RASCUNHO' || viva.contaPagarId)) {
       return NextResponse.json({ error: 'Fatura já emitida ou lançada na casa — cancele antes de refazer.' }, { status: 409 });
+    }
+    if (viva && (await complementosVivos(viva.id)).length > 0) {
+      return NextResponse.json({ error: 'Fatura dividida — cancele a parte separada antes de refazer.' }, { status: 409 });
     }
 
     const valores = {
@@ -218,7 +240,78 @@ export async function POST(req: Request) {
     return NextResponse.json(r);
   }
 
+  if (body.acao === 'dividir') {
+    if (fat.status !== 'RASCUNHO' || fat.contaPagarId) {
+      return NextResponse.json({ error: 'Só dá pra dividir fatura em rascunho e sem conta lançada.' }, { status: 409 });
+    }
+    if (fat.complementoDe) return NextResponse.json({ error: 'Esta já é a parte separada.' }, { status: 409 });
+    if ((await complementosVivos(fat.id)).length > 0) {
+      return NextResponse.json({ error: 'Já dividida — cancele a parte separada para dividir de novo.' }, { status: 409 });
+    }
+    const total = Number(fat.valorServico);
+    const valorNota = r2(body.valorNota);
+    if (valorNota >= total) {
+      return NextResponse.json({ error: `O valor desta nota tem que ser menor que ${total.toFixed(2)}.` }, { status: 400 });
+    }
+    if (body.competenciaResto === fat.competencia) {
+      return NextResponse.json({ error: 'A outra nota tem que ser de outro mês.' }, { status: 400 });
+    }
+    const aliq = Number(fat.aliquotaIss);
+    const baseTotal = Number(fat.valorBase);
+    const lucroTotal = Number(fat.valorLucro);
+    // Base e lucro repartidos na proporção; o ISS de cada nota sobre o próprio valor.
+    const baseNota = r2((baseTotal * valorNota) / total);
+    const lucroNota = r2(valorNota - baseNota);
+    const issNota = r2((valorNota * aliq) / 100);
+    const resto = r2(total - valorNota);
+    const issResto = r2((resto * aliq) / 100);
+    const agora = new Date();
+    const id = await db.transaction(async (tx) => {
+      await tx
+        .update(schema.faturaServico)
+        .set({
+          valorBase: String(baseNota),
+          valorLucro: String(lucroNota),
+          valorServico: String(valorNota),
+          valorIss: String(issNota),
+          valorLiquido: String(r2(valorNota - issNota)),
+          atualizadoEm: agora,
+        })
+        .where(eq(schema.faturaServico.id, fat.id));
+      const [parte] = await tx
+        .insert(schema.faturaServico)
+        .values({
+          filialId: fat.filialId,
+          tomadorFilialId: fat.tomadorFilialId,
+          competencia: fat.competencia,
+          complementoDe: fat.id,
+          competenciaNfse: body.competenciaResto,
+          base: fat.base,
+          valorBase: String(r2(baseTotal - baseNota)),
+          percentualLucro: fat.percentualLucro,
+          valorLucro: String(r2(lucroTotal - lucroNota)),
+          valorServico: String(resto),
+          aliquotaIss: fat.aliquotaIss,
+          valorIss: String(issResto),
+          issRetido: fat.issRetido,
+          valorLiquido: String(r2(resto - issResto)),
+          vencimento: fat.vencimento,
+          discriminacao: fat.discriminacao,
+          criadoPor: user.id,
+        })
+        .returning({ id: schema.faturaServico.id });
+      return parte!.id;
+    });
+    return NextResponse.json({ ok: true, id });
+  }
+
   // cancelar
+  if (!fat.complementoDe) {
+    const partes = await complementosVivos(fat.id);
+    if (partes.length > 0) {
+      return NextResponse.json({ error: 'Fatura dividida — cancele primeiro a parte separada.' }, { status: 409 });
+    }
+  }
   if (fat.contaPagarId) {
     return NextResponse.json({ error: 'Já tem conta lançada na casa — apague as contas antes de cancelar.' }, { status: 409 });
   }

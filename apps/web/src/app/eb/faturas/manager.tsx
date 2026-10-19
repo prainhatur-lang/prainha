@@ -10,6 +10,8 @@ export interface LinhaFatura {
   casa: string;
   municipio: string;
   previsao: PrevisaoFatura | null;
+  /** Parte separada de uma fatura dividida (NFS-e em outra competência). */
+  parte?: boolean;
   fatura: {
     id: string;
     status: string;
@@ -30,6 +32,8 @@ export interface LinhaFatura {
     nfseChave: string | null;
     nfseNumero: string | null;
     nfseErro: string | null;
+    competenciaNfse: string | null;
+    dividida: boolean;
   } | null;
 }
 
@@ -159,7 +163,7 @@ export function FaturasEbManager(props: {
             Total do mês: serviço <b>{brl(totServico)}</b> · ISS retido <b>{brl(totIss)}</b>
           </p>
           {props.linhas.map((l) => (
-            <CartaoCasa key={l.casaId} linha={l} comp={props.comp!} hoje={props.hoje} ocupado={ocupado} agir={agir} />
+            <CartaoCasa key={l.fatura?.id ?? l.casaId} linha={l} comp={props.comp!} hoje={props.hoje} ocupado={ocupado} agir={agir} />
           ))}
         </>
       )}
@@ -180,10 +184,17 @@ function CartaoCasa(props: {
   const [vencIss, setVencIss] = useState(f?.vencimento ?? l.previsao?.vencimento ?? props.hoje);
   const [recData, setRecData] = useState(props.hoje);
   const [recValor, setRecValor] = useState(f ? String(f.valorLiquido).replace('.', ',') : '');
+  const [dividindo, setDividindo] = useState(false);
+  const [valorNota, setValorNota] = useState('');
+  const [mesResto, setMesResto] = useState(() => {
+    const [a, m] = props.comp.split('-').map(Number);
+    return m === 12 ? `${a! + 1}-01` : `${a}-${String(m! + 1).padStart(2, '0')}`;
+  });
+  const valorNotaNum = Number(valorNota.replace(/\./g, '').replace(',', '.'));
 
   // Folha mudou depois de gerar (reimportação) — avisa pra gerar de novo.
   const desatualizada =
-    f && l.previsao && f.status === 'RASCUNHO' && !f.lancada && Math.abs(f.valorServico - l.previsao.valorServico) >= 0.01;
+    f && l.previsao && !f.dividida && f.status === 'RASCUNHO' && !f.lancada && Math.abs(f.valorServico - l.previsao.valorServico) >= 0.01;
 
   const status = !f
     ? { t: 'não gerada', c: 'border-slate-200 bg-slate-50 text-slate-600' }
@@ -196,11 +207,19 @@ function CartaoCasa(props: {
           : { t: 'rascunho', c: 'border-amber-200 bg-amber-50 text-amber-800' };
 
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm">
+    <div className={`rounded-xl border bg-white p-4 text-sm ${l.parte ? 'ml-6 border-dashed border-slate-300' : 'border-slate-200'}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h3 className="font-semibold text-slate-900">{l.casa}</h3>
+          <h3 className="font-semibold text-slate-900">
+            {l.casa}
+            {l.parte && f?.competenciaNfse && (
+              <span className="ml-2 font-normal text-slate-500">— parte separada, NFS-e com competência {fmtComp(f.competenciaNfse)}</span>
+            )}
+          </h3>
           <p className="text-xs text-slate-500">ISS retido recolhido em {l.municipio}</p>
+          {f?.dividida && (
+            <p className="text-xs text-slate-500">Fatura dividida: o resto está na parte separada logo abaixo.</p>
+          )}
         </div>
         <span className={`rounded-full border px-2 py-0.5 text-xs ${status.c}`}>{status.t}</span>
       </div>
@@ -245,6 +264,13 @@ function CartaoCasa(props: {
           </button>
         )}
 
+        {f && !l.parte && !f.dividida && f.status === 'RASCUNHO' && !f.lancada && (
+          <button onClick={() => setDividindo((d) => !d)} disabled={ocupado !== null}
+            className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-50 disabled:opacity-50">
+            Dividir
+          </button>
+        )}
+
         {f && f.status === 'RASCUNHO' && f.aliquotaIss > 0 && (
           <button
             onClick={() => {
@@ -275,6 +301,33 @@ function CartaoCasa(props: {
               Cancelar
             </button>
           </>
+        )}
+
+        {f && dividindo && (
+          <div className="flex w-full flex-wrap items-end gap-2 rounded-md bg-slate-50 p-2">
+            <label className="text-xs text-slate-500">
+              Valor desta nota ({fmtComp(props.comp)})
+              <input value={valorNota} onChange={(e) => setValorNota(e.target.value)} inputMode="decimal" placeholder="ex.: 14.000,00"
+                className="ml-1 w-28 rounded-md border border-slate-300 px-2 py-1 text-slate-800" />
+            </label>
+            <label className="text-xs text-slate-500">
+              O resto vai numa nota com competência
+              <input type="month" value={mesResto} onChange={(e) => setMesResto(e.target.value)}
+                className="ml-1 rounded-md border border-slate-300 px-2 py-1 text-slate-800" />
+            </label>
+            {valorNotaNum > 0 && valorNotaNum < f.valorServico && (
+              <span className="text-xs text-slate-600">resto: {brl(Math.round((f.valorServico - valorNotaNum) * 100) / 100)}</span>
+            )}
+            <button
+              onClick={async () => {
+                await agir(`dividir-${f.id}`, { acao: 'dividir', faturaId: f.id, valorNota: valorNotaNum, competenciaResto: mesResto });
+                setDividindo(false);
+              }}
+              disabled={ocupado !== null || !(valorNotaNum > 0 && valorNotaNum < f.valorServico) || !mesResto}
+              className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50">
+              {ocupado === `dividir-${f.id}` ? 'Dividindo…' : 'Confirmar divisão'}
+            </button>
+          </div>
         )}
 
         {f && f.lancada && !f.recebidoEm && (
