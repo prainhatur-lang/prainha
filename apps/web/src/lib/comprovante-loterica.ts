@@ -723,8 +723,10 @@ export async function sugestoesPorValor(
 
   const grupos = new Map<string, Array<ContaCasada & { pagaEm: string | null }>>();
   for (const a of abertas) {
-    if (!a.folhaSemanaId || a.pagaEm) continue;
-    const k = `${a.fornecedorId ?? a.pessoa}|${a.folhaSemanaId}`;
+    if (!a.folhaSemanaId) continue;
+    // paga no dia do depósito também soma (ex.: comissão + diária baixadas em
+    // lote e pagas por um depósito só), mas nunca misturada com conta em aberto
+    const k = `${a.fornecedorId ?? a.pessoa}|${a.folhaSemanaId}|${a.pagaEm ?? ''}`;
     grupos.set(k, [...(grupos.get(k) ?? []), a]);
   }
   const opcoes: Array<Array<ContaCasada & { pagaEm: string | null }>> = [
