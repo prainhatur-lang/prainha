@@ -18,6 +18,12 @@ async function main() {
     ALTER TABLE fatura_servico ADD COLUMN IF NOT EXISTS complemento_de uuid REFERENCES fatura_servico(id) ON DELETE SET NULL;
     ALTER TABLE fatura_servico ADD COLUMN IF NOT EXISTS competencia_nfse varchar(7);
     CREATE INDEX IF NOT EXISTS idx_fatura_servico_complemento ON fatura_servico(complemento_de);
+    -- Uma fatura viva por casa por mês continua valendo, mas só pra principal:
+    -- a parte separada tem a mesma casa e competência.
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_fatura_servico_viva_principal
+      ON fatura_servico (filial_id, tomador_filial_id, competencia)
+      WHERE status <> 'CANCELADA' AND complemento_de IS NULL;
+    DROP INDEX IF EXISTS uq_fatura_servico_viva;
   `);
   console.log('ok: fatura_servico.complemento_de + competencia_nfse');
   await sql.end();
