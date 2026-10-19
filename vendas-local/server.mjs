@@ -7509,8 +7509,13 @@ function garcomGeraToken(login) {
 function garcomVerificaToken(token) {
   const t = String(token || '');
   const parts = t.split('.');
-  if (parts.length !== 3) return null;
-  const login = decodeURIComponent(parts[0]); const exp = Number(parts[1]); const sig = parts[2];
+  // ⚠️ encodeURIComponent NÃO escapa o ponto e o cadastro aceita login com
+  // ponto (/^[a-z0-9_.]/): "carlos.viana" virava 4 partes, o login entrava e
+  // toda ação depois voltava "Faça login" (Mar, 19/10/2026). Lê pela direita:
+  // assinatura e validade são as duas últimas, o resto é o login.
+  if (parts.length < 3) return null;
+  const sig = parts.pop(); const exp = Number(parts.pop());
+  let login; try { login = decodeURIComponent(parts.join('.')); } catch { return null; }
   if (!login || !(exp > Date.now())) return null;
   const bom = garcomAssina(login, exp);
   try { if (!timingSafeEqual(Buffer.from(sig), Buffer.from(bom))) return null; } catch { return null; }
