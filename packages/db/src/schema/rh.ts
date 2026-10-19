@@ -77,6 +77,10 @@ export const funcionario = pgTable(
      *  nomes em vez de bater direto. A FK fica só no banco (ON DELETE SET
      *  NULL, scripts/migrate-funcionario-gemeo.ts). */
     gemeoDeId: uuid('gemeo_de_id'),
+    /** 'H' | 'M' — só pra regra de domingo da escala mensal (CCT cl.16:
+     *  homem folga 1 domingo a cada 5 trabalhados; mulher a cada 2 semanas,
+     *  CLT 386). Marcado na grade de /rh/escala-mensal (19/10/2026). */
+    sexo: varchar('sexo', { length: 1 }),
 
     /** Valor de FUNCOES_TALENTO (schema/talento.ts). */
     cargo: varchar('cargo', { length: 60 }),

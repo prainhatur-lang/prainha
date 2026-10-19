@@ -78,6 +78,12 @@ export default async function ValeTransportePage(props: { searchParams: Promise<
             <a href={link(seg.inicio)} className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-slate-600 hover:bg-slate-50">
               {nomeQuinzena(seg)} →
             </a>
+            <a
+              href={`/rh/escala-mensal?filialId=${filial.id}&mes=${q.inicio.slice(0, 7)}`}
+              className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-slate-600 hover:bg-slate-50"
+            >
+              Escala do mês
+            </a>
           </div>
         </div>
 

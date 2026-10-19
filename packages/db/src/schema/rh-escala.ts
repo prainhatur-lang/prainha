@@ -157,3 +157,25 @@ export const bancoHorasLancamento = pgTable(
   },
   (t) => ({ porPessoa: index('idx_banco_horas_pessoa').on(t.funcionarioId, t.dia) }),
 );
+
+/** Escala do mês, dia a dia (pedido do dono 19/10/2026): 6x1 com folga fixa
+ *  na semana, mas quem folga o domingo não folga na semana — por isso a
+ *  escala muda todo mês e é feita na grade de /rh/escala-mensal. Uma linha
+ *  por pessoa por dia; sem linha = dia sem escala. O VT conta os dias de
+ *  trabalho daqui antes de qualquer outra previsão. */
+export const rhEscalaDia = pgTable(
+  'rh_escala_dia',
+  {
+    funcionarioId: uuid('funcionario_id').notNull().references(() => funcionario.id, { onDelete: 'cascade' }),
+    dia: date('dia').notNull(),
+    /** Casa em que a escala foi feita. */
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    folga: boolean('folga').notNull(),
+    atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
+    atualizadoPor: uuid('atualizado_por'),
+  },
+  (t) => ({
+    uniq: unique('uq_rh_escala_dia').on(t.funcionarioId, t.dia),
+    porCasa: index('idx_rh_escala_dia_filial').on(t.filialId, t.dia),
+  }),
+);

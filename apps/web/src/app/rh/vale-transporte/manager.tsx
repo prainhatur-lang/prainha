@@ -8,6 +8,7 @@ const brl = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', curren
 const sinal = (n: number) => (n > 0 ? `+${brl(n)}` : n < 0 ? `−${brl(-n)}` : brl(0));
 
 const ORIGEM: Record<OrigemPrevisao, string> = {
+  escala_mes: 'pela escala do mês',
   escala: 'pela escala',
   dias_semana: 'dias/semana do VT',
   quinzena_anterior: 'como na quinzena anterior',

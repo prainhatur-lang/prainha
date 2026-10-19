@@ -10,6 +10,8 @@
 // Dias previstos: escala fixa (rh_jornada) → dias com horas na quinzena;
 // sem escala fixa → "dias por semana" do VT da pessoa; sem isso → os dias que
 // ela trabalhou na quinzena anterior. A tela deixa editar antes de pagar.
+// Desde 19/10/2026 a escala do mês (/rh/escala-mensal) vem antes de tudo:
+// quem tem a quinzena marcada lá conta os dias de trabalho dela.
 // Dias trabalhados: ponto próprio (qualquer casa) e, antes da virada, o Stelanto.
 //
 // Desconto de 6% (Lei 7.418/85): sai do salário, limitado ao VT que a pessoa
@@ -23,6 +25,7 @@ import { and, asc, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
 import { jornadaNoDia, minutosPrevistos, type VigenciaJornada } from '@/lib/rh/banco-horas';
 import { somarDias } from '@/lib/rh/dia-operacional';
 import { calcularDia } from '@/lib/rh/calcular-ponto';
+import { diasTrabalhoEscala } from '@/lib/rh/escala-mensal';
 
 export const DESCONTO_VT = 0.06;
 
@@ -75,7 +78,7 @@ export function descontoVt(base: number, vtRecebido: number): number {
   return r2(Math.max(0, Math.min(base * DESCONTO_VT, vtRecebido)));
 }
 
-export type OrigemPrevisao = 'escala' | 'dias_semana' | 'quinzena_anterior' | 'nenhuma';
+export type OrigemPrevisao = 'escala_mes' | 'escala' | 'dias_semana' | 'quinzena_anterior' | 'nenhuma';
 
 export interface LinhaVt {
   funcionarioId: string;
@@ -173,7 +176,7 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
     return { quinzena: q, anterior: ant, paga: qAtual, anteriorPaga: !!qAnt, seguintePaga: !!qSeg, linhas: [] };
   }
 
-  const [vts, vigRows, batidas, stelanto, batidasQ] = await Promise.all([
+  const [vts, vigRows, batidas, stelanto, batidasQ, escalaMes] = await Promise.all([
     db.select().from(schema.vtPessoa).where(inArray(schema.vtPessoa.funcionarioId, ids)),
     db
       .select({
@@ -236,6 +239,7 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
           isNull(schema.pontoBatida.excluidaEm),
         ),
       ),
+    diasTrabalhoEscala(ids, q.inicio, q.fim),
   ]);
 
   const porCasaDia = new Map<string, { quando: Date; tipo: 'entrada' | 'saida' }[]>();
@@ -281,7 +285,11 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
     let diasPrevistos = 0;
     let origemPrevisao: OrigemPrevisao = 'nenhuma';
     const temFixa = diasQ.some((d) => jornadaNoDia(vigencias, d)?.tipo === 'fixa');
-    if (temFixa) {
+    const esc = escalaMes.get(f.id);
+    if (esc && esc.comLinha > 0) {
+      diasPrevistos = diasQ.filter((d) => naCasa(d) && esc.trabalho.has(d)).length;
+      origemPrevisao = 'escala_mes';
+    } else if (temFixa) {
       diasPrevistos = diasQ.filter((d) => {
         const j = jornadaNoDia(vigencias, d);
         return naCasa(d) && !!j && minutosPrevistos(j, d) > 0;
