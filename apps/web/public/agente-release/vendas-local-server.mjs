@@ -3856,7 +3856,9 @@ async function cupomConta(numero, ped) {
   const subtotal = Number(p.I) || 0, servico = Number(p.S) || 0, desconto = Number(p.D) || 0, acrescimo = Number(p.A) || 0, total = Number(p.T) || 0;
   const falta = Math.max(0, +(total - pago).toFixed(2));
   const nome = (ct.ok && ct.nome) || T(p.NOME) || null;
-  const b = [IMP.init, IMP.centro, IMP.neg, IMP.grande, impLn(LOJA_NOME.toUpperCase()), IMP.norm, IMP.negFim,
+  const io = await impOpcoes();
+  const b = [IMP.init, IMP.centro, ...(io.compacta ? [Buffer.from([0x1b, 0x33, 24])] : []),
+    ...(io.logo ? [io.logo, Buffer.from([0x0a])] : [IMP.neg, IMP.grande, impLn(LOJA_NOME.toUpperCase()), IMP.norm, IMP.negFim]),
     impLn('CONFERÊNCIA DE CONSUMO - não é doc. fiscal'), IMP.esquerda, impTraco(),
     IMP.neg, IMP.alto, impLn(impRotulo(numero, null) + (nome ? ' · ' + nome : '')), IMP.norm, IMP.negFim,
     impLn(new Date().toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })), impTraco()];
@@ -6817,7 +6819,7 @@ async function nfceEmitirCore({ ped, numero, documento, destino, solicitante }) 
   if (destino === 'caixa' || destino === 'fila') {
     try {
       const ip = (await cfgGet('impressora_ip', '')).trim();
-      if (ip) { await imprimirRaw(ip, nfceBlocosEscpos(resp.danfe48 || []), 'DANFE NFC-e ' + rotulo); impresso = true; }
+      if (ip) { await imprimirRaw(ip, nfceBlocosEscpos(resp.danfe48 || [], await impOpcoes()), 'DANFE NFC-e ' + rotulo); impresso = true; }
       else impErro = 'sem impressora configurada';
     } catch (e2) { impErro = e2.message; }
   }
@@ -6886,7 +6888,7 @@ async function loopNfceImpressao() {
     const feitos = [];
     for (const job of j.jobs) {
       try {
-        await imprimirRaw(ip, nfceBlocosEscpos(job.blocos || []), '2ª via ' + (job.rotulo || 'DANFE'));
+        await imprimirRaw(ip, nfceBlocosEscpos(job.blocos || [], await impOpcoes()), '2ª via ' + (job.rotulo || 'DANFE'));
         feitos.push(job.id);
         console.log('[nfce] 2ª via impressa:', job.rotulo);
       } catch (e2) { console.error('[nfce] 2ª via falhou:', e2.message); }
@@ -6907,10 +6909,10 @@ async function loopNfceImpressao() {
 // O QR NÃO usa o comando nativo (GS ( k) porque a genérica 80mm nem sempre
 // implementa: rasteriza os módulos do qrcode-svg (4px/módulo + quiet zone)
 // e centraliza no papel de 576 px (72 bytes/linha).
-function nfceQrRaster(texto) {
+function nfceQrRaster(texto, quiet = 16) {
   const qr = new QRCode({ content: texto, padding: 0, width: 200, height: 200, ecl: 'M', join: true });
   const mods = qr.qrcode.modules;
-  const n = mods.length, escala = 4, quiet = 16;
+  const n = mods.length, escala = 4;
   const px = n * escala + quiet * 2;
   const bytesLinha = Math.ceil(px / 8);
   const cheio = 72; // 576 px úteis nas 80mm — centraliza com pad de bytes
@@ -6933,11 +6935,40 @@ function nfceQrRaster(texto) {
     Buffer.from([0x0a]),
   ]);
 }
-function nfceBlocosEscpos(blocos) {
+// ---- LOGO no topo + papel COMPACTO (Tabuará 19/10) ----
+// O logo é um raster GS v 0 pronto, gerado no Mac a partir do logo da casa e
+// publicado em /agente-release/logo-escpos/<FILIAL_ID>.bin (casa sem arquivo
+// = sai sem logo, como sempre). Compacto: entrelinha 24 pontos (padrão ~30),
+// sem as linhas em branco das pontas dos blocos e QR com margem menor — só
+// liga com app_config.impressao_compacta=1 (padrão ligado só na Tabuará).
+const IMP_TABUARA = 'fde37b95-7c7e-4b41-a618-2aba1fbc0de7';
+let impLogoCache = { em: 0, buf: null };
+async function impLogo() {
+  if (!FILIAL_ID) return null;
+  if (Date.now() - impLogoCache.em < 6 * 3600e3) return impLogoCache.buf;
+  try {
+    const r = await fetch(PAGAR_MESA_URL + '/agente-release/logo-escpos/' + FILIAL_ID + '.bin', { signal: AbortSignal.timeout(8000) });
+    const buf = r.ok ? Buffer.from(await r.arrayBuffer()) : null;
+    impLogoCache = { em: Date.now(), buf: buf && buf.length > 8 && buf[0] === 0x1d && buf[1] === 0x76 ? buf : null };
+  } catch { impLogoCache.em = Date.now() - 6 * 3600e3 + 10 * 60e3; } // nuvem fora: fica com o que tinha, tenta em 10 min
+  return impLogoCache.buf;
+}
+async function impOpcoes() {
+  const compacta = (await cfgGet('impressao_compacta', FILIAL_ID === IMP_TABUARA ? '1' : '').catch(() => '')).trim() === '1';
+  return { logo: await impLogo().catch(() => null), compacta };
+}
+function nfceBlocosEscpos(blocos, opt = {}) {
   const b = [IMP.init, IMP.centro];
+  if (opt.compacta) b.push(Buffer.from([0x1b, 0x33, 24]));
+  if (opt.logo) b.push(opt.logo, Buffer.from([0x0a]));
   for (const bl of blocos || []) {
-    if (bl.qr) { b.push(nfceQrRaster(bl.qr)); continue; }
-    const linhas = String(bl.texto || '').split('\n');
+    if (bl.qr) { b.push(nfceQrRaster(bl.qr, opt.compacta ? 6 : 16)); continue; }
+    let linhas = String(bl.texto || '').split('\n');
+    if (opt.compacta) {
+      while (linhas.length && !linhas[0].trim()) linhas.shift();
+      while (linhas.length && !linhas[linhas.length - 1].trim()) linhas.pop();
+      if (!linhas.length) continue;
+    }
     const grande = (Number(bl.tamanho) || 16) >= 21 && linhas.every((l) => l.length <= 24);
     const alto = !grande && (Number(bl.tamanho) || 16) >= 21;
     if (bl.negrito) b.push(IMP.neg);
