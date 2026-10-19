@@ -1,7 +1,8 @@
 // /api/folha-equipe/comprovantes/[id]
 //  GET    → abre a foto guardada (endereço assinado de 10 min)
 //  POST   { acao: 'casar' | 'ler' } → procura a conta de novo / relê a foto
-//  POST   { acao: 'escolher', contaId } → casa na mão (depósito na conta de outra pessoa)
+//  POST   { acao: 'escolher', contaId } → casa na mão (depósito na conta de outra pessoa;
+//         contaId pode ser 'a,b' = soma das contas da pessoa na mesma folha)
 //  DELETE { acao: 'desfazer' } → estorna a baixa (contas voltam a abertas)
 //  DELETE { acao: 'tirar' }    → tira da lista (a foto continua no bucket)
 
@@ -59,7 +60,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const body = (await req.json().catch(() => null)) as { acao?: string; contaId?: string } | null;
   if (body?.acao === 'escolher') {
     try {
-      await casarManual(id, String(body.contaId ?? ''), achado.filiais);
+      await casarManual(id, String(body.contaId ?? '').split(','), achado.filiais);
       return NextResponse.json({ ok: true, status: 'CASADO' });
     } catch (e) {
       if (e instanceof RecusaComprovante) return NextResponse.json({ error: e.message }, { status: 400 });

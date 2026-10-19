@@ -191,19 +191,37 @@ function tokens(s: string | null): string[] {
 export function parecencaNome(a: string | null, b: string | null): number {
   const ta = tokens(a);
   const tb = tokens(b);
-  if (ta.length === 0 || tb.length === 0 || ta[0] !== tb[0]) return 0;
+  if (ta.length === 0 || tb.length === 0 || !quaseIgual(ta[0]!, tb[0]!)) return 0;
   const livres = [...tb];
   let casados = 0;
   for (const t of ta) {
     let i = livres.indexOf(t);
     if (i < 0 && t.length === 1) i = livres.findIndex((x) => x.startsWith(t));
     if (i < 0) i = livres.findIndex((x) => x.length === 1 && t.startsWith(x));
+    if (i < 0) i = livres.findIndex((x) => quaseIgual(t, x));
     if (i >= 0) {
       casados++;
       livres.splice(i, 1);
     }
   }
   return Math.min(1, casados / Math.min(ta.length, tb.length));
+}
+
+/** Igual, ou uma letra de diferença em nome de 5+ letras (JEISIANE ×
+ *  JEISEANE, MEDEIRO × MEDEIROS) — a grafia do cadastro e a da lotérica
+ *  divergem. */
+function quaseIgual(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (Math.min(a.length, b.length) < 5 || Math.abs(a.length - b.length) > 1) return false;
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  let ja = a.length - 1;
+  let jb = b.length - 1;
+  while (ja >= i && jb >= i && a[ja] === b[jb]) {
+    ja--;
+    jb--;
+  }
+  return ja - i < 1 && jb - i < 1;
 }
 
 const PARECENCA_MIN = 0.6;
@@ -234,7 +252,7 @@ function brl(v: number): string {
  * usuário enxerga. Não grava nada.
  */
 export async function casarComprovante(
-  lido: { nome: string; valor: number; data: string | null },
+  lido: { nome: string; valor: number; data: string | null; autenticacao?: string | null },
   filialIds: string[],
   ignorarComprovanteId: string | null,
 ): Promise<ResultadoCasamento> {
@@ -250,6 +268,7 @@ export async function casarComprovante(
       descricao: schema.contaPagar.descricao,
       liquido: sql<string>`(${schema.contaPagar.valor} - COALESCE(${schema.contaPagar.descontos}, 0))::numeric(14,2)`,
       vencimento: schema.contaPagar.dataVencimento,
+      pagaEm: schema.contaPagar.dataPagamento,
     })
     .from(schema.contaPagar)
     .leftJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.contaPagar.fornecedorId))
@@ -257,7 +276,11 @@ export async function casarComprovante(
       and(
         inArray(schema.contaPagar.filialId, filialIds),
         eq(schema.contaPagar.origem, 'FOLHA'),
-        isNull(schema.contaPagar.dataPagamento),
+        // em aberto, ou já paga por outro caminho no mesmo dia do depósito
+        // (alguém baixou na mão antes de subir o comprovante)
+        ref
+          ? sql`(${schema.contaPagar.dataPagamento} IS NULL OR ${schema.contaPagar.dataPagamento} = ${ref}::date)`
+          : isNull(schema.contaPagar.dataPagamento),
         isNull(schema.contaPagar.dataDelete),
         ref
           ? sql`${schema.contaPagar.dataVencimento} BETWEEN (${ref}::date - 90) AND (${ref}::date + 20)`
@@ -265,13 +288,13 @@ export async function casarComprovante(
       ),
     );
 
-  // Conta já reservada por outro comprovante casado (e ainda não baixado).
+  // Conta já reservada por outro comprovante (casado ou baixado).
   const outros = await db
     .select({ ids: schema.comprovanteLoterica.contaPagarIds })
     .from(schema.comprovanteLoterica)
     .where(
       and(
-        eq(schema.comprovanteLoterica.status, 'CASADO'),
+        inArray(schema.comprovanteLoterica.status, ['CASADO', 'BAIXADO']),
         isNull(schema.comprovanteLoterica.excluidoEm),
         ignorarComprovanteId ? ne(schema.comprovanteLoterica.id, ignorarComprovanteId) : undefined,
       ),
@@ -279,7 +302,7 @@ export async function casarComprovante(
   const presas = new Set(outros.flatMap((o) => o.ids ?? []));
 
   const daPessoa = abertas
-    .map((c) => ({ ...c, liquido: Number(c.liquido), parec: parecencaNome(lido.nome, c.pessoa) }))
+    .map((c) => ({ ...c, liquido: Number(c.liquido), pagaNoDia: c.pagaEm !== null, parec: parecencaNome(lido.nome, c.pessoa) }))
     .filter((c) => c.parec >= PARECENCA_MIN && !presas.has(c.id));
   if (daPessoa.length === 0) {
     return { ok: false, motivo: `não achei conta de 10% em aberto pra "${lido.nome}"` };
@@ -307,7 +330,8 @@ export async function casarComprovante(
     return { ok: false, motivo: `nenhuma conta aberta de ${brl(lido.valor)} — abertas: ${resumo}` };
   }
   const melhor = Math.max(...batem.map((o) => o.parec));
-  const topo = batem.filter((o) => o.parec === melhor);
+  let topo = batem.filter((o) => o.parec === melhor);
+  if (topo.length > 1) topo = desempatar(topo, ref);
   if (topo.length > 1) {
     const nomes = [...new Set(topo.map((o) => `${o.contas[0]!.pessoa} (venc. ${o.contas[0]!.vencimento.split('-').reverse().join('/')})`))];
     return { ok: false, motivo: `mais de uma conta de ${brl(lido.valor)} serve: ${nomes.join(', ')}` };
@@ -325,6 +349,28 @@ export async function casarComprovante(
       vencimento: c.vencimento,
     })),
   };
+}
+
+/**
+ * Mesmo valor e mesmo nome em mais de uma conta. Conta em aberto ganha da que
+ * já foi paga no dia por outro caminho; conta velha que ficou aberta (Lilian:
+ * R$ 900 em 10/08, 31/08 e 12/10) perde pro vencimento mais perto do depósito.
+ * Pessoa em duas casas com o mesmo valor (Paulo Henrique) continua empatada —
+ * a tela mostra as opções.
+ */
+function desempatar<T extends { contas: Array<{ vencimento: string; pagaNoDia: boolean }> }>(
+  topo: T[],
+  ref: string | null,
+): T[] {
+  let r = topo;
+  const abertas = r.filter((o) => o.contas.every((c) => !c.pagaNoDia));
+  if (abertas.length > 0) r = abertas;
+  if (r.length > 1 && ref) {
+    const dist = (o: T) => Math.abs(Date.parse(o.contas[0]!.vencimento) - Date.parse(ref));
+    const menor = Math.min(...r.map(dist));
+    r = r.filter((o) => dist(o) === menor);
+  }
+  return r;
 }
 
 // ───────────────────────── gravação ─────────────────────────
@@ -382,7 +428,11 @@ export async function casarEGravar(comprovanteId: string, userId: string): Promi
   }
 
   const filiais = await filialIdsDoUsuario(userId);
-  const r = await casarComprovante({ nome: c.nomeLido, valor: Number(c.valor), data: c.dataPagamento }, filiais, c.id);
+  const r = await casarComprovante(
+    { nome: c.nomeLido, valor: Number(c.valor), data: c.dataPagamento, autenticacao: c.autenticacao },
+    filiais,
+    c.id,
+  );
   if (!r.ok) {
     await db
       .update(schema.comprovanteLoterica)
@@ -479,12 +529,53 @@ export async function baixarComprovante(comprovanteId: string, userId: string, f
         ),
       )
       .returning({ id: schema.contaPagar.id });
+    let jaPagas = 0;
     if (r.length !== ids.length) {
-      throw new RecusaComprovante('alguma conta deste comprovante já foi paga ou excluída — clique em "procurar de novo"');
+      // As que faltaram podem ter sido pagas por outro caminho (baixa na mão
+      // em contas a pagar) no MESMO dia do depósito: aí o comprovante só fica
+      // guardado com elas. Paga em outro dia, excluída ou já ligada a outro
+      // comprovante baixado → recusa como antes.
+      const feitas = new Set(r.map((x) => x.id));
+      const faltam = ids.filter((x) => !feitas.has(x));
+      const pagasNoDia = await tx
+        .select({ id: schema.contaPagar.id })
+        .from(schema.contaPagar)
+        .where(
+          and(
+            inArray(schema.contaPagar.id, faltam),
+            eq(schema.contaPagar.filialId, c.filialId),
+            eq(schema.contaPagar.dataPagamento, data),
+            isNull(schema.contaPagar.dataDelete),
+          ),
+        );
+      const [outro] = await tx
+        .select({ id: schema.comprovanteLoterica.id })
+        .from(schema.comprovanteLoterica)
+        .where(
+          and(
+            ne(schema.comprovanteLoterica.id, c.id),
+            eq(schema.comprovanteLoterica.status, 'BAIXADO'),
+            isNull(schema.comprovanteLoterica.excluidoEm),
+            sql`(${sql.join(
+              faltam.map((x) => sql`${schema.comprovanteLoterica.contaPagarIds} @> ${JSON.stringify([x])}::jsonb`),
+              sql` OR `,
+            )})`,
+          ),
+        )
+        .limit(1);
+      if (pagasNoDia.length !== faltam.length || outro) {
+        throw new RecusaComprovante('alguma conta deste comprovante já foi paga ou excluída — clique em "procurar de novo"');
+      }
+      jaPagas = faltam.length;
     }
     await tx
       .update(schema.comprovanteLoterica)
-      .set({ status: 'BAIXADO', erro: null, baixadoEm: new Date(), baixadoPor: userId })
+      .set({
+        status: 'BAIXADO',
+        erro: jaPagas ? `${jaPagas === ids.length ? 'a conta já estava paga' : `${jaPagas} conta(s) já estavam pagas`} no dia — comprovante guardado` : null,
+        baixadoEm: new Date(),
+        baixadoPor: userId,
+      })
       .where(eq(schema.comprovanteLoterica.id, c.id));
     return r.length;
   });
@@ -503,8 +594,11 @@ export async function desfazerBaixa(comprovanteId: string, filialIds: string[]):
     if (!c || c.status !== 'BAIXADO') throw new RecusaComprovante('este comprovante não está baixado');
     if (!c.filialId || !filialIds.includes(c.filialId)) throw new RecusaComprovante('sem acesso à casa da conta');
     const ids = c.contaPagarIds ?? [];
+    // Conta que já estava paga por outro caminho quando o comprovante foi
+    // guardado não é dele pra reabrir.
+    const soGuardou = /já esta(va|vam) pagas? no dia/.test(c.erro ?? '');
     const r =
-      ids.length === 0 || !c.dataPagamento
+      ids.length === 0 || !c.dataPagamento || soGuardou
         ? []
         : await tx
             .update(schema.contaPagar)
@@ -519,7 +613,7 @@ export async function desfazerBaixa(comprovanteId: string, filialIds: string[]):
             .returning({ id: schema.contaPagar.id });
     await tx
       .update(schema.comprovanteLoterica)
-      .set({ status: 'CASADO', baixadoEm: null, baixadoPor: null })
+      .set({ status: 'CASADO', erro: null, baixadoEm: null, baixadoPor: null })
       .where(eq(schema.comprovanteLoterica.id, c.id));
     return r.length;
   });
@@ -529,62 +623,94 @@ export async function desfazerBaixa(comprovanteId: string, filialIds: string[]):
 
 /** Contas FOLHA em aberto com o MESMO valor do comprovante, de qualquer nome —
  *  sugestão pra quando a lotérica depositou na conta de outra pessoa (parente,
- *  cônjuge): o nome do comprovante não bate, mas o valor sim. */
+ *  cônjuge): o nome do comprovante não bate, mas o valor sim. Cada opção é uma
+ *  conta sozinha ou a soma das abertas de uma pessoa na mesma folha (comissão
+ *  + diária num depósito só). */
 export async function sugestoesPorValor(
   comprovantes: Array<{ id: string; valor: string | null; dataPagamento: string | null }>,
   filialIds: string[],
-): Promise<Map<string, ContaCasada[]>> {
-  const out = new Map<string, ContaCasada[]>();
-  const valores = [...new Set(comprovantes.filter((c) => c.valor !== null).map((c) => Number(c.valor).toFixed(2)))];
-  if (valores.length === 0 || filialIds.length === 0) return out;
+): Promise<Map<string, ContaCasada[][]>> {
+  const out = new Map<string, ContaCasada[][]>();
+  if (filialIds.length === 0 || !comprovantes.some((c) => c.valor !== null)) return out;
   const presas = new Set(
     (
       await db
         .select({ ids: schema.comprovanteLoterica.contaPagarIds })
         .from(schema.comprovanteLoterica)
-        .where(and(eq(schema.comprovanteLoterica.status, 'CASADO'), isNull(schema.comprovanteLoterica.excluidoEm)))
+        .where(
+          and(
+            inArray(schema.comprovanteLoterica.status, ['CASADO', 'BAIXADO']),
+            isNull(schema.comprovanteLoterica.excluidoEm),
+          ),
+        )
     ).flatMap((o) => o.ids ?? []),
   );
-  const abertas = await db
-    .select({
-      id: schema.contaPagar.id,
-      filialId: schema.contaPagar.filialId,
-      folhaSemanaId: schema.contaPagar.folhaSemanaId,
-      fornecedorId: schema.contaPagar.fornecedorId,
-      pessoa: schema.fornecedor.nome,
-      descricao: schema.contaPagar.descricao,
-      liquido: sql<string>`(${schema.contaPagar.valor} - COALESCE(${schema.contaPagar.descontos}, 0))::numeric(14,2)`,
-      vencimento: schema.contaPagar.dataVencimento,
-    })
-    .from(schema.contaPagar)
-    .leftJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.contaPagar.fornecedorId))
-    .where(
-      and(
-        inArray(schema.contaPagar.filialId, filialIds),
-        eq(schema.contaPagar.origem, 'FOLHA'),
-        isNull(schema.contaPagar.dataPagamento),
-        isNull(schema.contaPagar.dataDelete),
-        sql`${schema.contaPagar.dataVencimento} >= (CURRENT_DATE - 120)`,
-        sql`(${schema.contaPagar.valor} - COALESCE(${schema.contaPagar.descontos}, 0))::numeric(14,2) IN (${sql.join(
-          valores.map((v) => sql`${v}::numeric`),
-          sql`, `,
-        )})`,
-      ),
-    );
+  const datas = [...new Set(comprovantes.map((c) => c.dataPagamento).filter((d): d is string => !!d))];
+  const abertas = (
+    await db
+      .select({
+        id: schema.contaPagar.id,
+        filialId: schema.contaPagar.filialId,
+        folhaSemanaId: schema.contaPagar.folhaSemanaId,
+        fornecedorId: schema.contaPagar.fornecedorId,
+        pessoa: schema.fornecedor.nome,
+        descricao: schema.contaPagar.descricao,
+        liquido: sql<string>`(${schema.contaPagar.valor} - COALESCE(${schema.contaPagar.descontos}, 0))::numeric(14,2)`,
+        vencimento: schema.contaPagar.dataVencimento,
+        pagaEm: schema.contaPagar.dataPagamento,
+      })
+      .from(schema.contaPagar)
+      .leftJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.contaPagar.fornecedorId))
+      .where(
+        and(
+          inArray(schema.contaPagar.filialId, filialIds),
+          eq(schema.contaPagar.origem, 'FOLHA'),
+          // em aberto, ou paga por outro caminho no dia de algum depósito
+          datas.length
+            ? sql`(${schema.contaPagar.dataPagamento} IS NULL OR ${schema.contaPagar.dataPagamento} IN (${sql.join(
+                datas.map((d) => sql`${d}::date`),
+                sql`, `,
+              )}))`
+            : isNull(schema.contaPagar.dataPagamento),
+          isNull(schema.contaPagar.dataDelete),
+          sql`${schema.contaPagar.dataVencimento} >= (CURRENT_DATE - 120)`,
+        ),
+      )
+  )
+    .filter((a) => !presas.has(a.id))
+    .map((a) => ({ ...a, liquido: Number(a.liquido) }));
+
+  const grupos = new Map<string, Array<ContaCasada & { pagaEm: string | null }>>();
+  for (const a of abertas) {
+    if (!a.folhaSemanaId || a.pagaEm) continue;
+    const k = `${a.fornecedorId ?? a.pessoa}|${a.folhaSemanaId}`;
+    grupos.set(k, [...(grupos.get(k) ?? []), a]);
+  }
+  const opcoes: Array<Array<ContaCasada & { pagaEm: string | null }>> = [
+    ...abertas.map((a) => [a]),
+    ...[...grupos.values()].filter((g) => g.length > 1),
+  ];
   for (const c of comprovantes) {
     if (c.valor === null) continue;
     const alvo = centavos(Number(c.valor));
-    const lista = abertas
-      .filter((a) => !presas.has(a.id) && centavos(Number(a.liquido)) === alvo)
-      .map((a) => ({ ...a, liquido: Number(a.liquido) }));
-    if (lista.length) out.set(c.id, lista.slice(0, 5));
+    const lista = opcoes.filter(
+      (o) =>
+        o.every((k) => !k.pagaEm || k.pagaEm === c.dataPagamento) &&
+        o.reduce((s, k) => s + centavos(k.liquido), 0) === alvo,
+    );
+    if (lista.length) {
+      // as mais recentes primeiro (conta velha esquecida em aberto vai pro fim)
+      lista.sort((x, y) => (y[0]!.vencimento > x[0]!.vencimento ? 1 : y[0]!.vencimento < x[0]!.vencimento ? -1 : 0));
+      out.set(c.id, lista.slice(0, 6));
+    }
   }
   return out;
 }
 
-/** Casa o comprovante com a conta escolhida na mão. Confere que a conta é
- *  FOLHA, está em aberto, é de uma casa do usuário e que o valor bate. */
-export async function casarManual(comprovanteId: string, contaId: string, filialIds: string[]): Promise<void> {
+/** Casa o comprovante com a(s) conta(s) escolhida(s) na mão. Confere que são
+ *  FOLHA, em aberto, de uma casa do usuário, da mesma pessoa e folha quando
+ *  são várias, e que a soma bate com o valor do comprovante. */
+export async function casarManual(comprovanteId: string, contaIds: string[], filialIds: string[]): Promise<void> {
   const [c] = await db
     .select()
     .from(schema.comprovanteLoterica)
@@ -593,7 +719,9 @@ export async function casarManual(comprovanteId: string, contaId: string, filial
   if (!c || c.excluidoEm) throw new RecusaComprovante('comprovante não encontrado');
   if (c.status === 'BAIXADO' || c.status === 'CASADO') throw new RecusaComprovante('este comprovante já tem conta');
   if (c.valor === null) throw new RecusaComprovante('o comprovante não foi lido — leia de novo');
-  const [k] = await db
+  const ids = [...new Set(contaIds.filter((x) => /^[0-9a-f-]{36}$/i.test(x)))];
+  if (ids.length === 0) throw new RecusaComprovante('conta não encontrada');
+  const ks = await db
     .select({
       id: schema.contaPagar.id,
       filialId: schema.contaPagar.filialId,
@@ -605,13 +733,18 @@ export async function casarManual(comprovanteId: string, contaId: string, filial
       liquido: sql<string>`(${schema.contaPagar.valor} - COALESCE(${schema.contaPagar.descontos}, 0))::numeric(14,2)`,
     })
     .from(schema.contaPagar)
-    .where(eq(schema.contaPagar.id, contaId))
-    .limit(1);
-  if (!k || k.apagada || k.origem !== 'FOLHA' || !filialIds.includes(k.filialId)) {
+    .where(inArray(schema.contaPagar.id, ids));
+  if (ks.length !== ids.length || ks.some((k) => k.apagada || k.origem !== 'FOLHA' || !filialIds.includes(k.filialId))) {
     throw new RecusaComprovante('conta não encontrada');
   }
-  if (k.pago) throw new RecusaComprovante('essa conta já está paga');
-  if (centavos(Number(k.liquido)) !== centavos(Number(c.valor))) {
+  // paga por outro caminho no mesmo dia do depósito vale (o comprovante só
+  // fica guardado com ela na hora de "baixar")
+  if (ks.some((k) => k.pago && k.pago !== c.dataPagamento)) throw new RecusaComprovante('essa conta já está paga');
+  const k = ks[0]!;
+  if (ks.some((x) => x.filialId !== k.filialId || x.fornecedorId !== k.fornecedorId || x.folhaSemanaId !== k.folhaSemanaId)) {
+    throw new RecusaComprovante('as contas têm que ser da mesma pessoa e da mesma folha');
+  }
+  if (ks.reduce((s, x) => s + centavos(Number(x.liquido)), 0) !== centavos(Number(c.valor))) {
     throw new RecusaComprovante('o valor da conta não bate com o do comprovante');
   }
   const [presa] = await db
@@ -619,9 +752,12 @@ export async function casarManual(comprovanteId: string, contaId: string, filial
     .from(schema.comprovanteLoterica)
     .where(
       and(
-        eq(schema.comprovanteLoterica.status, 'CASADO'),
+        inArray(schema.comprovanteLoterica.status, ['CASADO', 'BAIXADO']),
         isNull(schema.comprovanteLoterica.excluidoEm),
-        sql`${schema.comprovanteLoterica.contaPagarIds} @> ${JSON.stringify([k.id])}::jsonb`,
+        sql`(${sql.join(
+          ids.map((x) => sql`${schema.comprovanteLoterica.contaPagarIds} @> ${JSON.stringify([x])}::jsonb`),
+          sql` OR `,
+        )})`,
       ),
     )
     .limit(1);
@@ -631,7 +767,7 @@ export async function casarManual(comprovanteId: string, contaId: string, filial
     .set({
       status: 'CASADO',
       erro: null,
-      contaPagarIds: [k.id],
+      contaPagarIds: ids,
       filialId: k.filialId,
       folhaSemanaId: k.folhaSemanaId,
       fornecedorId: k.fornecedorId,

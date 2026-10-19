@@ -261,7 +261,7 @@ export function EscolherConta({
   const [erro, setErro] = useState('');
   async function escolher(contaId: string, rotulo: string) {
     if (fazendo) return;
-    if (!window.confirm(`Casar este comprovante com a conta de ${rotulo}? (o depósito foi na conta de outra pessoa)`)) return;
+    if (!window.confirm(`Casar este comprovante com a conta de ${rotulo}?`)) return;
     setFazendo(true);
     setErro('');
     try {
@@ -275,7 +275,7 @@ export function EscolherConta({
   }
   return (
     <div className="mt-1 space-y-1">
-      <div className="text-xs text-slate-500">Mesmo valor, outro nome:</div>
+      <div className="text-xs text-slate-500">Contas abertas com esse valor:</div>
       {opcoes.map((o) => (
         <button
           key={o.id}

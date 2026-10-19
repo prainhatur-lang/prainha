@@ -132,7 +132,7 @@ export default async function ComprovantesLotericaPage() {
                     </td>
                     <td className="px-3 py-2">
                       <span className={`rounded px-2 py-0.5 text-xs font-medium ${r.cor}`}>{r.txt}</span>
-                      {c.erro && c.status !== 'CASADO' && c.status !== 'BAIXADO' ? (
+                      {c.erro && c.status !== 'CASADO' ? (
                         <div className="mt-1 max-w-xs text-xs text-slate-600">{c.erro}</div>
                       ) : null}
                     </td>
@@ -141,9 +141,9 @@ export default async function ComprovantesLotericaPage() {
                       {c.status === 'SEM_CONTA' && sugestoes.has(c.id) ? (
                         <EscolherConta
                           id={c.id}
-                          opcoes={sugestoes.get(c.id)!.map((k) => ({
-                            id: k.id,
-                            rotulo: `${k.pessoa ?? '?'} — ${brl(k.liquido)} (venc. ${dmy(k.vencimento)}, ${nomeCasa.get(k.filialId) ?? ''})`,
+                          opcoes={sugestoes.get(c.id)!.map((ks) => ({
+                            id: ks.map((k) => k.id).join(','),
+                            rotulo: `${ks[0]!.pessoa ?? '?'} — ${ks.map((k) => brl(k.liquido)).join(' + ')} (venc. ${dmy(ks[0]!.vencimento)}, ${nomeCasa.get(ks[0]!.filialId) ?? ''})`,
                           }))}
                         />
                       ) : null}
