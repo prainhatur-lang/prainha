@@ -352,6 +352,16 @@ if (-not $subiu) {
 }
 Ok 'servidor no ar'
 
+# Numeracao: o servidor que morreu (18/10) ja vendia em banco proprio e gastou
+# na nuvem pedido ate 5.000.494, item 5.004.289, pagamento 5.000.589, cliente
+# 5.000.101. Banco novo comeca em 5.000.000 e a subida faz UPSERT pelo codigo:
+# a primeira venda sobrescreveria um pedido antigo. setval so sobe (GREATEST).
+$env:PGPASSWORD = $PGSENHA
+foreach ($sq in 'pedido','item','pagamento','caixa','contacorrente','cliente') {
+  $null = (& $psql.FullName -U postgres -d $PGBANCO -c "SELECT setval('seq_$sq', GREATEST(5100000, (SELECT last_value FROM seq_$sq)));" 2>&1)
+}
+Ok 'numeracao a partir de 5.100.000 (nao pisa nas vendas do servidor antigo)'
+
 # KDS so na Cozinha e no Bar (decisao do dono). A praca "Caixa" NAO pode ser
 # apenas OCULTADA: o proprio codigo avisa que item de praca oculta nao some —
 # cai no balde laranja "Sem praca definida" e continua contando atraso. Entao
