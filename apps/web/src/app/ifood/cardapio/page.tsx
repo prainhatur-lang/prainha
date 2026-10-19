@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/server';
 import { podeUsuario } from '@/lib/permissoes-runtime';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
+import Link from 'next/link';
 import { AppHeader } from '@/components/app-header';
 import { CardapioIfoodClient } from './cardapio-client';
 
@@ -36,6 +37,9 @@ export default async function IfoodCardapioPage({
           daqui. A coluna <b>código de PDV</b> é a que faz o pedido virar prato na cozinha — item
           com problema ali entra e não aparece pro cozinheiro.
         </p>
+        <Link href="/ifood/cardapio/editor" className="mt-2 inline-block text-sm text-blue-700 hover:underline">
+          ✏️ editor do cardápio (criar categoria/item, complementos, canais, turnos, lote) →
+        </Link>
         <CardapioIfoodClient
           filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
           inicial={escolhida?.id ?? ''}
