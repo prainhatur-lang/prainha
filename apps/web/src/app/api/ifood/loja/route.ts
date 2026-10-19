@@ -7,6 +7,10 @@
 //   POST { filialId, acao: 'pausar' | 'retomar', minutos?, motivo?, id? }
 //   POST { filialId, acao: 'horarios', turnos: [{dia, inicio, duracao}] }
 //          → reescreve a semana no iFood (exige configuracao.editar)
+//   POST { filialId, acao: 'agendar', inicio, fim, motivo? } → pausa com
+//          início/fim escolhidos (BRT, 'YYYY-MM-DDTHH:MM'); encavalada = 409
+//   POST { filialId, acao: 'teste-auth' } → mesma leitura sem token, com token
+//          inválido e com o válido (prova de 401 pra homologação)
 //
 // Por que na nuvem e não só no vendas-local: Tabuará e Prainha Mar não rodam
 // vendas-local. Pra elas o app.prainhabar.com é o único caminho de API.
@@ -16,9 +20,9 @@ import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { configsIfoodTodas } from '@/lib/ifood-credenciais';
 import { podeUsuario } from '@/lib/permissoes-runtime';
-import { explicarErroIfood } from '@/lib/ifood-api';
+import { explicarErroIfood, ifoodSondaAuth } from '@/lib/ifood-api';
 import {
-  statusLoja, pausarLoja, retomarLoja, merchantsDoApp, detalhesLoja, horariosLoja, salvarHorarios, validarTurnos,
+  statusLoja, pausarLoja, agendarPausa, validarPausa, retomarLoja, merchantsDoApp, detalhesLoja, horariosLoja, salvarHorarios, validarTurnos,
 } from '@/lib/ifood-loja';
 
 export const dynamic = 'force-dynamic';
@@ -94,6 +98,7 @@ export async function POST(request: Request) {
 
   const corpo = (await request.json().catch(() => ({}))) as {
     filialId?: string; acao?: string; minutos?: number; motivo?: string; id?: string;
+    inicio?: string; fim?: string;
     turnos?: Array<{ dia?: string; inicio?: string; duracao?: number }>;
   };
   const filialId = String(corpo.filialId ?? '');
@@ -114,6 +119,16 @@ export async function POST(request: Request) {
     if (acao === 'pausar') {
       const r = await pausarLoja(c, c.merchantId, Number(corpo.minutos ?? 30), String(corpo.motivo ?? ''));
       return NextResponse.json({ ok: true, ...r });
+    }
+    if (acao === 'agendar') {
+      const invalida = validarPausa(String(corpo.inicio ?? ''), String(corpo.fim ?? ''));
+      if (invalida) return NextResponse.json({ error: invalida }, { status: 400 });
+      const r = await agendarPausa(c, c.merchantId, String(corpo.inicio ?? ''), String(corpo.fim ?? ''), String(corpo.motivo ?? ''));
+      return NextResponse.json({ ok: true, ...r });
+    }
+    if (acao === 'teste-auth') {
+      const casos = await ifoodSondaAuth(c, '/merchant/v1.0/merchants/' + encodeURIComponent(c.merchantId) + '/status');
+      return NextResponse.json({ ok: true, casos, em: new Date().toISOString() });
     }
     if (acao === 'retomar') {
       const r = await retomarLoja(c, c.merchantId, corpo.id ? String(corpo.id) : undefined);

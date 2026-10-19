@@ -37,6 +37,12 @@ export interface StatusLojaIfood {
   /** Por que não entra pedido: validações do iFood que não estão OK. */
   motivos: string[];
   pausas: PausaIfood[];
+  /** Estado cru do /status (OK, WARNING, CLOSED, ERROR) — a homologação
+   *  confere que a tela mostra o mesmo que a API. */
+  estado?: string;
+  /** TODAS as validações do /status, inclusive as OK (is-connected,
+   *  opening-hours, unavailabilities…). `motivos` segue só com as que barram. */
+  validacoes?: Array<{ codigo: string; estado: string; titulo: string; descricao: string }>;
 }
 
 function base(merchantId: string): string {
@@ -141,7 +147,7 @@ export async function statusLoja(c: CredIfood, merchantId: string): Promise<Stat
 
   type Linha = {
     operation?: string; available?: boolean; state?: string;
-    validations?: Array<{ state?: string; code?: string; message?: { title?: string } }>;
+    validations?: Array<{ state?: string; code?: string; message?: { title?: string; subtitle?: string; description?: string } }>;
     message?: { title?: string };
   };
   const lista = Array.isArray(st) ? (st as Linha[]) : null;
@@ -195,6 +201,13 @@ export async function statusLoja(c: CredIfood, merchantId: string): Promise<Stat
       .map((v) => v.message?.title || v.code || '')
       .filter(Boolean),
     pausas,
+    estado: linha?.state ?? '',
+    validacoes: (linha?.validations ?? []).map((v) => ({
+      codigo: v.code ?? '',
+      estado: v.state ?? '',
+      titulo: v.message?.title ?? '',
+      descricao: v.message?.subtitle || v.message?.description || '',
+    })),
   };
 }
 
@@ -221,6 +234,38 @@ export async function pausarLoja(
     },
   });
   return { minutos: min };
+}
+
+/** Pausa com início e fim escolhidos (agendada pra depois ou por cima de
+ *  outra). Recebe 'YYYY-MM-DDTHH:MM' já no fuso da loja (BRT) — vai assim pro
+ *  iFood, sem passar por Date/UTC (ver isoBrt). Pausa encavalada com outra
+ *  volta 409 InterruptionOverlap do iFood, e a tela explica. */
+export function validarPausa(inicio: string, fim: string): string | null {
+  const re = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/;
+  if (!re.test(inicio) || !re.test(fim)) return 'informe início e fim da pausa (data e hora)';
+  if (fim <= inicio) return 'o fim da pausa tem que ser depois do início';
+  if (fim <= isoBrt(new Date()).slice(0, 16)) return 'o fim da pausa já passou';
+  return null;
+}
+
+export async function agendarPausa(
+  c: CredIfood,
+  merchantId: string,
+  inicio: string,
+  fim: string,
+  motivo: string,
+): Promise<{ id: string; inicio: string; fim: string }> {
+  const invalida = validarPausa(inicio, fim);
+  if (invalida) throw new Error(invalida);
+  const r = (await ifoodApi(c, base(merchantId) + '/interruptions', {
+    metodo: 'POST',
+    corpo: {
+      description: String(motivo || 'Pausa pela loja').slice(0, 100),
+      start: inicio + ':00',
+      end: fim + ':00',
+    },
+  })) as { id?: string; start?: string; end?: string } | null;
+  return { id: String(r?.id ?? ''), inicio: String(r?.start ?? inicio), fim: String(r?.end ?? fim) };
 }
 
 /** Volta a receber. Sem `id` remove TODAS as pausas — é o que "voltar a

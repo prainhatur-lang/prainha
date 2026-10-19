@@ -184,6 +184,39 @@ export async function ifoodApi(c: CredIfood, caminho: string, o: OpcoesApi = {})
   }
 }
 
+/** Prova de autenticação pra homologação: a MESMA leitura feita sem token,
+ *  com token inválido e com o token de verdade. Sem retry e sem renovar —
+ *  o que interessa é o status que o iFood devolve em cada caso (401, 401, 200). */
+export async function ifoodSondaAuth(
+  c: CredIfood,
+  caminho: string,
+): Promise<Array<{ caso: string; status: number; mensagem: string }>> {
+  const casos: Array<[string, string | null]> = [
+    ['sem token', null],
+    ['token inválido', 'token-invalido-' + Date.now()],
+    ['token válido', await ifoodToken(c)],
+  ];
+  const out: Array<{ caso: string; status: number; mensagem: string }> = [];
+  for (const [caso, tk] of casos) {
+    try {
+      const r = await fetch(IFOOD_BASE + caminho, {
+        headers: tk ? { authorization: 'Bearer ' + tk } : {},
+        signal: AbortSignal.timeout(15000),
+      });
+      const txt = await r.text().catch(() => '');
+      const msg = r.ok
+        ? 'autorizado — o iFood respondeu os dados'
+        : r.status === 401
+          ? 'recusado: ' + (codigoDoErro(txt) || 'sem autorização') + ' (esperado)'
+          : 'HTTP ' + r.status + ': ' + txt.slice(0, 160);
+      out.push({ caso, status: r.status, mensagem: msg });
+    } catch (e) {
+      out.push({ caso, status: 0, mensagem: 'sem resposta: ' + (e as Error).message });
+    }
+  }
+  return out;
+}
+
 /** Erro do iFood → recado de tela + status HTTP da nossa rota.
  *
  *  A homologação cobra mensagem clara pra cada código (400/401/403/409/429/5xx)

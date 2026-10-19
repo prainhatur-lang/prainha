@@ -17,6 +17,22 @@ interface CasaIfood {
   detalhe: string;
   motivos: string[];
   pausas: Pausa[];
+  estado?: string;
+  validacoes?: Array<{ codigo: string; estado: string; titulo: string; descricao: string }>;
+}
+
+interface CasoAuth { caso: string; status: number; mensagem: string }
+
+/** 'YYYY-MM-DDTHH:MM' em BRT daqui a N minutos — valor do datetime-local. */
+function brtLocal(minutosAFrente: number): string {
+  const d = new Date(Date.now() + minutosAFrente * 60000);
+  return d.toLocaleString('sv-SE', { timeZone: 'America/Sao_Paulo' }).slice(0, 16).replace(' ', 'T');
+}
+
+function situacaoPausa(p: Pausa): 'ativa' | 'agendada' | 'encerrada' {
+  if (p.ativa) return 'ativa';
+  const ini = Date.parse(p.inicio);
+  return Number.isFinite(ini) && ini > Date.now() ? 'agendada' : 'encerrada';
 }
 
 interface Turno { id?: string; dia: string; inicio: string; duracao: number }
@@ -92,6 +108,59 @@ export function LojaIfoodClient({ podeAgir, podeHorario }: { podeAgir: boolean; 
     const t = setInterval(carregar, 30000);
     return () => clearInterval(t);
   }, [carregar]);
+
+  const [formPausa, setFormPausa] = useState<Record<string, { inicio: string; fim: string; motivo: string }>>({});
+  const [auth, setAuth] = useState<Record<string, { casos: CasoAuth[]; em: string } | { erro: string }>>({});
+  const [verValid, setVerValid] = useState<string | null>(null);
+
+  function formDe(filialId: string) {
+    return formPausa[filialId] ?? { inicio: brtLocal(60), fim: brtLocal(90), motivo: 'Pausa programada' };
+  }
+
+  async function agendar(filialId: string) {
+    const f = formDe(filialId);
+    setOcupada(filialId);
+    try {
+      const r = await fetch('/api/ifood/loja', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filialId, acao: 'agendar', ...f }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(d.error ?? `Erro ${r.status}`); return; }
+      await carregar();
+    } finally {
+      setOcupada(null);
+    }
+  }
+
+  async function removerPausa(filialId: string, p: Pausa) {
+    if (!confirm(`Remover a pausa "${p.descricao || 'sem descrição'}" (${hora(p.inicio)} → ${hora(p.fim)}) do iFood?`)) return;
+    setOcupada(filialId);
+    try {
+      const r = await fetch('/api/ifood/loja', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filialId, acao: 'retomar', id: p.id }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { alert(d.error ?? `Erro ${r.status}`); return; }
+      await carregar();
+    } finally {
+      setOcupada(null);
+    }
+  }
+
+  async function testarAuth(filialId: string) {
+    setAuth((a) => { const n = { ...a }; delete n[filialId]; return n; });
+    const r = await fetch('/api/ifood/loja', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filialId, acao: 'teste-auth' }),
+    });
+    const d = await r.json().catch(() => ({}));
+    setAuth((a) => ({ ...a, [filialId]: r.ok ? { casos: d.casos ?? [], em: d.em } : { erro: d.error ?? `Erro ${r.status}` } }));
+  }
 
   async function agir(filialId: string, acao: 'pausar' | 'retomar', minutos?: number) {
     const casa = casas?.find((c) => c.filialId === filialId);
@@ -238,6 +307,87 @@ export function LojaIfoodClient({ podeAgir, podeHorario }: { podeAgir: boolean; 
                     </button>
                   ))}
                 </>
+              )}
+            </div>
+          )}
+
+          {c.sabe && (c.validacoes?.length ?? 0) > 0 && (
+            <div className="mt-2">
+              <button onClick={() => setVerValid(verValid === c.filialId ? null : c.filialId)} className="text-xs text-slate-500 underline">
+                {verValid === c.filialId ? 'esconder' : 'ver'} as validações do iFood{c.estado ? ` (estado ${c.estado})` : ''}
+              </button>
+              {verValid === c.filialId && (
+                <ul className="mt-1 space-y-0.5 text-xs">
+                  {c.validacoes!.map((v, i) => (
+                    <li key={i} className="text-slate-600">
+                      <b className={v.estado === 'OK' ? 'text-emerald-700' : v.estado === 'WARNING' ? 'text-amber-700' : 'text-rose-700'}>{v.estado || '—'}</b>
+                      {' '}<code>{v.codigo}</code>{v.titulo ? ` — ${v.titulo}` : ''}{v.descricao ? ` · ${v.descricao}` : ''}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {c.sabe && podeAgir && (
+            <div className="mt-3 rounded-lg border border-slate-200 p-3 text-sm">
+              <p className="font-semibold text-slate-800">Pausas no iFood</p>
+              {c.pausas.length === 0 && <p className="mt-1 text-xs text-slate-500">nenhuma pausa cadastrada</p>}
+              {c.pausas.length > 0 && (
+                <ul className="mt-1 space-y-1">
+                  {c.pausas.map((p) => {
+                    const sit = situacaoPausa(p);
+                    return (
+                      <li key={p.id} className="flex flex-wrap items-center gap-2 text-slate-700">
+                        <span className={`rounded px-1.5 py-0.5 text-xs font-semibold ${sit === 'ativa' ? 'bg-amber-100 text-amber-800' : sit === 'agendada' ? 'bg-sky-100 text-sky-800' : 'bg-slate-100 text-slate-500'}`}>{sit}</span>
+                        <span>{hora(p.inicio)} → {hora(p.fim)}</span>
+                        {p.descricao && <span className="text-slate-500">— {p.descricao}</span>}
+                        <button onClick={() => removerPausa(c.filialId, p)} disabled={ocupada === c.filialId}
+                          className="text-xs text-rose-700 underline disabled:opacity-40">remover</button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              <div className="mt-2 flex flex-wrap items-end gap-2">
+                <label className="text-xs text-slate-500">De
+                  <input type="datetime-local" value={formDe(c.filialId).inicio}
+                    onChange={(e) => setFormPausa((x) => ({ ...x, [c.filialId]: { ...formDe(c.filialId), inicio: e.target.value } }))}
+                    className="block rounded-md border border-slate-300 px-2 py-1 text-sm" />
+                </label>
+                <label className="text-xs text-slate-500">Até
+                  <input type="datetime-local" value={formDe(c.filialId).fim}
+                    onChange={(e) => setFormPausa((x) => ({ ...x, [c.filialId]: { ...formDe(c.filialId), fim: e.target.value } }))}
+                    className="block rounded-md border border-slate-300 px-2 py-1 text-sm" />
+                </label>
+                <label className="text-xs text-slate-500">Motivo
+                  <input value={formDe(c.filialId).motivo} maxLength={100}
+                    onChange={(e) => setFormPausa((x) => ({ ...x, [c.filialId]: { ...formDe(c.filialId), motivo: e.target.value } }))}
+                    className="block rounded-md border border-slate-300 px-2 py-1 text-sm" />
+                </label>
+                <button onClick={() => agendar(c.filialId)} disabled={ocupada === c.filialId}
+                  className="rounded-md border border-slate-300 px-2.5 py-1.5 text-sm text-slate-700 disabled:opacity-40">
+                  criar pausa
+                </button>
+              </div>
+              <p className="mt-1 text-xs text-slate-400">Horário de Aracaju. Pausa encavalada com outra o iFood recusa (conflito).</p>
+            </div>
+          )}
+
+          {c.merchantId && podeAgir && (
+            <div className="mt-2 text-xs">
+              <button onClick={() => testarAuth(c.filialId)} className="text-slate-500 underline">testar autenticação</button>
+              {auth[c.filialId] && 'erro' in auth[c.filialId] && <p className="text-rose-700">{(auth[c.filialId] as { erro: string }).erro}</p>}
+              {auth[c.filialId] && 'casos' in auth[c.filialId] && (
+                <ul className="mt-1 space-y-0.5">
+                  {(auth[c.filialId] as { casos: CasoAuth[]; em: string }).casos.map((k) => (
+                    <li key={k.caso} className="text-slate-600">
+                      <b className={k.status === 200 ? 'text-emerald-700' : k.status === 401 ? 'text-amber-700' : 'text-rose-700'}>HTTP {k.status || '—'}</b>
+                      {' '}{k.caso}: {k.mensagem}
+                    </li>
+                  ))}
+                  <li className="text-slate-400">GET /merchants/{'{id}'}/status · {hora((auth[c.filialId] as { em: string }).em)}</li>
+                </ul>
               )}
             </div>
           )}
