@@ -346,8 +346,12 @@ function CertificadoEb(props: { certificado: { cn: string | null; validadeFim: s
       </div>
       {aberto && (
         <div className="mt-3 flex flex-wrap items-end gap-2">
-          <input type="file" accept=".pfx,.p12" onChange={(e) => setArquivo(e.target.files?.[0] ?? null)} className="text-xs" />
+          <label className="cursor-pointer rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-50">
+            {arquivo ? `📄 ${arquivo.name}` : '📁 Escolher o arquivo .pfx'}
+            <input type="file" onChange={(e) => setArquivo(e.target.files?.[0] ?? null)} className="sr-only" />
+          </label>
           <input type="password" value={senha} onChange={(e) => setSenha(e.target.value)} placeholder="senha do certificado"
+            autoComplete="new-password" name="senha-certificado-eb" data-lpignore="true"
             className="rounded-md border border-slate-300 px-2 py-1 text-xs" />
           <button onClick={subir} disabled={salvando || !arquivo || !senha}
             className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50">
