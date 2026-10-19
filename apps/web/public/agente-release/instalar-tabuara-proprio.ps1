@@ -118,10 +118,21 @@ else {
     try {
       [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
       $ProgressPreference = 'SilentlyContinue'
-      Invoke-WebRequest 'https://get.enterprisedb.com/postgresql/postgresql-16.10-1-windows-x64.exe' -OutFile $exe -UseBasicParsing
+      # internet da loja lenta/instavel (19/10: Invoke-WebRequest estourou o tempo): curl.exe do
+      # Windows continua de onde parou (-C -); ate 20 tentativas, o arquivo parcial fica no disco
+      $pgUrl = 'https://get.enterprisedb.com/postgresql/postgresql-16.10-1-windows-x64.exe'
+      $pgTam = 357432712
+      $curl = Join-Path $env:WINDIR 'System32\curl.exe'
+      for ($t = 1; $t -le 20; $t++) {
+        if ((Test-Path $exe) -and (Get-Item $exe).Length -ge $pgTam) { break }
+        if (Test-Path $curl) { & $curl -L -C - --retry 5 --retry-delay 5 --connect-timeout 30 -sS -o $exe $pgUrl }
+        else { Invoke-WebRequest $pgUrl -OutFile $exe -UseBasicParsing -TimeoutSec 3600 }
+        $mb = if (Test-Path $exe) { [math]::Round((Get-Item $exe).Length/1MB) } else { 0 }
+        Write-Host "  baixado: $mb de 341 MB (tentativa $t)"
+      }
+      if (-not ((Test-Path $exe) -and (Get-Item $exe).Length -ge $pgTam)) { throw 'download incompleto (internet caindo) - rode de novo que ele continua de onde parou' }
       Write-Host '  instalando o PostgreSQL...'
       Start-Process $exe -ArgumentList $pgArgs -Wait
-      Remove-Item $exe -Force -ErrorAction SilentlyContinue
     } catch { Erro "falha ao baixar/instalar o PostgreSQL: $_" }
     $psql = AchaPsql
   }
