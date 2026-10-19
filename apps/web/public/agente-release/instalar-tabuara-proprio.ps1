@@ -79,32 +79,54 @@ else {
 
 # --- 2. PostgreSQL ----------------------------------------------------------
 Passo '2/10  PostgreSQL'
-$psql = Get-ChildItem 'C:\Program Files\PostgreSQL\*\bin\psql.exe' -ErrorAction SilentlyContinue |
-        Sort-Object FullName -Descending | Select-Object -First 1
+# Acha o psql em qualquer disco (C:\Program Files ou X:\PostgreSQL de instalacao em outro disco)
+function AchaPsql {
+  $l = @(Get-ChildItem 'C:\Program Files\PostgreSQL\*\bin\psql.exe' -ErrorAction SilentlyContinue)
+  foreach ($d in (Get-PSDrive -PSProvider FileSystem)) {
+    $l += @(Get-ChildItem "$($d.Root)PostgreSQL\*\bin\psql.exe" -ErrorAction SilentlyContinue)
+  }
+  $l | Sort-Object FullName -Descending | Select-Object -First 1
+}
+# C: com pouco espaco (PC de uso geral, 18/10 o Telao estava com 0 GB): banco vai pro disco com mais folga
+$livreC = [math]::Round((Get-PSDrive C).Free/1GB,1)
+$pgDisco = $null
+if ($livreC -lt 20) {
+  $pgDisco = Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Name -ne 'C' -and $_.Free -gt 20GB -and (Test-Path $_.Root) } |
+             Sort-Object Free -Descending | Select-Object -First 1
+}
+$psql = AchaPsql
 if ($psql) { Ok "já instalado ($($psql.FullName))" }
 else {
-  Write-Host '  instalando (demora — é o passo mais longo)...'
-  winget install --id PostgreSQL.PostgreSQL.16 -e --accept-source-agreements --accept-package-agreements --silent `
-    --override "--mode unattended --unattendedmodeui none --superpassword $PGSENHA --serverport 5432" | Out-Null
-  Start-Sleep 20
-  $psql = Get-ChildItem 'C:\Program Files\PostgreSQL\*\bin\psql.exe' -ErrorAction SilentlyContinue |
-          Sort-Object FullName -Descending | Select-Object -First 1
+  if ($pgDisco) {
+    $pgPrefix = "$($pgDisco.Name):\PostgreSQL\16"
+    Aviso "C: so tem $livreC GB livres: o PostgreSQL e o banco vao pro disco $($pgDisco.Name): ($pgPrefix)"
+  } else {
+    if ($livreC -lt 3) { Erro "C: so tem $livreC GB livres e nao achei outro disco com 20 GB. Libere espaco e rode de novo."; return }
+    Write-Host '  instalando (demora — é o passo mais longo)...'
+    winget install --id PostgreSQL.PostgreSQL.16 -e --accept-source-agreements --accept-package-agreements --silent `
+      --override "--mode unattended --unattendedmodeui none --superpassword $PGSENHA --serverport 5432" | Out-Null
+    Start-Sleep 20
+    $psql = AchaPsql
+  }
   if (-not $psql) {
-    # winget ausente/quebrado: baixa o instalador oficial (EDB, ~350 MB) e roda silencioso
-    Write-Host '  winget nao instalou; baixando o instalador oficial (~350 MB, alguns minutos)...'
-    $exe = Join-Path $env:TEMP 'postgresql-16-x64.exe'
+    # winget ausente/quebrado ou outro disco: baixa o instalador oficial (EDB, ~350 MB) e roda silencioso
+    Write-Host '  baixando o instalador oficial do PostgreSQL (~350 MB, alguns minutos)...'
+    $baixa = if ($pgDisco) { "$($pgDisco.Name):\" } else { $env:TEMP }
+    $exe = Join-Path $baixa 'postgresql-16-x64.exe'
+    $pgArgs = "--mode unattended --unattendedmodeui none --superpassword $PGSENHA --serverport 5432 --disable-components stackbuilder"
+    if ($pgDisco) { $pgArgs += " --prefix `"$pgPrefix`" --datadir `"$pgPrefix\data`"" }
     try {
       [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
       $ProgressPreference = 'SilentlyContinue'
       Invoke-WebRequest 'https://get.enterprisedb.com/postgresql/postgresql-16.10-1-windows-x64.exe' -OutFile $exe -UseBasicParsing
       Write-Host '  instalando o PostgreSQL...'
-      Start-Process $exe -ArgumentList "--mode unattended --unattendedmodeui none --superpassword $PGSENHA --serverport 5432 --disable-components stackbuilder" -Wait
+      Start-Process $exe -ArgumentList $pgArgs -Wait
+      Remove-Item $exe -Force -ErrorAction SilentlyContinue
     } catch { Erro "falha ao baixar/instalar o PostgreSQL: $_" }
-    $psql = Get-ChildItem 'C:\Program Files\PostgreSQL\*\bin\psql.exe' -ErrorAction SilentlyContinue |
-            Sort-Object FullName -Descending | Select-Object -First 1
+    $psql = AchaPsql
   }
   if (-not $psql) { Erro 'PostgreSQL nao instalou. Mande um print deste erro.'; return }
-  Ok 'instalado'
+  Ok "instalado ($($psql.FullName))"
 }
 $svc = Get-Service | Where-Object { $_.Name -like 'postgresql*' } | Select-Object -First 1
 if ($svc -and $svc.Status -ne 'Running') { Start-Service $svc.Name; Start-Sleep 5 }
@@ -137,7 +159,7 @@ if (-not $senhaOk) {
   # aceita conexao sem senha, define a senha nova e volta ao normal. Nenhum
   # dado e' tocado; o pg_hba.conf original fica salvo ao lado como .bak-prainha.
   Aviso 'Senha do postgres desconhecida — vou definir uma nova (10 segundos).'
-  $hbaFile = (Get-ChildItem 'C:\Program Files\PostgreSQL\*\data\pg_hba.conf' -ErrorAction SilentlyContinue |
+  $hbaFile = (Get-ChildItem (Join-Path (Split-Path (Split-Path $psql.FullName)) 'data\pg_hba.conf'),'C:\Program Files\PostgreSQL\*\data\pg_hba.conf' -ErrorAction SilentlyContinue |
               Sort-Object FullName -Descending | Select-Object -First 1)
   if (-not $hbaFile) { Erro 'nao achei o pg_hba.conf'; return }
   $hba = $hbaFile.FullName
