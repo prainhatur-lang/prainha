@@ -6,15 +6,18 @@
 //   reabrir  apaga a quinzena paga — só se a seguinte ainda não foi paga,
 //            senão o acerto da seguinte perde a base; o desconto da anterior
 //            volta a ser lido ao vivo
-// Não mexe em folha, ponto nem contas a pagar.
+// Não mexe em folha nem ponto. Desde 19/10/2026 "pagar" também gera uma conta
+// a pagar por pessoa (origem FOLHA, vencimento = 1º dia da quinzena) — é com
+// ela que o comprovante da lotérica casa e dá baixa; "reabrir" apaga as que
+// ainda estão em aberto e recusa se alguma já foi baixada.
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { negarSemPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
-import { montarQuinzenaVt, quinzenaAnterior, quinzenaDe, quinzenaSeguinte, valorPagar } from '@/lib/rh/vale-transporte';
+import { montarQuinzenaVt, nomeQuinzena, quinzenaAnterior, quinzenaDe, quinzenaSeguinte, valorPagar } from '@/lib/rh/vale-transporte';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -101,7 +104,45 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'a quinzena seguinte já foi paga; reabra ela primeiro' }, { status: 409 });
     }
     const ant = quinzenaAnterior(q);
+    const contas = (
+      await db
+        .select({ contaId: schema.vtQuinzenaItem.contaPagarId })
+        .from(schema.vtQuinzenaItem)
+        .innerJoin(schema.vtQuinzena, eq(schema.vtQuinzena.id, schema.vtQuinzenaItem.quinzenaId))
+        .where(
+          and(
+            eq(schema.vtQuinzena.filialId, d.filialId),
+            eq(schema.vtQuinzena.dataInicio, q.inicio),
+            isNotNull(schema.vtQuinzenaItem.contaPagarId),
+          ),
+        )
+    ).map((r) => r.contaId!);
+    if (contas.length) {
+      const [baixada] = await db
+        .select({ id: schema.contaPagar.id })
+        .from(schema.contaPagar)
+        .where(
+          and(
+            inArray(schema.contaPagar.id, contas),
+            isNull(schema.contaPagar.dataDelete),
+            isNotNull(schema.contaPagar.dataPagamento),
+          ),
+        )
+        .limit(1);
+      if (baixada) {
+        return NextResponse.json(
+          { error: 'já tem conta de VT dessa quinzena baixada; desfaça a baixa antes de reabrir' },
+          { status: 409 },
+        );
+      }
+    }
     await db.transaction(async (tx) => {
+      if (contas.length) {
+        await tx
+          .update(schema.contaPagar)
+          .set({ dataDelete: new Date() })
+          .where(and(inArray(schema.contaPagar.id, contas), isNull(schema.contaPagar.dataPagamento)));
+      }
       await tx
         .delete(schema.vtQuinzena)
         .where(and(eq(schema.vtQuinzena.filialId, d.filialId), eq(schema.vtQuinzena.dataInicio, q.inicio)));
@@ -145,6 +186,21 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'ninguém com VT cadastrado nessa casa' }, { status: 400 });
   }
 
+  // Conta a pagar por pessoa: quem recebe é o fornecedor ligado ao funcionário.
+  const pessoas = await db
+    .select({ id: schema.funcionario.id, nome: schema.funcionario.nome, fornecedorId: schema.funcionario.fornecedorId })
+    .from(schema.funcionario)
+    .where(inArray(schema.funcionario.id, itens.map((i) => i.funcionarioId)));
+  const pessoaDe = new Map(pessoas.map((x) => [x.id, x]));
+  const [cfg] = await db
+    .select({ categoriaId: schema.folhaConfig.categoriaTransporteId })
+    .from(schema.folhaConfig)
+    .where(eq(schema.folhaConfig.filialId, d.filialId))
+    .limit(1);
+  const semConta = itens
+    .filter((i) => Number(i.valorPago) > 0 && !pessoaDe.get(i.funcionarioId)?.fornecedorId)
+    .map((i) => pessoaDe.get(i.funcionarioId)?.nome ?? i.funcionarioId);
+
   const total = await db.transaction(async (tx) => {
     const [criada] = await tx
       .insert(schema.vtQuinzena)
@@ -152,7 +208,33 @@ export async function POST(req: Request) {
       .onConflictDoNothing()
       .returning({ id: schema.vtQuinzena.id });
     if (!criada) return null;
-    await tx.insert(schema.vtQuinzenaItem).values(itens.map((i) => ({ ...i, quinzenaId: criada.id })));
+    const contaDe = new Map<string, string>();
+    for (const i of itens) {
+      const pessoa = pessoaDe.get(i.funcionarioId);
+      if (Number(i.valorPago) <= 0 || !pessoa?.fornecedorId) continue;
+      const [conta] = await tx
+        .insert(schema.contaPagar)
+        .values({
+          filialId: d.filialId,
+          criadoPor: user.id,
+          criadoEm: new Date(),
+          codigoExterno: null,
+          fornecedorId: pessoa.fornecedorId,
+          categoriaId: cfg?.categoriaId ?? null,
+          dataVencimento: q.inicio,
+          valor: i.valorPago,
+          descricao: `Vale transporte ${nomeQuinzena(q)} — ${pessoa.nome}`,
+          observacao: `${i.diasPrevistos} dia(s) × R$ ${i.valorDia}${Number(i.acertoAnterior) ? ` + acerto ${i.acertoAnterior}` : ''} · ${i.forma === 'dinheiro' ? 'ajuda de custo' : 'VT na folha'}`,
+          competencia: q.inicio.slice(0, 7),
+          origem: 'FOLHA',
+          folhaSemanaId: null,
+        })
+        .returning({ id: schema.contaPagar.id });
+      contaDe.set(i.funcionarioId, conta!.id);
+    }
+    await tx
+      .insert(schema.vtQuinzenaItem)
+      .values(itens.map((i) => ({ ...i, quinzenaId: criada.id, contaPagarId: contaDe.get(i.funcionarioId) ?? null })));
     // A anterior já terminou: o desconto de 6% dela fica gravado.
     const [qAnt] = await tx
       .select({ id: schema.vtQuinzena.id })
@@ -180,5 +262,5 @@ export async function POST(req: Request) {
     return itens.reduce((s, i) => s + Number(i.valorPago), 0);
   });
   if (total === null) return NextResponse.json({ error: 'quinzena já está paga' }, { status: 409 });
-  return NextResponse.json({ ok: true, pessoas: itens.length, total });
+  return NextResponse.json({ ok: true, pessoas: itens.length, total, semConta });
 }

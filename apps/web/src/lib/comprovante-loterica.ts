@@ -307,7 +307,7 @@ export async function casarComprovante(
     .map((c) => ({ ...c, liquido: Number(c.liquido), pagaNoDia: c.pagaEm !== null, parec: parecencaNome(lido.nome, c.pessoa) }))
     .filter((c) => c.parec >= PARECENCA_MIN && !presas.has(c.id));
   if (daPessoa.length === 0) {
-    return { ok: false, motivo: `não achei conta de 10% em aberto pra "${lido.nome}"` };
+    return { ok: false, motivo: `não achei conta de 10% (ou de VT) em aberto pra "${lido.nome}"` };
   }
 
   // Opções: cada conta sozinha + a soma das abertas da pessoa na mesma folha.

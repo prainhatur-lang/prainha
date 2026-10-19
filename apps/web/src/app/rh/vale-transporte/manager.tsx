@@ -93,6 +93,9 @@ export function ValeTransporteManager(p: Props) {
         setErro(j.error ?? `erro ${r.status}`);
         return false;
       }
+      if (Array.isArray(j.semConta) && j.semConta.length) {
+        setErro(`Quinzena gravada, mas sem conta a pagar (sem cadastro de fornecedor): ${j.semConta.join(', ')}`);
+      }
       router.refresh();
       return true;
     } finally {
@@ -122,7 +125,7 @@ export function ValeTransporteManager(p: Props) {
   }
 
   async function pagar() {
-    if (!confirm(`Gravar a quinzena ${p.nomeQuinzena} como paga? Total ${brl(total)} para ${comVt.length} pessoa(s).`)) return;
+    if (!confirm(`Gravar a quinzena ${p.nomeQuinzena} como paga? Total ${brl(total)} para ${comVt.length} pessoa(s). Gera uma conta a pagar por pessoa (os comprovantes da lotérica casam com ela).`)) return;
     await enviar({
       acao: 'pagar',
       filialId: p.filialId,
@@ -132,7 +135,7 @@ export function ValeTransporteManager(p: Props) {
   }
 
   async function reabrir() {
-    if (!confirm(`Reabrir a quinzena ${p.nomeQuinzena}? Os valores gravados são apagados e recalculados.`)) return;
+    if (!confirm(`Reabrir a quinzena ${p.nomeQuinzena}? Os valores gravados são apagados e recalculados, e as contas a pagar do VT ainda em aberto são apagadas.`)) return;
     await enviar({ acao: 'reabrir', filialId: p.filialId, inicio: p.quinzena.inicio });
   }
 

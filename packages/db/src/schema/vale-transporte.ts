@@ -14,6 +14,7 @@ import { sql } from 'drizzle-orm';
 
 import { filial } from './tenant';
 import { funcionario } from './rh';
+import { contaPagar } from './financeiro';
 
 /** Quem recebe VT e quanto custa o dia (ida + volta, todas as passagens). */
 export const vtPessoa = pgTable('vt_pessoa', {
@@ -71,6 +72,9 @@ export const vtQuinzenaItem = pgTable(
      *  NULL = ainda ao vivo. */
     descontoBase: numeric('desconto_base', { precision: 10, scale: 2 }),
     descontoValor: numeric('desconto_valor', { precision: 10, scale: 2 }),
+    /** Conta a pagar (origem FOLHA, sem folha semanal) gerada ao gravar a
+     *  quinzena — é com ela que o comprovante da lotérica casa (19/10/2026). */
+    contaPagarId: uuid('conta_pagar_id').references(() => contaPagar.id, { onDelete: 'set null' }),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
