@@ -191,8 +191,10 @@ export default async function NotaDetalhePage(props: {
     .where(and(eq(schema.contaPagar.notaCompraId, id), isNull(schema.contaPagar.dataDelete)))
     .orderBy(asc(schema.contaPagar.dataVencimento));
 
-  // Fornecedores da filial (pra vincular caso a nota nao tenha)
-  const fornecedoresDaFilial = nota.fornecedorId
+  // Fornecedores da filial (pra vincular caso a nota nao tenha, ou pra TROCAR
+  // um vínculo errado enquanto a nota ainda não gerou conta a pagar)
+  const podeEscolherFornecedor = !nota.fornecedorId || contasPagar.length === 0;
+  const fornecedoresDaFilial = !podeEscolherFornecedor
     ? []
     : await db
         .select({
@@ -206,11 +208,20 @@ export default async function NotaDetalhePage(props: {
         .limit(2000);
   // Cadastro único: empresas que só existem nas outras casas também aparecem;
   // vincular uma delas cria a linha desta casa na hora (rota /fornecedor).
-  if (!nota.fornecedorId) {
+  if (podeEscolherFornecedor) {
     for (const f of await fornecedoresParaLancar(nota.filialId)) {
       if (f.casa) fornecedoresDaFilial.push({ id: f.id, nome: `${f.nome ?? '(sem nome)'} · ${f.casa}`, cnpjOuCpf: f.cnpjOuCpf });
     }
   }
+
+  // Nome do fornecedor já vinculado (card "Fornecedor vinculado · Trocar")
+  const [fornecedorAtual] = nota.fornecedorId
+    ? await db
+        .select({ nome: schema.fornecedor.nome, cnpjOuCpf: schema.fornecedor.cnpjOuCpf })
+        .from(schema.fornecedor)
+        .where(eq(schema.fornecedor.id, nota.fornecedorId))
+        .limit(1)
+    : [];
 
   // Pedido de compra vinculado a esta NF (auto-match no recebimento ou manual)
   const pedidoVinculado = await db
@@ -593,6 +604,43 @@ export default async function NotaDetalhePage(props: {
               emitUf={nota.emitUf}
               emitCidade={nota.emitCidade}
             />
+          </div>
+        )}
+
+        {/* Fornecedor já vinculado: mostra quem é e deixa trocar enquanto a
+            nota não gerou conta a pagar (vínculo errado no clique). */}
+        {nota.fornecedorId && (
+          <div className="mt-4 flex items-center justify-between gap-4 rounded-xl border border-slate-200 bg-white p-3">
+            <p className="min-w-0 text-xs text-slate-600">
+              Fornecedor vinculado:{' '}
+              <span className="font-medium text-slate-900">{fornecedorAtual?.nome ?? '(sem nome)'}</span>
+              {fornecedorAtual?.cnpjOuCpf && (
+                <span className="ml-1 font-mono text-[10px] text-slate-500">{maskCnpj(fornecedorAtual.cnpjOuCpf)}</span>
+              )}
+              {!podeEscolherFornecedor && (
+                <span className="ml-2 text-[11px] text-slate-400">
+                  (já tem conta a pagar — pra trocar, exclua as parcelas antes)
+                </span>
+              )}
+            </p>
+            {podeEscolherFornecedor && (
+              <VincularFornecedorBtn
+                notaId={id}
+                filialId={nota.filialId}
+                fornecedoresDisponiveis={fornecedoresDaFilial
+                  .filter((f) => f.id !== nota.fornecedorId)
+                  .map((f) => ({
+                    id: f.id,
+                    nome: f.nome ?? '(sem nome)',
+                    cnpjOuCpf: f.cnpjOuCpf,
+                  }))}
+                emitCnpj={nota.emitCnpj}
+                emitNome={nota.emitNome}
+                emitUf={nota.emitUf}
+                emitCidade={nota.emitCidade}
+                trocar
+              />
+            )}
           </div>
         )}
 

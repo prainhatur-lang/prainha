@@ -8,7 +8,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { garantirFornecedorNaFilial } from '@/lib/fornecedor-unico';
 
 export const dynamic = 'force-dynamic';
@@ -41,7 +41,7 @@ export async function PATCH(
   }
 
   const [nota] = await db
-    .select({ id: schema.notaCompra.id, filialId: schema.notaCompra.filialId })
+    .select({ id: schema.notaCompra.id, filialId: schema.notaCompra.filialId, fornecedorId: schema.notaCompra.fornecedorId })
     .from(schema.notaCompra)
     .where(eq(schema.notaCompra.id, id))
     .limit(1);
@@ -58,6 +58,22 @@ export async function PATCH(
     )
     .limit(1);
   if (!link) return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
+
+  // Troca de fornecedor (nota já vinculada): só enquanto não gerou conta a
+  // pagar — a conta guarda o fornecedor dela e ficaria desencontrada.
+  if (nota.fornecedorId && nota.fornecedorId !== parsed.data.fornecedorId) {
+    const [conta] = await db
+      .select({ id: schema.contaPagar.id })
+      .from(schema.contaPagar)
+      .where(and(eq(schema.contaPagar.notaCompraId, id), isNull(schema.contaPagar.dataDelete)))
+      .limit(1);
+    if (conta) {
+      return NextResponse.json(
+        { error: 'Esta nota já tem conta a pagar. Exclua as parcelas antes de trocar o fornecedor.' },
+        { status: 409 },
+      );
+    }
+  }
 
   // Garante que o fornecedor pertence a mesma filial
   const [forn] = await db

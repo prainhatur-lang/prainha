@@ -20,6 +20,7 @@ export function VincularFornecedorBtn({
   emitNome,
   emitUf,
   emitCidade,
+  trocar = false,
 }: {
   notaId: string;
   filialId: string;
@@ -28,6 +29,8 @@ export function VincularFornecedorBtn({
   emitNome: string | null;
   emitUf: string | null;
   emitCidade: string | null;
+  /** Nota já tem fornecedor: botão discreto "Trocar fornecedor". */
+  trocar?: boolean;
 }) {
   const router = useRouter();
   const [aberto, setAberto] = useState(false);
@@ -120,13 +123,23 @@ export function VincularFornecedorBtn({
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setAberto(true)}
-        className="rounded-lg border border-amber-700 bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700"
-      >
-        + Vincular fornecedor
-      </button>
+      {trocar ? (
+        <button
+          type="button"
+          onClick={() => setAberto(true)}
+          className="shrink-0 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+        >
+          ⇄ Trocar fornecedor
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setAberto(true)}
+          className="rounded-lg border border-amber-700 bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-700"
+        >
+          + Vincular fornecedor
+        </button>
+      )}
 
       {aberto && (
         <div
@@ -138,7 +151,7 @@ export function VincularFornecedorBtn({
             className="w-full max-w-lg space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-lg"
           >
             <div>
-              <h2 className="text-sm font-semibold text-slate-900">Vincular fornecedor</h2>
+              <h2 className="text-sm font-semibold text-slate-900">{trocar ? 'Trocar fornecedor' : 'Vincular fornecedor'}</h2>
               <p className="mt-0.5 text-xs text-slate-500">
                 Emitente da NFe:{' '}
                 <span className="font-medium text-slate-700">{emitNome ?? '—'}</span>
