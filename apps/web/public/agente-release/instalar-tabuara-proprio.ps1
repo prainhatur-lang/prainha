@@ -89,7 +89,21 @@ else {
   Start-Sleep 20
   $psql = Get-ChildItem 'C:\Program Files\PostgreSQL\*\bin\psql.exe' -ErrorAction SilentlyContinue |
           Sort-Object FullName -Descending | Select-Object -First 1
-  if (-not $psql) { Erro 'PostgreSQL não instalou. Instale manualmente e rode de novo.'; return }
+  if (-not $psql) {
+    # winget ausente/quebrado: baixa o instalador oficial (EDB, ~350 MB) e roda silencioso
+    Write-Host '  winget nao instalou; baixando o instalador oficial (~350 MB, alguns minutos)...'
+    $exe = Join-Path $env:TEMP 'postgresql-16-x64.exe'
+    try {
+      [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+      $ProgressPreference = 'SilentlyContinue'
+      Invoke-WebRequest 'https://get.enterprisedb.com/postgresql/postgresql-16.10-1-windows-x64.exe' -OutFile $exe -UseBasicParsing
+      Write-Host '  instalando o PostgreSQL...'
+      Start-Process $exe -ArgumentList "--mode unattended --unattendedmodeui none --superpassword $PGSENHA --serverport 5432 --disable-components stackbuilder" -Wait
+    } catch { Erro "falha ao baixar/instalar o PostgreSQL: $_" }
+    $psql = Get-ChildItem 'C:\Program Files\PostgreSQL\*\bin\psql.exe' -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1
+  }
+  if (-not $psql) { Erro 'PostgreSQL nao instalou. Mande um print deste erro.'; return }
   Ok 'instalado'
 }
 $svc = Get-Service | Where-Object { $_.Name -like 'postgresql*' } | Select-Object -First 1
@@ -334,6 +348,16 @@ else {
     Write-Host '  instalando Tailscale...'
     winget install --id Tailscale.Tailscale -e --accept-source-agreements --accept-package-agreements --silent | Out-Null
     Start-Sleep 10
+    if (-not (Test-Path $ts)) {
+      Write-Host '  winget nao instalou; baixando o MSI do Tailscale...'
+      $tsmsi = Join-Path $env:TEMP 'tailscale-setup.msi'
+      try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Invoke-WebRequest 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi' -OutFile $tsmsi -UseBasicParsing
+        Start-Process msiexec.exe -ArgumentList "/i `"$tsmsi`" /qn /norestart" -Wait
+        Start-Sleep 5
+      } catch { Aviso "falha ao baixar o Tailscale: $_" }
+    }
   }
   if (-not (Test-Path $ts)) { Aviso 'Tailscale não instalou — instale em tailscale.com/download e rode de novo.' }
   else {
