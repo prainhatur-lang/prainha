@@ -1,6 +1,7 @@
 // Faturas de mão de obra da E.B. Serviços pra cada casa (19/10/2026).
 // Valor = folha da E.B. na casa (folha do contador) + percentual de lucro;
-// ISS retido pela casa. Conta em lib/eb/faturas.ts. NFS-e entra na etapa 3.
+// ISS retido pela casa. Conta em lib/eb/faturas.ts. NFS-e Nacional emitida
+// daqui (lib/nfse/emitir-eb.ts) com o A1 da E.B. (/api/eb/certificado).
 
 import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
@@ -73,6 +74,9 @@ export default async function FaturasEbPage(props: { searchParams: Promise<{ com
             vencimento: fat.vencimento,
             discriminacao: fat.discriminacao,
             lancada: !!fat.contaPagarId,
+            nfseChave: fat.nfseChave,
+            nfseNumero: fat.nfseNumero,
+            nfseErro: fat.nfseErro,
             recebidoEm: fat.recebidoEm,
             valorRecebido: fat.valorRecebido === null ? null : Number(fat.valorRecebido),
           },
@@ -80,6 +84,14 @@ export default async function FaturasEbPage(props: { searchParams: Promise<{ com
       })
       .filter((l): l is LinhaFatura => l !== null);
   }
+
+  const [cert] = cfg
+    ? await db
+        .select({ cn: schema.certificadoFilial.cn, validadeFim: schema.certificadoFilial.validadeFim })
+        .from(schema.certificadoFilial)
+        .where(and(eq(schema.certificadoFilial.filialId, cfg.filialId), eq(schema.certificadoFilial.ativo, true)))
+        .limit(1)
+    : [];
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -90,7 +102,8 @@ export default async function FaturasEbPage(props: { searchParams: Promise<{ com
           <h1 className="mt-1 text-xl font-semibold text-slate-900">Faturas da E.B. Serviços</h1>
           <p className="mt-1 text-sm text-slate-500">
             Uma fatura de mão de obra por casa por mês: custo da folha da E.B. naquela casa (folha do contador) mais o
-            percentual de lucro. A casa retém o ISS e paga à E.B. o resto. A emissão da NFS-e entra na próxima etapa.
+            percentual de lucro. A casa retém o ISS e paga à E.B. o resto. A NFS-e sai daqui pelo emissor nacional, com
+            o certificado A1 da E.B.
           </p>
         </div>
 
@@ -105,6 +118,7 @@ export default async function FaturasEbPage(props: { searchParams: Promise<{ com
             comp={comp}
             linhas={linhas}
             hoje={hojeBr()}
+            certificado={cert ? { cn: cert.cn, validadeFim: cert.validadeFim } : null}
           />
         )}
       </div>

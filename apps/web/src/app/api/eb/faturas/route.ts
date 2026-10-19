@@ -4,7 +4,7 @@
 //   lancar    lança na casa as duas contas a pagar: líquido pra E.B. e guia do ISS retido
 //   receber   marca a fatura como recebida pela E.B.
 //   cancelar  cancela a fatura (só sem conta lançada na casa)
-// A emissão da NFS-e entra depois (etapa 3).
+//   emitir    emite a NFS-e Nacional da fatura (lib/nfse/emitir-eb.ts)
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
@@ -20,6 +20,7 @@ import {
   nomeCompetencia,
   preverFaturas,
 } from '@/lib/eb/faturas';
+import { emitirNfseFatura } from '@/lib/nfse/emitir-eb';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -39,6 +40,7 @@ const Body = z.discriminatedUnion('acao', [
   z.object({ acao: z.literal('lancar'), faturaId: z.string().uuid(), vencimentoIss: Dia }),
   z.object({ acao: z.literal('receber'), faturaId: z.string().uuid(), data: Dia, valor: z.number().positive() }),
   z.object({ acao: z.literal('cancelar'), faturaId: z.string().uuid() }),
+  z.object({ acao: z.literal('emitir'), faturaId: z.string().uuid() }),
 ]);
 
 export async function POST(req: Request) {
@@ -198,6 +200,15 @@ export async function POST(req: Request) {
       .set({ recebidoEm: body.data, valorRecebido: String(body.valor), atualizadoEm: new Date() })
       .where(eq(schema.faturaServico.id, fat.id));
     return NextResponse.json({ ok: true });
+  }
+
+  if (body.acao === 'emitir') {
+    if (Number(fat.aliquotaIss) <= 0) {
+      return NextResponse.json({ error: 'Preencha a alíquota do ISS, salve a regra e gere a fatura de novo.' }, { status: 400 });
+    }
+    const r = await emitirNfseFatura(fat.id);
+    if (!r.ok) return NextResponse.json({ error: r.erro }, { status: 422 });
+    return NextResponse.json(r);
   }
 
   // cancelar

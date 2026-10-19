@@ -25,6 +25,22 @@ export const MUNICIPIO_ISS: Record<string, string> = {
   'e899dae2-38bf-4f3f-9149-7effd059fab8': 'Aracaju',
 };
 
+/** Endereço do tomador na NFS-e quando o fiscal_config da casa não serve.
+ *  Bar: o fiscal_config (NFC-e) diz Aracaju, mas o alvará é de São Cristóvão
+ *  (inscrição mercantil 54823166) — e o ISS retido vai pra São Cristóvão. */
+export const TOMADOR_FIXO: Record<
+  string,
+  { codigoMunicipio: string; cep: string; logradouro: string; numero: string; bairro: string }
+> = {
+  '7c5c66ce-cceb-4e89-9c6d-d0785255c4f9': {
+    codigoMunicipio: '2806701',
+    cep: '49100000',
+    logradouro: 'Estrada Acesso ao Povoado Matapuã',
+    numero: 'S/N',
+    bairro: 'Mosqueiro',
+  },
+};
+
 export const ROTULO_BASE: Record<BaseFaturaServico, string> = {
   proventos_fgts: 'proventos + FGTS',
   proventos: 'só proventos (bruto)',

@@ -27,6 +27,9 @@ export interface LinhaFatura {
     lancada: boolean;
     recebidoEm: string | null;
     valorRecebido: number | null;
+    nfseChave: string | null;
+    nfseNumero: string | null;
+    nfseErro: string | null;
   } | null;
 }
 
@@ -57,6 +60,7 @@ export function FaturasEbManager(props: {
   comp: string | null;
   linhas: LinhaFatura[];
   hoje: string;
+  certificado: { cn: string | null; validadeFim: string | null } | null;
 }) {
   const router = useRouter();
   const [lucro, setLucro] = useState(String(props.config.percentualLucro).replace('.', ','));
@@ -128,6 +132,8 @@ export function FaturasEbManager(props: {
           (gere de novo enquanto for rascunho para atualizar).
         </p>
       </div>
+
+      <CertificadoEb certificado={props.certificado} />
 
       {props.competencias.length > 0 && (
         <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -211,6 +217,19 @@ function CartaoCasa(props: {
       </dl>
 
       {f && <p className="mt-3 rounded-md bg-slate-50 p-2 text-xs text-slate-600">{f.discriminacao}</p>}
+      {f?.nfseChave && (
+        <p className="mt-2 text-xs text-emerald-700">
+          NFS-e {f.nfseNumero ? `nº ${f.nfseNumero}` : ''} · chave <span className="font-mono">{f.nfseChave}</span>
+        </p>
+      )}
+      {f && !f.nfseChave && f.nfseErro && (
+        <p className="mt-2 break-words rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-700">
+          Último erro da NFS-e: {f.nfseErro}
+        </p>
+      )}
+      {f && f.status === 'RASCUNHO' && !(f.aliquotaIss > 0) && (
+        <p className="mt-2 text-xs text-amber-700">Para emitir a NFS-e, preencha a alíquota do ISS, salve e gere de novo.</p>
+      )}
       {desatualizada && (
         <p className="mt-2 text-xs text-amber-700">
           A folha desse mês mudou desde que a fatura foi gerada (agora daria {brl(l.previsao!.valorServico)}). Gere de novo.
@@ -223,6 +242,18 @@ function CartaoCasa(props: {
             disabled={ocupado !== null}
             className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50">
             {ocupado === `gerar-${l.casaId}` ? 'Gerando…' : f ? 'Gerar de novo' : 'Gerar fatura'}
+          </button>
+        )}
+
+        {f && f.status === 'RASCUNHO' && f.aliquotaIss > 0 && (
+          <button
+            onClick={() => {
+              if (confirm(`Emitir a NFS-e de ${brl(f.valorServico)} para ${l.casa}? Nota fiscal de verdade, na Receita.`))
+                agir(`emitir-${f.id}`, { acao: 'emitir', faturaId: f.id });
+            }}
+            disabled={ocupado !== null}
+            className="rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50">
+            {ocupado === `emitir-${f.id}` ? 'Emitindo…' : f.nfseErro ? 'Emitir NFS-e de novo' : 'Emitir NFS-e'}
           </button>
         )}
 
@@ -264,6 +295,67 @@ function CartaoCasa(props: {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+function CertificadoEb(props: { certificado: { cn: string | null; validadeFim: string | null } | null }) {
+  const router = useRouter();
+  const [aberto, setAberto] = useState(false);
+  const [arquivo, setArquivo] = useState<File | null>(null);
+  const [senha, setSenha] = useState('');
+  const [salvando, setSalvando] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const c = props.certificado;
+
+  async function subir() {
+    if (!arquivo || !senha) return;
+    setSalvando(true);
+    setMsg(null);
+    const fd = new FormData();
+    fd.append('pfx', arquivo);
+    fd.append('senha', senha);
+    const r = await fetch('/api/eb/certificado', { method: 'POST', body: fd });
+    const j = await r.json().catch(() => null);
+    setSalvando(false);
+    if (!r.ok) {
+      setMsg(j?.error ?? `erro ${r.status}`);
+      return;
+    }
+    setAberto(false);
+    setSenha('');
+    setArquivo(null);
+    router.refresh();
+  }
+
+  return (
+    <div className={`rounded-xl border p-4 text-sm ${c ? 'border-slate-200 bg-white' : 'border-amber-200 bg-amber-50'}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="font-medium text-slate-900">Certificado A1 da E.B.</h2>
+          <p className="text-xs text-slate-600">
+            {c
+              ? `${c.cn ?? 'certificado ativo'}${c.validadeFim ? ` · vence em ${fmtData(c.validadeFim)}` : ''}`
+              : 'Ainda não tem — sem ele a NFS-e não sai.'}
+          </p>
+        </div>
+        <button onClick={() => setAberto((a) => !a)}
+          className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-50">
+          {c ? 'Trocar certificado' : 'Enviar certificado (.pfx)'}
+        </button>
+      </div>
+      {aberto && (
+        <div className="mt-3 flex flex-wrap items-end gap-2">
+          <input type="file" accept=".pfx,.p12" onChange={(e) => setArquivo(e.target.files?.[0] ?? null)} className="text-xs" />
+          <input type="password" value={senha} onChange={(e) => setSenha(e.target.value)} placeholder="senha do certificado"
+            className="rounded-md border border-slate-300 px-2 py-1 text-xs" />
+          <button onClick={subir} disabled={salvando || !arquivo || !senha}
+            className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50">
+            {salvando ? 'Enviando…' : 'Salvar'}
+          </button>
+        </div>
+      )}
+      {msg && <p className="mt-2 text-xs text-red-700">{msg}</p>}
     </div>
   );
 }
