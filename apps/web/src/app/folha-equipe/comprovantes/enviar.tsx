@@ -248,3 +248,46 @@ export function AcoesComprovante({ id, status }: { id: string; status: string })
     </span>
   );
 }
+
+export function EscolherConta({
+  id,
+  opcoes,
+}: {
+  id: string;
+  opcoes: Array<{ id: string; rotulo: string }>;
+}) {
+  const router = useRouter();
+  const [fazendo, setFazendo] = useState(false);
+  const [erro, setErro] = useState('');
+  async function escolher(contaId: string, rotulo: string) {
+    if (fazendo) return;
+    if (!window.confirm(`Casar este comprovante com a conta de ${rotulo}? (o depósito foi na conta de outra pessoa)`)) return;
+    setFazendo(true);
+    setErro('');
+    try {
+      await chamar(`/api/folha-equipe/comprovantes/${id}`, 'POST', { acao: 'escolher', contaId });
+      router.refresh();
+    } catch (e) {
+      setErro((e as Error).message);
+    } finally {
+      setFazendo(false);
+    }
+  }
+  return (
+    <div className="mt-1 space-y-1">
+      <div className="text-xs text-slate-500">Mesmo valor, outro nome:</div>
+      {opcoes.map((o) => (
+        <button
+          key={o.id}
+          type="button"
+          disabled={fazendo}
+          onClick={() => void escolher(o.id, o.rotulo)}
+          className="block rounded border border-sky-300 bg-sky-50 px-2 py-0.5 text-left text-xs text-sky-800 hover:bg-sky-100 disabled:opacity-50"
+        >
+          casar com {o.rotulo}
+        </button>
+      ))}
+      {erro ? <div className="text-xs text-red-700">{erro}</div> : null}
+    </div>
+  );
+}

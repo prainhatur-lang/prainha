@@ -8,8 +8,8 @@ import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { exigirPermPage } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
-import { PERM_LOTERICA } from '@/lib/comprovante-loterica';
-import { AcoesComprovante, BaixarCasados, EnviarComprovantes } from './enviar';
+import { PERM_LOTERICA, sugestoesPorValor } from '@/lib/comprovante-loterica';
+import { AcoesComprovante, BaixarCasados, EnviarComprovantes, EscolherConta } from './enviar';
 
 export const dynamic = 'force-dynamic';
 
@@ -62,6 +62,10 @@ export default async function ComprovantesLotericaPage() {
     : [];
   const contaPorId = new Map(contas.map((c) => [c.id, c]));
 
+  const sugestoes = await sugestoesPorValor(
+    lista.filter((c) => c.status === 'SEM_CONTA'),
+    ids,
+  );
   const casados = lista.filter((c) => c.status === 'CASADO');
   const totalCasados = casados.reduce((s, c) => s + Number(c.valor ?? 0), 0);
 
@@ -133,7 +137,16 @@ export default async function ComprovantesLotericaPage() {
                       ) : null}
                     </td>
                     <td className="px-3 py-2 text-xs text-slate-700">
-                      {cs.length === 0 ? '—' : null}
+                      {cs.length === 0 && !sugestoes.has(c.id) ? '—' : null}
+                      {c.status === 'SEM_CONTA' && sugestoes.has(c.id) ? (
+                        <EscolherConta
+                          id={c.id}
+                          opcoes={sugestoes.get(c.id)!.map((k) => ({
+                            id: k.id,
+                            rotulo: `${k.pessoa ?? '?'} — ${brl(k.liquido)} (venc. ${dmy(k.vencimento)}, ${nomeCasa.get(k.filialId) ?? ''})`,
+                          }))}
+                        />
+                      ) : null}
                       {cs.map((k) => (
                         <div key={k.id}>
                           {k.pessoa} · {k.descricao ?? 'folha'} · venc. {dmy(k.vencimento)} ·{' '}

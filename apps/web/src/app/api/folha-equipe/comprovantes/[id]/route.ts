@@ -1,6 +1,7 @@
 // /api/folha-equipe/comprovantes/[id]
 //  GET    → abre a foto guardada (endereço assinado de 10 min)
 //  POST   { acao: 'casar' | 'ler' } → procura a conta de novo / relê a foto
+//  POST   { acao: 'escolher', contaId } → casa na mão (depósito na conta de outra pessoa)
 //  DELETE { acao: 'desfazer' } → estorna a baixa (contas voltam a abertas)
 //  DELETE { acao: 'tirar' }    → tira da lista (a foto continua no bucket)
 
@@ -14,6 +15,7 @@ import {
   PERM_LOTERICA,
   RecusaComprovante,
   casarEGravar,
+  casarManual,
   desfazerBaixa,
   filialIdsDoUsuario,
   lerECasar,
@@ -54,7 +56,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const achado = await carregar(id, auth.user.id);
   if (!achado) return NextResponse.json({ error: 'comprovante não encontrado' }, { status: 404 });
   if (achado.c.status === 'BAIXADO') return NextResponse.json({ error: 'já está baixado — desfaça a baixa antes' }, { status: 400 });
-  const body = (await req.json().catch(() => null)) as { acao?: string } | null;
+  const body = (await req.json().catch(() => null)) as { acao?: string; contaId?: string } | null;
+  if (body?.acao === 'escolher') {
+    try {
+      await casarManual(id, String(body.contaId ?? ''), achado.filiais);
+      return NextResponse.json({ ok: true, status: 'CASADO' });
+    } catch (e) {
+      if (e instanceof RecusaComprovante) return NextResponse.json({ error: e.message }, { status: 400 });
+      throw e;
+    }
+  }
   const r = body?.acao === 'ler' ? await lerECasar(id, auth.user.id) : await casarEGravar(id, auth.user.id);
   return NextResponse.json({ ok: true, ...r });
 }

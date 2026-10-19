@@ -524,3 +524,117 @@ export async function desfazerBaixa(comprovanteId: string, filialIds: string[]):
     return r.length;
   });
 }
+
+// ───────────────────────── casamento na mão ─────────────────────────
+
+/** Contas FOLHA em aberto com o MESMO valor do comprovante, de qualquer nome —
+ *  sugestão pra quando a lotérica depositou na conta de outra pessoa (parente,
+ *  cônjuge): o nome do comprovante não bate, mas o valor sim. */
+export async function sugestoesPorValor(
+  comprovantes: Array<{ id: string; valor: string | null; dataPagamento: string | null }>,
+  filialIds: string[],
+): Promise<Map<string, ContaCasada[]>> {
+  const out = new Map<string, ContaCasada[]>();
+  const valores = [...new Set(comprovantes.filter((c) => c.valor !== null).map((c) => Number(c.valor).toFixed(2)))];
+  if (valores.length === 0 || filialIds.length === 0) return out;
+  const presas = new Set(
+    (
+      await db
+        .select({ ids: schema.comprovanteLoterica.contaPagarIds })
+        .from(schema.comprovanteLoterica)
+        .where(and(eq(schema.comprovanteLoterica.status, 'CASADO'), isNull(schema.comprovanteLoterica.excluidoEm)))
+    ).flatMap((o) => o.ids ?? []),
+  );
+  const abertas = await db
+    .select({
+      id: schema.contaPagar.id,
+      filialId: schema.contaPagar.filialId,
+      folhaSemanaId: schema.contaPagar.folhaSemanaId,
+      fornecedorId: schema.contaPagar.fornecedorId,
+      pessoa: schema.fornecedor.nome,
+      descricao: schema.contaPagar.descricao,
+      liquido: sql<string>`(${schema.contaPagar.valor} - COALESCE(${schema.contaPagar.descontos}, 0))::numeric(14,2)`,
+      vencimento: schema.contaPagar.dataVencimento,
+    })
+    .from(schema.contaPagar)
+    .leftJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.contaPagar.fornecedorId))
+    .where(
+      and(
+        inArray(schema.contaPagar.filialId, filialIds),
+        eq(schema.contaPagar.origem, 'FOLHA'),
+        isNull(schema.contaPagar.dataPagamento),
+        isNull(schema.contaPagar.dataDelete),
+        sql`${schema.contaPagar.dataVencimento} >= (CURRENT_DATE - 120)`,
+        sql`(${schema.contaPagar.valor} - COALESCE(${schema.contaPagar.descontos}, 0))::numeric(14,2) IN (${sql.join(
+          valores.map((v) => sql`${v}::numeric`),
+          sql`, `,
+        )})`,
+      ),
+    );
+  for (const c of comprovantes) {
+    if (c.valor === null) continue;
+    const alvo = centavos(Number(c.valor));
+    const lista = abertas
+      .filter((a) => !presas.has(a.id) && centavos(Number(a.liquido)) === alvo)
+      .map((a) => ({ ...a, liquido: Number(a.liquido) }));
+    if (lista.length) out.set(c.id, lista.slice(0, 5));
+  }
+  return out;
+}
+
+/** Casa o comprovante com a conta escolhida na mão. Confere que a conta é
+ *  FOLHA, está em aberto, é de uma casa do usuário e que o valor bate. */
+export async function casarManual(comprovanteId: string, contaId: string, filialIds: string[]): Promise<void> {
+  const [c] = await db
+    .select()
+    .from(schema.comprovanteLoterica)
+    .where(eq(schema.comprovanteLoterica.id, comprovanteId))
+    .limit(1);
+  if (!c || c.excluidoEm) throw new RecusaComprovante('comprovante não encontrado');
+  if (c.status === 'BAIXADO' || c.status === 'CASADO') throw new RecusaComprovante('este comprovante já tem conta');
+  if (c.valor === null) throw new RecusaComprovante('o comprovante não foi lido — leia de novo');
+  const [k] = await db
+    .select({
+      id: schema.contaPagar.id,
+      filialId: schema.contaPagar.filialId,
+      folhaSemanaId: schema.contaPagar.folhaSemanaId,
+      fornecedorId: schema.contaPagar.fornecedorId,
+      origem: schema.contaPagar.origem,
+      pago: schema.contaPagar.dataPagamento,
+      apagada: schema.contaPagar.dataDelete,
+      liquido: sql<string>`(${schema.contaPagar.valor} - COALESCE(${schema.contaPagar.descontos}, 0))::numeric(14,2)`,
+    })
+    .from(schema.contaPagar)
+    .where(eq(schema.contaPagar.id, contaId))
+    .limit(1);
+  if (!k || k.apagada || k.origem !== 'FOLHA' || !filialIds.includes(k.filialId)) {
+    throw new RecusaComprovante('conta não encontrada');
+  }
+  if (k.pago) throw new RecusaComprovante('essa conta já está paga');
+  if (centavos(Number(k.liquido)) !== centavos(Number(c.valor))) {
+    throw new RecusaComprovante('o valor da conta não bate com o do comprovante');
+  }
+  const [presa] = await db
+    .select({ id: schema.comprovanteLoterica.id })
+    .from(schema.comprovanteLoterica)
+    .where(
+      and(
+        eq(schema.comprovanteLoterica.status, 'CASADO'),
+        isNull(schema.comprovanteLoterica.excluidoEm),
+        sql`${schema.comprovanteLoterica.contaPagarIds} @> ${JSON.stringify([k.id])}::jsonb`,
+      ),
+    )
+    .limit(1);
+  if (presa) throw new RecusaComprovante('essa conta já está casada com outro comprovante');
+  await db
+    .update(schema.comprovanteLoterica)
+    .set({
+      status: 'CASADO',
+      erro: null,
+      contaPagarIds: [k.id],
+      filialId: k.filialId,
+      folhaSemanaId: k.folhaSemanaId,
+      fornecedorId: k.fornecedorId,
+    })
+    .where(eq(schema.comprovanteLoterica.id, c.id));
+}
