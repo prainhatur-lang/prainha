@@ -131,6 +131,7 @@ export function AppSidebar({ mobileOpen, onMobileOpenChange, brand }: AppSidebar
   const pathname = usePathname();
   const [role, setRole] = useState<Role | null>(null);
   const [perms, setPerms] = useState<Set<string> | null>(null);
+  const [soContador, setSoContador] = useState(false);
   const [notificacoes, setNotificacoes] = useState<Notificacoes>(NOTIFICACOES_VAZIAS);
   // Área aberta = escolha manual do usuário; sem escolha, abre a área da rota
   // atual (e Início como default). Derivado, não sincronizado por effect.
@@ -141,9 +142,10 @@ export function AppSidebar({ mobileOpen, onMobileOpenChange, brand }: AppSidebar
 
     fetch('/api/usuario/me', { cache: 'no-store' })
       .then((response) => (response.ok ? response.json() : null))
-      .then((data: { role?: Role; perms?: string[] } | null) => {
+      .then((data: { role?: Role; perms?: string[]; soContador?: boolean } | null) => {
         if (cancelled) return;
         if (data?.role) setRole(data.role);
+        setSoContador(!!data?.soContador);
         setPerms(new Set(Array.isArray(data?.perms) ? data.perms : []));
       })
       .catch(() => {
@@ -217,13 +219,13 @@ export function AppSidebar({ mobileOpen, onMobileOpenChange, brand }: AppSidebar
         sections: area.sections
           .map((section) => ({
             ...section,
-            links: section.links.filter((link) => podeVer(link.perm)),
+            links: section.links.filter((link) => podeVer(link.perm) && !(link.semContador && soContador)),
           }))
           .filter((section) => section.links.length > 0),
       })).filter((area) => area.sections.length > 0),
     // role/perms são os únicos valores que mudam a visibilidade.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [perms, role],
+    [perms, role, soContador],
   );
 
   const activeHref = useMemo(() => {

@@ -19,6 +19,7 @@ import {
 } from '@/lib/extratos-fechamento';
 import { contaVemDoInter } from '@/lib/extrato-inter-fechamento';
 import { ExtratosAno } from './extratos-ano';
+import { ehSoContador } from '@/lib/so-contador';
 
 export const dynamic = 'force-dynamic';
 
@@ -40,10 +41,11 @@ export default async function ExtratosAnoPage(props: { searchParams: Promise<SP>
   // Anos nos botões: o atual e os dois anteriores, mais o que estiver aberto.
   const anos = [...new Set([hojeAno - 2, hojeAno - 1, hojeAno, ano])].sort((a, b) => a - b);
 
-  const [contas, podeEnviar, destinos] = await Promise.all([
+  const [contas, podeEnviar, destinos, soContador] = await Promise.all([
     extratosDoAno(user.id, ano),
     podeUsuario(user.id, PERM_EXTRATO_ENVIAR),
     destinosNovaContaExtrato(user.id),
+    ehSoContador(user.id),
   ]);
 
   return (
@@ -89,6 +91,7 @@ export default async function ExtratosAnoPage(props: { searchParams: Promise<SP>
           hojeMes={hojeMes}
           contas={contas}
           podeEnviar={podeEnviar}
+          soContador={soContador}
           extensoes={EXTRATO_EXTENSOES}
           casas={destinos.filiais.map((f) => ({ id: f.id, nome: f.nome }))}
           podeEmpresa={!!destinos.organizacaoEmpresas}

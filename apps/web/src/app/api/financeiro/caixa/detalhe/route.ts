@@ -2,6 +2,7 @@
 // (pagamento a pagamento). Proxy assinado pro vendas-local da loja.
 import { NextResponse } from 'next/server';
 import { exigirPermApi } from '@/lib/exigir-perm';
+import { barrarContador } from '@/lib/so-contador';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { chamarLojaCaixa } from '@/lib/caixa-loja';
 
@@ -14,6 +15,8 @@ export const maxDuration = 30;
 export async function GET(request: Request) {
   const { user, error } = await exigirPermApi('relatorio.read');
   if (error) return error;
+  const barrado = await barrarContador(user.id);
+  if (barrado) return barrado;
   const url = new URL(request.url);
   const filialId = url.searchParams.get('filial') ?? '';
   const caixa = url.searchParams.get('caixa') ?? '';

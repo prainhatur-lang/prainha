@@ -7,6 +7,7 @@
 
 import Link from 'next/link';
 import type { ContaExtratoDoMes } from '@/lib/extratos-fechamento';
+import { LinkExtrato } from './link-extrato';
 
 interface Props {
   ano: number;
@@ -18,6 +19,8 @@ interface Props {
   contas: ContaExtratoDoMes[];
   /** Quem envia extrato: o atalho fala em enviar; pros outros, só em ver o ano. */
   podeEnviar: boolean;
+  /** Contador de fora: planilha sai só em CSV. */
+  soContador?: boolean;
 }
 
 /** dd/mm hh:mm em BRT (UTC−3 fixo), igual no servidor e no navegador. */
@@ -41,7 +44,7 @@ function veioDoInter(nome: string): boolean {
   return /^extrato-inter-\d{4}-\d{2}-automatico\.xlsx$/.test(nome);
 }
 
-export function ExtratosMes({ ano, mesNome, mesEncerrado, filialAtivaId, contas, podeEnviar }: Props) {
+export function ExtratosMes({ ano, mesNome, mesEncerrado, filialAtivaId, contas, podeEnviar, soContador = false }: Props) {
   const mostradas = contas.filter((c) => c.ativo || c.arquivos.length > 0);
   const pedidas = mostradas.filter((c) => c.ativo);
   const enviadas = pedidas.filter((c) => c.arquivos.length > 0).length;
@@ -133,12 +136,7 @@ export function ExtratosMes({ ano, mesNome, mesEncerrado, filialAtivaId, contas,
                     <div className="min-w-0 flex-1 space-y-1">
                       {c.arquivos.map((a) => (
                         <div key={a.id} className="flex flex-wrap items-baseline gap-x-2 text-xs">
-                          <a
-                            href={`/api/extratos-fechamento/arquivos/${a.id}`}
-                            className="break-all font-medium text-sky-700 underline decoration-sky-300 hover:text-sky-900"
-                          >
-                            ⬇ {a.nome}
-                          </a>
+                          <LinkExtrato id={a.id} nome={a.nome} soContador={soContador} />
                           <span className="text-[11px] text-slate-400">
                             {[tamanho(a.tamanhoBytes), quando(a.enviadoEm), a.enviadoPor].filter(Boolean).join(' · ')}
                           </span>

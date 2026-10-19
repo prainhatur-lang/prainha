@@ -1,5 +1,7 @@
 // GET    /api/extratos-fechamento/arquivos/[id] — baixa o extrato (redireciona
 //        pra um endereço assinado do bucket privado, válido por 1 minuto).
+//        ?formato=csv: planilha convertida em CSV (";", UTF-8). O contador de
+//        fora (grupo só "Contador") sempre recebe a planilha em CSV (19/10/2026).
 // DELETE /api/extratos-fechamento/arquivos/[id] — tira o arquivo da lista
 //        (enviado errado). Só marca: o arquivo continua guardado no bucket.
 
@@ -7,7 +9,10 @@ import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, eq, isNull } from 'drizzle-orm';
 import { createAdminClient } from '@/lib/supabase/server';
+import * as XLSX from 'xlsx';
 import { exigirPermApi } from '@/lib/exigir-perm';
+import { ehSoContador } from '@/lib/so-contador';
+import { ehPlanilhaExtrato, nomeCsvExtrato } from '@/lib/extrato-planilha';
 import {
   BUCKET_EXTRATOS,
   PERM_EXTRATO_ENVIAR,
@@ -33,7 +38,7 @@ async function arquivoVisivel(userId: string, id: string) {
   return conta ? { arq, conta } : null;
 }
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function GET(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const auth = await exigirPermApi(PERM_EXTRATO_VER);
   if (auth.error) return auth.error;
   const { id } = await params;
@@ -43,6 +48,35 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
   const { arq, conta } = achado;
 
   const admin = await createAdminClient();
+
+  const pediuCsv = new URL(req.url).searchParams.get('formato') === 'csv';
+  if (ehPlanilhaExtrato(arq.nomeOriginal) && (pediuCsv || (await ehSoContador(auth.user.id)))) {
+    const { data: blob, error } = await admin.storage.from(BUCKET_EXTRATOS).download(arq.storagePath);
+    if (error || !blob) {
+      return NextResponse.json({ error: `storage: ${error?.message ?? 'arquivo não achado'}` }, { status: 500 });
+    }
+    let csv: string;
+    try {
+      const wb = XLSX.read(new Uint8Array(await blob.arrayBuffer()), { type: 'array', cellDates: true });
+      // Uma aba vira o CSV inteiro; com mais de uma, cada aba entra com o nome em cima.
+      const partes = wb.SheetNames.map((nome) => {
+        const corpo = XLSX.utils.sheet_to_csv(wb.Sheets[nome]!, { FS: ';', blankrows: false, dateNF: 'dd/mm/yyyy' });
+        return wb.SheetNames.length > 1 ? `${nome}\n${corpo}` : corpo;
+      });
+      csv = partes.join('\n\n');
+    } catch {
+      return NextResponse.json({ error: 'não consegui ler a planilha pra converter em CSV' }, { status: 422 });
+    }
+    const nome = nomeCsvExtrato(nomeDownloadExtrato(conta, arq.ano, arq.mes, arq.nomeOriginal));
+    return new NextResponse('\uFEFF' + csv, {
+      headers: {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${nome.replace(/"/g, '')}"`,
+        'Cache-Control': 'no-store',
+      },
+    });
+  }
+
   const { data, error } = await admin.storage
     .from(BUCKET_EXTRATOS)
     .createSignedUrl(arq.storagePath, 60, { download: nomeDownloadExtrato(conta, arq.ano, arq.mes, arq.nomeOriginal) });

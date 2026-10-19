@@ -11,6 +11,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import type { ContaExtratoDoAno } from '@/lib/extratos-fechamento';
+import { LinkExtrato } from '../link-extrato';
 
 interface Props {
   ano: number;
@@ -18,6 +19,8 @@ interface Props {
   hojeMes: number;
   contas: ContaExtratoDoAno[];
   podeEnviar: boolean;
+  /** Contador de fora: planilha sai só em CSV. */
+  soContador?: boolean;
   extensoes: string[];
   /** Casas em que este usuário pode cadastrar conta. */
   casas: Array<{ id: string; nome: string }>;
@@ -54,7 +57,7 @@ function veioDoInter(nome: string): boolean {
   return /^extrato-inter-\d{4}-\d{2}-automatico\.xlsx$/.test(nome);
 }
 
-export function ExtratosAno({ ano, hojeAno, hojeMes, contas, podeEnviar, extensoes, casas, podeEmpresa, interIds }: Props) {
+export function ExtratosAno({ ano, hojeAno, hojeMes, contas, podeEnviar, soContador = false, extensoes, casas, podeEmpresa, interIds }: Props) {
   const router = useRouter();
   /** Conta do Inter com integração: o extrato do mês pode vir direto da API do banco. */
   const contaDoInter = (c: { id: string }) => interIds.includes(c.id);
@@ -514,12 +517,7 @@ export function ExtratosAno({ ano, hojeAno, hojeMes, contas, podeEnviar, extenso
           <div className="space-y-1">
             {arquivosAbertos.map((a) => (
               <div key={a.id} className="flex flex-wrap items-baseline gap-x-2 text-xs">
-                <a
-                  href={`/api/extratos-fechamento/arquivos/${a.id}`}
-                  className="break-all font-medium text-sky-700 underline decoration-sky-300 hover:text-sky-900"
-                >
-                  ⬇ {a.nome}
-                </a>
+                <LinkExtrato id={a.id} nome={a.nome} soContador={soContador} />
                 <span className="text-[11px] text-slate-400">
                   {[tamanho(a.tamanhoBytes), quando(a.enviadoEm), a.enviadoPor].filter(Boolean).join(' · ')}
                 </span>

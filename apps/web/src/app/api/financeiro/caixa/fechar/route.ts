@@ -2,6 +2,7 @@
 // TODOS os abertos {filialId, todos:true}. Proxy assinado pro vendas-local.
 import { NextResponse } from 'next/server';
 import { exigirPermApi } from '@/lib/exigir-perm';
+import { barrarContador } from '@/lib/so-contador';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { chamarLojaCaixa } from '@/lib/caixa-loja';
 
@@ -14,6 +15,8 @@ export const maxDuration = 30;
 export async function POST(request: Request) {
   const { user, error } = await exigirPermApi('relatorio.read');
   if (error) return error;
+  const barrado = await barrarContador(user.id);
+  if (barrado) return barrado;
   const b = (await request.json().catch(() => null)) as
     | { filialId?: unknown; codigo?: unknown; todos?: unknown }
     | null;

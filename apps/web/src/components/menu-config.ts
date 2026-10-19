@@ -15,6 +15,8 @@ export interface MenuLinkItem {
   perm?: string;
   soon?: boolean;
   badge?: NotificationKey;
+  /** Esconde do contador de fora (grupo só "Contador") mesmo tendo a perm. */
+  semContador?: boolean;
 }
 
 export interface MenuSection {
@@ -322,7 +324,7 @@ export const MENU_AREAS: MenuArea[] = [
         label: 'Análises financeiras',
         links: [
           { label: 'DRE', href: '/relatorios/dre', perm: 'relatorio.read' },
-          { label: 'Conferência de caixa', href: '/financeiro/conferencia-caixa', perm: 'relatorio.read' },
+          { label: 'Conferência de caixa', href: '/financeiro/conferencia-caixa', perm: 'relatorio.read', semContador: true },
           {
             label: 'Fluxo de caixa',
             href: '/relatorios/fluxo-caixa',

@@ -14,6 +14,7 @@ import { dashboardFechamento, evolucaoMensal } from '@/lib/fechamento-dashboard'
 import { calcularCustoClt } from '@/lib/rh/custo-clt';
 import { metasDaCompetencia } from '@/lib/metas/resumo';
 import { podeUsuario } from '@/lib/permissoes-runtime';
+import { ehSoContador } from '@/lib/so-contador';
 import {
   PERM_EXTRATO_ENVIAR,
   extratosDoMes,
@@ -129,12 +130,13 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
   // Se esta parte falhar, o resto do fechamento continua abrindo igual.
   // Aqui é só ver e baixar: enviar, baixar do Inter e a lista de contas ficam
   // em /relatorios/fechamento/extratos (o dono tirou a importação daqui em 12/10).
-  const [extratos, podeEnviarExtrato] = await Promise.all([
+  const [extratos, podeEnviarExtrato, soContador] = await Promise.all([
     extratosDoMes(user.id, ano, mes),
     podeUsuario(user.id, PERM_EXTRATO_ENVIAR),
+    ehSoContador(user.id),
   ]).catch((e) => {
     console.error('[fechamento] extratos bancários do mês:', e);
-    return [[], false] as [Awaited<ReturnType<typeof extratosDoMes>>, boolean];
+    return [[], false, false] as [Awaited<ReturnType<typeof extratosDoMes>>, boolean, boolean];
   });
   const extratosPedidos = extratos.filter((c) => c.ativo);
   const extratosEnviados = extratosPedidos.filter((c) => c.arquivos.length > 0).length;
@@ -374,6 +376,7 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
           filialAtivaId={filial.id}
           contas={extratos}
           podeEnviar={podeEnviarExtrato}
+          soContador={soContador}
         />
 
         {/* Vendas */}
