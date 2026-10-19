@@ -333,6 +333,11 @@ Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyCon
 schtasks /create /tn PrainhaVendas /tr "cmd /c $RAIZ\start.bat" /sc onstart /ru SYSTEM /rl HIGHEST /f *> $null
 schtasks /run /tn PrainhaVendas *> $null
 Ok 'criada e iniciada (sobe sozinha no boot)'
+# Tarefa que APLICA as versoes novas (o Node so baixa e sinaliza). Sem ela a
+# loja fica parada em "sinalizado" pra sempre — Telao 19/10.
+Invoke-WebRequest -UseBasicParsing 'https://app.prainhabar.com/agente-release/updater-task.ps1' -OutFile "$RAIZ\updater-task.ps1"
+schtasks /create /tn PrainhaVendasUpdater /tr "powershell -NoProfile -ExecutionPolicy Bypass -File $RAIZ\updater-task.ps1" /sc minute /mo 5 /ru SYSTEM /rl HIGHEST /f *> $null
+Ok 'PrainhaVendasUpdater criada (aplica atualizacoes a cada 5 min)'
 
 # --- 8. subiu? --------------------------------------------------------------
 Passo '8/10  Conferindo'
