@@ -41,6 +41,12 @@ export const TOMADOR_FIXO: Record<
   },
 };
 
+/** Razão social do tomador na NFS-e pela raiz do CNPJ. O fiscal_config das casas
+ *  ainda diz "EIRELI" (NFC-e autoriza assim, não mexer); na Receita é LTDA. */
+export const RAZAO_TOMADOR_POR_RAIZ: Record<string, string> = {
+  '33159574': 'PRAINHA TURISMO LTDA',
+};
+
 export const ROTULO_BASE: Record<BaseFaturaServico, string> = {
   proventos_fgts: 'proventos + FGTS',
   proventos: 'só proventos (bruto)',

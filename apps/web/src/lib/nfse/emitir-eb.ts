@@ -15,7 +15,7 @@ import { decifrarSenha } from '@/lib/certificado';
 import { extrairPem, type PemCert } from '@/lib/sefaz-evento';
 import { assinarDps, idDps, montarDps } from './dps';
 import { chamarSefin, gunzipB64, gzipB64, type AmbienteNfse } from './sefin';
-import { TOMADOR_FIXO } from '@/lib/eb/faturas';
+import { RAZAO_TOMADOR_POR_RAIZ, TOMADOR_FIXO } from '@/lib/eb/faturas';
 
 type FiscalEnd = {
   cep?: string;
@@ -126,7 +126,7 @@ export async function emitirNfseFatura(faturaId: string): Promise<ResultadoEmiss
     },
     tomador: {
       cnpj: casa.cnpj,
-      nome: fiscal.razaoSocial || casa.nome,
+      nome: RAZAO_TOMADOR_POR_RAIZ[casa.cnpj.replace(/\D/g, '').slice(0, 8)] ?? (fiscal.razaoSocial || casa.nome),
       codigoMunicipio: end.codigoMunicipio,
       cep: end.cep,
       logradouro: end.logradouro,
