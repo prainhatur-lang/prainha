@@ -475,8 +475,24 @@ export function EditorProducao({
 
       {/* Balanço em tempo real */}
       <div className="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">
-        <CardKpi label="Qtd entradas" valor={qtdEntradas} precisao={3} />
-        <CardKpi label="Qtd saídas" valor={qtdSaidas} precisao={3} hint={`${qtdSaidasProduto} úteis + ${qtdSaidasPerda} perdas`} />
+        {modoReconciliacao === 'peso' ? (
+          <>
+            {/* Tudo com peso: o balanço é em kg (somar 31 un com 2,6 kg dava 35,9 e confundia) */}
+            <CardKpi label="Kg entradas" valor={kgEntradas} precisao={3} sufixo=" kg" />
+            <CardKpi
+              label="Kg saídas"
+              valor={kgSaidasTotal}
+              precisao={3}
+              sufixo=" kg"
+              hint={`${kgSaidasProduto.toFixed(2)} kg úteis + ${kgSaidasPerda.toFixed(2)} kg perdas`}
+            />
+          </>
+        ) : (
+          <>
+            <CardKpi label="Qtd entradas" valor={qtdEntradas} precisao={3} />
+            <CardKpi label="Qtd saídas" valor={qtdSaidas} precisao={3} hint={`${qtdSaidasProduto} úteis + ${qtdSaidasPerda} perdas`} />
+          </>
+        )}
         <CardKpi
           label={modoReconciliacao === 'peso' ? 'Divergência (peso)' : 'Divergência (qtd)'}
           valor={divergencia}
@@ -501,9 +517,13 @@ export function EditorProducao({
           label="Custo total entradas"
           valorBrl={valorEntradas}
           hint={
-            qtdSaidasProduto > 0
-              ? `${brl(custoUnitarioUtil)} por unidade útil`
-              : 'sem saídas úteis'
+            rateio.modo === 'peso' && rateio.custoPorBase > 0
+              ? todosPesoUm
+                ? `${brl(rateio.custoPorBase)} por kg útil (perda já incluída)`
+                : `${brl(rateio.custoPorBase)} por kg útil de peso 1 (perda já incluída)`
+              : qtdSaidasProduto > 0
+                ? `${brl(custoUnitarioUtil)} por unidade útil`
+                : 'sem saídas úteis'
           }
         />
       </div>
