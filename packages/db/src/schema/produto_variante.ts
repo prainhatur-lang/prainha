@@ -13,6 +13,8 @@ import {
   boolean,
   index,
   unique,
+  text,
+  primaryKey,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { filial } from './tenant';
@@ -263,5 +265,25 @@ export const wizardProduto = pgTable(
   },
   (t) => ({
     uniq: unique('uq_wizard_produto').on(t.filialId, t.codigoVarianteExterno, t.codigoPergunta),
+  }),
+);
+
+// --------- Combo marcado (só nuvem) ---------
+
+/**
+ * Produto que é COMBO de verdade na tela /cadastros/produtos/combos. Etapa que
+ * lança produto não basta (prato com acompanhamento, cachaça e vinho também
+ * têm) — a marcação é explícita. Criada por migrate-combo-marcado.
+ */
+export const comboMarcado = pgTable(
+  'combo_marcado',
+  {
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    codigoVarianteExterno: integer('codigo_variante_externo').notNull(),
+    criadoPor: text('criado_por'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.filialId, t.codigoVarianteExterno] }),
   }),
 );

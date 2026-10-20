@@ -14,6 +14,8 @@ export type ComboResumo = {
   preco: number;
   etapas: number;
   opcoes: number;
+  /** Marcado como combo (combo_marcado) — o resto é prato/bebida com escolhas. */
+  marcado: boolean;
 };
 
 export type ComboOpcao = {
@@ -51,11 +53,13 @@ const NOME_VARIANTE = sql.raw(
 
 export async function listarCombos(filialId: string): Promise<ComboResumo[]> {
   const linhas = await db.execute<{
-    codigo: number; nome: string; preco: string | null; etapas: number; opcoes: number;
+    codigo: number; nome: string; preco: string | null; etapas: number; opcoes: number; marcado: boolean;
   }>(sql`
     SELECT v.codigo_externo AS codigo, ${NOME_VARIANTE} AS nome, v.preco_venda::text AS preco,
            COUNT(DISTINCT wp.codigo_pergunta)::int AS etapas,
-           COUNT(DISTINCT o.codigo_externo)::int AS opcoes
+           COUNT(DISTINCT o.codigo_externo)::int AS opcoes,
+           EXISTS (SELECT 1 FROM combo_marcado cm
+                    WHERE cm.filial_id = wp.filial_id AND cm.codigo_variante_externo = v.codigo_externo) AS marcado
       FROM wizard_produto wp
       JOIN produto_variante v ON v.filial_id = wp.filial_id AND v.codigo_externo = wp.codigo_variante_externo
       JOIN produto p ON p.id = v.produto_id
@@ -72,7 +76,21 @@ export async function listarCombos(filialId: string): Promise<ComboResumo[]> {
     preco: Number(l.preco ?? 0),
     etapas: Number(l.etapas),
     opcoes: Number(l.opcoes),
+    marcado: l.marcado === true,
   }));
+}
+
+/** Marca/desmarca um tamanho como combo da lista (combo_marcado). */
+export async function marcarCombo(filialId: string, varianteCodigo: number, marcado: boolean, por: string | null) {
+  if (marcado) {
+    await db.execute(sql`
+      INSERT INTO combo_marcado (filial_id, codigo_variante_externo, criado_por)
+      VALUES (${filialId}, ${varianteCodigo}, ${por})
+      ON CONFLICT DO NOTHING`);
+  } else {
+    await db.execute(sql`
+      DELETE FROM combo_marcado WHERE filial_id = ${filialId} AND codigo_variante_externo = ${varianteCodigo}`);
+  }
 }
 
 export async function carregarCombo(filialId: string, varianteCodigo: number): Promise<ComboCompleto | null> {

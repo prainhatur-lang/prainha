@@ -19,6 +19,7 @@ import { exigirPermApi } from '@/lib/exigir-perm';
 import { podeUsuario } from '@/lib/permissoes-runtime';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { normalizaValor } from '@/lib/produto-campos';
+import { marcarCombo } from '@/lib/combos';
 import { db, schema } from '@concilia/db';
 import { and, eq, gte, inArray, isNull, ne, sql } from 'drizzle-orm';
 
@@ -308,8 +309,38 @@ export async function POST(request: Request) {
     }
 
     if (fila.length) await tx.insert(schema.produtoAlteracao).values(fila);
+    // Combo montado aqui entra na lista de combos (combo_marcado). Edição não
+    // marca: prato com acompanhamento editado pela lista completa segue prato.
+    if (!b.varianteCodigo) {
+      await tx
+        .insert(schema.comboMarcado)
+        .values({ filialId: b.filialId, codigoVarianteExterno: c.varianteCodigo, criadoPor: auth.user.email ?? null })
+        .onConflictDoNothing();
+    }
     return { varianteCodigo: c.varianteCodigo, novo: !b.varianteCodigo, filaNomePreco: fila.length };
   });
 
   return NextResponse.json({ ok: true, ...resultado });
+}
+
+// PATCH: marca/desmarca um produto como combo da lista (combo_marcado).
+// Só mexe na lista da tela — wizard, preço e PDV ficam como estão.
+const Marcar = z.object({
+  filialId: z.string().uuid(),
+  varianteCodigo: z.number().int().positive(),
+  marcado: z.boolean(),
+});
+
+export async function PATCH(request: Request) {
+  const auth = await exigirPermApi('produto.update');
+  if (auth.error) return auth.error;
+  const parsed = Marcar.safeParse(await request.json().catch(() => null));
+  if (!parsed.success) return NextResponse.json({ ok: false, erro: 'dados inválidos' }, { status: 400 });
+  const b = parsed.data;
+  const filiais = await filiaisDoUsuario(auth.user.id);
+  if (!filiais.some((f) => f.id === b.filialId)) {
+    return NextResponse.json({ ok: false, erro: 'sem acesso a essa filial' }, { status: 403 });
+  }
+  await marcarCombo(b.filialId, b.varianteCodigo, b.marcado, auth.user.email ?? null);
+  return NextResponse.json({ ok: true });
 }

@@ -7,12 +7,13 @@ import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { AppHeader } from '@/components/app-header';
 import { listarCombos } from '@/lib/combos';
+import { MarcarCombo } from './marcar-combo';
 
 export const dynamic = 'force-dynamic';
 
 const brl = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
-export default async function CombosPage(props: { searchParams: Promise<{ filial?: string; q?: string }> }) {
+export default async function CombosPage(props: { searchParams: Promise<{ filial?: string; q?: string; todos?: string }> }) {
   const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) redirect('/login');
@@ -24,10 +25,16 @@ export default async function CombosPage(props: { searchParams: Promise<{ filial
   const filial = (await escolherFilial(filiais, sp.filial)) ?? filiais[0];
   const q = (sp.q ?? '').trim();
   const semAcento = (x: string) => x.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const verTodos = sp.todos === '1';
   const todos = await listarCombos(filial.id);
-  // Todo produto com etapa que lança produto aparece aqui (acompanhamentos
-  // do Consumer inclusive) — a busca é o que torna a lista usável.
-  const combos = q ? todos.filter((c) => semAcento(c.nome).includes(semAcento(q)) || String(c.varianteCodigo) === q) : todos;
+  const marcados = todos.filter((c) => c.marcado);
+  // Padrão: só o que está marcado como combo (combo_marcado). "Mostrar todos"
+  // traz a lista de antes — todo produto com etapa que lança produto
+  // (acompanhamentos do Consumer inclusive) — e é lá que se marca o combo.
+  const base = verTodos ? todos : marcados;
+  const combos = q ? base.filter((c) => semAcento(c.nome).includes(semAcento(q)) || String(c.varianteCodigo) === q) : base;
+  const linkLista = (todosSim: boolean) =>
+    `/cadastros/produtos/combos?filial=${filial.id}${todosSim ? '&todos=1' : ''}${q ? `&q=${encodeURIComponent(q)}` : ''}`;
 
   return (
     <>
@@ -59,7 +66,7 @@ export default async function CombosPage(props: { searchParams: Promise<{ filial
             {filiais.map((f) => (
               <Link
                 key={f.id}
-                href={`/cadastros/produtos/combos?filial=${f.id}`}
+                href={`/cadastros/produtos/combos?filial=${f.id}${verTodos ? '&todos=1' : ''}`}
                 className={`rounded-md border px-3 py-1 ${
                   f.id === filial.id
                     ? 'border-slate-900 bg-slate-900 text-white'
@@ -74,18 +81,37 @@ export default async function CombosPage(props: { searchParams: Promise<{ filial
 
         <form className="mt-4 flex gap-2" action="/cadastros/produtos/combos">
           <input type="hidden" name="filial" value={filial.id} />
+          {verTodos && <input type="hidden" name="todos" value="1" />}
           <input name="q" defaultValue={q} placeholder="buscar combo ou produto com escolhas…"
             className="flex-1 rounded-md border border-slate-300 px-3 py-1.5 text-sm" />
           <button className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm hover:bg-slate-50">Buscar</button>
         </form>
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+          <Link
+            href={linkLista(false)}
+            className={`rounded-md border px-2 py-0.5 ${!verTodos ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'}`}
+          >
+            Combos ({marcados.length})
+          </Link>
+          <Link
+            href={linkLista(true)}
+            className={`rounded-md border px-2 py-0.5 ${verTodos ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'}`}
+          >
+            Mostrar todos com escolhas ({todos.length})
+          </Link>
+        </div>
         <p className="mt-1 text-xs text-slate-500">
-          {combos.length} de {todos.length} produto(s) com etapas que lançam produto em {filial.nome}.
+          {verTodos ? (
+            <>{combos.length} de {todos.length} produto(s) com etapas que lançam produto em {filial.nome}. Use “é combo?” pra pôr na lista de combos.</>
+          ) : (
+            <>{combos.length} de {marcados.length} combo(s) em {filial.nome}. Prato ou bebida com acompanhamento fica em “Mostrar todos”.</>
+          )}
         </p>
 
         <div className="mt-3 overflow-hidden rounded-xl border border-slate-200 bg-white">
           {combos.length === 0 ? (
             <p className="px-4 py-8 text-center text-sm text-slate-500">
-              {q ? 'Nada com esse nome.' : <>Nenhum combo em {filial.nome} ainda. Clique em “+ Montar combo”.</>}
+              {q ? 'Nada com esse nome.' : verTodos ? <>Nenhum produto com escolhas em {filial.nome}.</> : <>Nenhum combo em {filial.nome} ainda. Clique em “+ Montar combo” ou marque um em “Mostrar todos”.</>}
             </p>
           ) : (
             <table className="w-full text-sm">
@@ -107,7 +133,12 @@ export default async function CombosPage(props: { searchParams: Promise<{ filial
                     <td className="px-4 py-2 text-right tabular-nums">{brl(c.preco)}</td>
                     <td className="px-4 py-2 text-right tabular-nums">{c.etapas}</td>
                     <td className="px-4 py-2 text-right tabular-nums">{c.opcoes}</td>
-                    <td className="px-4 py-2 text-right">
+                    <td className="px-4 py-2 text-right whitespace-nowrap">
+                      {verTodos && (
+                        <span className="mr-3">
+                          <MarcarCombo filialId={filial.id} varianteCodigo={c.varianteCodigo} marcado={c.marcado} />
+                        </span>
+                      )}
                       <Link
                         href={`/cadastros/produtos/combos/${c.varianteCodigo}?filial=${filial.id}`}
                         className="text-xs font-medium text-slate-700 underline hover:text-slate-900"
