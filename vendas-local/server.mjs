@@ -931,6 +931,12 @@ async function initSchema() {
   // Gêmeo(a) que trabalha na casa, marcado no /rh/ponto da nuvem (10/10/2026):
   // a câmera não separa gêmeos idênticos — o tablet pergunta "Quem é você?".
   await addCol('ponto_funcionario', 'gemeo_de uuid');
+  // Trava de dias por semana (20/10/2026: quem trabalha sem registro só 2x na
+  // semana). Vem do roster da nuvem: o limite, o dia liberado pelo gerente e os
+  // dias com batida em QUALQUER casa (a loja só tem as batidas dela).
+  await addCol('ponto_funcionario', 'limite_dias_semana int');
+  await addCol('ponto_funcionario', 'limite_liberado_dia text');
+  await addCol('ponto_funcionario', 'dias_semana_nuvem jsonb');
   // Batida anulada ("Não sou eu" no tablet, ou excluída pelo RH na nuvem) não
   // conta pra nada local (entrada/saída, cooldown, horas). A linha fica — a fila
   // da nuvem é por cursor de id — e anulada_sync_pendente leva a anulação pra lá.
@@ -9886,6 +9892,40 @@ function diaOperacionalDe(d) {
   const dd = String(deslocado.getDate()).padStart(2, '0');
   return `${y}-${m}-${dd}`;
 }
+// Trava de dias por semana (20/10/2026). Só barra a ENTRADA de um dia NOVO:
+// quem já bateu hoje continua batendo (saída, volta do intervalo). Semana de
+// segunda a domingo pelo dia operacional; dias = batidas locais ∪ as da nuvem
+// (outras casas). Gerente libera o dia no Concilia (limite_liberado_dia).
+// Retorna a resposta de recusa (cooldown: o tablet mostra e fecha) ou null.
+async function pontoTravaSemana(pessoa, dia) {
+  try {
+    const lim = Number(pessoa.limite_dias_semana) || 0;
+    if (lim <= 0) return null;
+    if (String(pessoa.limite_liberado_dia || '') === dia) return null;
+    const [a, m, d] = dia.split('-').map(Number);
+    const dow = new Date(Date.UTC(a, m - 1, d)).getUTCDay(); // 0 = domingo
+    const segunda = new Date(Date.UTC(a, m - 1, d - ((dow + 6) % 7))).toISOString().slice(0, 10);
+    const jaHoje = await sql`SELECT 1 FROM ponto_batida WHERE funcionario_id=${pessoa.funcionario_id}
+      AND dia_operacional=${dia} AND anulada_em IS NULL LIMIT 1`;
+    if (jaHoje.length) return null;
+    const dias = new Set((await sql`SELECT DISTINCT dia_operacional::text AS d FROM ponto_batida
+      WHERE funcionario_id=${pessoa.funcionario_id} AND dia_operacional >= ${segunda} AND dia_operacional < ${dia}
+        AND anulada_em IS NULL`).map((x) => x.d));
+    const nuvem = Array.isArray(pessoa.dias_semana_nuvem) ? pessoa.dias_semana_nuvem : [];
+    for (const x of nuvem) {
+      const v = String(x).slice(0, 10);
+      if (v >= segunda && v < dia) dias.add(v);
+    }
+    if (dias.size < lim) return null;
+    console.log(`[ponto] trava da semana: ${pessoa.nome} já tem ${dias.size} dia(s) (limite ${lim}) — entrada de ${dia} recusada`);
+    return { ok: false, cooldown: true, bloqueio: 'limite_semana',
+      erro: `${pessoa.nome}, você já trabalhou ${dias.size} ${dias.size === 1 ? 'dia' : 'dias'} nesta semana (segunda a domingo) — o limite é ${lim}. Fale com o gerente.` };
+  } catch (err) {
+    // trava falhou: não impede o ponto (é melhor bater do que perder a hora)
+    console.error('[ponto] trava da semana:', err.message);
+    return null;
+  }
+}
 // GET /api/ponto/pessoas — roster ativo + estado do dia (fora/trabalhando desde)
 // + face_descriptor de quem já tem, pro reconhecimento comparar no navegador.
 // `marca` = impressão digital de quem está no roster e de quem tem rosto. A
@@ -10084,6 +10124,10 @@ async function apiPontoBaterFacial(body) {
     WHERE funcionario_id=${funcionarioId} AND dia_operacional=${dia} AND anulada_em IS NULL
     ORDER BY quando DESC LIMIT 1`)[0];
   const tipo = ultimaHoje && ultimaHoje.tipo === 'entrada' ? 'saida' : 'entrada';
+  if (!ultimaHoje) {
+    const trava = await pontoTravaSemana(pessoa, dia);
+    if (trava) return trava;
+  }
   const [nova] = await sql`INSERT INTO ponto_batida (funcionario_id, quando, dia_operacional, tipo, dispositivo, login_local)
     VALUES (${funcionarioId}, ${agora}, ${dia}, ${tipo}, 'reconhecimento_facial', ${pessoa.login_local}) RETURNING id`;
 
@@ -10208,6 +10252,10 @@ async function apiPontoBater(body) {
       ? `${pessoa.nome} já está com entrada batida.`
       : `${pessoa.nome} já bateu saída — pra sair nesse turno, bate entrada de novo primeiro.` };
   }
+  if (!ultima && tipo === 'entrada') {
+    const trava = await pontoTravaSemana(pessoa, dia);
+    if (trava) return trava;
+  }
 
   const dispositivo = String(body.dispositivo || '').slice(0, 120) || null;
   await sql`INSERT INTO ponto_batida (funcionario_id, quando, dia_operacional, tipo, dispositivo, login_local)
@@ -10326,6 +10374,18 @@ async function loopPontoRoster() {
           } catch (err) { console.error('[ponto] gêmeos (gravação):', err.message); }
         }
       }
+    }
+    // Trava de dias por semana: gravação à parte, igual aos gêmeos; nuvem
+    // antiga (sem o campo) não mexe em nada.
+    for (const p of j.pessoas) {
+      if (!('limite_dias_semana' in p)) continue;
+      try {
+        const lim = Number.isInteger(p.limite_dias_semana) && p.limite_dias_semana > 0 ? p.limite_dias_semana : null;
+        const lib = /^\d{4}-\d{2}-\d{2}$/.test(String(p.limite_liberado_dia || '')) ? String(p.limite_liberado_dia) : null;
+        const dias = Array.isArray(p.dias_semana) ? p.dias_semana.map((x) => String(x).slice(0, 10)) : [];
+        await sql`UPDATE ponto_funcionario SET limite_dias_semana=${lim}, limite_liberado_dia=${lib},
+          dias_semana_nuvem=${sql.json(dias)} WHERE funcionario_id=${p.funcionario_id}`;
+      } catch (err) { console.error('[ponto] trava da semana (gravação):', err.message); }
     }
     const ids = j.pessoas.map((p) => p.funcionario_id);
     if (ids.length) await sql`UPDATE ponto_funcionario SET ativo=false WHERE NOT (funcionario_id = ANY(${ids})) AND ativo`;
@@ -16185,7 +16245,7 @@ async function pfBater(pessoa){
     if (!r.cooldown) { clearInterval(PF_LOOP); PF_LOOP=setInterval(pfTick,250); return; }
   }
   clearTimeout(PF_FECHA_T);
-  PF_FECHA_T=setTimeout(fecharPontoFacial, r.ok&&r.batida_id?8000:4500);
+  PF_FECHA_T=setTimeout(fecharPontoFacial, (r.ok&&r.batida_id)||r.bloqueio?8000:4500);
   return r; // só a escolha entre gêmeos lê (pfGemeoEscolhe)
 }
 /* GÊMEOS (10/10/2026, Prainha Bar: "temos gêmeos trabalhando na casa; quando um

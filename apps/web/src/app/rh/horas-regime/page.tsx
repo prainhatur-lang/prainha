@@ -9,7 +9,9 @@ import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { AppHeader } from '@/components/app-header';
 import { hojeBr } from '@/lib/datas';
-import { montarHorasRegime, type PessoaHoras } from '@/lib/rh/horas-regime';
+import { montarHorasRegime, diasNaSemanaAtual, semanaDoPontoAgora, type PessoaHoras } from '@/lib/rh/horas-regime';
+import { podeUsuario } from '@/lib/permissoes-runtime';
+import { TravarTodos, TravaPessoa } from './limite-semana';
 
 export const dynamic = 'force-dynamic';
 
@@ -51,6 +53,13 @@ export default async function HorasRegimePage(props: { searchParams: Promise<SP>
   const hoje = hojeBr();
   const dados = await montarHorasRegime(filial.id, hoje, n);
   const { semanas, pessoas, resumo } = dados;
+  // Trava de dias/semana no ponto (dono 20/10/2026: sem registro só 2 vezes).
+  const semRegistro = pessoas.filter((p) => p.regime === 'sem_registro');
+  const [podeTravar, diasAgora] = await Promise.all([
+    podeUsuario(user.id, 'ponto.corrigir'),
+    diasNaSemanaAtual(semRegistro.map((p) => p.id)),
+  ]);
+  const diaPonto = semanaDoPontoAgora().hoje;
   const ncompletas = semanas.filter((s) => !s.parcial).length || 1;
 
   const media = (p: PessoaHoras, campo: 'minTotal' | 'minCasa' | 'dias') => {
@@ -198,6 +207,22 @@ export default async function HorasRegimePage(props: { searchParams: Promise<SP>
                 {g.titulo} <span className="text-sm font-normal text-slate-500">({lista.length})</span>
               </h2>
               <p className="mb-2 text-xs text-slate-500">{g.nota}</p>
+              {g.regime === 'sem_registro' && (
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-rose-100 bg-rose-50/50 px-3 py-2 text-xs text-slate-600">
+                  <span>
+                    Trava no ponto facial: com limite, o tablet recusa a entrada de um dia novo quando a pessoa já bateu
+                    ponto nesse número de dias da semana (seg a dom, somando as casas). O gerente libera um dia por vez em
+                    &ldquo;liberar hoje&rdquo;.
+                  </span>
+                  {podeTravar && (
+                    <TravarTodos
+                      ids={lista.map((p) => p.id)}
+                      jaTravados={lista.filter((p) => p.limiteDiasSemana === 2).length}
+                      dias={2}
+                    />
+                  )}
+                </div>
+              )}
               <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
                 <table className="w-full text-sm">
                   <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
@@ -212,6 +237,7 @@ export default async function HorasRegimePage(props: { searchParams: Promise<SP>
                       <th className="px-3 py-2 text-right">Média h/sem</th>
                       <th className="px-3 py-2 text-right">Dias/sem</th>
                       <th className="px-3 py-2">Situação</th>
+                      {g.regime === 'sem_registro' && <th className="px-3 py-2">Trava</th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -258,6 +284,17 @@ export default async function HorasRegimePage(props: { searchParams: Promise<SP>
                               </span>
                             )}
                           </td>
+                          {g.regime === 'sem_registro' && (
+                            <td className="px-3 py-2">
+                              <TravaPessoa
+                                id={p.id}
+                                limite={p.limiteDiasSemana}
+                                liberadoHoje={p.limiteLiberadoDia === diaPonto}
+                                diasSemanaAtual={diasAgora.get(p.id) ?? 0}
+                                podeEditar={podeTravar}
+                              />
+                            </td>
+                          )}
                         </tr>
                       );
                     })}

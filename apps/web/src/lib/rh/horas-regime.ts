@@ -14,7 +14,8 @@ import { db } from '@concilia/db';
 import { sql, type SQL } from 'drizzle-orm';
 import { calcularDia } from '@/lib/rh/calcular-ponto';
 import { pontoProprioDesde } from '@/lib/rh/ponto-vigencia';
-import { somarDias } from '@/lib/rh/dia-operacional';
+import { somarDias, PONTO_VIRADA_HORA } from '@/lib/rh/dia-operacional';
+import { dateToBrYmd } from '@/lib/datas';
 import { jornadaNoDia, minutosPrevistos, type VigenciaJornada } from '@/lib/rh/banco-horas';
 
 async function q<T>(query: SQL): Promise<T[]> {
@@ -53,6 +54,10 @@ export interface PessoaHoras {
   /** valor da hora (intermitente) ou salário do mês (CLT). */
   valor: number | null;
   daCasa: boolean;
+  /** Trava do ponto facial: máx. de dias por semana (null = sem limite). */
+  limiteDiasSemana: number | null;
+  /** Dia que o gerente liberou por fora da trava (YYYY-MM-DD). */
+  limiteLiberadoDia: string | null;
   /** por semana: min batidos NESTA casa, min em todas, dias, previsto (CLT). */
   semanas: { minCasa: number; minTotal: number; dias: number; previstoMin: number }[];
 }
@@ -115,8 +120,9 @@ export async function montarHorasRegime(filialId: string, hoje: string, numSeman
         FROM folha_contador
        WHERE funcionario_id IS NOT NULL AND (demitido_em IS NULL)
        ORDER BY funcionario_id, competencia DESC`),
-    q<{ id: string; nome: string; cargo: string | null; filial_id: string; regime: string | null; salario_base: string | null; ativo: boolean; data_admissao: string | null }>(sql`
-      SELECT id, nome, cargo, filial_id, regime_salarial AS regime, salario_base, ativo, data_admissao::text AS data_admissao
+    q<{ id: string; nome: string; cargo: string | null; filial_id: string; regime: string | null; salario_base: string | null; ativo: boolean; data_admissao: string | null; limite_dias_semana: number | null; limite_liberado_dia: string | null }>(sql`
+      SELECT id, nome, cargo, filial_id, regime_salarial AS regime, salario_base, ativo, data_admissao::text AS data_admissao,
+             limite_dias_semana, limite_liberado_dia::text AS limite_liberado_dia
         FROM funcionario`),
     // Dia operacional da venda: conta aberta de madrugada é do dia anterior (virada 05:00).
     q<{ dia: string; total: number }>(sql`
@@ -237,6 +243,8 @@ export async function montarHorasRegime(filialId: string, hoje: string, numSeman
       regimeCadastro: f.regime,
       valor,
       daCasa,
+      limiteDiasSemana: f.limite_dias_semana != null ? num(f.limite_dias_semana) : null,
+      limiteLiberadoDia: f.limite_liberado_dia,
       semanas: sem,
     });
   }
@@ -288,4 +296,27 @@ export async function montarHorasRegime(filialId: string, hoje: string, numSeman
   });
 
   return { semanas, pessoas, resumo, competenciaFolha };
+}
+
+/** Dia do ponto de agora (vira às 05:00) e a segunda-feira da semana dele. */
+export function semanaDoPontoAgora(): { hoje: string; segunda: string } {
+  const hoje = dateToBrYmd(new Date(Date.now() - PONTO_VIRADA_HORA * 3600 * 1000));
+  return { hoje, segunda: segundaDe(hoje) };
+}
+
+/** Dias distintos com batida (qualquer casa) na semana do ponto de agora, por
+ *  pessoa — o mesmo número que a trava do tablet usa. */
+export async function diasNaSemanaAtual(ids: string[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (!ids.length) return out;
+  const { hoje, segunda } = semanaDoPontoAgora();
+  const rows = await q<{ funcionario_id: string; n: number }>(sql`
+    SELECT funcionario_id, COUNT(DISTINCT dia_operacional)::int AS n
+      FROM ponto_batida
+     WHERE funcionario_id IN (${sql.join(ids.map((i) => sql`${i}::uuid`), sql`, `)})
+       AND dia_operacional BETWEEN ${segunda}::date AND ${hoje}::date
+       AND excluida_em IS NULL
+     GROUP BY funcionario_id`);
+  for (const r of rows) out.set(r.funcionario_id, num(r.n));
+  return out;
 }

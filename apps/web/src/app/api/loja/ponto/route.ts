@@ -34,7 +34,7 @@ export async function GET(request: Request) {
   if (!autoriza(f, e, s)) return NextResponse.json({ ok: false, erro: 'assinatura inválida' }, { status: 403 });
 
   const { db, schema } = await import('@concilia/db');
-  const { and, eq, or, exists, gte, isNotNull } = await import('drizzle-orm');
+  const { and, eq, or, exists, gte, inArray, isNotNull, isNull } = await import('drizzle-orm');
   const { diasAtrasBr } = await import('@/lib/datas');
 
   // Roster = lotação principal NESTA filial OU vínculo extra (quem circula
@@ -52,6 +52,8 @@ export async function GET(request: Request) {
       // gêmeo(a) marcado no /rh/ponto: o tablet pergunta "Quem é você?" em vez
       // de bater direto (loja antiga ignora o campo)
       gemeoDeId: schema.funcionario.gemeoDeId,
+      limiteDiasSemana: schema.funcionario.limiteDiasSemana,
+      limiteLiberadoDia: schema.funcionario.limiteLiberadoDia,
     })
     .from(schema.funcionario)
     .where(
@@ -100,6 +102,30 @@ export async function GET(request: Request) {
       ),
     );
   const excluidas = recentes.filter((x) => x.excluidaEm);
+
+  // Trava de dias por semana (20/10/2026, quem trabalha sem registro: 2x na
+  // semana). A loja só enxerga as batidas DELA; quem circula entre as casas
+  // tem os dias das outras aqui — dias operacionais com batida válida nos
+  // últimos 8 dias, em qualquer casa. A loja recorta a semana (seg–dom).
+  const comLimite = pessoas.filter((p) => p.limiteDiasSemana != null).map((p) => p.funcionarioId);
+  const diasPorPessoa = new Map<string, string[]>();
+  if (comLimite.length) {
+    const dias = await db
+      .selectDistinct({ funcionarioId: schema.pontoBatida.funcionarioId, dia: schema.pontoBatida.diaOperacional })
+      .from(schema.pontoBatida)
+      .where(
+        and(
+          inArray(schema.pontoBatida.funcionarioId, comLimite),
+          gte(schema.pontoBatida.diaOperacional, diasAtrasBr(8)),
+          isNull(schema.pontoBatida.excluidaEm),
+        ),
+      );
+    for (const d of dias) {
+      const l = diasPorPessoa.get(d.funcionarioId) ?? [];
+      l.push(String(d.dia));
+      diasPorPessoa.set(d.funcionarioId, l);
+    }
+  }
   const corrigidas = recentes.filter((x) => !x.excluidaEm);
 
   return NextResponse.json({
@@ -126,6 +152,9 @@ export async function GET(request: Request) {
       cargo: p.cargo,
       login_local: p.loginLocal,
       gemeo_de: p.gemeoDeId,
+      limite_dias_semana: p.limiteDiasSemana ?? null,
+      limite_liberado_dia: p.limiteLiberadoDia ?? null,
+      dias_semana: diasPorPessoa.get(p.funcionarioId) ?? [],
     })),
   });
 }

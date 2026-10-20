@@ -31,6 +31,7 @@ import {
   uuid,
   varchar,
   integer,
+  smallint,
   bigint,
   date,
   timestamp,
@@ -77,6 +78,13 @@ export const funcionario = pgTable(
      *  nomes em vez de bater direto. A FK fica só no banco (ON DELETE SET
      *  NULL, scripts/migrate-funcionario-gemeo.ts). */
     gemeoDeId: uuid('gemeo_de_id'),
+    /** Máximo de dias por semana (seg–dom, dia operacional, somando as casas)
+     *  que o tablet do ponto aceita ENTRADA (20/10/2026: quem trabalha sem
+     *  registro só 2 vezes na semana). Nulo = sem limite. Marcado em
+     *  /rh/horas-regime; a loja recebe no roster do ponto. */
+    limiteDiasSemana: smallint('limite_dias_semana'),
+    /** Dia que o gerente liberou por fora da trava acima (só aquele dia). */
+    limiteLiberadoDia: date('limite_liberado_dia'),
     /** 'H' | 'M' — só pra regra de domingo da escala mensal (CCT cl.16:
      *  homem folga 1 domingo a cada 5 trabalhados; mulher a cada 2 semanas,
      *  CLT 386). Marcado na grade de /rh/escala-mensal (19/10/2026). */
