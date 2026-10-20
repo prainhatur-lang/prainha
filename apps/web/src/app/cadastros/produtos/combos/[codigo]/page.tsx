@@ -10,6 +10,8 @@ import { and, asc, eq } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { carregarCombo, produtosParaEscolha } from '@/lib/combos';
 import { EditorCombo } from './editor';
+import { HorarioCombo } from './horario';
+import { carregarRegra } from '@/lib/combo-horario';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,7 +36,7 @@ export default async function ComboPage(props: {
   const combo = varianteCodigo ? await carregarCombo(filial.id, varianteCodigo) : null;
   if (!novo && !combo) notFound();
 
-  const [produtos, etiquetas, pracas] = await Promise.all([
+  const [produtos, etiquetas, pracas, regra] = await Promise.all([
     produtosParaEscolha(filial.id),
     db
       .select({ codigo: schema.produtoEtiqueta.codigoExterno, nome: schema.produtoEtiqueta.nome })
@@ -46,6 +48,7 @@ export default async function ComboPage(props: {
       .from(schema.areaProducao)
       .where(and(eq(schema.areaProducao.filialId, filial.id), eq(schema.areaProducao.ativa, true)))
       .orderBy(asc(schema.areaProducao.nome)),
+    varianteCodigo ? carregarRegra(filial.id, varianteCodigo) : Promise.resolve(null),
   ]);
 
   return (
@@ -81,6 +84,12 @@ export default async function ComboPage(props: {
                 {f.nome}
               </Link>
             ))}
+          </div>
+        )}
+
+        {varianteCodigo && (
+          <div className="mt-5">
+            <HorarioCombo filialId={filial.id} varianteCodigo={varianteCodigo} regra={regra} />
           </div>
         )}
 

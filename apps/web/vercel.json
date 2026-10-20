@@ -13,6 +13,10 @@
       "schedule": "0 8 * * *"
     },
     {
+      "path": "/api/cron/combo-horario",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/cron/no-show-automatico",
       "schedule": "*/5 * * * *"
     },

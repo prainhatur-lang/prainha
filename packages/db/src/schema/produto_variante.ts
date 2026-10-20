@@ -15,6 +15,8 @@ import {
   unique,
   text,
   primaryKey,
+  date,
+  time,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { filial } from './tenant';
@@ -282,6 +284,36 @@ export const comboMarcado = pgTable(
     codigoVarianteExterno: integer('codigo_variante_externo').notNull(),
     criadoPor: text('criado_por'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.filialId, t.codigoVarianteExterno] }),
+  }),
+);
+
+/**
+ * QUANDO o combo vale: dias da semana (0=dom…6=sáb, vazio = todos), faixa de
+ * hora (fim < início = vira a meia-noite), vigência e calendário (datas_fora
+ * tira o dia, datas_extra põe). Fora da regra o cron /api/cron/combo-horario
+ * pausa o tamanho pela fila produto_alteracao; só age na virada
+ * (estado_aplicado 'dentro' | 'fora'). Sem linha = vale sempre.
+ */
+export const comboRegra = pgTable(
+  'combo_regra',
+  {
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    codigoVarianteExterno: integer('codigo_variante_externo').notNull(),
+    ativa: boolean('ativa').notNull().default(true),
+    diasSemana: smallint('dias_semana').array().notNull().default(sql`'{}'`),
+    horaInicio: time('hora_inicio'),
+    horaFim: time('hora_fim'),
+    dataInicio: date('data_inicio'),
+    dataFim: date('data_fim'),
+    datasFora: date('datas_fora').array().notNull().default(sql`'{}'`),
+    datasExtra: date('datas_extra').array().notNull().default(sql`'{}'`),
+    estadoAplicado: text('estado_aplicado'),
+    aplicadoEm: timestamp('aplicado_em', { withTimezone: true }),
+    atualizadoPor: text('atualizado_por'),
+    atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
     pk: primaryKey({ columns: [t.filialId, t.codigoVarianteExterno] }),

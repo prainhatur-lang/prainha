@@ -7,6 +7,7 @@ import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { AppHeader } from '@/components/app-header';
 import { listarCombos } from '@/lib/combos';
+import { carregarRegras, resumoRegra, valeAgora } from '@/lib/combo-horario';
 import { MarcarCombo } from './marcar-combo';
 
 export const dynamic = 'force-dynamic';
@@ -26,7 +27,7 @@ export default async function CombosPage(props: { searchParams: Promise<{ filial
   const q = (sp.q ?? '').trim();
   const semAcento = (x: string) => x.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
   const verTodos = sp.todos === '1';
-  const todos = await listarCombos(filial.id);
+  const [todos, regras] = await Promise.all([listarCombos(filial.id), carregarRegras(filial.id)]);
   const marcados = todos.filter((c) => c.marcado);
   // Padrão: só o que está marcado como combo (combo_marcado). "Mostrar todos"
   // traz a lista de antes — todo produto com etapa que lança produto
@@ -118,6 +119,7 @@ export default async function CombosPage(props: { searchParams: Promise<{ filial
               <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
                 <tr>
                   <th className="px-4 py-2">Combo</th>
+                  <th className="px-4 py-2">Quando vale</th>
                   <th className="px-4 py-2 text-right">Preço</th>
                   <th className="px-4 py-2 text-right">Etapas</th>
                   <th className="px-4 py-2 text-right">Opções</th>
@@ -129,6 +131,21 @@ export default async function CombosPage(props: { searchParams: Promise<{ filial
                   <tr key={c.varianteCodigo}>
                     <td className="px-4 py-2 font-medium text-slate-900">
                       {c.nome} <span className="text-xs font-normal text-slate-400">#{c.varianteCodigo}</span>
+                    </td>
+                    <td className="px-4 py-2 text-xs">
+                      {(() => {
+                        const rg = regras.get(c.varianteCodigo);
+                        if (!rg || !rg.ativa) return <span className="text-slate-400">sempre</span>;
+                        const ok = valeAgora(rg);
+                        return (
+                          <span className="text-slate-600">
+                            {resumoRegra(rg)}{' '}
+                            <span className={`ml-1 rounded-full px-1.5 py-0.5 ${ok ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                              {ok ? 'à venda' : 'fora'}
+                            </span>
+                          </span>
+                        );
+                      })()}
                     </td>
                     <td className="px-4 py-2 text-right tabular-nums">{brl(c.preco)}</td>
                     <td className="px-4 py-2 text-right tabular-nums">{c.etapas}</td>

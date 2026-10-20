@@ -158,6 +158,7 @@
     "migrate:campanha-convite": "tsx scripts/migrate-campanha-convite.ts",
     "migrate:whatsapp-nao-enviar": "tsx scripts/migrate-whatsapp-nao-enviar.ts",
     "migrate:combo-marcado": "tsx scripts/migrate-combo-marcado.ts",
+    "migrate:combo-regra": "tsx scripts/migrate-combo-regra.ts",
     "migrate:vale-transporte": "tsx scripts/migrate-vale-transporte.ts",
     "migrate:escala-mensal": "tsx scripts/migrate-escala-mensal.ts",
     "migrate:eb-faturas": "tsx scripts/migrate-eb-faturas.ts",
