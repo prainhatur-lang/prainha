@@ -41,7 +41,11 @@ export async function GET(req: Request) {
         // Datapoints liga/desliga que o aparelho aceita — pra acertar o
         // "codigo_switch" do cadastro (switch_1, switch, switch_led...).
         const codigosSwitch = items.filter((i) => typeof i.value === 'boolean').map((i) => i.code);
-        return { id: d.id, ...leitura, codigosSwitch, online: true, erro: null as string | null };
+        // Datapoints crus (sem os liga/desliga) — pra conferir medidor que vem em formato diferente.
+        const medicao = Object.fromEntries(
+          items.filter((i) => typeof i.value !== 'boolean').map((i) => [i.code, i.value]),
+        );
+        return { id: d.id, ...leitura, codigosSwitch, medicao, online: true, erro: null as string | null };
       } catch (e) {
         return {
           id: d.id,

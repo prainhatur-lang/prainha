@@ -160,15 +160,39 @@ export function interpretarStatus(items: TuyaStatusItem[], codigoSwitch: string)
   const voltage = get('cur_voltage');
   const current = get('cur_current');
   const energy = get('add_ele');
+  // Disjuntor DIN com medidor (pré-pago/fuga, ex: "Mar Disjuntor Freezer"):
+  // não manda cur_*; manda phase_a em base64 e total_forward_energy (÷100).
+  const fase = lerFaseA(get('phase_a'));
+  const energiaTotal = get('total_forward_energy');
   return {
     ...LEITURA_VAZIA,
     ligado: typeof switchVal === 'boolean' ? switchVal : null,
-    potenciaW: typeof power === 'number' ? power / 10 : null,
-    tensaoV: typeof voltage === 'number' ? voltage / 10 : null,
-    correnteA: typeof current === 'number' ? current / 1000 : null,
-    energiaKwh: typeof energy === 'number' ? energy / 100 : null,
+    potenciaW: typeof power === 'number' ? power / 10 : (fase?.potenciaW ?? null),
+    tensaoV: typeof voltage === 'number' ? voltage / 10 : (fase?.tensaoV ?? null),
+    correnteA: typeof current === 'number' ? current / 1000 : (fase?.correnteA ?? null),
+    energiaKwh:
+      typeof energy === 'number' ? energy / 100 : typeof energiaTotal === 'number' ? energiaTotal / 100 : null,
     online: null,
   };
+}
+
+/**
+ * phase_a dos medidores/disjuntores Tuya: base64 de 8 bytes —
+ * tensão (2 bytes, ÷10 V), corrente (3 bytes, ÷1000 A), potência (3 bytes, ÷1000 kW).
+ */
+function lerFaseA(v: unknown): { tensaoV: number; correnteA: number; potenciaW: number } | null {
+  if (typeof v !== 'string' || !v) return null;
+  try {
+    const b = Buffer.from(v, 'base64');
+    if (b.length < 8) return null;
+    return {
+      tensaoV: ((b[0]! << 8) | b[1]!) / 10,
+      correnteA: ((b[2]! << 16) | (b[3]! << 8) | b[4]!) / 1000,
+      potenciaW: ((b[5]! << 16) | (b[6]! << 8) | b[7]!),
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** Sensor magnético de porta/janela (GA-M400A): datapoint doorcontact_state. */
