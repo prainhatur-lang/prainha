@@ -121,6 +121,10 @@ function requestJson<T>(opts: {
   body?: string;
   contentType?: string;
   authorization?: string;
+  /** Cabeçalhos extras (ex.: idempotência do Pix). */
+  headers?: Record<string, string>;
+  /** Corta a espera (ms). Sem isso, espera o banco. */
+  timeoutMs?: number;
   cred: InterCredenciais;
 }): Promise<{ status: number; data: T }> {
   return new Promise((resolve, reject) => {
@@ -134,6 +138,7 @@ function requestJson<T>(opts: {
           ...(opts.body ? { 'Content-Type': opts.contentType ?? 'application/json' } : {}),
           ...(opts.body ? { 'Content-Length': Buffer.byteLength(opts.body) } : {}),
           ...(opts.authorization ? { Authorization: opts.authorization } : {}),
+          ...(opts.headers ?? {}),
         },
       },
       (res) => {
@@ -149,6 +154,7 @@ function requestJson<T>(opts: {
       },
     );
     req.on('error', reject);
+    if (opts.timeoutMs) req.setTimeout(opts.timeoutMs, () => req.destroy(new Error('Inter: sem resposta (timeout)')));
     if (opts.body) req.write(opts.body);
     req.end();
   });
@@ -254,6 +260,115 @@ export async function buscarPagamentosInter(
     throw new Error(`Inter pagamentos erro (${status}): ${JSON.stringify(data)}`);
   }
   return data;
+}
+
+// ---------------------------------------------------------------------------
+// Pagamento Pix (20/10/2026 — tela Pedidos a pagar por Pix). Escopos
+// pagamento-pix.write / pagamento-pix.read, na integração de pagamentos
+// (INTER_*_PAG_*). Contrato conferido no SDK oficial do Inter (pj-sdk-python):
+// POST /banking/v2/pix e GET /banking/v2/pix/{codigoSolicitacao}.
+
+export interface InterPixIncluirResposta {
+  tipoRetorno?: string; // PROCESSADO | APROVACAO | AGENDADO
+  codigoSolicitacao?: string;
+  endToEndId?: string;
+  dataPagamento?: string;
+  dataOperacao?: string;
+  codigoAgendamento?: string;
+  [k: string]: unknown;
+}
+
+/** Erro de quando o Inter recusou com certeza (4xx) — nenhum dinheiro saiu. */
+export class InterPixRecusado extends Error {
+  constructor(
+    message: string,
+    public status: number,
+    public detalhe: unknown,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * Manda o Pix pra uma chave. Lança `InterPixRecusado` quando o banco recusou
+ * (4xx: nada saiu). Qualquer outro erro (rede, timeout, 5xx) é AMBÍGUO: o Pix
+ * pode ter saído — quem chama trata como pendente, nunca como "não pagou".
+ * `idempotencia` vai em x-id-idempotente: reenviar o mesmo id não paga 2x.
+ */
+export async function incluirPagamentoPixInter(
+  cred: InterCredenciais,
+  p: { valor: number; chave: string; descricao?: string; idempotencia: string },
+): Promise<InterPixIncluirResposta> {
+  let token: string;
+  try {
+    token = await getAccessToken(cred, 'pagamento-pix.write');
+  } catch (e) {
+    // Sem token nada foi enviado ao banco — é recusa certa.
+    throw new InterPixRecusado(e instanceof Error ? e.message : String(e), 401, null);
+  }
+  const body = JSON.stringify({
+    valor: p.valor.toFixed(2),
+    ...(p.descricao ? { descricao: p.descricao.slice(0, 140) } : {}),
+    destinatario: { tipo: 'CHAVE', chave: p.chave },
+  });
+  const { status, data } = await requestJson<InterPixIncluirResposta>({
+    method: 'POST',
+    path: '/banking/v2/pix',
+    body,
+    authorization: `Bearer ${token}`,
+    headers: { 'x-id-idempotente': p.idempotencia },
+    timeoutMs: 45_000,
+    cred,
+  });
+  // 408 (timeout) e 409 (duplicado) não garantem que nada saiu: ficam ambíguos.
+  if (status >= 400 && status < 500 && status !== 408 && status !== 409) {
+    throw new InterPixRecusado(`Inter recusou o Pix (${status}): ${JSON.stringify(data).slice(0, 500)}`, status, data);
+  }
+  if (status < 200 || status >= 300) {
+    throw new Error(`Inter Pix resposta ${status}: ${JSON.stringify(data).slice(0, 500)}`);
+  }
+  return data;
+}
+
+export interface InterPixConsulta {
+  transacaoPix?: {
+    status?: string;
+    valor?: number | string;
+    endToEnd?: string;
+    codigoSolicitacao?: string;
+    dataHoraMovimento?: string;
+    dataHoraSolicitacao?: string;
+    chave?: string;
+    recebedor?: { nome?: string; cpfCnpj?: string; [k: string]: unknown };
+    erros?: Array<{ codigoErro?: string; descricaoErro?: string; [k: string]: unknown }>;
+  };
+  historico?: unknown[];
+  [k: string]: unknown;
+}
+
+/** Situação de um Pix enviado (pagamento-pix.read). */
+export async function consultarPagamentoPixInter(cred: InterCredenciais, codigoSolicitacao: string): Promise<InterPixConsulta> {
+  const token = await getAccessToken(cred, 'pagamento-pix.read');
+  const { status, data } = await requestJson<InterPixConsulta>({
+    method: 'GET',
+    path: `/banking/v2/pix/${encodeURIComponent(codigoSolicitacao)}`,
+    authorization: `Bearer ${token}`,
+    timeoutMs: 30_000,
+    cred,
+  });
+  if (status !== 200) throw new Error(`Inter consulta Pix erro (${status}): ${JSON.stringify(data).slice(0, 500)}`);
+  return data;
+}
+
+/** Status do Inter → nosso: PAGO (dinheiro saiu), ERRO (não saiu) ou null (ainda pendente). */
+export function classificarStatusPixInter(s: string | undefined | null): 'PAGO' | 'ERRO' | null {
+  const v = (s ?? '').toUpperCase();
+  if (['PAGO', 'PIX_PAGO', 'ENVIADO', 'PIX_ENVIADO', 'DEBITADO'].includes(v)) return 'PAGO';
+  if (
+    ['REPROVADO', 'EXPIRADO', 'CANCELADO', 'FALHA', 'CANCELADO_SEM_SALDO', 'NAO_DEBITADO', 'AGENDAMENTO_CANCELADO'].includes(v)
+  )
+    return 'ERRO';
+  return null;
 }
 
 /**

@@ -1,0 +1,201 @@
+// POST /api/financeiro/pedidos-pix/pagar — manda o Pix pelo Inter e, se o
+// banco processar na hora, dá a baixa nas contas. Pedido do dono (20/10/2026).
+//
+// Segurança:
+//  - quem manda dinheiro: podePagarPix (Admin ou conta_pagar.pagar_pix);
+//  - valor e chave saem do servidor (saldo das contas + cadastro do
+//    fornecedor); o valor digitado na confirmação tem que bater;
+//  - a linha nasce ENVIANDO antes de chamar o banco, com trava por casa, e a
+//    conta que já está num Pix sem desfecho é recusada (nada de pagar 2x);
+//  - resposta perdida (rede/timeout/5xx) fica ENVIANDO: conferir no Inter.
+
+import { NextResponse } from 'next/server';
+import { z } from 'zod';
+import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { db, schema } from '@concilia/db';
+import { sql } from 'drizzle-orm';
+import { exigirPermApi } from '@/lib/exigir-perm';
+import { incluirPagamentoPixInter, InterPixRecusado, resolverCredenciaisInterPagamentos } from '@/lib/inter';
+import { baixarContasDoPix, podePagarPix } from '@/lib/pix-pagamento';
+
+export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
+
+const ORIGENS_FORA = ['CONSUMER', 'FOLHA', 'TRANSFERENCIA', 'ENCONTRO_CONTAS'];
+
+const Body = z.object({
+  filialId: z.string().uuid(),
+  fornecedorId: z.string().uuid(),
+  contaIds: z.array(z.string().uuid()).min(1).max(50),
+  valorConfirmado: z.number().positive(),
+});
+
+const brl = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+
+export async function POST(req: Request) {
+  const { user, error } = await exigirPermApi('conta_pagar.marcar_pago');
+  if (error) return error;
+  if (!(await podePagarPix(user.id))) {
+    return NextResponse.json({ error: 'Só o Admin pode mandar Pix pelo sistema.' }, { status: 403 });
+  }
+  const parsed = Body.safeParse(await req.json().catch(() => null));
+  if (!parsed.success) return NextResponse.json({ error: 'dados inválidos' }, { status: 400 });
+  const { filialId, fornecedorId, valorConfirmado } = parsed.data;
+  const contaIds = [...new Set(parsed.data.contaIds)];
+
+  const [acesso] = await db
+    .select({ id: schema.usuarioFilial.filialId })
+    .from(schema.usuarioFilial)
+    .where(and(eq(schema.usuarioFilial.usuarioId, user.id), eq(schema.usuarioFilial.filialId, filialId)))
+    .limit(1);
+  if (!acesso) return NextResponse.json({ error: 'sem acesso à casa' }, { status: 403 });
+
+  const cred = resolverCredenciaisInterPagamentos(filialId);
+  if (!cred) {
+    return NextResponse.json({ error: 'Esta casa não tem a integração de pagamentos do Inter configurada.' }, { status: 400 });
+  }
+
+  const [forn] = await db
+    .select({ nome: schema.fornecedor.nome, chave: schema.fornecedor.chavePix, favorecido: schema.fornecedor.pixFavorecido })
+    .from(schema.fornecedor)
+    .where(eq(schema.fornecedor.id, fornecedorId))
+    .limit(1);
+  const chave = forn?.chave?.trim();
+  if (!forn || !chave) return NextResponse.json({ error: 'Fornecedor sem chave Pix cadastrada.' }, { status: 400 });
+
+  const c = schema.contaPagar;
+  const contas = await db
+    .select({
+      id: c.id,
+      valor: c.valor,
+      origem: c.origem,
+      fornecedorId: c.fornecedorId,
+      jaPago: sql<string>`coalesce((select sum(b.valor) from conta_pagar_baixa b where b.conta_pagar_id = ${c.id}), 0)::text`,
+    })
+    .from(c)
+    .where(and(inArray(c.id, contaIds), eq(c.filialId, filialId), isNull(c.dataPagamento), isNull(c.dataDelete)));
+  if (contas.length !== contaIds.length) {
+    return NextResponse.json({ error: 'Alguma conta já foi paga, excluída ou não é desta casa. Recarregue a tela.' }, { status: 409 });
+  }
+  if (contas.some((x) => x.fornecedorId !== fornecedorId || ORIGENS_FORA.includes(x.origem ?? ''))) {
+    return NextResponse.json({ error: 'Conta de outro fornecedor ou que não se paga por aqui.' }, { status: 400 });
+  }
+  const itens = contas.map((x) => ({ id: x.id, valor: Math.round((Number(x.valor) - Number(x.jaPago)) * 100) / 100 }));
+  if (itens.some((i) => i.valor <= 0)) {
+    return NextResponse.json({ error: 'Conta sem saldo em aberto. Recarregue a tela.' }, { status: 409 });
+  }
+  const total = Math.round(itens.reduce((s, i) => s + i.valor, 0) * 100) / 100;
+  if (Math.abs(total - valorConfirmado) > 0.005) {
+    return NextResponse.json(
+      { error: `O valor em aberto é ${brl(total)}, não ${brl(valorConfirmado)}. Recarregue a tela.` },
+      { status: 409 },
+    );
+  }
+
+  // Trava por casa + confere conta presa + cria a linha ENVIANDO, tudo junto.
+  const descricao = `Pedido ${forn.nome}`.slice(0, 140);
+  const criado = await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${'pix_pagamento:' + filialId}))`);
+    const presas = (await tx.execute(sql`
+      SELECT p.id FROM pix_pagamento p, jsonb_array_elements(p.conta_ids) e
+       WHERE p.filial_id = ${filialId}::uuid
+         AND (p.status IN ('ENVIANDO','APROVACAO','AGENDADO') OR (p.status = 'PAGO' AND p.baixado_em IS NULL))
+         AND e->>'id' IN (${sql.join(contaIds.map((id) => sql`${id}`), sql`, `)})
+       LIMIT 1
+    `)) as unknown as unknown[];
+    if (presas.length > 0) return null;
+    const [linha] = await tx
+      .insert(schema.pixPagamento)
+      .values({
+        filialId,
+        fornecedorId,
+        favorecido: forn.favorecido ?? forn.nome,
+        contaIds: itens,
+        chave,
+        valor: total.toFixed(2),
+        descricao,
+        status: 'ENVIANDO',
+        usuarioId: user.id,
+        usuarioEmail: user.email ?? null,
+      })
+      .returning({ id: schema.pixPagamento.id });
+    return linha!;
+  });
+  if (!criado) {
+    return NextResponse.json(
+      { error: 'Uma dessas contas já está num Pix enviado pelo sistema. Confira a lista "Pix enviados pelo sistema".' },
+      { status: 409 },
+    );
+  }
+
+  const atualizar = (campos: Partial<typeof schema.pixPagamento.$inferInsert>) =>
+    db
+      .update(schema.pixPagamento)
+      .set({ ...campos, atualizadoEm: new Date() })
+      .where(eq(schema.pixPagamento.id, criado.id));
+
+  let resp;
+  try {
+    resp = await incluirPagamentoPixInter(cred, { valor: total, chave, descricao, idempotencia: criado.id });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (e instanceof InterPixRecusado) {
+      await atualizar({ status: 'ERRO', erro: msg.slice(0, 1000), retorno: (e.detalhe ?? null) as object | null });
+      const semEscopo = e.status === 401 || e.status === 403 || /scope|escopo|invalid_client|unauthorized/i.test(msg);
+      return NextResponse.json(
+        {
+          error: semEscopo
+            ? 'O Inter não deixou: a integração de pagamentos desta casa não tem a permissão "Pagamento Pix" (escrita e leitura). Ligue no Internet Banking do Inter → Integrações. Nenhum dinheiro saiu.'
+            : `O Inter recusou o Pix. Nenhum dinheiro saiu. ${msg}`,
+        },
+        { status: 400 },
+      );
+    }
+    await atualizar({ erro: msg.slice(0, 1000) });
+    return NextResponse.json(
+      {
+        pendente: true,
+        error:
+          'O Inter não respondeu. O Pix PODE ter saído: confira no app do Inter antes de tentar de novo. As contas ficam travadas até você conferir na lista "Pix enviados pelo sistema".',
+      },
+      { status: 202 },
+    );
+  }
+
+  const tipo = String(resp.tipoRetorno ?? '').toUpperCase();
+  await atualizar({
+    statusInter: tipo || null,
+    codigoSolicitacao: resp.codigoSolicitacao ?? null,
+    endToEndId: resp.endToEndId ?? null,
+    retorno: resp as object,
+    status: tipo === 'APROVACAO' ? 'APROVACAO' : tipo === 'AGENDADO' ? 'AGENDADO' : 'ENVIANDO',
+  });
+
+  if (tipo === 'PROCESSADO') {
+    const { baixadas } = await baixarContasDoPix(criado.id, resp.dataPagamento ?? null);
+    return NextResponse.json({
+      ok: true,
+      status: 'PAGO',
+      mensagem: `Pix de ${brl(total)} enviado pra ${forn.favorecido ?? forn.nome}. Baixa feita em ${baixadas} conta(s).`,
+    });
+  }
+  if (tipo === 'APROVACAO') {
+    return NextResponse.json({
+      ok: true,
+      status: 'APROVACAO',
+      mensagem: `Pix de ${brl(total)} criado no Inter e esperando APROVAÇÃO no app do Inter. Depois de aprovar, clique em "Conferir no Inter" pra dar a baixa.`,
+    });
+  }
+  if (tipo === 'AGENDADO') {
+    return NextResponse.json({
+      ok: true,
+      status: 'AGENDADO',
+      mensagem: `Pix de ${brl(total)} agendado no Inter. A baixa sai quando você conferir depois do pagamento.`,
+    });
+  }
+  return NextResponse.json({
+    ok: true,
+    status: 'ENVIANDO',
+    mensagem: `O Inter recebeu o Pix (retorno "${tipo || 'sem tipo'}"). Clique em "Conferir no Inter" pra confirmar e dar a baixa.`,
+  });
+}

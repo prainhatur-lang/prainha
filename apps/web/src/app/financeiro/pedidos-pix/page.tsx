@@ -11,6 +11,9 @@
 // conta do Consumer ficam de fora (têm fluxo próprio).
 // Nada aqui manda dinheiro: a baixa usa a rota de sempre
 // (/api/financeiro/contas/[id]/baixas) e a chave, a do cadastro de fornecedor.
+// EXCEÇÃO desde 20/10/2026 (pedido do dono): "Pagar Pix agora" manda o Pix
+// pela API de pagamentos do Inter (só Admin, tabela pix_pagamento) e dá a
+// baixa quando o banco confirma. O caminho de copiar + baixa continua igual.
 
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
@@ -25,6 +28,9 @@ import { AppHeader } from '@/components/app-header';
 import { brl } from '@/lib/format';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
 import { GrupoPix, type GrupoPedidos } from './grupo-pix';
+import { PixEnviados, type PixEnviado } from './pix-enviados';
+import { contasEmPixAberto, podePagarPix } from '@/lib/pix-pagamento';
+import { resolverCredenciaisInterPagamentos } from '@/lib/inter';
 
 export const dynamic = 'force-dynamic';
 
@@ -87,6 +93,58 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
     );
   }
   const escolhida = escolhidaX;
+
+  // Pix pelo sistema (20/10/2026). Se a tabela falhar, a tela segue sem isso.
+  const pagaPix = await podePagarPix(user.id).catch(() => false);
+  const temInterPix = !!resolverCredenciaisInterPagamentos(escolhida.id);
+  let travadas: string[] = [];
+  let enviados: PixEnviado[] = [];
+  try {
+    travadas = [...(await contasEmPixAberto(escolhida.id))];
+    type Row = {
+      id: string;
+      quando: string;
+      favorecido: string | null;
+      chave: string;
+      valor: string;
+      status: string;
+      status_inter: string | null;
+      codigo_solicitacao: string | null;
+      erro: string | null;
+      quem: string | null;
+      baixado: boolean;
+      qtd: number;
+    };
+    const rows = (await db.execute(sql`
+      SELECT p.id, to_char(p.criado_em AT TIME ZONE 'America/Sao_Paulo', 'DD/MM HH24:MI') AS quando,
+             p.favorecido, p.chave, p.valor::text AS valor, p.status, p.status_inter, p.codigo_solicitacao,
+             p.erro, coalesce(u.nome, p.usuario_email) AS quem, (p.baixado_em IS NOT NULL) AS baixado,
+             jsonb_array_length(p.conta_ids) AS qtd
+        FROM pix_pagamento p
+        LEFT JOIN usuario u ON u.id = p.usuario_id
+       WHERE p.filial_id = ${escolhida.id}::uuid
+         AND (p.criado_em > now() - interval '30 days'
+              OR (p.baixado_em IS NULL AND p.status NOT IN ('ERRO','CANCELADO')))
+       ORDER BY p.criado_em DESC
+       LIMIT 50
+    `)) as unknown as Row[];
+    enviados = rows.map((r) => ({
+      id: r.id,
+      quando: r.quando,
+      favorecido: r.favorecido,
+      chave: r.chave,
+      valor: Number(r.valor),
+      status: r.status,
+      statusInter: r.status_inter,
+      codigo: r.codigo_solicitacao,
+      erro: r.erro,
+      quem: r.quem && r.quem.includes('@') ? r.quem.split('@')[0]! : r.quem,
+      baixado: r.baixado,
+      qtdContas: Number(r.qtd),
+    }));
+  } catch (e) {
+    console.error('[pedidos-pix] pix enviados', e);
+  }
 
   const c = schema.contaPagar;
   const f = schema.fornecedor;
@@ -248,6 +306,15 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
         <p className="mt-1 text-sm text-slate-600">
           Pedidos em aberto por fornecedor, com a chave Pix e o valor pra copiar. Você paga no app
           do Inter e volta aqui pra dar a baixa. Nenhum dinheiro sai por esta tela.
+          {pagaPix && (
+            <>
+              {' '}
+              <b className="font-medium text-violet-800">
+                Exceção: o botão 💸 Pagar Pix agora manda o Pix pelo Inter
+                {temInterPix ? '' : ' (esta casa ainda não tem a integração de pagamentos do Inter)'}.
+              </b>
+            </>
+          )}
         </p>
 
         {filiais.length > 1 && (
@@ -344,10 +411,16 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
                 hoje={hoje}
                 podeBaixar={podeBaixar}
                 podeEditarFornecedor={podeEditarFornecedor}
+                filialId={escolhida.id}
+                podePagarPix={pagaPix}
+                temInterPix={temInterPix}
+                contasTravadas={travadas}
               />
             ))
           )}
         </div>
+
+        <PixEnviados itens={enviados} podeMexer={pagaPix} />
       </section>
     </main>
   );
