@@ -71,13 +71,20 @@ export async function salvarDestinosCasa(organizacaoId: string, destinos: Destin
     });
 }
 
+/** Array de uuid pro ANY(): o sql`` do drizzle abre um array JS em ($1, $2) e
+ *  `${ids}::uuid[]` quebrava com "malformed array literal" — o cron das 07:00
+ *  não mandou nada pro Lula/Lidiane em 18 e 19/10. */
+function uuidArray(ids: string[]) {
+  return sql`ARRAY[${sql.join(ids.map((i) => sql`${i}`), sql`, `)}]::uuid[]`;
+}
+
 /** Organizações que têm alguém recebendo por casa (salvo ou da lista fixa). */
 async function organizacoesComDestino(): Promise<string[]> {
   const rows = (await db.execute(sql`
     SELECT DISTINCT organizacao_id::text AS id FROM (
       SELECT organizacao_id FROM relatorio_diario_config WHERE destinos_casa IS NOT NULL
       UNION
-      SELECT organizacao_id FROM filial WHERE id = ANY(${DESTINOS_CASA.map((d) => d.filialId)}::uuid[])
+      SELECT organizacao_id FROM filial WHERE id = ANY(${uuidArray(DESTINOS_CASA.map((d) => d.filialId))})
     ) x
   `)) as unknown as Array<{ id: string }>;
   return rows.map((r) => r.id);
@@ -126,7 +133,7 @@ export interface ResultadoCasa {
 async function filiaisDe(organizacaoId: string, ids: string[]): Promise<Array<{ id: string; nome: string }>> {
   if (!ids.length) return [];
   const rows = (await db.execute(sql`
-    SELECT id, nome FROM filial WHERE organizacao_id = ${organizacaoId}::uuid AND id = ANY(${ids}::uuid[])
+    SELECT id, nome FROM filial WHERE organizacao_id = ${organizacaoId}::uuid AND id = ANY(${uuidArray(ids)})
   `)) as unknown as Array<{ id: string; nome: string }>;
   // na ordem escolhida
   return ids.map((id) => rows.find((r) => r.id === id)).filter((x): x is { id: string; nome: string } => !!x);
