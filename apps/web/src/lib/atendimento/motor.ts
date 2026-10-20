@@ -14,6 +14,7 @@ import { enviarTexto, enviarAudio, marcarLidaComDigitando, baixarMidia } from '.
 import { gerarAudioNina } from './voz';
 import { transcreverAudio } from './transcrever';
 import { avisarEquipe } from './avisos';
+import { hojeBr } from '@/lib/datas';
 import { responsavelAchadosPerdidos, telefoneResponsavel } from './achados-perdidos';
 import {
   consultarDisponibilidade,
@@ -798,6 +799,7 @@ export async function processarEntrada(params: {
     let transferiu = false;
     let leadRegistrado = false;
     let usouFerramenta = false;
+    let reservaCriada = false;
     try {
       let resposta;
       try {
@@ -887,6 +889,7 @@ export async function processarEntrada(params: {
       transferiu = resposta.transferiu;
       leadRegistrado = resposta.leadRegistrado;
       usouFerramenta = resposta.usouFerramenta === true;
+      reservaCriada = resposta.reservaCriada === true;
       // RESPOSTA AUTOMÁTICA DE OUTRO NEGÓCIO (09/10/2026): convite nosso caiu
       // em número com saudação automática ("O Gprado Contabilidade agradece o
       // seu contato") e a Nina se apresentou e ofereceu reserva pro robô — 5
@@ -996,6 +999,79 @@ export async function processarEntrada(params: {
         )
         .catch(() => {});
       transferiu = true;
+    }
+
+    // PROMESSA DE PASSAR PRA EQUIPE SEM PASSAR (caso Tais, 11/10/2026): "vou
+    // transferir para eles", "a equipe vai entrar em contato com você
+    // rapidinho", "registrei seu pedido" — nenhuma dessas a rede de cima
+    // pegava. A conversa ficou em 'bot', ninguém foi avisado e a cliente de 13
+    // pessoas ficou sem mesa. Link de orçamento na mesma resposta não conta:
+    // ali a equipe já é avisada pelo próprio orçamento.
+    if (
+      !transferiu &&
+      !leadRegistrado &&
+      !passouPara &&
+      texto &&
+      !/\/orcamento\//.test(texto) &&
+      // Pergunta ("posso passar seu contato pra equipe?") é pedir licença, não promessa.
+      /\bvou (te )?(transferir|passar|encaminhar)\b|\b(passar|encaminhar|transferir)\b[^.!?\n]{0,25}\b(para|pra|à|a) (a |nossa )?(equipe|time|gerente|respons[aá]vel|eles)\b|\b(a |nossa )?(equipe|time|gerente|respons[aá]vel|algu[eé]m)\b[^.!?\n]{0,40}\b(vai|v[aã]o|ir[aá]|ir[aã]o|j[aá] vai|deve)\b[^.!?\n]{0,20}\b(entrar em contato|te (chamar|responder|retornar|ligar)|falar com (voc[eê]|vc)|retornar)|\bregistrei (o |seu |o seu )?(pedido|interesse|solicita[cç][aã]o)\b/i.test(
+        textoPromessa.replace(/[^.!?\n]*\b(posso|quer que|prefere|gostaria|deseja)\b[^.!?\n]*\?/gi, ''),
+      )
+    ) {
+      await executores
+        .transferir(
+          'Nina prometeu passar pra equipe',
+          'A Nina disse ao cliente que a equipe ia entrar em contato — assumir e responder.',
+        )
+        .catch(() => {});
+      transferiu = true;
+    }
+
+    // RESERVA DE BOCA (caso Tais, 11/10/2026): "Já registrei sua reserva para
+    // 13 pessoas na Areia" sem criar_reserva ter rodado — a cliente chega e
+    // não tem mesa. Se a resposta afirma reserva feita, a ferramenta não criou
+    // nesta resposta e não existe reserva dela (de hoje em diante) nesta casa,
+    // a conversa vai pra equipe e o texto deixa de mentir.
+    if (
+      texto &&
+      !reservaCriada &&
+      modo === 'cliente' &&
+      /\b(j[aá] )?(registrei|reservei|garanti|anotei|confirmei|agendei|marquei)\b[^.!?\n]{0,40}\breserva\b|\breserva\b[^.!?\n]{0,40}\b(est[aá]|foi|ficou|j[aá] est[aá])\s+(confirmada|registrada|garantida|feita|criada|agendada|anotada)\b/i.test(
+        texto,
+      ) &&
+      // "Conferi e não encontrei reserva no seu nome" não é afirmar reserva.
+      !/\b(n[aã]o|nenhuma)\b[^.!?\n]{0,30}\breserva\b/i.test(texto)
+    ) {
+      const suf = entrada.telefone.replace(/\D/g, '').slice(-8);
+      const [existe] = suf
+        ? await db
+            .select({ id: schema.reserva.id })
+            .from(schema.reserva)
+            .where(
+              and(
+                eq(schema.reserva.filialId, entrada.filialId),
+                sql`${schema.reserva.data} >= ${hojeBr()}::date`,
+                sql`${schema.reserva.status} not in ('cancelada', 'no_show')`,
+                sql`right(regexp_replace(${schema.reserva.clienteTelefone}, '\\D', '', 'g'), 8) = ${suf}`,
+              ),
+            )
+            .limit(1)
+            .catch(() => [])
+        : [];
+      if (!existe) {
+        console.log('[nina] reserva de boca segurada', filialNome, registro.conversaId, texto.slice(0, 200));
+        if (!transferiu) {
+          await executores
+            .transferir(
+              'Nina disse que reservou sem criar',
+              'A Nina falou ao cliente que a reserva estava feita, mas nenhuma reserva foi criada — conferir e criar/responder.',
+            )
+            .catch(() => {});
+          transferiu = true;
+        }
+        texto =
+          'Ainda não consegui deixar sua reserva registrada por aqui, então já passei pra nossa equipe — eles confirmam com você nesta mesma conversa em instantes.';
+      }
     }
 
     // LOUNGE SEM LINK (dono, 18/10/2026): a Nina não cria reserva de Lounge

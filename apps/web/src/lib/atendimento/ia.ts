@@ -130,6 +130,9 @@ export interface RespostaNina {
   /** true se alguma ferramenta rodou nesta resposta (pode ter criado/mudado
    *  algo) — o motor só descarta resposta atrasada quando é false. */
   usouFerramenta?: boolean;
+  /** true se criar_reserva (ou a remarcação) gravou a reserva nesta resposta.
+   *  O motor usa pra pegar "registrei sua reserva" dito sem reserva nenhuma. */
+  reservaCriada?: boolean;
 }
 
 /** O modelo devolve isto quando a mensagem é resposta automática de outro
@@ -380,7 +383,7 @@ ${duasCasas
 - QUANDO A RESERVA DE HOJE NÃO DÁ MAIS (ferramenta recusou / janela fechou / lotado): a mensagem NUNCA é só "não dá" — a casa CONTINUA RECEBENDO por ordem de chegada. Diga isso como convite: chegando, é só procurar a recepção, que acomoda conforme as mesas forem vagando. NÃO ofereça "colocar o nome na lista de espera", NÃO diga que anotou o nome nem que o cliente tem posição na fila — a fila é feita na recepção, na chegada (decisão do dono, 10/10). Seja honesta: sem mesa garantida e sem hora garantida; com a casa cheia, diga que pode ter espera; se a ocupação de agora informar fila na recepção, só AVISE quantos grupos estão esperando ("agora tem 2 grupos na fila").
 ${duasCasas
     ? `- Lounge NOVO: não crie por aqui — explique a taxa (R$ 100 dia útil / R$ 250 sáb-dom, com garçom exclusivo) e mande concluir em https://reservas.prainhabar.com (o Pix é pago lá). TODA vez que o cliente falar de Lounge — reserva nova, "dá pra trocar da Areia pro Lounge?", "quanto é o Lounge?" — a MESMA resposta leva o valor DESSA data (consultar_disponibilidade_reserva) e o link https://reservas.prainhabar.com. É PROIBIDO responder "veja com a equipe na chegada" ou "depende da disponibilidade no dia": o Lounge só é garantido pagando a taxa no site (caso Ismael, 18/10: pediu pra trocar a Areia pelo Lounge e ficou sem valor e sem link). Se ele quiser as duas coisas, crie a reserva da Areia normalmente e mande o link do Lounge junto. Isso vale SÓ pra reserva NOVA: lounge JÁ RESERVADO/PAGO que quer mudar horário, dia ou pessoas é remarcar_reserva (você faz na hora).
-- GRUPOS GRANDES: a ferramenta junta DUAS mesas sozinha quando o grupo não cabe numa só (na Areia duas mesas atendem até 16; no Deck Superior, até 24). Se nem duas mesas derem, ofereça a área que comporta ou transfira pra equipe (3 mesas ou mais é com humanos). NÃO transfira antes de tentar criar — deixe a ferramenta decidir.`
+- GRUPOS GRANDES: a ferramenta junta DUAS mesas sozinha quando o grupo não cabe numa só (na Areia duas mesas atendem até 16; no Deck Superior, até 24). Se nem duas mesas derem, ofereça a área que comporta ou transfira pra equipe (3 mesas ou mais é com humanos). NÃO transfira antes de tentar criar — deixe a ferramenta decidir. Ex.: 13 pessoas na Areia = DUAS mesas = você mesma cria com criar_reserva (caso Tais, 11/10: ouviu "precisaria juntar mais de duas mesas" e ficou sem reserva). Nunca diga que precisa de mais de duas mesas pra grupo que cabe em duas.`
     : `- Área COM taxa (reserva NOVA): não crie por aqui — explique a taxa conforme os blocos e mande concluir pelo site de reservas da casa. Reserva com taxa JÁ FEITA/PAGA que quer mudar horário, dia ou pessoas é remarcar_reserva (você faz na hora).
 - GRUPOS GRANDES: a ferramenta junta DUAS mesas sozinha quando o grupo não cabe numa só. Se nem duas mesas derem, ofereça outra área ou transfira pra equipe (3 mesas ou mais é com humanos). NÃO transfira antes de tentar criar — deixe a ferramenta decidir.`}
 - GRUPO QUE PASSA DE DUAS MESAS${duasCasas ? ' (no Prainha Bar: mais de 16 pessoas na Areia, mais de 24 no Deck Superior)' : ''}: conte TODO MUNDO, adultos e crianças. É PROIBIDO dizer "podemos acomodar vocês", "podemos juntar duas mesas" ou seguir perguntando área e horário como se a reserva fosse sair por aqui — duas mesas não comportam, e prometer é mandar o grupo chegar sem lugar (caso Sérgio, 10/10: 20 adultos + 10 crianças ouviram "juntamos duas mesas"). Assim que souber o número de pessoas, diga com carinho que grupo desse tamanho quem monta é a equipe, porque precisa juntar três mesas ou mais e depende do movimento do dia; pegue o que faltar (data, horário, nome) e transfira pra equipe. Não prometa que cabe nem que não cabe.
@@ -1246,6 +1249,7 @@ Como usar, SEM EXCEÇÃO:
   let transferiu = false;
   let leadRegistrado = false;
   let usouFerramenta = false;
+  let reservaCriada = false;
 
   const ferramentasBase = modo === 'fornecedor' ? [...FERRAMENTAS, ...FERRAMENTAS_FORNECEDOR.filter((f) => f.type === 'function' && f.function.name === 'consultar_cotacoes_fornecedor')] : FERRAMENTAS;
   // Passagem só com outra casa ligada e executor presente (e nunca no modo fornecedor).
@@ -1276,7 +1280,7 @@ Como usar, SEM EXCEÇÃO:
 
     const toolCalls = msg.tool_calls ?? [];
     if (toolCalls.length === 0) {
-      return { texto: msg.content?.trim() || null, transferiu, leadRegistrado, usouFerramenta };
+      return { texto: msg.content?.trim() || null, transferiu, leadRegistrado, usouFerramenta, reservaCriada };
     }
     usouFerramenta = true;
 
@@ -1474,6 +1478,7 @@ Como usar, SEM EXCEÇÃO:
         semDigitosLongos(tc.function.arguments || '{}').slice(0, 400),
         semDigitosLongos(resultado).replace(/\s+/g, ' ').slice(0, 300),
       );
+      if (/^RESERVA (CRIADA|REMARCADA)\b/.test(resultado)) reservaCriada = true;
       mensagens.push({ role: 'tool', tool_call_id: tc.id, content: resultado });
     }
   }
@@ -1498,9 +1503,9 @@ Como usar, SEM EXCEÇÃO:
             max_tokens: 400,
           })
         ).choices[0]?.message;
-    return { texto: fim?.content?.toString().trim() || null, transferiu, leadRegistrado, usouFerramenta };
+    return { texto: fim?.content?.toString().trim() || null, transferiu, leadRegistrado, usouFerramenta, reservaCriada };
   } catch (e) {
     console.error('[nina] fechamento forçado falhou:', e instanceof Error ? e.message : e);
-    return { texto: null, transferiu, leadRegistrado, usouFerramenta };
+    return { texto: null, transferiu, leadRegistrado, usouFerramenta, reservaCriada };
   }
 }
