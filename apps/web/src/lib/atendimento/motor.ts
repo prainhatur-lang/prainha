@@ -642,8 +642,8 @@ export async function processarEntrada(params: {
         }),
       // Terraço fechado + consumo por comanda (20/10/2026, caso Gabriella):
       // preço e entrada do cadastro de espaços desta casa.
-      gerarOrcamentoEspaco: (dados: import('./ia').DadosOrcamentoEspaco) =>
-        gerarOrcamentoEspaco({
+      gerarOrcamentoEspaco: async (dados: import('./ia').DadosOrcamentoEspaco) => {
+        const r = await gerarOrcamentoEspaco({
           filialId: entrada.filialId,
           filialNome,
           telefone: entrada.telefone,
@@ -655,7 +655,20 @@ export async function processarEntrada(params: {
           pessoas: dados.pessoas,
           tipoEvento: dados.tipoEvento,
           observacoes: dados.observacoes,
-        }),
+        });
+        // Lead de aluguel avisa a equipe (dono, 20/10/2026): a Nina segue
+        // vendendo, mas um humano fica sabendo e acompanha o pagamento.
+        if (/\/orcamento\//.test(r)) {
+          const [a, m, d] = String(dados.data ?? '').split('-');
+          void avisarEquipe(numerosEquipe, {
+            motivo: `Aluguel do ${dados.espaco || 'Terraço'}: orçamento enviado — ${d}/${m}/${a}${dados.hora ? ` ${dados.hora}` : ''}, ${dados.pessoas} pessoas${dados.tipoEvento ? `, ${dados.tipoEvento}` : ''}`,
+            nomeCliente: dados.nomeCliente || conversa.nomeCliente || '-',
+            telefone: entrada.telefone,
+            filial: filialNome,
+          }).catch(() => {});
+        }
+        return r;
+      },
       consultarMesa: (numero: string) => consultarMesa(entrada.filialId, numero),
       // Pedido de delivery AO VIVO na loja (14/10/2026, caso Cíntya): procura
       // nesta casa e nas outras do grupo — o cliente do iFood acha o WhatsApp

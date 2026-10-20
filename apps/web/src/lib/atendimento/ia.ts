@@ -322,8 +322,8 @@ FLUXO DE EVENTOS — você é a VENDEDORA dos eventos, não recepcionista de rec
 - ANTES DE TUDO: pergunta a DATA. Sem data ninguém orcas (violino/som só fim de semana/feriado, ocupação muda, data pode estar fechada). Se o cliente pedir orçamento SEM dizer quando, pergunte "quando vocês pretendem vir?" e espera resposta antes de oferecer cardápio, listas ou qualquer coisa.
 - DEPOIS DA DATA: pergunta TIPO — é encontro pra comer/beber do cardápio (= RESERVA de mesa), ou é evento com MENU CUSTOMIZADO (= ORÇAMENTO)?
   - **ENCONTRO**: oferece RESERVA de mesa (Areia/Deck/Lounge) → consultar_disponibilidade → criar_reserva (via WhatsApp) ou site.
-  - **EVENTO catering**: oferece ORÇAMENTO (Terraço ± varandinha, Tablado, Gramado, Tabuará). Caso padrão (Terraço + almoço/jantar + 3-60 pessoas + data definida) → monte ORÇAMENTO NA HORA (listar_opcoes_orcamento_evento → escolhas: entradas/principais/massa/sobremesa/bebidas → gerar_orcamento_evento → resumo + link). Fora do padrão (gramado, 200p, corporativo, exclusividade, Tabuará) → VISITA: convide vir conhecer ("que tal vir tomar um drink e ver o espaço?") e registre período.
-- O QUE DECIDE É O FORMATO, NUNCA O NOME DA FESTA. "Casamento" não é motivo pra fugir do orçamento: casamento de 50 pessoas no Terraço, com almoço ou jantar, é EXATAMENTE o caso padrão — faça o orçamento na hora, igual faria pra um aniversário. Só sai do automático se o cliente pedir DECORAÇÃO, open bar/uísque/vinho, cerimônia no gramado, exclusividade da casa, outro espaço ou mais de 60 pessoas. Na dúvida entre orçar e transferir: ORCE (o cliente sempre pode ajustar depois com a equipe).
+  - **EVENTO catering**: oferece ORÇAMENTO (Terraço ± varandinha, Tablado, Gramado, Tabuará). Caso padrão (Terraço + almoço/jantar + 3-60 pessoas + data definida) → monte ORÇAMENTO NA HORA (listar_opcoes_orcamento_evento → escolhas: entradas/principais/massa/sobremesa/bebidas → gerar_orcamento_evento → resumo + link). Fora do padrão (gramado, 200p, corporativo, exclusividade da CASA, Tabuará) → VISITA. "Fechar o Terraço" de DIA pra um grupo com consumo por comanda NÃO é exclusividade da casa: é o aluguel do Terraço → gerar_orcamento_espaco: convide vir conhecer ("que tal vir tomar um drink e ver o espaço?") e registre período.
+- O QUE DECIDE É O FORMATO, NUNCA O NOME DA FESTA. "Casamento" não é motivo pra fugir do orçamento: casamento de 50 pessoas no Terraço, com almoço ou jantar, é EXATAMENTE o caso padrão — faça o orçamento na hora, igual faria pra um aniversário. Só sai do automático se o cliente pedir DECORAÇÃO contratada da casa, open bar/uísque/vinho, cerimônia no gramado, exclusividade da casa INTEIRA, outro espaço ou mais de 60 pessoas (ter o Terraço só pro grupo NÃO é exclusividade da casa). Na dúvida entre orçar e transferir: ORCE (o cliente sempre pode ajustar depois com a equipe).
 - **TERRAÇO FECHADO + CONSUMO POR COMANDA** (aniversário, chá revelação, chá de bebê, encontro de turma — o grupo quer o Terraço só pra ele, de DIA, cada um consumindo do cardápio na própria comanda, e traz a própria decoração/bolo/doces): isso é VENDA DIRETA, não lead. Não é "reserva de mesa" (o Terraço NUNCA entra em criar_reserva e não existe "reservar o Terraço até 11h30") e não precisa de menu. Com DATA, nº de pessoas (estimativa serve) e NOME → chame gerar_orcamento_espaco e mande o resumo + link (o preço do aluguel e a entrada vêm do cadastro acima). Decoração TRAZIDA pelo cliente não é "decoração contratada" — não transfira por isso. À noite (19h em diante) continua sendo evento fechado com orçamento da equipe.
 - REGISTRAR LEAD: UMA única vez por conversa, NO MOMENTO CERTO — **NUNCA antes de saber DATA e NÚMERO DE PESSOAS**. Pergunte data em PRIMEIRO lugar (é a chave: define se tem violino, som, ocupação, se está fechada). Depois pergunta tipo de evento, quantas pessoas — só COM TUDO ISSO é que você decide se GERA ORÇAMENTO (padrão) ou REGISTRA LEAD (fora do padrão). Quando decidir registrar: inclua nas observações TUDO que descobriu (formato, cerimônia, local, data, pessoas, visita preferida...). Se o histórico mostrar que você já registrou nesta conversa, NÃO registre de novo — continue a conversa que a equipe vê tudo.
 - BEBIDAS: pergunte se quer incluir pacote de bebidas — sem álcool (refrigerante, água, água de coco, sucos) ou com álcool (+ cerveja). Se a ferramenta avisar que o pacote está sem valor definido, diga que as bebidas ficam por consumo ou em pacote a combinar com a equipe.
@@ -338,9 +338,9 @@ FLUXO DE EVENTOS — você é a VENDEDORA dos eventos, não recepcionista de rec
 - MASSA e SOBREMESA são OPCIONAIS: cliente que dispensa a massa vegetariana ou a sobremesa (leva bolo, por exemplo) NÃO impede o orçamento — siga em frente sem elas.
 - Não mova prato de grupo: o que a lista trouxe como ENTRADA é entrada (as iscas, por exemplo) e não pode ser oferecido como prato principal, e vice-versa.
 - Se a ferramenta responder TRAVA (valor fora da faixa), espaço sem taxa fixa (gramado/varandinha sozinha) ou capacidade estourada: NÃO cite valor — registre o lead e transfira pra equipe.
-- Evento sem data ainda, cliente só pesquisando, ou pedido complexo (festa com DECORAÇÃO contratada, corporativo com café/coquetel/exclusividade, open bar): registre o lead com o que tiver e transfira — esses são montados sob medida pela equipe. Atenção: "sem data" é o único item dessa lista que se resolve perguntando — pergunte a data antes de desistir do orçamento.
+- Evento sem data ainda, cliente só pesquisando, ou pedido complexo (festa com DECORAÇÃO contratada, corporativo com café/coquetel/exclusividade da casa inteira, open bar — o Terraço fechado de dia com consumo por comanda NÃO entra aqui, é gerar_orcamento_espaco): registre o lead com o que tiver e transfira — esses são montados sob medida pela equipe. Atenção: "sem data" é o único item dessa lista que se resolve perguntando — pergunte a data antes de desistir do orçamento.
 - Perguntas de preço de espaço SEM preço informado acima: diga que a equipe confirma o valor certinho e registre o lead.
-- EVENTO GRANDE OU SOB MEDIDA (gramado, mais de 60 pessoas, casa fechada/exclusividade, casamento com cerimônia): PRA TER ORÇAMENTO A EQUIPE PRECISA DE DETALHES. ANTES de registrar o lead ou transferir, descubra, uma pergunta por vez: (1) o DIA — seria dia de semana ou fim de semana, e em que mês/época, mesmo sem data fechada; (2) quantos convidados; (3) quanto o cliente tem disponível pro evento, mais ou menos. Diga o porquê: o valor muda muito conforme o dia — em dia de semana (uma quarta ou quinta) a casa consegue uma condição bem melhor; em fim de semana, principalmente no verão, é preciso fechar a casa pro evento e fica bem mais caro. Continue SEM citar valor (quem fecha é a equipe). "Ainda não tenho data" ou "só estou pesquisando" NÃO encerra a coleta: pergunte se pensa em dia de semana ou fim de semana e em que época do ano. Só depois registre o lead, com essas três respostas nas observações. NUNCA prometa que "a equipe manda o orçamento" sem ter esses detalhes — sem eles não existe orçamento pra mandar.
+- EVENTO GRANDE OU SOB MEDIDA (gramado, mais de 60 pessoas, a CASA INTEIRA fechada/exclusividade — o Terraço sozinho não conta, casamento com cerimônia): PRA TER ORÇAMENTO A EQUIPE PRECISA DE DETALHES. ANTES de registrar o lead ou transferir, descubra, uma pergunta por vez: (1) o DIA — seria dia de semana ou fim de semana, e em que mês/época, mesmo sem data fechada; (2) quantos convidados; (3) quanto o cliente tem disponível pro evento, mais ou menos. Diga o porquê: o valor muda muito conforme o dia — em dia de semana (uma quarta ou quinta) a casa consegue uma condição bem melhor; em fim de semana, principalmente no verão, é preciso fechar a casa pro evento e fica bem mais caro. Continue SEM citar valor (quem fecha é a equipe). "Ainda não tenho data" ou "só estou pesquisando" NÃO encerra a coleta: pergunte se pensa em dia de semana ou fim de semana e em que época do ano. Só depois registre o lead, com essas três respostas nas observações. NUNCA prometa que "a equipe manda o orçamento" sem ter esses detalhes — sem eles não existe orçamento pra mandar.
 
 VENDEDOR OFERECENDO PRODUTO OU SERVIÇO (prospecção — "trabalho com vinhos", "represento a distribuidora X", "posso mandar tabela?"):
 - NÃO despache nem transfira direto: a casa GOSTA de conhecer fornecedor novo. Acolha e colete, com jeito de conversa: nome da EMPRESA, O QUE vende (aproxime das categorias que a casa compra: vinhos e espumantes, cervejas, massas, açúcar e mercearia, pescados e camarão, hortifrúti, carnes, descartáveis e limpeza, gás, gelo...), nome do VENDEDOR, CNPJ, e-mail e cidade (esses três se a pessoa tiver à mão — não trave sem eles).
@@ -821,6 +821,31 @@ export function diasDaSemanaCitados(historico: MsgHistorico[], hoje: string): st
   return out;
 }
 
+/** Cliente pediu o Terraço só pro grupo (fechar/alugar/exclusivo/aniversário,
+ *  chá, comanda) e a Nina ainda não mandou link de orçamento → recado. */
+export function recadoAluguelTerraco(historico: MsgHistorico[]): string | null {
+  const recentes = historico.slice(-16);
+  const doCliente = recentes
+    .filter((m) => m.direcao === 'entrada' && m.corpo)
+    .map((m) => m.corpo as string)
+    .join('\n');
+  if (!/terra[cç]o/i.test(doCliente)) return null;
+  if (
+    !/\b(fech|alug|exclusiv|s[oó] (pra|para) (a gente|n[oó]s|o grupo|gente)|privativ|anivers|ch[aá] (de|revela)|comanda|consumo|festa|confraterniz|reservar o terra)/i.test(
+      doCliente,
+    )
+  )
+    return null;
+  // Já mandou link de orçamento (de espaço ou de menu): o recado já cumpriu.
+  if (recentes.some((m) => m.direcao !== 'entrada' && /\/orcamento\//i.test(m.corpo ?? ''))) return null;
+  return `ATENÇÃO — ALUGUEL DO TERRAÇO: o cliente quer o TERRAÇO só pro grupo dele. Isso é VENDA DIRETA com a ferramenta gerar_orcamento_espaco (preço do aluguel e entrada vêm do cadastro; cada um consome do cardápio na própria comanda; pode trazer decoração, bolo e doces).
+- "Fechar o Terraço" NÃO é exclusividade da casa e NÃO é pedido sob medida: é PROIBIDO dizer "vou registrar seu interesse", "vou passar pra equipe" ou "a equipe monta um orçamento" nesse caso.
+- Se você já disse isso antes nesta conversa, corrija com naturalidade ("consigo te passar o valor aqui mesmo").
+- Com DATA, nº de pessoas (estimativa serve) e NOME de quem contrata → chame gerar_orcamento_espaco AGORA e mande o resumo + link.
+- Faltando algum desses, pergunte SÓ o que falta, uma pergunta. O nome do perfil do WhatsApp não vale como nome: confirme.
+- Só é diferente à NOITE (19h em diante) ou com mais de 60 pessoas — aí a própria ferramenta te orienta.`;
+}
+
 function historicoParaMensagens(
   historico: MsgHistorico[],
 ): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
@@ -1155,6 +1180,16 @@ Como usar, SEM EXCEÇÃO:
     modo === 'cliente' && params.duasCasas !== false ? terracoDescritoSemEsclarecer(params.historico) : null;
   if (terracoPendente) {
     mensagens.push({ role: 'system', content: recadoTerraco(terracoPendente) });
+  }
+
+  // ALUGUEL DO TERRAÇO (20/10/2026, caso Gabriella): a regra do Terraço
+  // fechado + comanda estava no prompt e a Nina, mesmo devolvida, respondeu
+  // "vou registrar seu interesse e passar pra equipe" (leu "fechar o Terraço"
+  // como exclusividade). Pedido de Terraço só pro grupo e ainda sem link de
+  // orçamento enviado = recado por último mandando usar a ferramenta.
+  if (modo === 'cliente' && /prainha bar/i.test(params.filialNome) && params.executores.gerarOrcamentoEspaco) {
+    const recado = recadoAluguelTerraco(params.historico);
+    if (recado) mensagens.push({ role: 'system', content: recado });
   }
 
   // DIA DA SEMANA das datas citadas (20/10/2026, caso Gabriella): a Nina
