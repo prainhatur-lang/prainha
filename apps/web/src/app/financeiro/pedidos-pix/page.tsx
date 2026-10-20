@@ -11,7 +11,7 @@
 // conta do Consumer ficam de fora (têm fluxo próprio).
 // Nada aqui manda dinheiro: a baixa usa a rota de sempre
 // (/api/financeiro/contas/[id]/baixas) e a chave, a do cadastro de fornecedor.
-// EXCEÇÃO desde 20/10/2026 (pedido do dono): "Pagar Pix agora" manda o Pix
+// EXCEÇÃO desde 20/10/2026 (pedido do dono): "💸 Pagar" (um Pix por conta) manda o Pix
 // pela API de pagamentos do Inter (só Admin, tabela pix_pagamento) e dá a
 // baixa quando o banco confirma. O caminho de copiar + baixa continua igual.
 
@@ -310,7 +310,7 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
             <>
               {' '}
               <b className="font-medium text-violet-800">
-                Exceção: o botão 💸 Pagar Pix agora manda o Pix pelo Inter
+                Exceção: o botão 💸 Pagar de cada conta manda o Pix daquela conta pelo Inter (um Pix por nota)
                 {temInterPix ? '' : ' (esta casa ainda não tem a integração de pagamentos do Inter)'}.
               </b>
             </>

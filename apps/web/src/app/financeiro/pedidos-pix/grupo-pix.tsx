@@ -4,9 +4,10 @@
 // copiar, cadastro da chave que falta (mesmo editor do cadastro de
 // fornecedores, que replica pras outras casas) e a baixa das contas marcadas
 // depois que o dono pagou no Inter. A baixa usa a rota de sempre da conta.
-// Desde 20/10/2026 também "Pagar Pix agora": manda o Pix pela API do Inter
-// (só Admin) e, se o banco processar, dá a baixa sozinho. O caminho antigo
-// (copiar, pagar no app, "Paguei no Inter") continua igual.
+// Desde 20/10/2026 também "💸 Pagar" em cada conta: manda o Pix pela API do
+// Inter (só Admin) e, se o banco processar, dá a baixa sozinho. Um Pix por
+// conta (nota/pedido), nunca somado — pra saber o que pagou o quê. O caminho
+// antigo (copiar, pagar no app, "Paguei no Inter") continua igual.
 
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -145,11 +146,11 @@ export function GrupoPix({
   );
   const chave = grupo.chavePix?.trim() || null;
   const travadas = useMemo(() => new Set(contasTravadas), [contasTravadas]);
-  const marcadaTravada = grupo.contas.some((c) => marcadas.has(c.id) && travadas.has(c.id));
-  const [confirmando, setConfirmando] = useState(false);
+  const [confirmandoId, setConfirmandoId] = useState<string | null>(null);
+  const contaConfirmando = grupo.contas.find((c) => c.id === confirmandoId) ?? null;
   const [valorDigitado, setValorDigitado] = useState('');
   const [enviando, setEnviando] = useState(false);
-  const totalCentavos = Math.round(totalMarcado * 100);
+  const totalCentavos = Math.round((contaConfirmando?.saldo ?? 0) * 100);
   const digitadoCentavos = (() => {
     const t = valorDigitado.replace(/[^\d,.]/g, '');
     if (!t) return null;
@@ -158,10 +159,11 @@ export function GrupoPix({
   })();
   const valorConfere = digitadoCentavos !== null && digitadoCentavos === totalCentavos;
   const mostraPagarPix = podePagarPix && !!filialId && !!grupo.fornecedorId;
+  const podeBotaoPix = mostraPagarPix && temInterPix && !!chave;
 
   async function pagarPix() {
-    if (!filialId || !grupo.fornecedorId || !valorConfere) return;
-    const contas = grupo.contas.filter((c) => marcadas.has(c.id));
+    if (!filialId || !grupo.fornecedorId || !valorConfere || !contaConfirmando) return;
+    const contas = [contaConfirmando];
     setEnviando(true);
     setMsg(null);
     const r = await fetch('/api/financeiro/pedidos-pix/pagar', {
@@ -176,7 +178,7 @@ export function GrupoPix({
     }).catch(() => null);
     const d = r ? ((await r.json().catch(() => ({}))) as { error?: string; mensagem?: string }) : {};
     setEnviando(false);
-    setConfirmando(false);
+    setConfirmandoId(null);
     setValorDigitado('');
     if (!r) {
       setMsg({
@@ -309,7 +311,35 @@ export function GrupoPix({
                 </span>
               ) : null}
               <span className="w-24 shrink-0 text-right font-medium text-slate-900">{brl(c.saldo)}</span>
+              {podeBotaoPix && !travadas.has(c.id) && (
+                <button
+                  type="button"
+                  disabled={pending || enviando}
+                  onClick={() => {
+                    setConfirmandoId(confirmandoId === c.id ? null : c.id);
+                    setValorDigitado('');
+                    setMsg(null);
+                  }}
+                  className="shrink-0 rounded-md bg-violet-700 px-2 py-1 text-[11px] font-semibold text-white disabled:bg-slate-400"
+                  title="Mandar o Pix só desta conta pelo Inter"
+                >
+                  💸 Pagar
+                </button>
+              )}
             </div>
+            {contaConfirmando?.id === c.id && chave && (
+              <PainelConfirmar
+                recebe={grupo.pixFavorecido || grupo.nome}
+                chave={chave}
+                conta={c}
+                valorDigitado={valorDigitado}
+                setValorDigitado={setValorDigitado}
+                valorConfere={valorConfere}
+                enviando={enviando}
+                cancelar={() => setConfirmandoId(null)}
+                confirmar={() => void pagarPix()}
+              />
+            )}
             {c.origem && <LinhaOrigem o={c.origem} />}
             </li>
           );
@@ -338,89 +368,10 @@ export function GrupoPix({
           </button>
         </div>
       )}
-      {mostraPagarPix && (
-        <div className="border-t border-slate-100 bg-violet-50/50 px-4 py-3">
-          {!temInterPix ? (
-            <p className="text-xs text-slate-500">
-              💸 Pagar Pix pelo sistema: esta casa ainda não tem a integração de pagamentos do Inter.
-            </p>
-          ) : !chave ? (
-            <p className="text-xs text-slate-500">💸 Pagar Pix pelo sistema: cadastre a chave Pix primeiro.</p>
-          ) : marcadaTravada ? (
-            <p className="text-xs text-violet-800">
-              Uma conta marcada já está num Pix enviado pelo sistema. Confira na lista &quot;Pix enviados pelo
-              sistema&quot; antes de pagar de novo.
-            </p>
-          ) : !confirmando ? (
-            <div className="flex justify-end">
-              <button
-                type="button"
-                disabled={totalMarcado <= 0 || pending || enviando}
-                onClick={() => {
-                  setConfirmando(true);
-                  setValorDigitado('');
-                  setMsg(null);
-                }}
-                className="rounded-md bg-violet-700 px-3 py-1.5 text-xs font-semibold text-white disabled:bg-slate-400"
-              >
-                💸 Pagar Pix agora ({brl(totalMarcado)})
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-2 text-sm">
-              <div className="font-semibold text-violet-900">Confira antes de mandar o Pix pelo Inter:</div>
-              <div className="grid gap-1 rounded-md border border-violet-200 bg-white p-3 text-xs sm:grid-cols-3">
-                <div>
-                  <div className="text-slate-500">Recebe</div>
-                  <div className="font-medium text-slate-900">{grupo.pixFavorecido || grupo.nome}</div>
-                </div>
-                <div className="min-w-0">
-                  <div className="text-slate-500">Chave Pix</div>
-                  <div className="break-all font-mono text-slate-900">{chave}</div>
-                </div>
-                <div>
-                  <div className="text-slate-500">Valor ({grupo.contas.filter((c) => marcadas.has(c.id)).length} conta(s))</div>
-                  <div className="text-base font-bold text-slate-900">{brl(totalMarcado)}</div>
-                </div>
-              </div>
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                <label className="text-xs text-slate-600">
-                  Digite o valor pra confirmar{' '}
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    autoFocus
-                    value={valorDigitado}
-                    onChange={(e) => setValorDigitado(e.target.value)}
-                    placeholder={valorParaCopiar(totalMarcado)}
-                    className={`ml-1 w-28 rounded-md border px-2 py-1 text-right font-mono text-xs ${
-                      valorDigitado && !valorConfere ? 'border-rose-400' : 'border-slate-300'
-                    }`}
-                  />
-                </label>
-                <button
-                  type="button"
-                  disabled={enviando}
-                  onClick={() => setConfirmando(false)}
-                  className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-700"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="button"
-                  disabled={!valorConfere || enviando}
-                  onClick={() => void pagarPix()}
-                  className="rounded-md bg-violet-700 px-3 py-1.5 text-xs font-semibold text-white disabled:bg-slate-400"
-                >
-                  {enviando ? 'Mandando Pix…' : `Confirmar e mandar ${brl(totalMarcado)}`}
-                </button>
-              </div>
-              <p className="text-[11px] text-slate-500">
-                O dinheiro sai da conta do Inter desta casa. Se o Inter pedir aprovação no app, o Pix fica esperando
-                e a baixa sai depois, no &quot;Conferir no Inter&quot;.
-              </p>
-            </div>
-          )}
+      {mostraPagarPix && !podeBotaoPix && (
+        <div className="border-t border-slate-100 bg-violet-50/50 px-4 py-2 text-xs text-slate-500">
+          💸 Pagar Pix pelo sistema:{' '}
+          {!temInterPix ? 'esta casa ainda não tem a integração de pagamentos do Inter.' : 'cadastre a chave Pix primeiro.'}
         </div>
       )}
       {msg && (
@@ -430,6 +381,90 @@ export function GrupoPix({
           {msg.texto}
         </div>
       )}
+    </div>
+  );
+}
+
+function PainelConfirmar({
+  recebe,
+  chave,
+  conta,
+  valorDigitado,
+  setValorDigitado,
+  valorConfere,
+  enviando,
+  cancelar,
+  confirmar,
+}: {
+  recebe: string;
+  chave: string;
+  conta: PedidoPix;
+  valorDigitado: string;
+  setValorDigitado: (v: string) => void;
+  valorConfere: boolean;
+  enviando: boolean;
+  cancelar: () => void;
+  confirmar: () => void;
+}) {
+  return (
+    <div className="mx-4 mb-3 space-y-2 rounded-md border border-violet-200 bg-violet-50/60 p-3 text-sm">
+      <div className="font-semibold text-violet-900">Confira antes de mandar o Pix desta conta pelo Inter:</div>
+      <div className="grid gap-2 rounded-md border border-violet-200 bg-white p-3 text-xs sm:grid-cols-4">
+        <div>
+          <div className="text-slate-500">Recebe</div>
+          <div className="font-medium text-slate-900">{recebe}</div>
+        </div>
+        <div className="min-w-0">
+          <div className="text-slate-500">Chave Pix</div>
+          <div className="break-all font-mono text-slate-900">{chave}</div>
+        </div>
+        <div className="min-w-0">
+          <div className="text-slate-500">Conta</div>
+          <div className="truncate text-slate-900" title={conta.descricao}>
+            {conta.descricao} · venc {dataBr(conta.venc)}
+          </div>
+        </div>
+        <div>
+          <div className="text-slate-500">Valor</div>
+          <div className="text-base font-bold text-slate-900">{brl(conta.saldo)}</div>
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <label className="text-xs text-slate-600">
+          Digite o valor pra confirmar{' '}
+          <input
+            type="text"
+            inputMode="decimal"
+            autoFocus
+            value={valorDigitado}
+            onChange={(e) => setValorDigitado(e.target.value)}
+            placeholder={valorParaCopiar(conta.saldo)}
+            className={`ml-1 w-28 rounded-md border px-2 py-1 text-right font-mono text-xs ${
+              valorDigitado && !valorConfere ? 'border-rose-400' : 'border-slate-300'
+            }`}
+          />
+        </label>
+        <button
+          type="button"
+          disabled={enviando}
+          onClick={cancelar}
+          className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-700"
+        >
+          Cancelar
+        </button>
+        <button
+          type="button"
+          disabled={!valorConfere || enviando}
+          onClick={confirmar}
+          className="rounded-md bg-violet-700 px-3 py-1.5 text-xs font-semibold text-white disabled:bg-slate-400"
+        >
+          {enviando ? 'Mandando Pix…' : `Confirmar e mandar ${brl(conta.saldo)}`}
+        </button>
+      </div>
+      <p className="text-[11px] text-slate-500">
+        Um Pix só desta conta, com a descrição dela. O dinheiro sai da conta do Inter desta casa. Se o Inter pedir
+        aprovação no app, o Pix fica esperando e a baixa sai depois, no &quot;Conferir no Inter&quot;.
+      </p>
     </div>
   );
 }

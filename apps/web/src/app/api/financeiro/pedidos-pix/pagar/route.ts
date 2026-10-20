@@ -1,5 +1,7 @@
 // POST /api/financeiro/pedidos-pix/pagar — manda o Pix pelo Inter e, se o
-// banco processar na hora, dá a baixa nas contas. Pedido do dono (20/10/2026).
+// banco processar na hora, dá a baixa na conta. Pedido do dono (20/10/2026).
+// UM Pix POR CONTA (nota/pedido): o dono quer saber o que pagou o quê, então
+// nada de juntar valores num Pix só.
 //
 // Segurança:
 //  - quem manda dinheiro: podePagarPix (Admin ou conta_pagar.pagar_pix);
@@ -26,7 +28,7 @@ const ORIGENS_FORA = ['CONSUMER', 'FOLHA', 'TRANSFERENCIA', 'ENCONTRO_CONTAS'];
 const Body = z.object({
   filialId: z.string().uuid(),
   fornecedorId: z.string().uuid(),
-  contaIds: z.array(z.string().uuid()).min(1).max(50),
+  contaIds: z.array(z.string().uuid()).length(1),
   valorConfirmado: z.number().positive(),
 });
 
@@ -69,6 +71,8 @@ export async function POST(req: Request) {
       id: c.id,
       valor: c.valor,
       origem: c.origem,
+      descricao: c.descricao,
+      venc: sql<string>`to_char(${c.dataVencimento}, 'DD/MM')`,
       fornecedorId: c.fornecedorId,
       jaPago: sql<string>`coalesce((select sum(b.valor) from conta_pagar_baixa b where b.conta_pagar_id = ${c.id}), 0)::text`,
     })
@@ -93,7 +97,8 @@ export async function POST(req: Request) {
   }
 
   // Trava por casa + confere conta presa + cria a linha ENVIANDO, tudo junto.
-  const descricao = `Pedido ${forn.nome}`.slice(0, 140);
+  const conta0 = contas[0]!;
+  const descricao = `${forn.nome} - ${conta0.descricao ?? 'pedido'} (venc ${conta0.venc})`.slice(0, 140);
   const criado = await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${'pix_pagamento:' + filialId}))`);
     const presas = (await tx.execute(sql`
