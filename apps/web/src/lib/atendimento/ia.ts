@@ -129,6 +129,22 @@ export interface ExecutoresFerramentas {
   consultarPedidoDelivery?: (dados: { numero: string | null; nome: string | null }) => Promise<string>;
 }
 
+/** Ferramentas que só leem — não gravam nem enviam nada. Resposta que só usou
+ *  essas pode ser descartada quando o cliente mandou mensagem mais nova.
+ *  Ferramenta nova fica de fora por padrão (conta como "com efeito"). */
+const FERRAMENTAS_SO_CONSULTA = new Set([
+  'consultar_disponibilidade_reserva',
+  'listar_opcoes_orcamento_evento',
+  'consultar_cardapio',
+  'consultar_mare',
+  'consultar_previsao_tempo',
+  'consultar_mesa',
+  'localizar_reserva',
+  'consultar_estorno_reserva',
+  'consultar_pedido_delivery',
+  'consultar_cotacoes_fornecedor',
+]);
+
 export interface RespostaNina {
   texto: string | null;
   transferiu: boolean;
@@ -136,6 +152,11 @@ export interface RespostaNina {
   /** true se alguma ferramenta rodou nesta resposta (pode ter criado/mudado
    *  algo) — o motor só descarta resposta atrasada quando é false. */
   usouFerramenta?: boolean;
+  /** true se rodou ferramenta que GRAVA ou ENVIA algo (reserva, orçamento,
+   *  lead, transferência...). Ferramenta só de consulta (cardápio, menu,
+   *  disponibilidade, maré) não conta — 20/10/2026: 3 respostas seguidas pra
+   *  Neydja porque consultar o cardápio travava o descarte da resposta velha. */
+  usouFerramentaComEfeito?: boolean;
   /** true se criar_reserva (ou a remarcação) gravou a reserva nesta resposta.
    *  O motor usa pra pegar "registrei sua reserva" dito sem reserva nenhuma. */
   reservaCriada?: boolean;
@@ -1256,6 +1277,7 @@ Como usar, SEM EXCEÇÃO:
   let transferiu = false;
   let leadRegistrado = false;
   let usouFerramenta = false;
+  let usouFerramentaComEfeito = false;
   let reservaCriada = false;
 
   const ferramentasBase = modo === 'fornecedor' ? [...FERRAMENTAS, ...FERRAMENTAS_FORNECEDOR.filter((f) => f.type === 'function' && f.function.name === 'consultar_cotacoes_fornecedor')] : FERRAMENTAS;
@@ -1287,9 +1309,12 @@ Como usar, SEM EXCEÇÃO:
 
     const toolCalls = msg.tool_calls ?? [];
     if (toolCalls.length === 0) {
-      return { texto: msg.content?.trim() || null, transferiu, leadRegistrado, usouFerramenta, reservaCriada };
+      return { texto: msg.content?.trim() || null, transferiu, leadRegistrado, usouFerramenta, usouFerramentaComEfeito, reservaCriada };
     }
     usouFerramenta = true;
+    if (toolCalls.some((tc) => tc.type !== 'function' || !FERRAMENTAS_SO_CONSULTA.has(tc.function.name))) {
+      usouFerramentaComEfeito = true;
+    }
 
     mensagens.push(msg);
     for (const tc of toolCalls) {
@@ -1515,9 +1540,9 @@ Como usar, SEM EXCEÇÃO:
             max_tokens: 400,
           })
         ).choices[0]?.message;
-    return { texto: fim?.content?.toString().trim() || null, transferiu, leadRegistrado, usouFerramenta, reservaCriada };
+    return { texto: fim?.content?.toString().trim() || null, transferiu, leadRegistrado, usouFerramenta, usouFerramentaComEfeito, reservaCriada };
   } catch (e) {
     console.error('[nina] fechamento forçado falhou:', e instanceof Error ? e.message : e);
-    return { texto: null, transferiu, leadRegistrado, usouFerramenta, reservaCriada };
+    return { texto: null, transferiu, leadRegistrado, usouFerramenta, usouFerramentaComEfeito, reservaCriada };
   }
 }

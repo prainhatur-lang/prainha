@@ -799,6 +799,7 @@ export async function processarEntrada(params: {
     let transferiu = false;
     let leadRegistrado = false;
     let usouFerramenta = false;
+    let usouFerramentaComEfeito = false;
     let reservaCriada = false;
     try {
       let resposta;
@@ -889,6 +890,7 @@ export async function processarEntrada(params: {
       transferiu = resposta.transferiu;
       leadRegistrado = resposta.leadRegistrado;
       usouFerramenta = resposta.usouFerramenta === true;
+      usouFerramentaComEfeito = resposta.usouFerramentaComEfeito === true;
       reservaCriada = resposta.reservaCriada === true;
       // RESPOSTA AUTOMÁTICA DE OUTRO NEGÓCIO (09/10/2026): convite nosso caiu
       // em número com saudação automática ("O Gprado Contabilidade agradece o
@@ -1164,7 +1166,9 @@ export async function processarEntrada(params: {
       // descarta quando NADA foi feito nesta rodada (sem ferramenta, sem
       // transferência, sem lead, sem áudio): se uma reserva foi criada, o
       // cliente precisa ouvir a confirmação mesmo atrasada.
-      if (!usouFerramenta && !transferiu && !leadRegistrado && !audioEnviado && params.retomada !== true) {
+      // 20/10/2026 (Neydja, 3 respostas seguidas): ferramenta só de consulta
+      // (cardápio, menu, disponibilidade) não segura mais a resposta velha.
+      if (!usouFerramentaComEfeito && !transferiu && !leadRegistrado && !audioEnviado && params.retomada !== true) {
         const maisNova = await ultimaEntradaQuePedeResposta(registro.conversaId);
         if (maisNova && maisNova !== registro.mensagemId) {
           console.log('[nina] chegou mensagem mais nova durante a resposta — descarto esta', registro.conversaId);
