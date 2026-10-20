@@ -195,6 +195,7 @@
     "migrate:portador": "tsx scripts/migrate-portador.ts",
     "migrate:cartao-rateio": "tsx scripts/migrate-cartao-rateio.ts",
     "migrate:conta-pagar-criado-por": "tsx scripts/migrate-conta-pagar-criado-por.ts",
+    "migrate:registro-exclusao": "tsx scripts/migrate-registro-exclusao.ts",
     "migrate:fornecedor-pix-favorecido": "tsx scripts/migrate-fornecedor-pix-favorecido.ts",
     "migrate:nota-item-sem-vinculo-auto": "tsx scripts/migrate-nota-item-sem-vinculo-auto.ts",
     "migrate:nota-fotos-extras": "tsx scripts/migrate-nota-fotos-extras.ts",

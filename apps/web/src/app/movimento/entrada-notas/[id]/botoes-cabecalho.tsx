@@ -4,6 +4,7 @@ import { useState, useTransition, useMemo, useEffect } from 'react';
 import QRCode from 'qrcode-svg';
 import { flushSync } from 'react-dom';
 import { useRouter } from 'next/navigation';
+import { perguntarMotivo } from '@/lib/perguntar-motivo';
 import { brl } from '@/lib/format';
 
 interface Duplicata {
@@ -113,6 +114,8 @@ export function BotoesCabecalho({
       ? `Excluir esta nota?\n\nVai REVERTER ${lancados} lancamento(s) no estoque (subtrai a quantidade do saldo) e apagar a nota.\n\nApos excluir, voce pode re-importar o XML pra refazer.`
       : `Excluir esta nota?\n\nA nota ainda nao foi lancada — so o registro vai sumir. Apos excluir, voce pode re-importar o XML.`;
     if (!confirm(aviso)) return;
+    const motivo = perguntarMotivo('esta nota');
+    if (motivo == null) return;
 
     // flushSync forca o paint imediato do estado loading pra dar feedback
     // visual antes do fetch (que pode levar varios segundos).
@@ -121,7 +124,11 @@ export function BotoesCabecalho({
       setMsg(null);
     });
     try {
-      const r = await fetch(`/api/nota-compra/${notaId}`, { method: 'DELETE' });
+      const r = await fetch(`/api/nota-compra/${notaId}`, {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ motivo }),
+      });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) {
         if (r.status === 409 && Array.isArray(d.conflitos)) {

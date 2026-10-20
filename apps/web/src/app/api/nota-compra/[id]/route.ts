@@ -25,12 +25,13 @@ import { negarSemPerm } from '@/lib/exigir-perm';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq, inArray, sql } from 'drizzle-orm';
+import { lerMotivo, registrarExclusao, resumoConta } from '@/lib/registro-exclusao';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function DELETE(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const supabase = await createClient();
@@ -158,6 +159,45 @@ export async function DELETE(
         contasPagas: pagas.map((c) => ({ parcela: c.parcela, valor: Number(c.valor) })),
       },
       { status: 409 },
+    );
+  }
+
+  // Registro de quem excluiu (20/10/2026): a nota e cada conta dela, com a
+  // foto da linha. Se não registrar, não apaga.
+  try {
+    const motivo = await lerMotivo(req);
+    const [notaFoto] = await db.select().from(schema.notaCompra).where(eq(schema.notaCompra.id, id)).limit(1);
+    const quemNota = notaFoto?.emitNome ?? null;
+    await registrarExclusao({
+      tabela: 'nota_compra',
+      registroId: id,
+      filialId: nota.filialId,
+      usuarioId: user.id,
+      motivo,
+      resumo: `NF ${nota.numero ?? '?'}${quemNota ? ` · ${quemNota}` : ''} · chave ${nota.chave ?? '?'}`,
+      dados: notaFoto ?? null,
+    });
+    if (contasNfe.length > 0) {
+      const fotos = await db
+        .select()
+        .from(schema.contaPagar)
+        .where(and(eq(schema.contaPagar.notaCompraId, id), eq(schema.contaPagar.origem, 'NFE')));
+      for (const c of fotos) {
+        await registrarExclusao({
+          tabela: 'conta_pagar',
+          registroId: c.id,
+          filialId: c.filialId,
+          usuarioId: user.id,
+          motivo: `nota NF ${nota.numero ?? '?'} excluída${motivo ? `: ${motivo}` : ''}`,
+          resumo: resumoConta(quemNota ?? c.descricao, c.dataVencimento, c.valor),
+          dados: c,
+        });
+      }
+    }
+  } catch (e) {
+    return NextResponse.json(
+      { error: `não consegui registrar a exclusão, nada foi apagado (${(e as Error).message})` },
+      { status: 500 },
     );
   }
 

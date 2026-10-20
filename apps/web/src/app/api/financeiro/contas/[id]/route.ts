@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { and, asc, eq } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
 import { exigirPermApi } from '@/lib/exigir-perm';
+import { lerMotivo, registrarExclusao, resumoConta } from '@/lib/registro-exclusao';
 import { garantirFornecedorNaFilial } from '@/lib/fornecedor-unico';
 
 export const dynamic = 'force-dynamic';
@@ -151,13 +152,40 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
   return NextResponse.json({ ok: true });
 }
 
-export async function DELETE(_req: Request, ctx: { params: Promise<{ id: string }> }) {
+export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { user, error } = await exigirPermApi('conta_pagar.delete');
   if (error) return error;
   const { id } = await ctx.params;
 
   const r = await carregarContaManual(id, user.id);
   if (r.erro) return r.erro;
+
+  // Registro de quem excluiu (20/10/2026) — antes de apagar; se falhar, não apaga.
+  const motivo = await lerMotivo(req);
+  const [linha] = await db
+    .select({ conta: schema.contaPagar, fornecedor: schema.fornecedor.nome })
+    .from(schema.contaPagar)
+    .leftJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.contaPagar.fornecedorId))
+    .where(eq(schema.contaPagar.id, id))
+    .limit(1);
+  try {
+    await registrarExclusao({
+      tabela: 'conta_pagar',
+      registroId: id,
+      filialId: linha?.conta.filialId ?? null,
+      usuarioId: user.id,
+      motivo,
+      resumo: linha
+        ? resumoConta(linha.fornecedor ?? linha.conta.descricao, linha.conta.dataVencimento, linha.conta.valor)
+        : null,
+      dados: linha?.conta ?? null,
+    });
+  } catch (e) {
+    return NextResponse.json(
+      { error: `não consegui registrar a exclusão, nada foi apagado (${(e as Error).message})` },
+      { status: 500 },
+    );
+  }
 
   // Soft delete — a linha (e o histórico de baixas) fica pra auditoria,
   // mas some das listas, dos totais e do DRE.

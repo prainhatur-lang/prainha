@@ -59,3 +59,4 @@ export * from './cartao-fatura';
 export * from './comprovante-loterica';
 export * from './portador';
 export * from './nfse';
+export * from './registro-exclusao';

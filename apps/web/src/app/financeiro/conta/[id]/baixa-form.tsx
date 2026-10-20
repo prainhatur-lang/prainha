@@ -6,6 +6,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { perguntarMotivo } from '@/lib/perguntar-motivo';
 import { hojeBr } from '@/lib/datas';
 import { parseValorBr } from '@/lib/format';
 
@@ -33,9 +34,13 @@ export function BaixaForm({
 
   async function estornar() {
     if (!confirm('Estornar esse pagamento? Ele sai do histórico e o saldo volta.')) return;
+    const motivo = perguntarMotivo('esse pagamento (estorno)');
+    if (motivo == null) return;
     setOcupado(true);
     const r = await fetch(`/api/financeiro/contas/${contaId}/baixas?baixaId=${estornarId}`, {
       method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ motivo }),
     });
     setOcupado(false);
     if (r.ok) router.refresh();

@@ -6,18 +6,25 @@
 import Link from 'next/link';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { perguntarMotivo } from '@/lib/perguntar-motivo';
 
 export function AcoesConta({ contaId, descricao }: { contaId: string; descricao: string }) {
   const router = useRouter();
   const [ocupado, setOcupado] = useState(false);
 
   async function excluir() {
-    if (!confirm(`Excluir a conta "${descricao}"?\n\nEla some das listas e dos totais (o histórico fica guardado pra auditoria).`)) {
+    if (!confirm(`Excluir a conta "${descricao}"?\n\nEla some das listas e dos totais (o histórico fica guardado pra auditoria, com seu usuário e o motivo).`)) {
       return;
     }
+    const motivo = perguntarMotivo(`"${descricao}"`);
+    if (motivo == null) return;
     setOcupado(true);
     try {
-      const r = await fetch(`/api/financeiro/contas/${contaId}`, { method: 'DELETE' });
+      const r = await fetch(`/api/financeiro/contas/${contaId}`, {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ motivo }),
+      });
       if (!r.ok) {
         alert((await r.json().catch(() => ({}))).error ?? `HTTP ${r.status}`);
         return;

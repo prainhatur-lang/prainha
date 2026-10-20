@@ -19,6 +19,7 @@ import { db, schema } from '@concilia/db';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { consumerParado } from '@/lib/consumer-contas';
 import { recalcularAgregado } from '@/lib/conta-pagar-baixa';
+import { lerMotivo, registrarExclusao } from '@/lib/registro-exclusao';
 
 export const dynamic = 'force-dynamic';
 
@@ -139,6 +140,31 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }
   const r = await carregarConta(id, user.id);
   if (r.erro) return r.erro;
   const conta = r.conta!;
+
+  // Registro de quem estornou (20/10/2026) — antes de apagar; se falhar, não apaga.
+  const [baixaFoto] = await db
+    .select()
+    .from(schema.contaPagarBaixa)
+    .where(and(eq(schema.contaPagarBaixa.id, baixaId), eq(schema.contaPagarBaixa.contaPagarId, id)))
+    .limit(1);
+  if (baixaFoto) {
+    try {
+      await registrarExclusao({
+        tabela: 'conta_pagar_baixa',
+        registroId: baixaId,
+        filialId: baixaFoto.filialId,
+        usuarioId: user.id,
+        motivo: await lerMotivo(req),
+        resumo: `estorno do pagamento de ${baixaFoto.data.split('-').reverse().join('/')} · R$ ${Number(baixaFoto.valor).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} · conta ${id}`,
+        dados: baixaFoto,
+      });
+    } catch (e) {
+      return NextResponse.json(
+        { error: `não consegui registrar o estorno, nada foi apagado (${(e as Error).message})` },
+        { status: 500 },
+      );
+    }
+  }
 
   const apagadas = await db
     .delete(schema.contaPagarBaixa)
