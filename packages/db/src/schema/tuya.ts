@@ -3,7 +3,7 @@
 // (não são espelhados no banco); esta tabela só guarda o mapeamento
 // dispositivo Tuya -> filial/tipo/nome, pra alimentar o painel /energia.
 
-import { pgTable, uuid, varchar, boolean, timestamp, unique, integer, text, jsonb } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, boolean, timestamp, unique, integer, text, jsonb, numeric, index } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { filial } from './tenant';
 
@@ -71,3 +71,34 @@ export const alarmeGatilho = pgTable('alarme_gatilho', {
   criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
 });
+
+// Leitura de hora em hora (cron /api/cron/energia-leitura) de cada
+// dispositivo Tuya — o contador de energia do disjuntor zera quando falta
+// luz, então o consumo da hora (consumoKwh) é calculado na gravação: delta do
+// contador; se o contador caiu, conta como queda (zerou) e vale o valor atual.
+export const tuyaLeitura = pgTable(
+  'tuya_leitura',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    dispositivoId: uuid('dispositivo_id')
+      .notNull()
+      .references(() => tuyaDispositivo.id, { onDelete: 'cascade' }),
+    lidoEm: timestamp('lido_em', { withTimezone: true }).notNull().defaultNow(),
+    online: boolean('online').notNull(),
+    ligado: boolean('ligado'),
+    potenciaW: numeric('potencia_w', { precision: 10, scale: 1 }),
+    tensaoV: numeric('tensao_v', { precision: 6, scale: 1 }),
+    correnteA: numeric('corrente_a', { precision: 8, scale: 3 }),
+    /** contador do aparelho (kWh), como veio. */
+    contadorKwh: numeric('contador_kwh', { precision: 12, scale: 2 }),
+    /** consumo desde a leitura anterior (null na 1ª leitura ou sem contador). */
+    consumoKwh: numeric('consumo_kwh', { precision: 10, scale: 3 }),
+    /** contador menor que o anterior = aparelho zerou (queda de energia). */
+    zerou: boolean('zerou').notNull().default(false),
+    erro: text('erro'),
+  },
+  (t) => ({
+    idxDispLido: index('tuya_leitura_disp_lido_idx').on(t.dispositivoId, t.lidoEm),
+  }),
+);

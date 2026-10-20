@@ -59,6 +59,10 @@
     {
       "path": "/api/cron/google-respostas",
       "schedule": "10 * * * *"
+    },
+    {
+      "path": "/api/cron/energia-leitura",
+      "schedule": "0 * * * *"
     }
   ]
 }

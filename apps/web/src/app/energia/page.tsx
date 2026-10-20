@@ -11,6 +11,7 @@ import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { AppHeader } from '@/components/app-header';
 import { EnergiaDashboardClient } from './energia-dashboard-client';
+import { HistoricoConsumo } from './historico-consumo';
 
 export const dynamic = 'force-dynamic';
 
@@ -76,6 +77,7 @@ export default async function EnergiaPage(props: { searchParams: Promise<{ filia
           protect: !!g.protectHost && !!g.protectApiKey,
         }))}
       />
+      <HistoricoConsumo filialId={filial.id} />
     </main>
   );
 }

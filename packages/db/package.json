@@ -143,6 +143,7 @@
     "migrate:kids": "tsx scripts/migrate-kids.ts",
     "migrate:tuya": "tsx scripts/migrate-tuya.ts",
     "migrate:tuya-multi-canal": "tsx scripts/migrate-tuya-multi-canal.ts",
+    "migrate:tuya-leitura": "tsx scripts/migrate-tuya-leitura.ts",
     "migrate:alarme-gatilho": "tsx scripts/migrate-alarme-gatilho.ts",
     "migrate:alarme-armado": "tsx scripts/migrate-alarme-armado.ts",
     "migrate:alarme-protect": "tsx scripts/migrate-alarme-protect.ts",
