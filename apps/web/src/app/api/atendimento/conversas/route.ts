@@ -35,8 +35,19 @@ export async function GET(request: Request) {
     .limit(200);
 
   const nomes = new Map(filiais.map((f) => [f.id, f.nome]));
+  // Nome do atendente de cada casa (Nina no Bar, Otávio na Tabuará, Marina na Mar).
+  const cfgs = await db
+    .select({ filialId: schema.atendimentoConfig.filialId, nome: schema.atendimentoConfig.nomeAtendente })
+    .from(schema.atendimentoConfig)
+    .where(inArray(schema.atendimentoConfig.filialId, ids))
+    .catch(() => []);
+  const atendentes = new Map(cfgs.map((x) => [x.filialId, x.nome]));
   return NextResponse.json({
-    conversas: conversas.map((c) => ({ ...c, filialNome: nomes.get(c.filialId) ?? '' })),
+    conversas: conversas.map((c) => ({
+      ...c,
+      filialNome: nomes.get(c.filialId) ?? '',
+      atendente: atendentes.get(c.filialId) || 'Nina',
+    })),
     filiais: filiais.map((f) => ({ id: f.id, nome: f.nome })),
   });
 }

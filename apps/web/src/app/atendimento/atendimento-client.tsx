@@ -18,6 +18,7 @@ interface Conversa {
   ultimaMsgClienteEm: string | null;
   ultimaMsgEm: string | null;
   naoLidas: number;
+  atendente?: string;
 }
 
 interface Mensagem {
@@ -37,6 +38,13 @@ const STATUS_LABEL: Record<string, { txt: string; cls: string }> = {
   fornecedor: { txt: 'Fornecedor', cls: 'bg-slate-200 text-slate-600' },
   encerrada: { txt: 'Encerrada', cls: 'bg-slate-100 text-slate-500' },
 };
+
+// "a Nina"/"pra Nina" × "o Otávio"/"pro Otávio".
+function atendenteDe(c: { atendente?: string } | null | undefined) {
+  const nome = c?.atendente || 'Nina';
+  const fem = /a$/i.test(nome);
+  return { nome, a: fem ? 'a' : 'o', pra: fem ? 'pra' : 'pro' };
+}
 
 function hora(s: string | null): string {
   if (!s) return '';
@@ -201,6 +209,9 @@ export function AtendimentoClient(props: {
     ? Date.now() - new Date(conversaAberta.ultimaMsgClienteEm).getTime() < 24 * 3600 * 1000
     : false;
 
+  // A conversa aberta vem sem o nome do atendente; pega da lista.
+  const atAberta = atendenteDe(conversas.find((x) => x.id === conversaAberta?.id) ?? conversaAberta);
+
   return (
     <div className="mx-auto max-w-7xl px-4 py-6">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
@@ -295,7 +306,7 @@ export function AtendimentoClient(props: {
                   <span className="shrink-0 text-[10px] text-slate-400">{diaHora(c.ultimaMsgEm)}</span>
                 </div>
                 <div className="mt-1 flex items-center gap-1.5">
-                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${st.cls}`}>{st.txt}</span>
+                  <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${st.cls}`}>{c.status === 'bot' || !STATUS_LABEL[c.status] ? atendenteDe(c).nome : st.txt}</span>
                   {filiais.length > 1 && (
                     <span className="truncate text-[10px] text-slate-400">{c.filialNome}</span>
                   )}
@@ -340,12 +351,12 @@ export function AtendimentoClient(props: {
                     )}
                     {props.podeConfig && conversaAberta.status === 'humano' && !ensinando && (
                       <button onClick={abrirEnsino} className="rounded-md bg-violet-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-violet-700">
-                        Ensinar a Nina
+                        Ensinar {atAberta.a} {atAberta.nome}
                       </button>
                     )}
                     {conversaAberta.status !== 'bot' && (
                       <button onClick={() => mudarStatus('bot')} className="rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-700">
-                        Devolver pra Nina
+                        Devolver {atAberta.pra} {atAberta.nome}
                       </button>
                     )}
                     {conversaAberta.status !== 'encerrada' && (
@@ -373,7 +384,7 @@ export function AtendimentoClient(props: {
                       >
                         {!doCliente && (
                           <p className="mb-0.5 text-[10px] font-semibold text-slate-500">
-                            {m.autor === 'equipe' ? 'Equipe' : 'Nina'}
+                            {m.autor === 'equipe' ? 'Equipe' : atAberta.nome}
                           </p>
                         )}
                         <p className="whitespace-pre-wrap break-words">
@@ -397,7 +408,7 @@ export function AtendimentoClient(props: {
                   {erro && <p className="mb-2 text-xs text-red-600">{erro}</p>}
                   {ensinando && (
                     <div className="mb-3 rounded-md border border-violet-200 bg-violet-50 p-3">
-                      <p className="text-xs font-semibold text-violet-800">Ensinar a Nina</p>
+                      <p className="text-xs font-semibold text-violet-800">Ensinar {atAberta.a} {atAberta.nome}</p>
                       <p className="mb-2 text-[11px] text-violet-700">
                         Ela guarda a resposta, responde este cliente agora e usa nas próximas conversas.
                       </p>
@@ -427,7 +438,7 @@ export function AtendimentoClient(props: {
                           disabled={gravandoEnsino || !ensinoPergunta.trim() || !ensinoResposta.trim()}
                           className="rounded-md bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-700 disabled:opacity-50"
                         >
-                          {gravandoEnsino ? 'Gravando…' : 'Gravar e mandar a Nina responder'}
+                          {gravandoEnsino ? 'Gravando…' : `Gravar e mandar ${atAberta.a} ${atAberta.nome} responder`}
                         </button>
                       </div>
                     </div>
@@ -451,7 +462,7 @@ export function AtendimentoClient(props: {
                         rows={1}
                         placeholder={
                           conversaAberta.status === 'bot'
-                            ? 'Responder como equipe (a Nina continua ativa — use Assumir pra pausá-la)…'
+                            ? `Responder como equipe (${atAberta.a} ${atAberta.nome} continua ${atAberta.a === 'a' ? 'ativa' : 'ativo'} — use Assumir pra pausar)…`
                             : 'Responder como equipe…'
                         }
                         className="flex-1 resize-none rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none"
