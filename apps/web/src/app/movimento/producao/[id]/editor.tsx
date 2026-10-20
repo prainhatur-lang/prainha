@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { brl } from '@/lib/format';
 import { normalizaBusca } from '@/lib/texto';
+import { ratearCustoOp } from '@/lib/producao-rateio';
 import { EnviarCozinheiroBtn } from './enviar-cozinheiro';
 
 interface Op {
@@ -181,6 +182,17 @@ export function EditorProducao({
   );
   // Custo por unidade-peso. Cortes nobres (peso>1) absorvem mais.
   const custoPorUnidadePeso = unidadesPesoUtil > 0 ? valorEntradas / unidadesPesoUtil : 0;
+  // Rateio igual ao da conclusão: por kg quando toda saída útil tem peso.
+  const rateio = ratearCustoOp(
+    valorEntradas,
+    saidas.map((s) => ({
+      tipo: s.tipo,
+      quantidade: Number(s.quantidade ?? 0),
+      unidade: s.produtoUnidade,
+      pesoTotalKg: s.pesoTotalKg ? Number(s.pesoTotalKg) : null,
+      pesoRelativo: Number(s.pesoRelativo ?? 1),
+    })),
+  );
   // Custo médio simples (pra hint quando todos os pesos = 1)
   const custoUnitarioUtil = qtdSaidasProduto > 0 ? valorEntradas / qtdSaidasProduto : 0;
   const todosPesoUm = saidasProduto.every((s) => Number(s.pesoRelativo ?? 1) === 1);
@@ -576,9 +588,23 @@ export function EditorProducao({
               Custo total das entradas se distribui pelas <strong>unidades-peso</strong>{' '}
               das saídas úteis: peso 3 = corte 3× mais caro que peso 1. Perda absorve
               custo automaticamente.
-              {!todosPesoUm && qtdSaidasProduto > 0 && custoPorUnidadePeso > 0 && (
+              {rateio.modo === 'peso' && rateio.custoPorBase > 0 && (
+                <span className="ml-1 text-slate-700">
+                  Todas as saídas úteis têm peso: o custo se divide por <strong>kg</strong>{' '}
+                  (≈ <strong>{brl(rateio.custoPorBase)}/kg</strong>
+                  {!todosPesoUm ? ' no peso 1' : ''}).
+                </span>
+              )}
+              {rateio.modo === 'quantidade' && !todosPesoUm && qtdSaidasProduto > 0 && custoPorUnidadePeso > 0 && (
                 <span className="ml-1 text-slate-700">
                   Custo/unidade-peso ≈ <strong>{brl(custoPorUnidadePeso)}</strong>.
+                </span>
+              )}
+              {rateio.misturaUnidade && (
+                <span className="mt-1 block font-medium text-amber-700">
+                  ⚠ Saídas em unidades diferentes (kg e un) sem peso em todas: o custo
+                  fica dividido por quantidade e sai errado. Preencha o Peso (kg) das
+                  saídas em un pra dividir por kg.
                 </span>
               )}
             </p>
@@ -615,12 +641,11 @@ export function EditorProducao({
                   </td>
                 </tr>
               ) : (
-                saidas.map((s) => {
-                  const peso = Number(s.pesoRelativo ?? 1);
-                  // Custo previa: qtd*peso*custoPorUnidadePeso quando OP em rascunho
+                saidas.map((s, idx) => {
+                  // Custo prévia (OP em rascunho): mesmo rateio da conclusão
                   const custoPreviaUnit =
                     s.tipo === 'PRODUTO' && !op.concluidaEm
-                      ? peso * custoPorUnidadePeso
+                      ? rateio.custoUnit[idx]!
                       : null;
                   return (
                     <LinhaSaidaRow

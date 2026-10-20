@@ -3,6 +3,12 @@
 // grava movimento_estoque (SAIDA_PRODUCAO nas entradas + ENTRADA_PRODUCAO
 // nas saídas PRODUTO), atualiza produto.estoqueAtual, seta status=CONCLUIDA.
 //
+// Rateio (lib/producao-rateio): por PESO (kg × pesoRelativo) quando toda
+// saída útil tem kg — unidade kg/g ou o peso pesado pra un. Até 20/10/2026
+// era sempre qtd × pesoRelativo, e somar 5,381 kg de apara com 93 robalos
+// (un) dava o mesmo R$/un pra tudo (apara a R$ 26,92/kg com filé a R$ 72).
+// Sem peso em alguma saída útil continua o rateio antigo, descrito abaixo.
+//
 // Rateio por UNIDADES-PESO (qtd × pesoRelativo):
 //  - C = soma dos valor_total das entradas (cada entrada já tem preco_unitario;
 //    se entrada.preco for null, usa produto.preco_custo; se também null, 0).
@@ -25,6 +31,7 @@ import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq, inArray } from 'drizzle-orm';
 import { aplicarMpmEntrada, aplicarSaida } from '@/lib/custo-medio';
+import { ratearCustoOp } from '@/lib/producao-rateio';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -128,11 +135,6 @@ export async function POST(
       // 2) Rateio por UNIDADES-PESO das saidas PRODUTO. Perdas absorvem custo
       //    automaticamente (não entram no denominador). Cortes nobres (peso>1)
       //    absorvem mais; populares (peso<1) absorvem menos.
-      const saidasUteis = saidas.filter((s) => s.tipo === 'PRODUTO');
-      const unidadesPesoUtil = saidasUteis.reduce(
-        (s, r) => s + Number(r.quantidade ?? 0) * Number(r.pesoRelativo ?? 1),
-        0,
-      );
 
       // Divergência: por PESO quando toda linha tem kg (mesma regra do editor);
       // senão por quantidade. Somar 10,5 kg com 25 porções dava -142%.
@@ -200,14 +202,22 @@ export async function POST(
 
       // 4) Grava saidas: ENTRADA_PRODUCAO pras tipo=PRODUTO, nada de movimento
       //    pras PERDA (mas ainda grava custoRateado=0 na linha pra UI).
-      //    custo unit = pesoRelativo × (custoTotal / unidadesPesoUtil).
+      //    custo unit = ratearCustoOp (peso quando todas têm kg; senão qtd).
       //    O produto destino recebe o novo estoque via MPM (mistura com saldo
       //    anterior, se houver).
-      const custoPorUnidadePeso = unidadesPesoUtil > 0 ? custoTotal / unidadesPesoUtil : 0;
-      for (const s of saidas) {
+      const rateio = ratearCustoOp(
+        custoTotal,
+        saidas.map((s) => ({
+          tipo: s.tipo,
+          quantidade: Number(s.quantidade ?? 0),
+          unidade: s.produtoId ? (unidadeSaida.get(s.produtoId) ?? null) : null,
+          pesoTotalKg: s.pesoTotalKg !== null ? Number(s.pesoTotalKg) : null,
+          pesoRelativo: Number(s.pesoRelativo ?? 1),
+        })),
+      );
+      for (const [idx, s] of saidas.entries()) {
         const qtd = Number(s.quantidade ?? 0);
-        const peso = Number(s.pesoRelativo ?? 1);
-        const custoUnit = s.tipo === 'PRODUTO' && custoPorUnidadePeso > 0 ? peso * custoPorUnidadePeso : 0;
+        const custoUnit = s.tipo === 'PRODUTO' ? rateio.custoUnit[idx]! : 0;
         const valor = qtd * custoUnit;
 
         await tx
