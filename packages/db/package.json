@@ -132,6 +132,7 @@
     "migrate:funcionario-face": "tsx scripts/migrate-funcionario-face.ts",
     "migrate:funcionario-gemeo": "tsx scripts/migrate-funcionario-gemeo.ts",
     "migrate:funcionario-limite-semana": "tsx scripts/migrate-funcionario-limite-semana.ts",
+    "migrate:funcionario-regime-agenda": "tsx scripts/migrate-funcionario-regime-agenda.ts",
     "migrate:funcionario-filial-extra": "tsx scripts/migrate-funcionario-filial-extra.ts",
     "migrate:rh-escala": "tsx scripts/migrate-rh-escala.ts",
     "importar:stelanto": "tsx scripts/importar-stelanto.ts",

@@ -229,6 +229,13 @@ export default async function FichaFuncionarioPage(props: { params: Promise<{ id
     .limit(1);
   if (!pessoa) notFound();
   const f = pessoa;
+  // Mudança de regime com data marcada (funcionario_regime_agenda) — o cron
+  // /api/cron/regime-agendado aplica no dia.
+  const regimeAgendado = (await db.execute(sql`
+    SELECT a_partir::text AS "aPartir", regime_salarial AS "regime", salario_base::text AS "salario", motivo
+      FROM funcionario_regime_agenda
+     WHERE funcionario_id = ${id}::uuid AND aplicado_em IS NULL AND cancelado_em IS NULL
+     ORDER BY a_partir`)) as unknown as Array<{ aPartir: string; regime: string; salario: string | null; motivo: string | null }>;
 
   // Só abre a ficha de quem é de uma casa que o usuário enxerga (lotação
   // principal ou casa onde a pessoa circula) — a mesma régua da lista.
@@ -621,6 +628,18 @@ export default async function FichaFuncionarioPage(props: { params: Promise<{ id
             </dl>
           ) : (
             <p className="text-sm text-slate-500">Sem registro em carteira no cadastro (não apareceu em nenhuma folha do contador importada).</p>
+          )}
+          {regimeAgendado.length > 0 && (
+            <div className="mt-4 space-y-1 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              {regimeAgendado.map((r) => (
+                <p key={r.aPartir + r.regime}>
+                  📅 A partir de <b>{r.aPartir.split('-').reverse().join('/')}</b> passa a{' '}
+                  <b>{REGIME_LABEL[r.regime] ?? r.regime}</b>
+                  {r.salario ? ` · ${brl(r.salario)}${r.regime === 'intermitente_hora' ? ' por hora' : ' por mês'}` : ''}
+                  {r.motivo ? <span className="text-amber-700"> — {r.motivo}</span> : null}
+                </p>
+              ))}
+            </div>
           )}
         </Bloco>
 

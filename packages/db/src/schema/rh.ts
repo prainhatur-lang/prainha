@@ -173,6 +173,35 @@ export const funcionarioFilialExtra = pgTable(
   }),
 );
 
+/** Mudança de regime/salário com data marcada (dono 20/10/2026: os
+ *  intermitentes da escala base da Tabuará viram CLT em 01/11). O cadastro
+ *  (funcionario.regime_salarial/salario_base) não tem data — trocar antes
+ *  da hora estraga o VT da quinzena e o custo do mês. O cron
+ *  /api/cron/regime-agendado aplica no dia `a_partir` e grava `aplicado_em`.
+ *  Cancelar = `cancelado_em` antes de aplicar. */
+export const funcionarioRegimeAgenda = pgTable(
+  'funcionario_regime_agenda',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    funcionarioId: uuid('funcionario_id').notNull().references(() => funcionario.id, { onDelete: 'cascade' }),
+    aPartir: date('a_partir').notNull(),
+    /** 'clt_mensal' | 'intermitente_hora' */
+    regimeSalarial: varchar('regime_salarial', { length: 20 }).notNull(),
+    salarioBase: numeric('salario_base', { precision: 10, scale: 2 }),
+    /** Como estava quando agendou (pra mostrar "de → para"). */
+    regimeAnterior: varchar('regime_anterior', { length: 20 }),
+    salarioAnterior: numeric('salario_anterior', { precision: 10, scale: 2 }),
+    motivo: varchar('motivo', { length: 200 }),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    criadoPor: varchar('criado_por', { length: 120 }),
+    aplicadoEm: timestamp('aplicado_em', { withTimezone: true }),
+    canceladoEm: timestamp('cancelado_em', { withTimezone: true }),
+  },
+  (t) => ({
+    funcIdx: index('idx_funcionario_regime_agenda_func').on(t.funcionarioId),
+  }),
+);
+
 /** Uma batida. APPEND-ONLY — toda mudança gera linha em
  *  ponto_batida_ajuste; exclusão é soft (excluida_em/excluida_por). */
 export const pontoBatida = pgTable(
