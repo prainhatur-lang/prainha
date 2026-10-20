@@ -125,6 +125,31 @@ export async function POST(request: Request) {
             eq(schema.wizardPergunta.filialId, filialId),
             eq(schema.wizardPergunta.codigoExterno, linha.alvoCodigo),
           ));
+      } else if (linha.campo === 'opcao_produto') {
+        // O valor é o código de PDV do tamanho (PRODUTODETALHE), não preço —
+        // até 20/10/2026 ia parar em preco_promo e corrompia a opção na casa
+        // de banco próprio (Mar), onde a nuvem é a fonte da verdade.
+        const cod = v == null || v === '' ? null : Number(v);
+        const codigoVarianteExterno = cod != null && Number.isFinite(cod) ? cod : null;
+        let varianteId: string | null = null;
+        if (codigoVarianteExterno != null) {
+          const [alvoVar] = await db
+            .select({ id: schema.produtoVariante.id })
+            .from(schema.produtoVariante)
+            .where(and(
+              eq(schema.produtoVariante.filialId, filialId),
+              eq(schema.produtoVariante.codigoExterno, codigoVarianteExterno),
+            ))
+            .limit(1);
+          varianteId = alvoVar?.id ?? null;
+        }
+        await db
+          .update(schema.wizardOpcao)
+          .set({ codigoVarianteExterno, varianteId })
+          .where(and(
+            eq(schema.wizardOpcao.filialId, filialId),
+            eq(schema.wizardOpcao.codigoExterno, linha.alvoCodigo),
+          ));
       } else {
         await db
           .update(schema.wizardOpcao)
