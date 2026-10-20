@@ -415,6 +415,8 @@ export async function gerarOrcamentoEspaco(p: PedidoOrcamentoEspaco): Promise<st
       `Aluguel do Terraço só para o grupo${comVaranda ? ' (com a varandinha)' : ''}: ${rs(taxa)}. ` +
       'Comida e bebida por consumo do cardápio da casa, em comandas individuais (cada convidado paga o que consumir). ' +
       'Incluído: mesas e cadeiras, material de serviço, pessoal de serviço e de limpeza. ' +
+      'O aluguel abre o Terraço exclusivo para o grupo, com garçom e barman exclusivos atendendo só o evento; o valor do aluguel não é convertido em consumo. ' +
+      'O consumo é à parte e o cliente escolhe: comanda individual, consumação livre (conta única) ou pacote fechado de comidas e bebidas (orçamento à parte). ' +
       'O cliente pode trazer decoração, bolo e doces. ' +
       `Entrada de ${pct}% (${rs(entrada)}) por Pix para reservar a data — a data só fica bloqueada após a confirmação do pagamento. ` +
       `Saldo do aluguel até o dia do evento. ${cad.condicoes ? `Condição cadastrada: ${cad.condicoes}.` : ''}`.trim(),
@@ -426,6 +428,7 @@ export async function gerarOrcamentoEspaco(p: PedidoOrcamentoEspaco): Promise<st
   return (
     `ORÇAMENTO DE ESPAÇO CRIADO: Terraço${comVaranda ? ' + varandinha' : ''} fechado pro grupo, ${p.data.split('-').reverse().join('/')}${p.hora ? ` a partir das ${p.hora}` : ''}, ${pessoas} pessoas${tipo ? ` (${tipo})` : ''}. ` +
     `Aluguel do espaço ${rs(taxa)}; comida e bebida por consumo do cardápio, em comanda individual. Pode trazer decoração, bolo e doces. ` +
+    `O aluguel abre o Terraço exclusivo pro grupo, com garçom e barman exclusivos só pra eles, e NÃO vira consumação. O consumo é à parte e o cliente escolhe: comanda individual, consumação livre (conta única) ou pacote de comidas e bebidas (aí é orçamento de menu à parte). Se perguntarem se o valor vira consumo, responda isso você mesma, sem transferir. ` +
     `Entrada de ${pct}% = ${rs(entrada)} por Pix na própria página do link: é ela que reserva a data (enquanto não pagar, o dia segue livre pra outro cliente — diga com naturalidade, sem pressão). Saldo do aluguel até o dia do evento. ` +
     (descEspaco
       ? `O cliente é ${descEspaco.motivo}: ganhou ${rs(descEspaco.desconto)} de desconto no aluguel, já abatido no documento — conte como benefício do cartão. `
