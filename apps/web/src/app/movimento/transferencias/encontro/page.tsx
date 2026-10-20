@@ -173,6 +173,13 @@ export default async function EncontroPage(props: { searchParams: Promise<{ comp
                           ) : (
                             x.descricao
                           )}
+                          <span
+                            className={`ml-1.5 rounded px-1 py-0.5 text-[10px] ${
+                              x.origem === 'MANUAL' ? 'bg-violet-100 text-violet-800' : 'bg-slate-100 text-slate-500'
+                            }`}
+                          >
+                            {x.origem === 'MANUAL' ? 'lançado na conta' : 'Inter'}
+                          </span>
                         </td>
                         <td className="px-3 py-2 text-xs text-slate-500 whitespace-nowrap">
                           {nome.get(x.filialDevedoraId)} deve pra {nome.get(x.filialPagadoraId)}

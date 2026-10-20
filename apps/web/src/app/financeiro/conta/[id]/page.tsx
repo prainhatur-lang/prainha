@@ -14,6 +14,8 @@ import { consumerParado } from '@/lib/consumer-contas';
 import { BaixaForm } from './baixa-form';
 import { AcoesConta } from './acoes-conta';
 import { ValorBoletoForm } from './valor-boleto-form';
+import { PagaOutraCasa } from './paga-outra-casa';
+import { filiaisDoUsuario } from '@/lib/filiais';
 
 export const dynamic = 'force-dynamic';
 
@@ -127,6 +129,29 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
       : conta.dataVencimento < hoje
         ? { label: 'VENCIDA', cls: 'bg-rose-100 text-rose-800' }
         : { label: 'EM ABERTO', cls: 'bg-slate-100 text-slate-700' };
+
+  // "Paga por outra casa" (20/10/2026): lançamentos desta conta no encontro de contas
+  const minhasCasas = await filiaisDoUsuario(user.id);
+  const nomeCasa = new Map(minhasCasas.map((f) => [f.id, f.nome ?? 'outra casa']));
+  const outrasCasas = minhasCasas
+    .filter((f) => f.id !== conta.filialId)
+    .map((f) => ({ id: f.id, nome: f.nome ?? 'outra casa' }));
+  const pagosPorOutra = (
+    await db
+      .select({
+        id: schema.pagamentoEntreCasas.id,
+        data: schema.pagamentoEntreCasas.data,
+        competencia: schema.pagamentoEntreCasas.competencia,
+        valor: schema.pagamentoEntreCasas.valor,
+        descricao: schema.pagamentoEntreCasas.descricao,
+        status: schema.pagamentoEntreCasas.status,
+        origem: schema.pagamentoEntreCasas.origem,
+        pagadoraId: schema.pagamentoEntreCasas.filialPagadoraId,
+      })
+      .from(schema.pagamentoEntreCasas)
+      .where(eq(schema.pagamentoEntreCasas.contaPagarId, id))
+      .orderBy(desc(schema.pagamentoEntreCasas.criadoEm))
+  ).map(({ pagadoraId, ...l }) => ({ ...l, pagadora: nomeCasa.get(pagadoraId) ?? 'outra casa' }));
 
   const consumer = conta.origem === 'CONSUMER';
   // casa que saiu do Consumer: a conta CONSUMER se baixa aqui (lib/consumer-contas)
@@ -309,6 +334,15 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
             </p>
           )}
         </div>
+
+        <PagaOutraCasa
+          contaId={conta.id}
+          casas={outrasCasas}
+          saldo={saldo}
+          valorConta={valor}
+          podeBaixar={(!consumer || consumerAqui) && !pagaNoConsumer && saldo > 0.005}
+          lancamentos={pagosPorOutra}
+        />
       </div>
     </main>
   );

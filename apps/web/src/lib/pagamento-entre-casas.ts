@@ -10,6 +10,8 @@ import { filiaisDoUsuario } from '@/lib/filiais';
 import { buscarPagamentosInter, resolverCredenciaisInterPagamentos } from '@/lib/inter';
 import { centavos, pagamentoAgendado, pagamentoCancelado } from '@/lib/boletos-inter';
 import { RecusaTransf } from '@/lib/transferencia';
+import { consumerParado } from '@/lib/consumer-contas';
+import { recalcularAgregado } from '@/lib/conta-pagar-baixa';
 
 const dataBr = (ymd: string) => ymd.split('-').reverse().join('/');
 
@@ -140,4 +142,119 @@ export async function desfazerPagamentoEntreCasas(userId: string, id: string) {
     .set({ status: 'CANCELADO', canceladoPor: userId, canceladoEm: new Date() })
     .where(and(eq(schema.pagamentoEntreCasas.id, id), eq(schema.pagamentoEntreCasas.status, 'ABERTO')));
   return { id };
+}
+
+/** Formas de pagamento do lançamento à mão (botão "Paga por outra casa"). */
+export const FORMAS_PAGAMENTO_CASA = ['Pix', 'Boleto', 'Transferência', 'Cartão', 'Dinheiro', 'Outro'] as const;
+
+/** Conta de uma casa paga por OUTRA casa fora do Inter (Pix de outro banco,
+ *  cartão, dinheiro...) — pedido do dono 20/10/2026. Lança à mão no encontro
+ *  de contas do mês do pagamento (origem MANUAL) e, se pedido, dá a baixa na
+ *  conta pelas mesmas regras da tela de baixas. Uma conta só tem um
+ *  pagamento entre casas valendo; um desfeito libera lançar de novo. */
+export async function lancarPagamentoManualEntreCasas(opts: {
+  userId: string;
+  contaId: string;
+  filialPagadoraId: string;
+  data: string;
+  valor: number;
+  forma: string;
+  observacao?: string | null;
+  darBaixa: boolean;
+}) {
+  const { userId, contaId, filialPagadoraId } = opts;
+  const filiais = await filiaisDoUsuario(userId);
+  const nome = new Map(filiais.map((f) => [f.id, f.nome]));
+  if (!nome.has(filialPagadoraId)) throw new RecusaTransf('sem acesso à casa que pagou');
+
+  const [c] = await db
+    .select({
+      id: schema.contaPagar.id,
+      filialId: schema.contaPagar.filialId,
+      valor: schema.contaPagar.valor,
+      origem: schema.contaPagar.origem,
+      dataVencimento: schema.contaPagar.dataVencimento,
+      dataPagamento: schema.contaPagar.dataPagamento,
+      dataDelete: schema.contaPagar.dataDelete,
+      descricao: schema.contaPagar.descricao,
+      fornecedorNome: schema.fornecedor.nome,
+    })
+    .from(schema.contaPagar)
+    .leftJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.contaPagar.fornecedorId))
+    .where(eq(schema.contaPagar.id, contaId))
+    .limit(1);
+  if (!c || c.dataDelete) throw new RecusaTransf('conta não encontrada');
+  if (!nome.has(c.filialId)) throw new RecusaTransf('sem acesso à casa da conta');
+  if (c.filialId === filialPagadoraId) throw new RecusaTransf('a casa que pagou é a mesma da conta — use "Registrar pagamento"');
+
+  const [ativo] = await db
+    .select({ id: schema.pagamentoEntreCasas.id })
+    .from(schema.pagamentoEntreCasas)
+    .where(
+      and(
+        eq(schema.pagamentoEntreCasas.contaPagarId, contaId),
+        ne(schema.pagamentoEntreCasas.status, 'CANCELADO'),
+      ),
+    )
+    .limit(1);
+  if (ativo) throw new RecusaTransf('essa conta já está no encontro de contas — desfaça o lançamento antes');
+
+  const valorConta = Number(c.valor);
+  const baixasDaqui = await db
+    .select({ valor: schema.contaPagarBaixa.valor })
+    .from(schema.contaPagarBaixa)
+    .where(eq(schema.contaPagarBaixa.contaPagarId, contaId));
+  const saldo = valorConta - baixasDaqui.reduce((s, x) => s + Number(x.valor), 0);
+  let baixar = opts.darBaixa && saldo > 0.005;
+  if (baixar && c.origem === 'CONSUMER') {
+    if (!(await consumerParado(c.filialId))) {
+      throw new RecusaTransf('conta do Consumer: a baixa é feita no PDV — desmarque "dar baixa" pra só lançar no encontro');
+    }
+    if (c.dataPagamento && baixasDaqui.length === 0) baixar = false; // o Consumer já pagou
+  }
+
+  const casa = nome.get(filialPagadoraId);
+  const forma = opts.forma.trim();
+  const obs = opts.observacao?.trim();
+  const descricao =
+    `${c.fornecedorNome ?? c.descricao ?? 'Conta'} — venc. ${dataBr(c.dataVencimento)}, pago pela ${casa} (${forma})` +
+    (obs ? ` · ${obs}` : '');
+  const valor = opts.valor.toFixed(2);
+
+  return db.transaction(async (tx) => {
+    const [p] = await tx
+      .insert(schema.pagamentoEntreCasas)
+      .values({
+        filialPagadoraId,
+        filialDevedoraId: c.filialId,
+        contaPagarId: contaId,
+        origem: 'MANUAL',
+        codigoExterno: null,
+        data: opts.data,
+        competencia: opts.data.slice(0, 7),
+        valor,
+        descricao,
+        status: 'ABERTO',
+        criadoPor: userId,
+      })
+      .returning({ id: schema.pagamentoEntreCasas.id });
+    let baixou = false;
+    if (baixar) {
+      // principal abate o saldo; o que passar dele vai como juros (igual à baixa)
+      const principal = Math.min(opts.valor, saldo);
+      const juros = opts.valor - principal;
+      await tx.insert(schema.contaPagarBaixa).values({
+        filialId: c.filialId,
+        contaPagarId: contaId,
+        data: opts.data,
+        valor: principal.toFixed(2),
+        juros: juros > 0.005 ? juros.toFixed(2) : null,
+        observacao: `pago pela ${casa} (${forma}) — encontro de contas${obs ? ` · ${obs}` : ''}`,
+        criadoPor: userId,
+      });
+      await recalcularAgregado(contaId, valorConta, tx);
+      baixou = true;
+    }
+    return { id: p!.id, competencia: opts.data.slice(0, 7), baixou };
+  });
 }
