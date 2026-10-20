@@ -803,6 +803,17 @@ export default async function NotaDetalhePage(props: {
         {/* Conferência de recebimento — com a nota na mão */}
         {totalItens > 0 && (
           <div className="mt-6">
+            {conferencia.conferidaEm && (
+              <p className="mb-2 text-xs text-emerald-700">
+                ✓ Conferida
+                {conferencia.conferidaPor ? ` por ${conferencia.conferidaPor}` : ' (quem: não registrado)'} em{' '}
+                {new Date(conferencia.conferidaEm).toLocaleString('pt-BR', {
+                  timeZone: 'America/Sao_Paulo',
+                  dateStyle: 'short',
+                  timeStyle: 'short',
+                })}
+              </p>
+            )}
             <ConferirNota
               notaId={id}
               obsAtual={conferencia.obs}

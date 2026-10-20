@@ -17,6 +17,47 @@ export interface PedidoPix {
   saldo: number;
   parcial: boolean;
   pareceBoleto: boolean;
+  /** Pedido ligado, quem lançou e quem conferiu (20/10/2026). */
+  origem?: {
+    notaId: string | null;
+    notaNumero: number | null;
+    ehPedidoFoto: boolean;
+    lancouConta: string | null;
+    lancouEstoque: string | null;
+    conferidaEm: string | null;
+    conferiu: string | null;
+  };
+}
+
+const quemCurto = (s: string) => (s.includes('@') ? s.split('@')[0]! : s);
+
+function LinhaOrigem({ o }: { o: NonNullable<PedidoPix['origem']> }) {
+  const lancou = o.lancouConta ?? o.lancouEstoque;
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 pl-[7.25rem] pr-4 pb-2 text-[11px] text-slate-500">
+      {o.notaId ? (
+        <a href={`/movimento/entrada-notas/${o.notaId}`} className="font-medium text-sky-700 hover:underline">
+          📄 Ver {o.ehPedidoFoto ? 'pedido' : 'nota'}
+          {o.notaNumero ? ` nº ${o.notaNumero}` : ''}
+        </a>
+      ) : (
+        <span className="text-amber-700">⚠ sem pedido no sistema (lançada à mão)</span>
+      )}
+      <span>
+        Lançou: <b className="font-medium text-slate-700">{lancou ? quemCurto(lancou) : 'não registrado'}</b>
+      </span>
+      {o.notaId &&
+        (o.conferidaEm ? (
+          <span>
+            Conferiu:{' '}
+            <b className="font-medium text-emerald-700">{o.conferiu ? quemCurto(o.conferiu) : 'não registrado'}</b> em{' '}
+            {o.conferidaEm}
+          </span>
+        ) : (
+          <span className="text-amber-700">⚠ não conferido</span>
+        ))}
+    </div>
+  );
 }
 
 export interface GrupoPedidos {
@@ -175,7 +216,8 @@ export function GrupoPix({
         {grupo.contas.map((c) => {
           const atraso = diasAtraso(c.venc, hoje);
           return (
-            <li key={c.id} className="flex items-center gap-3 px-4 py-2 text-sm">
+            <li key={c.id}>
+            <div className="flex items-center gap-3 px-4 py-2 text-sm">
               <input
                 type="checkbox"
                 checked={marcadas.has(c.id)}
@@ -202,6 +244,8 @@ export function GrupoPix({
                 </span>
               ) : null}
               <span className="w-24 shrink-0 text-right font-medium text-slate-900">{brl(c.saldo)}</span>
+            </div>
+            {c.origem && <LinhaOrigem o={c.origem} />}
             </li>
           );
         })}

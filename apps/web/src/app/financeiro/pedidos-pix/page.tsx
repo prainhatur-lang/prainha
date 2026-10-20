@@ -118,6 +118,50 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
     )
     .orderBy(c.dataVencimento);
 
+  // Pedido ligado, quem lançou e quem conferiu (dono 20/10/2026). Consulta à
+  // parte: se falhar, a tela continua igual, só sem essas linhas.
+  type Origem = {
+    id: string;
+    nota_id: string | null;
+    nota_numero: number | null;
+    nota_origem: string | null;
+    lancou_conta: string | null;
+    lancou_estoque: string | null;
+    conferida_em: string | null;
+    conferiu: string | null;
+  };
+  const origens = new Map<string, Origem>();
+  if (linhas.length > 0) {
+    try {
+      const rows = (await db.execute(sql`
+        SELECT c.id,
+               n.id AS nota_id, n.numero AS nota_numero, n.origem_importacao AS nota_origem,
+               coalesce(uc.nome, uc.email) AS lancou_conta,
+               (SELECT coalesce(u2.nome, u2.email)
+                  FROM movimento_estoque m
+                  JOIN nota_compra_item i ON i.id = m.nota_compra_item_id
+                  JOIN usuario u2 ON u2.id = m.criado_por
+                 WHERE i.nota_compra_id = n.id
+                 ORDER BY m.criado_em LIMIT 1) AS lancou_estoque,
+               to_char(n.conferida_em AT TIME ZONE 'America/Sao_Paulo', 'DD/MM HH24:MI') AS conferida_em,
+               coalesce(ucf.nome, ucf.email) AS conferiu
+          FROM conta_pagar c
+          LEFT JOIN usuario uc ON uc.id = c.criado_por
+          LEFT JOIN nota_compra n ON n.id = coalesce(
+                 c.nota_compra_id,
+                 (SELECT d.nota_compra_id FROM nota_compra_duplicata d WHERE d.conta_pagar_id = c.id LIMIT 1))
+          LEFT JOIN usuario ucf ON ucf.id = n.conferida_por
+         WHERE c.id IN (${sql.join(
+           linhas.map((l) => sql`${l.id}::uuid`),
+           sql`, `,
+         )})
+      `)) as unknown as Origem[];
+      for (const r of rows) origens.set(r.id, r);
+    } catch (e) {
+      console.error('[pedidos-pix] origem dos pedidos', e);
+    }
+  }
+
   let escondidas = 0;
   const grupos = new Map<string, GrupoPedidos>();
   for (const l of linhas) {
@@ -154,6 +198,19 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
       saldo,
       parcial: Number(l.jaPago) > 0,
       pareceBoleto: !ehPix,
+      origem: (() => {
+        const o = origens.get(l.id);
+        if (!o) return undefined;
+        return {
+          notaId: o.nota_id,
+          notaNumero: o.nota_numero,
+          ehPedidoFoto: o.nota_origem === 'PEDIDO_FOTO',
+          lancouConta: o.lancou_conta,
+          lancouEstoque: o.lancou_estoque,
+          conferidaEm: o.conferida_em,
+          conferiu: o.conferiu,
+        };
+      })(),
     });
   }
 

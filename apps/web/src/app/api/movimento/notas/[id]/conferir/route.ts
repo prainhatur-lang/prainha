@@ -45,6 +45,7 @@ export async function POST(
     notaId,
     entradas.map((e) => ({ itemId: e.itemId, qtdRecebida: Number(e.qtdRecebida) })),
     body.observacao?.trim() || null,
+    user.id,
   );
 
   // Resumo das faltas (nota diz X, chegou Y)
