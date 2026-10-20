@@ -1819,7 +1819,7 @@ function AdicionarLinhaBtn({
                     className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
                   />
                   <p className="mt-1 text-[10px] text-slate-400">
-                    1 = corte comum · 3 = nobre · 0.5 = popular · em branco = o último usado
+                    1 = corte comum · 3 = nobre · 0.5 = popular · em branco = o do cadastro do produto (ou o último usado)
                   </p>
                 </div>
               )}

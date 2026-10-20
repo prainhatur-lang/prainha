@@ -25,6 +25,7 @@ interface Produto {
   criadoNaNuvem: boolean;
   estoqueAtual?: string | null;
   pesoUnitarioPadraoKg?: string | null;
+  pesoRelativoProducao?: string | null;
   semTaxaServico?: boolean | null;
 }
 
@@ -44,6 +45,9 @@ export function EditarProdutoButton({ produto }: { produto: Produto }) {
   const [descontinuado, setDescontinuado] = useState(produto.descontinuado ?? false);
   const [pesoUn, setPesoUn] = useState(
     produto.pesoUnitarioPadraoKg ? String(Number(produto.pesoUnitarioPadraoKg)) : '',
+  );
+  const [pesoRel, setPesoRel] = useState(
+    produto.pesoRelativoProducao ? String(Number(produto.pesoRelativoProducao)) : '',
   );
   const [semServico, setSemServico] = useState(produto.semTaxaServico ?? false);
   const [pending, start] = useTransition();
@@ -120,6 +124,17 @@ export function EditarProdutoButton({ produto }: { produto: Produto }) {
       return;
     }
     if (pesoUnNovo !== pesoUnAtual) body.pesoUnitarioPadraoKg = pesoUnNovo;
+
+    // Peso relativo na produção (rateio do custo da OP) — vazio = sem config
+    const pesoRelAtual = produto.pesoRelativoProducao
+      ? Number(produto.pesoRelativoProducao)
+      : null;
+    const pesoRelNovo = pesoRel.trim() ? Number(pesoRel.replace(',', '.')) : null;
+    if (pesoRelNovo !== null && (!Number.isFinite(pesoRelNovo) || pesoRelNovo <= 0 || pesoRelNovo > 100)) {
+      setErro('Peso na produção inválido (maior que 0, até 100)');
+      return;
+    }
+    if (pesoRelNovo !== pesoRelAtual) body.pesoRelativoProducao = pesoRelNovo;
 
     if (Object.keys(body).length === 0) {
       fechar();
@@ -275,6 +290,25 @@ export function EditarProdutoButton({ produto }: { produto: Produto }) {
                 </p>
               </div>
             )}
+
+            <div>
+              <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                Peso na produção (custo)
+              </label>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={pesoRel}
+                onChange={(e) => setPesoRel(e.target.value)}
+                placeholder="1 (corte comum)"
+                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+              />
+              <p className="mt-1 text-[10px] text-slate-500">
+                Quanto do custo por kg este produto carrega quando sai de uma ordem de
+                produção. 1 = corte comum · 0,3 = subproduto/apara (cada kg vale 30%) ·
+                maior que 1 = corte nobre. Em branco = usa o último peso da produção (ou 1).
+              </p>
+            </div>
 
             <label className="flex items-center gap-2 text-xs text-slate-700">
               <input

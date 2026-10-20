@@ -34,6 +34,7 @@ const Body = z.object({
   descontinuado: z.boolean().optional(),
   tipo: z.enum(TIPOS).optional(),
   pesoUnitarioPadraoKg: z.number().positive().nullable().optional(),
+  pesoRelativoProducao: z.number().positive().max(100).nullable().optional(),
   semTaxaServico: z.boolean().optional(),
 });
 
@@ -84,7 +85,7 @@ export async function PATCH(
     .limit(1);
   if (!link) return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
 
-  const { nome, unidadeEstoque, controlaEstoque, estoqueMinimo, estoqueMaximo, descontinuado, tipo, pesoUnitarioPadraoKg, semTaxaServico } = parsed.data;
+  const { nome, unidadeEstoque, controlaEstoque, estoqueMinimo, estoqueMaximo, descontinuado, tipo, pesoUnitarioPadraoKg, pesoRelativoProducao, semTaxaServico } = parsed.data;
   const set: Record<string, unknown> = {};
   if (unidadeEstoque !== undefined) set.unidadeEstoque = unidadeEstoque;
   if (controlaEstoque !== undefined) set.controlaEstoque = controlaEstoque;
@@ -96,6 +97,10 @@ export async function PATCH(
   if (pesoUnitarioPadraoKg !== undefined) {
     set.pesoUnitarioPadraoKg =
       pesoUnitarioPadraoKg !== null ? pesoUnitarioPadraoKg.toFixed(4) : null;
+  }
+  if (pesoRelativoProducao !== undefined) {
+    set.pesoRelativoProducao =
+      pesoRelativoProducao !== null ? pesoRelativoProducao.toFixed(4) : null;
   }
   if (nome !== undefined) {
     if (!prod.criadoNaNuvem) {

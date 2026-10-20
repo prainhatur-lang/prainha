@@ -68,6 +68,10 @@ export const produto = pgTable(
      *  pedir "60 ml" de um insumo controlado em garrafa: baixa 0,06 un.
      *  Null = sem conversão un↔ml. Preenchido pelo nome ("750 ml", "1L"). */
     volumeUnitarioMl: numeric('volume_unitario_ml', { precision: 14, scale: 4 }),
+    /** Peso relativo na produção: quanto do custo por kg esse produto carrega
+     *  quando sai de uma OP (1 = corte comum, apara 0,3). Null = não
+     *  configurado → a OP usa o último peso usado, ou 1. */
+    pesoRelativoProducao: numeric('peso_relativo_producao', { precision: 10, scale: 4 }),
     codigoUnidadeComercial: integer('codigo_unidade_comercial'),
     codigoProdutoTipo: integer('codigo_produto_tipo'),
     codigoCozinha: integer('codigo_cozinha'),

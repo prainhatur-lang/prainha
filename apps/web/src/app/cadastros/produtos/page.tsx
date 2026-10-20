@@ -169,6 +169,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
       controlaEstoque: schema.produto.controlaEstoque,
       criadoNaNuvem: schema.produto.criadoNaNuvem,
       pesoUnitarioPadraoKg: schema.produto.pesoUnitarioPadraoKg,
+      pesoRelativoProducao: schema.produto.pesoRelativoProducao,
       semTaxaServico: schema.produto.semTaxaServico,
       codigoEtiqueta: schema.produto.codigoEtiqueta,
     })
@@ -628,6 +629,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
                             criadoNaNuvem: p.criadoNaNuvem,
                             estoqueAtual: p.estoqueAtual,
                             pesoUnitarioPadraoKg: p.pesoUnitarioPadraoKg,
+                            pesoRelativoProducao: p.pesoRelativoProducao,
                             semTaxaServico: p.semTaxaServico,
                           }}
                         />
