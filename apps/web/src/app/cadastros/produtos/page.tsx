@@ -370,6 +370,13 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
               ⚠ Vendeu sem baixar
             </Link>
             <Link
+              href={`/cadastros/produtos/combos?filial=${filialSelecionada.id}`}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              title="Preço fixo + etapas de escolha (prato, bebida…)"
+            >
+              🍱 Combos
+            </Link>
+            <Link
               href={`/cadastros/produtos/novo?filial=${filialSelecionada.id}`}
               className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
             >
