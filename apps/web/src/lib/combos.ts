@@ -59,7 +59,7 @@ export async function listarCombos(filialId: string): Promise<ComboResumo[]> {
            COUNT(DISTINCT wp.codigo_pergunta)::int AS etapas,
            COUNT(DISTINCT o.codigo_externo)::int AS opcoes,
            EXISTS (SELECT 1 FROM combo_marcado cm
-                    WHERE cm.filial_id = wp.filial_id AND cm.codigo_variante_externo = v.codigo_externo) AS marcado
+                    WHERE cm.filial_id = ${filialId} AND cm.codigo_variante_externo = v.codigo_externo) AS marcado
       FROM wizard_produto wp
       JOIN produto_variante v ON v.filial_id = wp.filial_id AND v.codigo_externo = wp.codigo_variante_externo
       JOIN produto p ON p.id = v.produto_id
