@@ -27,7 +27,7 @@ import {
   entrarListaEsperaWhatsApp,
   consultarMesa,
 } from './reservar';
-import { consultarCardapio } from './cardapio';
+import { consultarCardapio, FILIAL_TABUARA } from './cardapio';
 import { medirOcupacaoHoje } from './ocupacao';
 import { consultarPedidoDelivery } from './pedido-delivery';
 import { consultarMareTexto } from './mare';
@@ -1072,6 +1072,32 @@ export async function processarEntrada(params: {
         texto =
           'Ainda não consegui deixar sua reserva registrada por aqui, então já passei pra nossa equipe — eles confirmam com você nesta mesma conversa em instantes.';
       }
+    }
+
+    // AGÊNCIA PAGANDO ANTES NA TABUARÁ (dono, 20/10/2026 — caso Flytour/Neydja):
+    // a Tabuará aceita pagamento antecipado de agência/empresa e quem fecha é a
+    // equipe. A Nina dizia "não trabalhamos com pré-pagamento", mandava pro
+    // site e montava menu de evento pra um casal. Cliente falou em pré-pagar,
+    // agência, premiação ou voucher e ela não transferiu → transfere e responde
+    // a regra da casa.
+    if (
+      texto &&
+      !transferiu &&
+      modo === 'cliente' &&
+      entrada.filialId === FILIAL_TABUARA &&
+      /\bpr[eé][- ]?pag|\bpagar (antes|adiantado|antecipad)|\bpagamento (antecipad|adiantad)|\bantecipar (o )?pagamento|\bag[eê]ncia\b|\bincentivo\b|\bpremia|\bvoucher/i.test(
+        [...historico.filter((m) => m.direcao === 'entrada').slice(-8).map((m) => m.corpo ?? ''), entrada.corpo ?? ''].join(' '),
+      )
+    ) {
+      await executores
+        .transferir(
+          'Agência/pré-pagamento na Tabuará',
+          'Cliente de agência/empresa quer reservar e pagar antes — a Tabuará aceita pagamento antecipado. Fechar valor, data e enviar o pagamento.',
+        )
+        .catch(() => {});
+      transferiu = true;
+      texto =
+        'Sim, a Tabuará aceita pagamento antecipado de agência e empresa. Já passei seu pedido pra nossa equipe, que fecha o valor e a reserva e envia o pagamento com você aqui nesta mesma conversa.';
     }
 
     // LOUNGE SEM LINK (dono, 18/10/2026): a Nina não cria reserva de Lounge
