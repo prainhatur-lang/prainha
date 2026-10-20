@@ -256,6 +256,7 @@ export const MENU_AREAS: MenuArea[] = [
           { label: 'Contas a pagar', href: '/financeiro', perm: 'conta_pagar.read' },
           { label: 'Boletos pagos no Inter', href: '/financeiro/boletos-inter', perm: 'conta_pagar.read' },
           { label: 'Pix pagos no Inter', href: '/financeiro/pix-inter', perm: 'conta_pagar.read' },
+          { label: 'Pedidos a pagar por Pix', href: '/financeiro/pedidos-pix', perm: 'conta_pagar.read' },
           { label: 'Faturas de cartão', href: '/financeiro/cartoes', perm: 'conta_pagar.read' },
           { label: 'Portadores (cofre e dinheiro)', href: '/financeiro/portadores', perm: 'conta_pagar.read' },
           { label: 'Contas a receber', href: '/financeiro/receber', perm: 'conta_receber.read' },
