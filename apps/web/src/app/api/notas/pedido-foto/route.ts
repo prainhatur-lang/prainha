@@ -13,8 +13,10 @@ import { NextResponse } from 'next/server';
 import { createClient, createAdminClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
+import { acharNfeDoPapel, gravarVencimentosDaNfe, type NfeDoPapel } from '@/lib/nfe-do-papel';
 import {
   BUCKET_PEDIDO,
+  DanfeLida,
   MIMES_PEDIDO,
   NotaServicoLida,
   catalogoDaFilial,
@@ -33,6 +35,25 @@ export const maxDuration = 180;
 
 const MAX_SIZE = 4 * 1024 * 1024; // a tela já reduz a foto; acima disso a Vercel nem entrega o corpo
 const MAX_PAGINAS = 10;
+
+/** Resposta quando o papel é DANFE de uma NF-e que existe: abre a NF-e e não
+ *  cria pedido sem nota (duplicava estoque e conta a pagar). */
+function respostaDanfe(nfe: NfeDoPapel, vencimentosLidos: Array<{ data: string; valor: number }>, gravados: Array<{ data: string; valor: number }>) {
+  return NextResponse.json({
+    ok: true,
+    danfe: true,
+    id: nfe.id,
+    numero: nfe.numero,
+    emitNome: nfe.emitNome,
+    valorTotal: nfe.valorTotal,
+    resumo: nfe.resumo,
+    jaLancada: nfe.jaLancada,
+    por: nfe.por,
+    importacao: nfe.importacao,
+    vencimentosLidos,
+    vencimentosGravados: gravados,
+  });
+}
 
 function extOf(mime: string): string {
   if (mime.includes('pdf')) return 'pdf';
@@ -120,6 +141,22 @@ export async function POST(req: Request) {
         )
       : await lerPedido(buf, mime, arquivo.name, cat);
   } catch (e) {
+    // DANFE que a IA não montou como pedido: abre a NF-e pela chave.
+    if (e instanceof DanfeLida) {
+      const nfe = await acharNfeDoPapel({
+        filialId,
+        chave: e.chave,
+        fornecedorCnpj: e.fornecedorCnpj,
+        numero: e.numero,
+      });
+      if (nfe) return respostaDanfe(nfe, [], []);
+      return NextResponse.json(
+        {
+          error: `é uma NF-e (DANFE${e.numero ? ` nº ${e.numero}` : ''}), mas a SEFAZ ainda não entregou ela pra esta casa — lance pela chave em "Entrada de notas" (chave ${e.chave})`,
+        },
+        { status: 422 },
+      );
+    }
     if (e instanceof NotaServicoLida && extras.length) {
       return NextResponse.json(
         { error: 'é uma nota de serviço — envie ela sozinha (uma foto), não junto com outras' },
@@ -152,6 +189,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, servico: true, ...rs });
     }
     return NextResponse.json({ error: (e as Error).message }, { status: 422 });
+  }
+
+  // DANFE (NF-e impressa): a nota de verdade vem da SEFAZ. Achou → abre ela em
+  // vez de criar pedido sem nota. Não achou → segue como sempre.
+  const nfe = await acharNfeDoPapel({
+    filialId,
+    chave: lido.chaveNfe,
+    fornecedorCnpj: lido.fornecedorCnpj,
+    numero: lido.numero,
+    total: lido.total ?? lido.itens.reduce((t, i) => t + (i.valorTotal ?? 0), 0),
+  });
+  if (nfe) {
+    const gravados = await gravarVencimentosDaNfe(nfe, filialId, lido.vencimentos);
+    return respostaDanfe(nfe, lido.vencimentos, gravados);
   }
 
   const storagePath = `pedidos-sem-nota/${filialId}/${hash}.${extOf(mime)}`;

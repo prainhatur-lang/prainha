@@ -89,6 +89,28 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
     if (d.duplicada) {
       return { arquivo: f.name, ok: true, titulo: 'Este pedido já tinha sido enviado', detalhes: [], notaId: d.id };
     }
+    if (d.danfe) {
+      // É NF-e (DANFE): a nota de verdade já veio da SEFAZ — nada de pedido sem nota.
+      const dt = (s: string) => s.split('-').reverse().join('/');
+      const det: string[] = [];
+      if (d.jaLancada) det.push('essa NF-e já foi lançada no estoque/contas a pagar — não lance de novo');
+      else if (d.resumo) det.push('a SEFAZ só mandou o resumo até agora — os itens chegam sozinhos; abra a nota depois pra lançar');
+      else det.push('abra a nota e clique em "Lançar" pra dar entrada no estoque');
+      const gravados = (d.vencimentosGravados ?? []) as Array<{ data: string; valor: number }>;
+      const lidos = (d.vencimentosLidos ?? []) as Array<{ data: string; valor: number }>;
+      if (gravados.length) {
+        det.push(`vencimento do boleto gravado na nota: ${gravados.map((v) => `${dt(v.data)} — ${brl(v.valor)}`).join(', ')}`);
+      } else if (lidos.length && !d.jaLancada) {
+        det.push(`vencimento lido no papel: ${lidos.map((v) => `${dt(v.data)} — ${brl(v.valor)}`).join(', ')} — confira na conta a pagar`);
+      }
+      return {
+        arquivo: f.name,
+        ok: true,
+        titulo: `É NF-e — abrindo a nota${d.numero ? ` nº ${d.numero}` : ''} de ${d.emitNome ?? 'fornecedor'} · ${brl(Number(d.valorTotal ?? 0))}`,
+        detalhes: det,
+        notaId: d.id,
+      };
+    }
     if (d.servico) {
       // Nota de serviço: não tem estoque — as parcelas já foram pro contas a pagar.
       const parcelas = (d.parcelas ?? []) as Array<{ data: string; valor: number }>;

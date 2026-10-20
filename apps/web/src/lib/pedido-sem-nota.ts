@@ -56,6 +56,9 @@ export interface PedidoLido {
   desconto: number | null;
   legibilidade: 'alta' | 'media' | 'baixa';
   observacao: string | null;
+  /** Papel é DANFE (NF-e impressa): os 44 dígitos da chave de acesso. A rota
+   *  abre a NF-e da SEFAZ em vez de criar pedido sem nota (duplicava). */
+  chaveNfe: string | null;
   itens: ItemLido[];
 }
 
@@ -85,9 +88,14 @@ Insumos:
 - Nunca force um vínculo: item sem correspondente claro fica com null.
 
 Saída: SOMENTE um objeto JSON, sem cerca de código e sem texto em volta:
-{"pedido": true, "fornecedorNome": "JOÃO DO PEIXE", "fornecedorCnpj": null, "fornecedor": "F3", "numero": "1234", "data": "2026-10-12", "vencimentos": [["2026-10-20", 350.00]], "total": 350.00, "desconto": null, "legibilidade": "alta", "observacao": null, "itens": [["Camarão cinza médio", 10, "kg", 35.00, 350.00, "P12", "alta"]]}
+{"pedido": true, "fornecedorNome": "JOÃO DO PEIXE", "fornecedorCnpj": null, "fornecedor": "F3", "numero": "1234", "data": "2026-10-12", "vencimentos": [["2026-10-20", 350.00]], "total": 350.00, "desconto": null, "legibilidade": "alta", "observacao": null, "chaveNfe": null, "itens": [["Camarão cinza médio", 10, "kg", 35.00, 350.00, "P12", "alta"]]}
 Cada item é uma lista nesta ordem: descricao, quantidade, unidade, valorUnitario, valorTotal, insumo, certeza.
 Se o arquivo NÃO for um pedido/romaneio/recibo de compra de mercadoria: {"pedido": false, "motivo": "o que é o arquivo"}.
+
+DANFE (nota fiscal eletrônica impressa — tem "DANFE" e uma CHAVE DE ACESSO de 44 dígitos, geralmente com código de barras):
+- Leia normalmente no formato do pedido acima (itens, total, fornecedor, número da NF).
+- Devolva também "chaveNfe" = os 44 dígitos da chave de acesso, só dígitos, conferindo dígito a dígito. Papel que não é DANFE: "chaveNfe": null.
+- "vencimentos": as duplicatas/fatura do DANFE ou, se veio boleto junto, o vencimento e o valor do boleto.
 
 Exceção — NOTA DE SERVIÇO (NFS-e de prefeitura ou nota/recibo de prestação de serviço, sem mercadoria pra estoque): não vira entrada de estoque, mas vira conta a pagar. Devolva:
 {"pedido": false, "servico": true, "motivo": "nota de serviço", "fornecedorNome": "I9 EMBALAGENS LTDA", "fornecedorCnpj": "29196541000119", "fornecedor": "F7", "numero": "901", "data": "2026-09-10", "descricao": "Personalização de artigos gráficos", "total": 7012.41, "vencimentos": [["2026-09-10", 3400.00], ["2026-09-17", 722.48]]}
@@ -211,6 +219,12 @@ export function normalizarPedido(bruto: unknown, qtdProdutos: number, qtdFornece
   if (o.pedido === false && o.servico === true) {
     throw new NotaServicoLida(normalizarServico(o, qtdFornecedores));
   }
+  const chaveCedo = chaveDoJson(o);
+  const cnpjCedo = typeof o.fornecedorCnpj === 'string' ? o.fornecedorCnpj.replace(/\D/g, '') : '';
+  const numeroCedo = o.numero != null && String(o.numero).trim() ? String(o.numero).trim().slice(0, 30) : null;
+  if (o.pedido === false && chaveCedo) {
+    throw new DanfeLida(chaveCedo, numeroCedo, cnpjCedo.length === 14 ? cnpjCedo : null);
+  }
   if (o.pedido === false) {
     throw new Error(`o arquivo não parece um pedido de compra${typeof o.motivo === 'string' ? ` (${o.motivo})` : ''}`);
   }
@@ -236,6 +250,9 @@ export function normalizarPedido(bruto: unknown, qtdProdutos: number, qtdFornece
       certeza: produtoIdx == null ? 'baixa' : certeza(linha[6]),
     });
   }
+  if (itens.length === 0 && chaveCedo) {
+    throw new DanfeLida(chaveCedo, numeroCedo, cnpjCedo.length === 14 ? cnpjCedo : null);
+  }
   if (itens.length === 0) throw new Error('a IA não achou nenhum item no pedido — tire a foto mais de perto');
 
   const vencimentos: PedidoLido['vencimentos'] = [];
@@ -257,8 +274,34 @@ export function normalizarPedido(bruto: unknown, qtdProdutos: number, qtdFornece
     desconto: num(o.desconto),
     legibilidade: certeza(o.legibilidade),
     observacao: typeof o.observacao === 'string' && o.observacao.trim() ? o.observacao.trim().slice(0, 500) : null,
+    chaveNfe: chaveDoJson(o),
     itens,
   };
+}
+
+/** Chave de 44 dígitos que a IA leu: do campo chaveNfe ou, se ela só avisou na
+ *  observação ("é DANFE, chave 2826…"), de lá. */
+function chaveDoJson(o: Record<string, unknown>): string | null {
+  const direta = typeof o.chaveNfe === 'string' ? o.chaveNfe.replace(/\D/g, '') : '';
+  if (direta.length === 44) return direta;
+  for (const campo of [o.observacao, o.motivo]) {
+    if (typeof campo !== 'string') continue;
+    const m = campo.replace(/(\d)[ .]+(?=\d)/g, '$1').match(/\d{44}/);
+    if (m) return m[0];
+  }
+  return null;
+}
+
+/** Papel é DANFE mas a IA não montou o pedido (devolveu "não é pedido" ou
+ *  nenhum item): a rota tenta abrir a NF-e pela chave. */
+export class DanfeLida extends Error {
+  constructor(
+    public chave: string,
+    public numero: string | null,
+    public fornecedorCnpj: string | null,
+  ) {
+    super('o papel é um DANFE (nota fiscal eletrônica)');
+  }
 }
 
 export interface CatalogoPedido {
