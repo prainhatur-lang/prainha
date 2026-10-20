@@ -119,6 +119,19 @@ export async function POST(
         );
       }
       const unidadeSaida = new Map(infoSaida.map((p) => [p.id, p.unidade]));
+      // Perda com produto (ex.: 3 kg de filé descartado) também precisa da
+      // unidade, senão a divergência cai no modo quantidade e soma kg com un
+      // (OP da Mar de 20/10 gravou -190%).
+      const idsPerda = saidas
+        .filter((s) => s.tipo !== 'PRODUTO' && s.produtoId && !unidadeSaida.has(s.produtoId))
+        .map((s) => s.produtoId!);
+      if (idsPerda.length) {
+        const infoPerda = await tx
+          .select({ id: schema.produto.id, unidade: schema.produto.unidadeEstoque })
+          .from(schema.produto)
+          .where(inArray(schema.produto.id, idsPerda));
+        for (const p of infoPerda) unidadeSaida.set(p.id, p.unidade);
+      }
 
       // 1) Custo total das entradas. Prioridade do preço unitário:
       //    1º) preco_unitario da própria linha de entrada (se user editou)

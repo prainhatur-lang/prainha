@@ -1,6 +1,7 @@
 // POST /api/op/[token]/saida — adiciona saída via link público (sem auth)
 
 import { NextResponse } from 'next/server';
+import { pesoRelativoPadrao } from '@/lib/producao-peso-padrao';
 import { z } from 'zod';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
@@ -80,7 +81,11 @@ export async function POST(
       tipo: parsed.data.tipo,
       produtoId: parsed.data.produtoId ?? null,
       quantidade: parsed.data.quantidade.toFixed(4),
-      pesoRelativo: (parsed.data.pesoRelativo ?? 1).toFixed(4),
+      // Sem peso digitado: o último usado pra esse produto (lib/producao-peso-padrao)
+      pesoRelativo: (
+        parsed.data.pesoRelativo ??
+        (parsed.data.tipo === 'PRODUTO' ? await pesoRelativoPadrao(parsed.data.produtoId) : 1)
+      ).toFixed(4),
       pesoTotalKg:
         parsed.data.pesoTotalKg != null ? parsed.data.pesoTotalKg.toFixed(4) : null,
       observacao: parsed.data.observacao ?? null,

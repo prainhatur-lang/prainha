@@ -1330,6 +1330,9 @@ function LinhaSaidaRow({
   const [peso, setPeso] = useState(
     linha.pesoTotalKg ? String(Number(linha.pesoTotalKg)) : '',
   );
+  const [editRel, setEditRel] = useState(false);
+  const pesoRelNum = Number(linha.pesoRelativo ?? 1);
+  const [rel, setRel] = useState(String(pesoRelNum));
 
   async function salvar(body: Record<string, unknown>) {
     const r = await fetch(`/api/ordem-producao-saida/${linha.id}`, {
@@ -1391,6 +1394,53 @@ function LinhaSaidaRow({
             {linha.observacao || <em>perda sem produto</em>}
           </span>
         )}
+        {linha.tipo === 'PRODUTO' &&
+          (editavel && editRel ? (
+            <span className="ml-2 inline-flex items-center gap-1 text-[10px] text-slate-500">
+              peso
+              <input
+                type="text"
+                inputMode="decimal"
+                value={rel}
+                onChange={(e) => setRel(e.target.value)}
+                onBlur={async () => {
+                  const n = Number(rel.replace(',', '.'));
+                  if (Number.isFinite(n) && n > 0 && n <= 100 && n !== pesoRelNum) {
+                    await salvar({ pesoRelativo: n });
+                  } else {
+                    setRel(String(pesoRelNum));
+                  }
+                  setEditRel(false);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                  if (e.key === 'Escape') {
+                    setRel(String(pesoRelNum));
+                    setEditRel(false);
+                  }
+                }}
+                autoFocus
+                className="w-14 rounded border border-slate-300 px-1 py-0.5 text-right text-xs"
+              />
+            </span>
+          ) : editavel ? (
+            <button
+              type="button"
+              onClick={() => setEditRel(true)}
+              title="Peso relativo no rateio do custo: 1 = corte comum, menor que 1 = subproduto (apara 0,3 = cada kg vale 30% do kg do corte), maior = corte nobre"
+              className={`ml-2 rounded px-1.5 py-0.5 text-[10px] print:hidden ${
+                pesoRelNum === 1
+                  ? 'border border-dashed border-slate-300 text-slate-400 hover:border-slate-500'
+                  : 'bg-sky-50 text-sky-700 hover:bg-sky-100'
+              }`}
+            >
+              peso {pesoRelNum.toLocaleString('pt-BR')}
+            </button>
+          ) : pesoRelNum !== 1 ? (
+            <span className="ml-2 rounded bg-sky-50 px-1.5 py-0.5 text-[10px] text-sky-700">
+              peso {pesoRelNum.toLocaleString('pt-BR')}
+            </span>
+          ) : null)}
       </td>
       <td className="px-4 py-2 text-right font-mono text-xs">
         {editavel && editQtd ? (
@@ -1527,7 +1577,7 @@ function AdicionarLinhaBtn({
   const [quantidade, setQuantidade] = useState('');
   const [precoUnit, setPrecoUnit] = useState('');
   const [tipoSaida, setTipoSaida] = useState<'PRODUTO' | 'PERDA'>('PRODUTO');
-  const [pesoRel, setPesoRel] = useState('1');
+  const [pesoRel, setPesoRel] = useState('');
   const [observacao, setObservacao] = useState('');
   const [_pending, start] = useTransition();
   const [erro, setErro] = useState<string | null>(null);
@@ -1548,7 +1598,7 @@ function AdicionarLinhaBtn({
     setQuantidade('');
     setPrecoUnit('');
     setTipoSaida('PRODUTO');
-    setPesoRel('1');
+    setPesoRel('');
     setObservacao('');
     setErro(null);
   }
@@ -1586,12 +1636,15 @@ function AdicionarLinhaBtn({
           return;
         }
         body.produtoId = produtoId;
-        const p = Number((pesoRel || '1').replace(',', '.'));
-        if (!Number.isFinite(p) || p <= 0) {
-          setErro('Peso relativo inválido');
-          return;
+        // Em branco: o servidor usa o último peso desse produto (ou 1).
+        if (pesoRel.trim()) {
+          const p = Number(pesoRel.replace(',', '.'));
+          if (!Number.isFinite(p) || p <= 0) {
+            setErro('Peso relativo inválido');
+            return;
+          }
+          body.pesoRelativo = p;
         }
-        body.pesoRelativo = p;
       } else {
         body.produtoId = produtoId || null;
         if (observacao.trim()) body.observacao = observacao.trim();
@@ -1753,7 +1806,7 @@ function AdicionarLinhaBtn({
                 <div className="w-32">
                   <label
                     className="block text-[11px] font-medium uppercase tracking-wide text-slate-500"
-                    title="Maior = corte mais nobre, absorve mais custo. Exemplo: lâmina 3, cabeça 1, aparas 0.5"
+                    title="Maior = corte mais nobre, absorve mais custo. Exemplo: lâmina 3, cabeça 1, aparas 0.5. Em branco = o último peso usado pra esse produto"
                   >
                     Peso relativo
                   </label>
@@ -1766,7 +1819,7 @@ function AdicionarLinhaBtn({
                     className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
                   />
                   <p className="mt-1 text-[10px] text-slate-400">
-                    1 = corte comum · 3 = nobre · 0.5 = popular
+                    1 = corte comum · 3 = nobre · 0.5 = popular · em branco = o último usado
                   </p>
                 </div>
               )}
