@@ -45,6 +45,17 @@ export interface DadosOrcamentoEvento {
   observacoes: string | null;
 }
 
+/** Terraço fechado pro grupo + consumo do cardápio por comanda (sem menu). */
+export interface DadosOrcamentoEspaco {
+  espaco: string;
+  data: string; // YYYY-MM-DD
+  hora: string | null;
+  pessoas: number;
+  nomeCliente: string;
+  tipoEvento: string | null;
+  observacoes: string | null;
+}
+
 export interface DadosReservaMesa {
   data: string; // YYYY-MM-DD
   hora: string; // HH:MM
@@ -106,6 +117,8 @@ export interface ExecutoresFerramentas {
   consultarCardapio: (termo: string, casa?: string) => Promise<string>;
   listarOpcoesOrcamento: () => Promise<string>;
   gerarOrcamento: (dados: DadosOrcamentoEvento) => Promise<string>;
+  /** Espaço fechado + consumo por comanda, com preço do cadastro de espaços. */
+  gerarOrcamentoEspaco?: (dados: DadosOrcamentoEspaco) => Promise<string>;
   /** Pedido de delivery (iFood/site) lido ao vivo na loja: situação, hora que saiu e o que fazer. */
   consultarPedidoDelivery?: (dados: { numero: string | null; nome: string | null }) => Promise<string>;
 }
@@ -311,6 +324,7 @@ FLUXO DE EVENTOS — você é a VENDEDORA dos eventos, não recepcionista de rec
   - **ENCONTRO**: oferece RESERVA de mesa (Areia/Deck/Lounge) → consultar_disponibilidade → criar_reserva (via WhatsApp) ou site.
   - **EVENTO catering**: oferece ORÇAMENTO (Terraço ± varandinha, Tablado, Gramado, Tabuará). Caso padrão (Terraço + almoço/jantar + 3-60 pessoas + data definida) → monte ORÇAMENTO NA HORA (listar_opcoes_orcamento_evento → escolhas: entradas/principais/massa/sobremesa/bebidas → gerar_orcamento_evento → resumo + link). Fora do padrão (gramado, 200p, corporativo, exclusividade, Tabuará) → VISITA: convide vir conhecer ("que tal vir tomar um drink e ver o espaço?") e registre período.
 - O QUE DECIDE É O FORMATO, NUNCA O NOME DA FESTA. "Casamento" não é motivo pra fugir do orçamento: casamento de 50 pessoas no Terraço, com almoço ou jantar, é EXATAMENTE o caso padrão — faça o orçamento na hora, igual faria pra um aniversário. Só sai do automático se o cliente pedir DECORAÇÃO, open bar/uísque/vinho, cerimônia no gramado, exclusividade da casa, outro espaço ou mais de 60 pessoas. Na dúvida entre orçar e transferir: ORCE (o cliente sempre pode ajustar depois com a equipe).
+- **TERRAÇO FECHADO + CONSUMO POR COMANDA** (aniversário, chá revelação, chá de bebê, encontro de turma — o grupo quer o Terraço só pra ele, de DIA, cada um consumindo do cardápio na própria comanda, e traz a própria decoração/bolo/doces): isso é VENDA DIRETA, não lead. Não é "reserva de mesa" (o Terraço NUNCA entra em criar_reserva e não existe "reservar o Terraço até 11h30") e não precisa de menu. Com DATA, nº de pessoas (estimativa serve) e NOME → chame gerar_orcamento_espaco e mande o resumo + link (o preço do aluguel e a entrada vêm do cadastro acima). Decoração TRAZIDA pelo cliente não é "decoração contratada" — não transfira por isso. À noite (19h em diante) continua sendo evento fechado com orçamento da equipe.
 - REGISTRAR LEAD: UMA única vez por conversa, NO MOMENTO CERTO — **NUNCA antes de saber DATA e NÚMERO DE PESSOAS**. Pergunte data em PRIMEIRO lugar (é a chave: define se tem violino, som, ocupação, se está fechada). Depois pergunta tipo de evento, quantas pessoas — só COM TUDO ISSO é que você decide se GERA ORÇAMENTO (padrão) ou REGISTRA LEAD (fora do padrão). Quando decidir registrar: inclua nas observações TUDO que descobriu (formato, cerimônia, local, data, pessoas, visita preferida...). Se o histórico mostrar que você já registrou nesta conversa, NÃO registre de novo — continue a conversa que a equipe vê tudo.
 - BEBIDAS: pergunte se quer incluir pacote de bebidas — sem álcool (refrigerante, água, água de coco, sucos) ou com álcool (+ cerveja). Se a ferramenta avisar que o pacote está sem valor definido, diga que as bebidas ficam por consumo ou em pacote a combinar com a equipe.
 - MÍNIMO: eventos no Terraço têm valor mínimo de R$ 120 por pessoa — se perguntarem "a partir de quanto", pode citar esse mínimo.
@@ -487,6 +501,27 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           observacoes: { type: 'string', description: 'pedidos especiais do cliente' },
         },
         required: ['espaco', 'data', 'pessoas', 'nomeCliente', 'entradas', 'principais'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'gerar_orcamento_espaco',
+      description:
+        'Gera o orçamento de ESPAÇO FECHADO (Terraço só pro grupo) com comida e bebida por CONSUMO do cardápio em comanda individual — sem menu fechado. Preço e entrada vêm do cadastro de espaços. Use quando o cliente quer o Terraço pra aniversário, chá revelação, encontro de turma etc., de dia (antes das 19h), pagando o que consumir, e pode trazer a própria decoração/bolo/doces. Devolve o valor e o link de aceite com Pix da entrada.',
+      parameters: {
+        type: 'object',
+        properties: {
+          espaco: { type: 'string', description: 'ex.: Terraço' },
+          data: { type: 'string', description: 'YYYY-MM-DD' },
+          hora: { type: 'string', description: 'HH:MM de início (opcional)' },
+          pessoas: { type: 'number', description: 'número estimado de convidados (se disser 30 a 40, use o maior)' },
+          nomeCliente: { type: 'string' },
+          tipoEvento: { type: 'string', description: 'ex.: chá revelação, aniversário' },
+          observacoes: { type: 'string', description: 'pedidos do cliente (mesa decorada, pôr do sol, etc.)' },
+        },
+        required: ['espaco', 'data', 'pessoas', 'nomeCliente'],
       },
     },
   },
@@ -752,6 +787,38 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
 /** Telefone/CPF não vai inteiro pro log: fica o final e o tamanho. */
 function semDigitosLongos(s: string): string {
   return s.replace(/\d{6,}/g, (d) => `…${d.slice(-4)}(${d.length}d)`);
+}
+
+const DIAS_SEMANA = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'];
+
+/** Datas dd/mm(/aaaa) citadas nas últimas mensagens do cliente → "07/11/2026 = sábado".
+ *  Sem ano: a próxima ocorrência a partir de hoje (BRT). */
+export function diasDaSemanaCitados(historico: MsgHistorico[], hoje: string): string[] {
+  const textos = historico
+    .filter((m) => m.direcao === 'entrada' && m.corpo)
+    .slice(-12)
+    .map((m) => m.corpo as string);
+  const anoHoje = Number(hoje.slice(0, 4));
+  const vistos = new Set<string>();
+  const out: string[] = [];
+  for (const t of textos) {
+    for (const m of t.matchAll(/(?<![\d/])(\d{1,2})\s*\/\s*(\d{1,2})(?:\s*\/\s*(\d{2,4}))?(?![\d/])/g)) {
+      const d = Number(m[1]);
+      const mes = Number(m[2]);
+      if (d < 1 || d > 31 || mes < 1 || mes > 12) continue;
+      let ano = m[3] ? Number(m[3].length === 2 ? `20${m[3]}` : m[3]) : anoHoje;
+      const ymd = (a: number) => `${a}-${String(mes).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      if (!m[3] && ymd(ano) < hoje) ano += 1;
+      const dt = new Date(Date.UTC(ano, mes - 1, d));
+      if (dt.getUTCMonth() !== mes - 1) continue; // 31/02 etc.
+      const chave = ymd(ano);
+      if (vistos.has(chave)) continue;
+      vistos.add(chave);
+      out.push(`${String(d).padStart(2, '0')}/${String(mes).padStart(2, '0')}/${ano} = ${DIAS_SEMANA[dt.getUTCDay()]}`);
+      if (out.length >= 6) return out;
+    }
+  }
+  return out;
 }
 
 function historicoParaMensagens(
@@ -1090,6 +1157,19 @@ Como usar, SEM EXCEÇÃO:
     mensagens.push({ role: 'system', content: recadoTerraco(terracoPendente) });
   }
 
+  // DIA DA SEMANA das datas citadas (20/10/2026, caso Gabriella): a Nina
+  // chamou o sábado 07/11 de "segunda-feira, dia útil". Calculado aqui, não
+  // pelo modelo.
+  if (modo === 'cliente') {
+    const linhas = diasDaSemanaCitados(params.historico, hojeBr());
+    if (linhas.length > 0) {
+      mensagens.push({
+        role: 'system',
+        content: `CALENDÁRIO (calculado pelo sistema — use exatamente isto, não calcule dia da semana de cabeça): ${linhas.join('; ')}.`,
+      });
+    }
+  }
+
   // PRÓXIMOS FERIADOS (09/10/2026, caso Claudia): numa sexta com feriado na
   // segunda, "tá cobrando entrada nesse feriado?" virou "qual feriado você tem
   // em mente?" duas vezes. Best-effort: sem a lista, segue como antes.
@@ -1239,6 +1319,18 @@ Como usar, SEM EXCEÇÃO:
               : 'nenhuma',
             observacoes: String(args.observacoes ?? '') || null,
           });
+        } else if (tc.function.name === 'gerar_orcamento_espaco') {
+          resultado = params.executores.gerarOrcamentoEspaco
+            ? await params.executores.gerarOrcamentoEspaco({
+                espaco: String(args.espaco ?? ''),
+                data: String(args.data ?? ''),
+                hora: String(args.hora ?? '') || null,
+                pessoas: Number(args.pessoas) || 0,
+                nomeCliente: String(args.nomeCliente ?? ''),
+                tipoEvento: String(args.tipoEvento ?? '') || null,
+                observacoes: String(args.observacoes ?? '') || null,
+              })
+            : 'Orçamento de espaço indisponível neste número: registre o lead e transfira pra equipe.';
         } else if (tc.function.name === 'consultar_cardapio') {
           resultado = await params.executores.consultarCardapio(
             String(args.termo ?? ''),

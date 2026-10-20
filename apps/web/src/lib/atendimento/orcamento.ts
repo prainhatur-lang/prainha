@@ -314,3 +314,122 @@ export async function gerarOrcamentoEvento(p: PedidoOrcamento): Promise<string> 
     `Válido por ${VALIDADE_DIAS} dias.${bebidaNota} Mande pro cliente o resumo com o link do orçamento pra ver e aceitar: https://app.prainhabar.com/orcamento/${aceiteToken}`
   );
 }
+
+// ---------------------------------------------------------------------------
+// ESPAÇO FECHADO + CONSUMO DO CARDÁPIO POR COMANDA (20/10/2026, caso
+// Gabriella — chá revelação no Terraço, 30-40 pessoas, decoração própria).
+// O cliente não quer menu: quer o Terraço só pro grupo e cada um consome do
+// cardápio na própria comanda. Preço e condição vêm do CADASTRO dos espaços
+// (Atendimento → config → espaços de evento), não de constante aqui: o dono
+// muda o valor lá e a Nina acompanha. Gera o mesmo orçamento com link de
+// aceite e Pix da entrada (pratos vazios = "Cardápio a definir").
+// ---------------------------------------------------------------------------
+
+export interface PedidoOrcamentoEspaco {
+  filialId: string;
+  filialNome: string;
+  telefone: string;
+  espacos: Array<{ nome: string; preco: string; condicoes: string; ativo?: boolean }>;
+  nomeCliente: string;
+  espaco: string;
+  data: string; // YYYY-MM-DD
+  hora: string | null; // HH:MM
+  pessoas: number;
+  tipoEvento: string | null;
+  observacoes: string | null;
+}
+
+/** "1.500", "R$ 800,00", "800" → número. */
+export function valorDoCadastro(txt: string): number | null {
+  const m = (txt || '').replace(/\s/g, '').match(/\d[\d.]*(,\d{1,2})?/);
+  if (!m) return null;
+  const n = Number(m[0].replace(/\./g, '').replace(',', '.'));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** "50% saldo até o dia do evento" → 50. Sem percentual → 50 (padrão da casa). */
+export function percentualEntrada(condicoes: string): number {
+  const m = (condicoes || '').match(/(\d{1,3})\s*%/);
+  const n = m ? Number(m[1]) : 50;
+  return n > 0 && n <= 100 ? n : 50;
+}
+
+export async function gerarOrcamentoEspaco(p: PedidoOrcamentoEspaco): Promise<string> {
+  const alvo = dobrar(p.espaco ?? '');
+  if (!alvo.includes('terraco')) {
+    return `Orçamento de espaço fechado com consumo por comanda, por enquanto, só sai pro Terraço. Pra ${p.espaco || 'esse espaço'}, registre o lead com tudo que o cliente contou e transfira pra equipe — NÃO cite preço.`;
+  }
+  const cad = p.espacos.find((e) => e.ativo !== false && dobrar(e.nome).includes('terraco'));
+  const taxa = cad ? valorDoCadastro(cad.preco) : null;
+  if (!cad || !taxa) {
+    return 'O Terraço está sem preço no cadastro de espaços. Registre o lead e transfira pra equipe confirmar o valor — NÃO cite preço.';
+  }
+  const pessoas = Math.round(p.pessoas);
+  if (!pessoas || pessoas < 1) return 'Preciso do número de pessoas (pode ser uma estimativa, ex.: 40).';
+  if (pessoas > CAP_TERRACO_COM_VARANDA) {
+    return `O Terraço comporta até ${CAP_TERRACO} pessoas (até ${CAP_TERRACO_COM_VARANDA} juntando a varandinha). Pra ${pessoas} pessoas, registre o lead e transfira pra equipe pensar num formato — não gere orçamento.`;
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(p.data)) return 'Data inválida (YYYY-MM-DD).';
+  if (p.data < hojeBr()) return 'A data do evento já passou — peça uma data futura.';
+  // Noite (19h em diante) = evento fechado com orçamento da equipe (regra do dono 14/10).
+  if (p.hora && /^\d{2}:\d{2}$/.test(p.hora) && p.hora >= '19:00') {
+    return 'À NOITE (a partir das 19h) a casa só abre pra evento fechado, com mínimo de 30 pessoas e orçamento feito pela equipe. NÃO gere orçamento: confirme o horário com o cliente — se for mesmo à noite, registre o lead com tudo e transfira; se puder ser de dia (até as 19h), chame esta ferramenta de novo com o horário certo.';
+  }
+  const jaFechada = await eventoQueSeguraData({ filialId: p.filialId, local: 'Terraço', data: p.data });
+  if (jaFechada) {
+    return `DATA INDISPONÍVEL: o Terraço já está fechado em ${p.data.split('-').reverse().join('/')} — outro evento pagou a entrada. NÃO gere orçamento pra esse dia: conte com jeito e pergunte qual outra data serve.`;
+  }
+  if (!p.nomeCliente.trim()) {
+    return 'Falta o nome do cliente — PERGUNTE agora, numa frase curta ("pra deixar o orçamento no seu nome, como você se chama?"), e chame gerar_orcamento_espaco de novo. NÃO registre lead nem transfira por isso, e NÃO use o nome do perfil do WhatsApp.';
+  }
+
+  const pct = percentualEntrada(cad.condicoes);
+  const entrada = Math.round((taxa * pct) / 100);
+  const comVaranda = pessoas > CAP_TERRACO;
+  const descEspaco = await descontoEspacoMembro(p.filialId, p.telefone, taxa, null).catch(() => null);
+  const aceiteToken = randomBytes(32).toString('hex');
+  const rs = (v: number) => `R$ ${v.toFixed(2).replace('.', ',')}`;
+  const tipo = p.tipoEvento?.trim() ? p.tipoEvento.trim().slice(0, 120) : null;
+
+  await db.insert(schema.orcamentoEvento).values({
+    filialId: p.filialId,
+    local: `Terraço (${p.filialNome})${comVaranda ? ' + Varandinha' : ''}`,
+    clienteNome: p.nomeCliente.trim().slice(0, 200),
+    clienteTelefone: p.telefone,
+    dataEvento: p.data,
+    hora: p.hora,
+    pessoas,
+    valorPessoa: null,
+    pratos: [],
+    sobremesaIncluida: false,
+    sobremesaDescricao: null,
+    taxaEspaco: taxa.toFixed(2),
+    descontoEspaco: descEspaco ? descEspaco.desconto.toFixed(2) : null,
+    descontoEspacoMotivo: descEspaco?.motivo ?? null,
+    entradaValor: entrada.toFixed(2),
+    observacoes:
+      `Orçamento de espaço montado pela Nina no WhatsApp: Terraço fechado pro grupo, consumo do cardápio por comanda individual.` +
+      (tipo ? ` Evento: ${tipo}.` : '') +
+      (p.observacoes ? ` ${p.observacoes.slice(0, 500)}` : ''),
+    condicoes:
+      `Aluguel do Terraço só para o grupo${comVaranda ? ' (com a varandinha)' : ''}: ${rs(taxa)}. ` +
+      'Comida e bebida por consumo do cardápio da casa, em comandas individuais (cada convidado paga o que consumir). ' +
+      'Incluído: mesas e cadeiras, material de serviço, pessoal de serviço e de limpeza. ' +
+      'O cliente pode trazer decoração, bolo e doces. ' +
+      `Entrada de ${pct}% (${rs(entrada)}) por Pix para reservar a data — a data só fica bloqueada após a confirmação do pagamento. ` +
+      `Saldo do aluguel até o dia do evento. ${cad.condicoes ? `Condição cadastrada: ${cad.condicoes}.` : ''}`.trim(),
+    validoAte: diasAtrasBr(-VALIDADE_DIAS),
+    aceiteToken,
+    criadoPor: 'nina-whatsapp',
+  });
+
+  return (
+    `ORÇAMENTO DE ESPAÇO CRIADO: Terraço${comVaranda ? ' + varandinha' : ''} fechado pro grupo, ${p.data.split('-').reverse().join('/')}${p.hora ? ` a partir das ${p.hora}` : ''}, ${pessoas} pessoas${tipo ? ` (${tipo})` : ''}. ` +
+    `Aluguel do espaço ${rs(taxa)}; comida e bebida por consumo do cardápio, em comanda individual. Pode trazer decoração, bolo e doces. ` +
+    `Entrada de ${pct}% = ${rs(entrada)} por Pix na própria página do link: é ela que reserva a data (enquanto não pagar, o dia segue livre pra outro cliente — diga com naturalidade, sem pressão). Saldo do aluguel até o dia do evento. ` +
+    (descEspaco
+      ? `O cliente é ${descEspaco.motivo}: ganhou ${rs(descEspaco.desconto)} de desconto no aluguel, já abatido no documento — conte como benefício do cartão. `
+      : '') +
+    `Válido por ${VALIDADE_DIAS} dias. Mande pro cliente o resumo com o link pra ver e aceitar: https://app.prainhabar.com/orcamento/${aceiteToken}`
+  );
+}

@@ -32,7 +32,7 @@ import { consultarPedidoDelivery } from './pedido-delivery';
 import { consultarMareTexto } from './mare';
 import { consultarTempoTexto } from './clima';
 import { consultarCotacoesFornecedor, cadastrarFornecedorProspect } from './fornecedor';
-import { listarOpcoesOrcamento, gerarOrcamentoEvento } from './orcamento';
+import { listarOpcoesOrcamento, gerarOrcamentoEvento, gerarOrcamentoEspaco } from './orcamento';
 import { casasComAtendente, acharCasa, linkPassagem, passagemRecebida, casasCobertas, acharCasaCoberta, type OutraCasa, type PassagemRecebida, type CasaCoberta } from './outras-casas';
 
 const DEBOUNCE_MS = 6_000;
@@ -638,6 +638,22 @@ export async function processarEntrada(params: {
           massa: dados.massa,
           sobremesa: dados.sobremesa,
           bebidas: dados.bebidas,
+          observacoes: dados.observacoes,
+        }),
+      // Terraço fechado + consumo por comanda (20/10/2026, caso Gabriella):
+      // preço e entrada do cadastro de espaços desta casa.
+      gerarOrcamentoEspaco: (dados: import('./ia').DadosOrcamentoEspaco) =>
+        gerarOrcamentoEspaco({
+          filialId: entrada.filialId,
+          filialNome,
+          telefone: entrada.telefone,
+          espacos: config.espacosEvento ?? [],
+          nomeCliente: dados.nomeCliente,
+          espaco: dados.espaco,
+          data: dados.data,
+          hora: dados.hora,
+          pessoas: dados.pessoas,
+          tipoEvento: dados.tipoEvento,
           observacoes: dados.observacoes,
         }),
       consultarMesa: (numero: string) => consultarMesa(entrada.filialId, numero),
