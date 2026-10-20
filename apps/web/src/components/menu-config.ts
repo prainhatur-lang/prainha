@@ -386,6 +386,7 @@ export const MENU_AREAS: MenuArea[] = [
           { label: 'Faturas da E.B. (NFS-e)', href: '/eb/faturas', perm: 'folha_equipe.fechar' },
           { label: 'Vale transporte (quinzenal)', href: '/rh/vale-transporte', perm: 'folha_equipe.read' },
           { label: 'Escala do mês (folgas)', href: '/rh/escala-mensal', perm: 'folha_equipe.read' },
+          { label: 'Horas: CLT × intermitente', href: '/rh/horas-regime', perm: 'folha_equipe.read' },
           { label: 'Metas e premiação', href: '/rh/metas', perm: 'meta.read' },
           {
             label: 'Configuração da folha',
