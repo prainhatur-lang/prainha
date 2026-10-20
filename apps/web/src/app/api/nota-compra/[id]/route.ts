@@ -24,8 +24,9 @@ import { NextResponse } from 'next/server';
 import { negarSemPerm } from '@/lib/exigir-perm';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { lerMotivo, registrarExclusao, resumoConta } from '@/lib/registro-exclusao';
+import { ehAdmin } from '@/lib/usuario-admin';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -151,6 +152,70 @@ export async function DELETE(
         eq(schema.contaPagar.origem, 'NFE'),
       ),
     );
+  // Nota paga (dono 20/10/2026): ninguém exclui nota com pagamento lançado —
+  // nem o administrador. Ele primeiro exclui o pagamento (estorno da baixa na
+  // conta a pagar) e só depois a nota. E nota que já teve pagamento (mesmo
+  // estornado) só o administrador exclui: senão quem lançou estorna a baixa
+  // e apaga a nota. Olha todas as contas ligadas à nota, de qualquer origem.
+  const contasDaNota = await db
+    .select({
+      id: schema.contaPagar.id,
+      valor: schema.contaPagar.valor,
+      valorPago: schema.contaPagar.valorPago,
+      dataPagamento: schema.contaPagar.dataPagamento,
+      parcela: schema.contaPagar.parcela,
+    })
+    .from(schema.contaPagar)
+    .where(and(eq(schema.contaPagar.notaCompraId, id), isNull(schema.contaPagar.dataDelete)));
+  if (contasDaNota.length > 0) {
+    const contaIds = contasDaNota.map((c) => c.id);
+    const comBaixa = new Set(
+      (
+        await db
+          .selectDistinct({ id: schema.contaPagarBaixa.contaPagarId })
+          .from(schema.contaPagarBaixa)
+          .where(inArray(schema.contaPagarBaixa.contaPagarId, contaIds))
+      ).map((b) => b.id),
+    );
+    const comPagamento = contasDaNota.filter(
+      (c) => c.dataPagamento != null || Number(c.valorPago ?? 0) > 0 || comBaixa.has(c.id),
+    );
+    const admin = await ehAdmin(user.id);
+    if (comPagamento.length > 0) {
+      const total = comPagamento.reduce((s, c) => s + Number(c.valorPago ?? c.valor ?? 0), 0);
+      const reais = total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      return NextResponse.json(
+        {
+          error: admin
+            ? `Essa nota já tem pagamento lançado (${comPagamento.length} conta(s), R$ ${reais}). Primeiro exclua o pagamento na conta a pagar e depois exclua a nota.`
+            : `Essa nota já foi paga (${comPagamento.length} conta(s), R$ ${reais}). Só o administrador pode excluir nota paga — ele exclui primeiro o pagamento e depois a nota.`,
+          contasPagas: comPagamento.map((c) => ({ parcela: c.parcela, valor: Number(c.valor) })),
+        },
+        { status: admin ? 409 : 403 },
+      );
+    }
+    if (!admin) {
+      const [estorno] = await db
+        .select({ resumo: schema.registroExclusao.resumo })
+        .from(schema.registroExclusao)
+        .where(
+          and(
+            eq(schema.registroExclusao.tabela, 'conta_pagar_baixa'),
+            inArray(sql`${schema.registroExclusao.dados}->>'contaPagarId'`, contaIds),
+          ),
+        )
+        .limit(1);
+      if (estorno) {
+        return NextResponse.json(
+          {
+            error: `Essa nota já teve pagamento, que foi excluído (${estorno.resumo ?? 'estorno registrado'}). Só o administrador pode excluir essa nota.`,
+          },
+          { status: 403 },
+        );
+      }
+    }
+  }
+
   const pagas = contasNfe.filter((c) => c.dataPagamento != null);
   if (pagas.length > 0) {
     return NextResponse.json(
