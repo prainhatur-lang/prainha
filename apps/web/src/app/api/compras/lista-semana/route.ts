@@ -2,6 +2,7 @@
 // Salva a Lista da semana (lista_compra): com listaId, grava quantidade,
 // unidade e observação dos itens existentes; sem listaId, cria uma lista nova
 // (origem HISTORICO) com a sugestão montada pelo histórico. Não cria cotação.
+// Com listaId, item sem id (posto pela sugestão do ritmo) entra na lista.
 
 import { NextResponse } from 'next/server';
 import { negarSemPerm } from '@/lib/exigir-perm';
@@ -66,7 +67,49 @@ export async function POST(req: Request) {
           ),
         );
     }
-    return NextResponse.json({ listaId: lista.id });
+    // Item sem id = posto na lista pela tela (sugestão pelo ritmo de pedido):
+    // entra no fim da lista, só produto da filial e que ainda não está nela.
+    const novos = body.itens.filter((i) => !i.id && i.produtoId);
+    const criados: Array<{ produtoId: string; id: string }> = [];
+    if (novos.length) {
+      const validosNovos = new Set(
+        (
+          await db
+            .select({ id: schema.produto.id })
+            .from(schema.produto)
+            .where(and(eq(schema.produto.filialId, body.filialId), inArray(schema.produto.id, novos.map((i) => i.produtoId))))
+        ).map((p) => p.id),
+      );
+      const jaNaLista = await db
+        .select({ id: schema.listaCompraItem.id, produtoId: schema.listaCompraItem.produtoId, ordem: schema.listaCompraItem.ordem })
+        .from(schema.listaCompraItem)
+        .where(eq(schema.listaCompraItem.listaId, lista.id));
+      const naLista = new Map(jaNaLista.filter((r) => r.produtoId).map((r) => [r.produtoId as string, r.id]));
+      let ordem = Math.max(0, ...jaNaLista.map((r) => r.ordem ?? 0));
+      for (const i of novos) {
+        const ja = naLista.get(i.produtoId);
+        if (ja) {
+          criados.push({ produtoId: i.produtoId, id: ja });
+          continue;
+        }
+        if (!validosNovos.has(i.produtoId)) continue;
+        const [r] = await db
+          .insert(schema.listaCompraItem)
+          .values({
+            listaId: lista.id,
+            produtoId: i.produtoId,
+            quantidade: String(i.quantidade),
+            unidade: i.unidade?.trim().slice(0, 10) || null,
+            observacao: i.observacao?.trim() || null,
+            grupo: i.grupo,
+            ordem: ++ordem,
+          })
+          .returning({ id: schema.listaCompraItem.id });
+        naLista.set(i.produtoId, r.id);
+        criados.push({ produtoId: i.produtoId, id: r.id });
+      }
+    }
+    return NextResponse.json({ listaId: lista.id, criados });
   }
 
   // Sugestão pelo histórico → vira lista salva. Só produtos da própria filial.

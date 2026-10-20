@@ -4,6 +4,9 @@
 // grupo sai no clique, com os fornecedores da última vez já marcados.
 // Semana sem lista → a sugestão é montada pelo histórico (mediana das últimas
 // 3 semanas, só o que apareceu em pelo menos 2 delas).
+// Pelo ritmo de pedido (dono 20/10/2026): de quanto em quanto tempo cada item é
+// pedido — o que vence nesta semana aparece num bloco à parte, com "+ pôr na
+// lista". Pedir toda semana com estoque no sistema = estoque errado (⚠).
 
 import { redirect } from 'next/navigation';
 import { exigirPerm } from '@/lib/exigir-perm';
@@ -18,6 +21,8 @@ import { fornecedoresDeOutrasCasas } from '@/lib/fornecedor-unico';
 import type { FornecedorOpt } from '../sugestao-client';
 import { ListaSemanaClient, type LinhaLista, type SemanaCol } from './lista-semana-client';
 import { GRUPOS } from './grupos';
+import { calcularRitmo, type OcorrenciaCompra } from '@/lib/ritmo-compra';
+import type { LinhaRitmo } from './lista-semana-client';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,6 +41,13 @@ function grupoDaObs(obs: string | null): string | null {
   if (o.startsWith('HORTI') || o.startsWith('VERDURAS')) return 'HORTIFRUTI';
   if (o.startsWith('LIMPEZA')) return 'LIMPEZA';
   return null;
+}
+
+/** Segunda-feira da semana de uma data YYYY-MM-DD (mesma conta do date_trunc('week')). */
+function segundaDe(ymd: string): string {
+  const d = new Date(`${ymd}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
 }
 
 function mediana(v: number[]): number {
@@ -185,8 +197,55 @@ export default async function ListaSemanaPage(props: { searchParams: Promise<SP>
     }
   }
 
+  // ——— Ritmo de pedido: listas + cotações da cozinha + pedidos de compra,
+  // por semana (segunda-feira). Pedido só conta pra produto que já esteve numa
+  // lista da cozinha (os outros pedidos da casa são do bar).
+  const semanaRef = segundaDe(dataLista ?? hojeBr());
+  const occRows = (await db.execute(sql`
+    SELECT date_trunc('week', (c.aberta_em AT TIME ZONE 'America/Sao_Paulo')::date)::date::text AS sem,
+           ci.produto_id::text AS pid, ci.quantidade::float AS q, ci.unidade AS u, 'L' AS f,
+           c.observacao AS obs, NULL::text AS grupo
+    FROM cotacao c JOIN cotacao_item ci ON ci.cotacao_id = c.id
+    WHERE c.filial_id = ${filial.id}
+      AND (c.observacao ILIKE '%lista da cozinha%' OR c.observacao ILIKE '%lista da marcia%' OR c.observacao ILIKE '%lista da márcia%')
+      AND c.observacao NOT ILIKE 'reabertura%'
+      AND c.observacao NOT ILIKE '%rodada%'
+      AND c.observacao NOT ILIKE '%teste%'
+      AND ci.produto_id IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM lista_compra_item li WHERE li.cotacao_id = c.id)
+    UNION ALL
+    SELECT date_trunc('week', l.data::date)::date::text, li.produto_id::text, li.quantidade::float, li.unidade, 'L',
+           NULL, li.grupo
+    FROM lista_compra l JOIN lista_compra_item li ON li.lista_id = l.id
+    WHERE l.filial_id = ${filial.id} AND li.produto_id IS NOT NULL
+    UNION ALL
+    SELECT date_trunc('week', (pc.criado_em AT TIME ZONE 'America/Sao_Paulo')::date)::date::text, pci.produto_id::text,
+           pci.quantidade::float, pci.unidade, 'P', NULL, NULL
+    FROM pedido_compra pc JOIN pedido_compra_item pci ON pci.pedido_compra_id = pc.id
+    WHERE pc.filial_id = ${filial.id} AND pc.status <> 'CANCELADO'
+      AND pc.criado_em > now() - interval '120 days'
+      AND pci.produto_id IS NOT NULL
+  `)) as unknown as Row[];
+  const grupoRitmo = new Map<string, string>();
+  for (const r of occRows) {
+    const g = r.grupo ? String(r.grupo) : grupoDaObs(r.obs ? String(r.obs) : null);
+    if (g) grupoRitmo.set(String(r.pid), g);
+  }
+  const ocorrencias: OcorrenciaCompra[] = occRows
+    .filter((r) => r.f !== 'P' || grupoRitmo.has(String(r.pid)))
+    .map((r) => ({
+      semana: String(r.sem),
+      produtoId: String(r.pid),
+      quantidade: Number(r.q ?? 0),
+      unidade: r.u ? String(r.u) : null,
+      fonte: r.f === 'P' ? 'P' : 'L',
+    }));
+  const ritmoItens = calcularRitmo(ocorrencias, (pid) => grupoRitmo.get(pid) ?? 'MERCEARIA', semanaRef);
+
   // ——— Produto: nome, estoque. Última entrada: nota casada, senão movimento.
-  const ids = Array.from(new Set(base.map((b) => b.produtoId).filter((x): x is string => !!x)));
+  const ids = Array.from(
+    new Set([...base.map((b) => b.produtoId), ...ritmoItens.map((r) => r.produtoId)].filter((x): x is string => !!x)),
+  );
   const idsSql = ids.length ? sql.raw(`(${ids.map((i) => `'${i}'`).join(',')})`) : null;
   const produtos = idsSql
     ? ((await db.execute(sql`
@@ -261,6 +320,71 @@ export default async function ListaSemanaPage(props: { searchParams: Promise<SP>
       ultEntradaFornecedor: ent?.fornecedor ?? null,
     };
   });
+
+  // ——— Linhas do ritmo: prontas pra entrar na lista no "+ pôr na lista".
+  // Entradas de compra no estoque nos últimos 60 dias, pra apontar quando a
+  // cozinha pede sempre e o estoque não registra a compra.
+  const entradas60 = new Map<string, number>();
+  if (idsSql) {
+    const ents = (await db.execute(sql`
+      SELECT m.produto_id, COUNT(*)::int AS n
+      FROM movimento_estoque m
+      WHERE m.filial_id = ${filial.id} AND m.tipo = 'ENTRADA_COMPRA' AND m.produto_id IN ${idsSql}
+        AND m.data_hora >= ${diasAtrasBr(60)}::date
+      GROUP BY m.produto_id
+    `)) as unknown as Row[];
+    for (const r of ents) entradas60.set(String(r.produto_id), Number(r.n));
+  }
+  const ritmo: LinhaRitmo[] = [];
+  for (const r of ritmoItens) {
+    const p = prodPorId.get(r.produtoId);
+    if (!p) continue;
+    const ent = ultEntrada.get(r.produtoId);
+    const estoque = p.estoque_atual != null ? Number(p.estoque_atual) : null;
+    const uEst = p.unidade_estoque ? String(p.unidade_estoque) : '';
+    let alerta: string | null = null;
+    if ((r.ritmo === 'SEMANAL' || r.ritmo === 'QUINZENAL') && r.vezes >= 2) {
+      if (estoque != null && estoque > 0)
+        alerta = `estoque não confere: o sistema diz ${estoque.toLocaleString('pt-BR', { maximumFractionDigits: 3 })} ${uEst} e a cozinha pede ${r.ritmo === 'SEMANAL' ? 'toda semana' : 'de 15 em 15 dias'}`;
+      else if (!entradas60.get(r.produtoId))
+        alerta = 'compra não dá entrada no estoque (nenhuma entrada em 60 dias)';
+    }
+    ritmo.push({
+      linha: {
+        chave: `r-${r.produtoId}`,
+        listaItemId: null,
+        produtoId: r.produtoId,
+        nome: p.nome ? String(p.nome) : '(sem nome)',
+        textoOriginal: null,
+        quantidade: r.quantidade,
+        unidade: r.unidade || uEst || 'un',
+        observacao: '',
+        grupo: GRUPOS.some((g) => g.codigo === r.grupo) ? r.grupo : 'MERCEARIA',
+        cotacaoNumero: null,
+        cotacaoId: null,
+        historico: Object.fromEntries(
+          semanas.map((d) => {
+            const h = porSemana.get(d)?.get(r.produtoId);
+            return [d, h ? { q: h.q, u: h.u } : null];
+          }),
+        ),
+        estoque,
+        unidadeEstoque: uEst || null,
+        ultEntradaQtd: ent?.q ?? null,
+        ultEntradaData: ent?.data ?? null,
+        ultEntradaFornecedor: ent?.fornecedor ?? null,
+      },
+      ritmo: r.ritmo,
+      vezes: r.vezes,
+      semanas: r.semanas,
+      marcas: r.marcas,
+      intervalo: r.intervalo,
+      desde: r.desde,
+      ultimaSemana: r.ultimaSemana,
+      vence: r.vence,
+      alerta,
+    });
+  }
 
   // ——— Fornecedores da última cotação de cada grupo (já marcados no clique).
   const ultimosForn = (await db.execute(sql`
@@ -444,6 +568,8 @@ export default async function ListaSemanaPage(props: { searchParams: Promise<SP>
           )}
           . Os insumos da cozinha quase não têm baixa de estoque, então a base da sugestão são as listas e
           os pedidos das semanas anteriores; estoque e última entrada aparecem pra conferir.
+          {' '}O bloco <b className="text-slate-800">Pelo ritmo de pedido</b> mostra o que a cozinha costuma pedir
+          toda semana, de 15 em 15 dias ou 1 vez por mês, e o que vence nesta semana.
         </div>
 
         <ListaSemanaClient
@@ -456,6 +582,7 @@ export default async function ListaSemanaPage(props: { searchParams: Promise<SP>
           fornecedores={fornecedorOpts}
           fornecedoresPorGrupo={fornPorGrupo}
           cotacaoAnteriorPorGrupo={cotacaoDoGrupo}
+          ritmo={ritmo}
         />
       </div>
     </main>
