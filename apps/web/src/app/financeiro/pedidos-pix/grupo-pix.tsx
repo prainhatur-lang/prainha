@@ -30,10 +30,79 @@ export interface PedidoPix {
     lancouEstoque: string | null;
     conferidaEm: string | null;
     conferiu: string | null;
+    /** Foto do pedido / nota de serviço / boleto anexado (20/10/2026). */
+    fotos?: Array<{ url: string; rotulo: string }>;
   };
 }
 
 const quemCurto = (s: string) => (s.includes('@') ? s.split('@')[0]! : s);
+
+const ehPdf = (url: string) => /\.pdf($|\?)/i.test(url);
+
+/** Miniaturas das fotos do pedido/boleto; clique abre grande por cima da tela. */
+function FotosPedido({ fotos }: { fotos: Array<{ url: string; rotulo: string }> }) {
+  const [aberta, setAberta] = useState<{ url: string; rotulo: string } | null>(null);
+  if (fotos.length === 0) return null;
+  return (
+    <>
+      <span className="flex flex-wrap items-center gap-1.5">
+        {fotos.map((f) =>
+          ehPdf(f.url) ? (
+            <a
+              key={f.url}
+              href={f.url}
+              target="_blank"
+              rel="noreferrer"
+              className="rounded border border-slate-300 bg-white px-1.5 py-0.5 font-medium text-sky-700 hover:bg-slate-50"
+            >
+              📎 {f.rotulo} (PDF)
+            </a>
+          ) : (
+            <button
+              key={f.url}
+              type="button"
+              onClick={() => setAberta(f)}
+              title={`Ver a foto do ${f.rotulo}`}
+              className="group flex items-center gap-1 rounded border border-slate-300 bg-white p-0.5 pr-1.5 hover:border-sky-400"
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={f.url} alt={`foto do ${f.rotulo}`} loading="lazy" className="h-10 w-10 rounded object-cover" />
+              <span className="font-medium text-sky-700 group-hover:underline">📷 {f.rotulo}</span>
+            </button>
+          ),
+        )}
+      </span>
+      {aberta && (
+        <div
+          className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/80 p-4"
+          onClick={() => setAberta(null)}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={aberta.url}
+            alt={`foto do ${aberta.rotulo}`}
+            className="max-h-[85vh] max-w-full rounded bg-white object-contain"
+            onClick={(e) => e.stopPropagation()}
+          />
+          <div className="mt-3 flex gap-4 text-sm">
+            <a
+              href={aberta.url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-sky-300 underline"
+              onClick={(e) => e.stopPropagation()}
+            >
+              abrir em outra aba
+            </a>
+            <button type="button" onClick={() => setAberta(null)} className="text-white underline">
+              fechar
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
 
 function LinhaOrigem({ o }: { o: NonNullable<PedidoPix['origem']> }) {
   const lancou = o.lancouConta ?? o.lancouEstoque;
@@ -47,6 +116,7 @@ function LinhaOrigem({ o }: { o: NonNullable<PedidoPix['origem']> }) {
       ) : (
         <span className="text-amber-700">⚠ sem pedido no sistema (lançada à mão)</span>
       )}
+      {o.fotos && <FotosPedido fotos={o.fotos} />}
       <span>
         Lançou: <b className="font-medium text-slate-700">{lancou ? quemCurto(lancou) : 'não registrado'}</b>
       </span>

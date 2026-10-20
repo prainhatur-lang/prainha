@@ -31,6 +31,7 @@ import { GrupoPix, type GrupoPedidos } from './grupo-pix';
 import { PixEnviados, type PixEnviado } from './pix-enviados';
 import { contasEmPixAberto, podePagarPix } from '@/lib/pix-pagamento';
 import { resolverCredenciaisInterPagamentos } from '@/lib/inter';
+import { urlFotoPedido } from '@/lib/pedido-sem-nota';
 
 export const dynamic = 'force-dynamic';
 
@@ -187,6 +188,9 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
     lancou_estoque: string | null;
     conferida_em: string | null;
     conferiu: string | null;
+    foto_pedido: string | null;
+    fotos_extras: string[] | null;
+    foto_boleto: string | null;
   };
   const origens = new Map<string, Origem>();
   if (linhas.length > 0) {
@@ -202,7 +206,10 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
                  WHERE i.nota_compra_id = n.id
                  ORDER BY m.criado_em LIMIT 1) AS lancou_estoque,
                to_char(n.conferida_em AT TIME ZONE 'America/Sao_Paulo', 'DD/MM HH24:MI') AS conferida_em,
-               coalesce(ucf.nome, ucf.email) AS conferiu
+               coalesce(ucf.nome, ucf.email) AS conferiu,
+               CASE WHEN n.origem_importacao IN ('PEDIDO_FOTO', 'NFSE_PDF') THEN n.xml_storage_path END AS foto_pedido,
+               CASE WHEN n.origem_importacao = 'PEDIDO_FOTO' THEN n.fotos_extras END AS fotos_extras,
+               c.boleto_storage_path AS foto_boleto
           FROM conta_pagar c
           LEFT JOIN usuario uc ON uc.id = c.criado_por
           LEFT JOIN nota_compra n ON n.id = coalesce(
@@ -267,6 +274,15 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
           lancouEstoque: o.lancou_estoque,
           conferidaEm: o.conferida_em,
           conferiu: o.conferiu,
+          // Foto do pedido (tirada ou subida no lançamento) e do boleto anexado
+          // na conta, pra conferir antes de pagar (dono 20/10/2026).
+          fotos: [
+            ...[o.foto_pedido, ...(o.fotos_extras ?? [])].flatMap((p, i) => {
+              const url = urlFotoPedido(p);
+              return url ? [{ url, rotulo: i === 0 ? (o.nota_origem === 'NFSE_PDF' ? 'nota' : 'pedido') : `pedido ${i + 1}` }] : [];
+            }),
+            ...(urlFotoPedido(o.foto_boleto) ? [{ url: urlFotoPedido(o.foto_boleto)!, rotulo: 'boleto' }] : []),
+          ],
         };
       })(),
     });
