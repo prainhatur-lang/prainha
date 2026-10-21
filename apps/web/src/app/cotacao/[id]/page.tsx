@@ -20,6 +20,7 @@ import { ItemEditor } from './item-editor';
 import { conviteCotacaoConfigurado } from '@/lib/whatsapp-otp';
 import { calcularAlocacaoCotacao, normalizaMarca } from '@/lib/cotacao-alocacao';
 import { lerExclusoesPorCotacao } from '@/lib/cotacao-exclusao';
+import { alertaUnidadeResposta } from '@/lib/cotacao-alerta-unidade';
 
 export const dynamic = 'force-dynamic';
 
@@ -153,6 +154,7 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
           precoUnitario: schema.cotacaoRespostaItem.precoUnitario,
           precoUnitarioNormalizado: schema.cotacaoRespostaItem.precoUnitarioNormalizado,
           unidadeFornecedor: schema.cotacaoRespostaItem.unidadeFornecedor,
+          fatorConversao: schema.cotacaoRespostaItem.fatorConversao,
           marcaNome: schema.marca.nome,
         })
         .from(schema.cotacaoRespostaItem)
@@ -327,6 +329,21 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
       ? await calcularAlocacaoCotacao(c.id).catch(() => null)
       : null;
 
+  // Respostas com ⚠ de unidade (preço do kg num item de cx/peça, "c/ 16 cx"):
+  // a aprovação compara o número cru e manda pedido errado. Avisa antes.
+  const alertasUnidade =
+    c.status === 'ABERTA' || c.status === 'AGUARDANDO_APROVACAO'
+      ? respostasVisiveis.flatMap((r) => {
+          if (r.precoUnitarioNormalizado == null) return [];
+          const item = itens.find((i) => i.id === r.cotacaoItemId);
+          if (!item) return [];
+          const alerta = alertaUnidadeResposta(item.unidade, r.unidadeFornecedor, Number(r.fatorConversao) || 1);
+          if (!alerta) return [];
+          const forn = fornecedores.find((f) => f.id === r.cotacaoFornecedorId);
+          return [{ id: r.id, produto: item.produtoNome, fornecedor: forn?.fornecedorNome ?? '?', alerta }];
+        })
+      : [];
+
   return (
     <main className="min-h-screen bg-slate-50">
       <AppHeader userEmail={user.email} />
@@ -375,6 +392,29 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
               abaixo e clique em <strong>Aprovar e gerar pedidos</strong>.
             </div>
           )}
+
+        {alertasUnidade.length > 0 && (
+          <div className="mb-4 rounded-xl border-2 border-amber-400 bg-amber-50 p-4 text-sm text-amber-900">
+            <strong>
+              ⚠ {alertasUnidade.length} preço(s) não se comparam com o pedido — acerte antes de aprovar,
+              senão o pedido sai com o preço errado.
+            </strong>
+            <ul className="mt-1 list-disc pl-5 text-xs">
+              {alertasUnidade.slice(0, 10).map((a) => (
+                <li key={a.id}>
+                  <strong>{a.produto}</strong> · {a.fornecedor}: {a.alerta}
+                </li>
+              ))}
+              {alertasUnidade.length > 10 && <li>e mais {alertasUnidade.length - 10}…</li>}
+            </ul>
+            <Link
+              href={`/cotacao/${c.id}/respostas`}
+              className="mt-2 inline-block rounded-lg border border-amber-400 bg-white px-3 py-1 text-xs font-medium text-amber-900 hover:bg-amber-100"
+            >
+              Acertar em Respostas → informar o peso ou confirmar o preço
+            </Link>
+          </div>
+        )}
 
         {/* Preview da alocação (antes de aprovar) */}
         {previewAprovacao && previewAprovacao.porFornecedor.length > 0 && (

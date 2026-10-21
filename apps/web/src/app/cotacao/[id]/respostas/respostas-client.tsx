@@ -8,6 +8,7 @@
 
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { alertaUnidadeResposta } from '@/lib/cotacao-alerta-unidade';
 
 /** Mesma normalização de marca de @/lib/cotacao-alocacao (duplicada aqui
  *  porque aquele módulo importa o driver do banco e não pode ir pro client). */
@@ -70,24 +71,9 @@ interface NotaRef {
   vt: number;
 }
 
-/** Item pedido numa unidade que não diz o peso (cx, peça, un, pct…). */
-function unidadeSemPeso(unidade: string): boolean {
-  return !['kg', 'g', 'l', 'lt', 'litro', 'ml'].includes(unidade.toLowerCase());
-}
-
-/** Resposta que não se compara com o pedido (dono 21/10/2026): item em cx/peça
- *  e o fornecedor deu o preço do kg sem dizer o peso, ou escreveu "c/ 16 cx"
- *  querendo dizer caixa de 16 kg. null = resposta normal. */
+/** Resposta que não se compara com o pedido — regra em lib/cotacao-alerta-unidade. */
 function alertaUnidade(item: Item, r: Resp): string | null {
-  if (!unidadeSemPeso(item.unidade)) return null;
-  const emb = (r.embalagem ?? '').toLowerCase();
-  if (emb.startsWith('kg (1 ')) return null; // já veio com o peso
-  if (r.fator === 1 && /\b(kg|kgs|kilo|kilos|quilo|quilos|kl)\b/.test(emb))
-    return `preço do kg — falta o peso da ${item.unidade}; não compara`;
-  const m = emb.match(/c\/\s*([\d.,]+)\s*(\S+)/);
-  if (r.fator > 1 && m && m[2].replace(/\.$/, '') === item.unidade.toLowerCase())
-    return `confira: ${m[1]} ${item.unidade} juntas ou ${item.unidade} de ${m[1]} kg?`;
-  return null;
+  return alertaUnidadeResposta(item.unidade, r.embalagem, r.fator);
 }
 
 function fmtQtd(n: number): string {
@@ -256,6 +242,43 @@ export function RespostasClient(props: {
         [item.id]: { tipo: 'erro', msg: e instanceof Error ? e.message : String(e) },
       }));
       limparQtdStatus(item.id, 6000);
+    }
+  }
+
+  // Acerto de resposta com ⚠ (preço do kg sem peso / "c/ N cx"): chave cfId:itemId.
+  const [pesoDigitado, setPesoDigitado] = useState<Record<string, string>>({});
+  const [ajusteStatus, setAjusteStatus] = useState<
+    Record<string, { tipo: 'salvando' | 'erro'; msg?: string }>
+  >({});
+
+  async function ajustarResposta(
+    f: Forn,
+    item: Item,
+    modo: 'peso' | 'preco_da_unidade' | 'uma_de_n_kg' | 'juntas',
+  ) {
+    const k = `${f.cfId}:${item.id}`;
+    const pesoKg = modo === 'peso' ? Number((pesoDigitado[k] ?? '').trim().replace(',', '.')) || 0 : undefined; // "2,5" ou "2.5" = 2,5 kg
+    if (modo === 'peso' && !(pesoKg! > 0)) {
+      setAjusteStatus((p) => ({ ...p, [k]: { tipo: 'erro', msg: `digite quantos kg tem 1 ${item.unidade}` } }));
+      return;
+    }
+    setAjusteStatus((p) => ({ ...p, [k]: { tipo: 'salvando' } }));
+    try {
+      const resp = await fetch(`/api/cotacao/${props.cotacaoId}/ajustar-resposta`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ cotacaoFornecedorId: f.cfId, cotacaoItemId: item.id, modo, pesoKg }),
+      });
+      const j = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(j.error ?? `HTTP ${resp.status}`);
+      setAjusteStatus((p) => {
+        const novo = { ...p };
+        delete novo[k];
+        return novo;
+      });
+      router.refresh();
+    } catch (e) {
+      setAjusteStatus((p) => ({ ...p, [k]: { tipo: 'erro', msg: e instanceof Error ? e.message : String(e) } }));
     }
   }
 
@@ -596,6 +619,76 @@ export function RespostasClient(props: {
                                 ⚠ {alerta}
                               </div>
                             )}
+                            {alerta && props.podeEditar && (() => {
+                              const k = `${f.cfId}:${item.id}`;
+                              const st = ajusteStatus[k];
+                              const ocupado = st?.tipo === 'salvando';
+                              const btn =
+                                'rounded border border-amber-300 bg-white px-1 py-0.5 text-[10px] text-amber-800 hover:bg-amber-50 disabled:opacity-50';
+                              const nCx = (r.embalagem ?? '').match(/c\/\s*([\d.,]+)/)?.[1] ?? '';
+                              return (
+                                <div className="mt-1 flex max-w-[180px] flex-col gap-1 rounded bg-amber-50 p-1">
+                                  {alerta.startsWith('preço do kg') ? (
+                                    <>
+                                      <div className="flex items-center gap-1">
+                                        <input
+                                          inputMode="decimal"
+                                          placeholder={`kg na ${item.unidade}`}
+                                          value={pesoDigitado[k] ?? ''}
+                                          onChange={(e) => setPesoDigitado((p) => ({ ...p, [k]: e.target.value }))}
+                                          onKeyDown={(e) => {
+                                            if (e.key === 'Enter') void ajustarResposta(f, item, 'peso');
+                                          }}
+                                          className="w-16 rounded border border-amber-300 px-1 py-0.5 text-[10px]"
+                                          title={`Quantos kg pesa 1 ${item.unidade}? O preço da ${item.unidade} vira kg × peso`}
+                                        />
+                                        <button
+                                          type="button"
+                                          disabled={ocupado}
+                                          onClick={() => void ajustarResposta(f, item, 'peso')}
+                                          className={btn}
+                                        >
+                                          OK
+                                        </button>
+                                      </div>
+                                      <button
+                                        type="button"
+                                        disabled={ocupado}
+                                        onClick={() => void ajustarResposta(f, item, 'preco_da_unidade')}
+                                        className={btn}
+                                        title={`O número já é o preço da ${item.unidade} inteira`}
+                                      >
+                                        já é o preço da {item.unidade}
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button
+                                        type="button"
+                                        disabled={ocupado}
+                                        onClick={() => void ajustarResposta(f, item, 'uma_de_n_kg')}
+                                        className={btn}
+                                        title={`${brl(r.preco ?? 0)} é o preço de 1 ${item.unidade} de ${nCx} kg`}
+                                      >
+                                        1 {item.unidade} de {nCx} kg
+                                      </button>
+                                      <button
+                                        type="button"
+                                        disabled={ocupado}
+                                        onClick={() => void ajustarResposta(f, item, 'juntas')}
+                                        className={btn}
+                                      >
+                                        {nCx} {item.unidade} juntas
+                                      </button>
+                                    </>
+                                  )}
+                                  {ocupado && <span className="text-[10px] text-slate-500">salvando…</span>}
+                                  {st?.tipo === 'erro' && (
+                                    <span className="text-[10px] font-semibold text-rose-600">⚠ {st.msg?.slice(0, 60)}</span>
+                                  )}
+                                </div>
+                              );
+                            })()}
                             {r.marca && (
                               <div className={`text-[10px] ${marcaOk ? 'text-slate-500' : 'text-rose-600'}`}>
                                 {r.marca}
