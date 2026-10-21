@@ -5,7 +5,7 @@
 const FATOS: Record<string, string> = {
   // 01 Prainha Bar
   '7c5c66ce-cceb-4e89-9c6d-d0785255c4f9':
-    'Prainha Bar: bar de praia em Aracaju-SE. Aberto ao público das 9h às 19h. À noite só evento fechado (mínimo 30 pessoas). Tem Terraço para eventos. Instagram @prainha.se.',
+    'Prainha Bar: bar de praia no Mosqueiro, em Aracaju-SE. Endereço: Estrada Matapoã, 2285, Mosqueiro, Aracaju-SE. Aberto ao público das 9h às 19h. À noite só evento fechado (mínimo 30 pessoas). Tem Terraço para eventos. Instagram @prainha.se.',
   // 02 Tabuará
   'fde37b95-7c7e-4b41-a618-2aba1fbc0de7': 'Tabuará: restaurante do grupo Prainha em Aracaju-SE.',
   // 03 Prainha Mar
