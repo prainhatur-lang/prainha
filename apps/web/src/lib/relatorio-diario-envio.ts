@@ -23,7 +23,7 @@ import {
   ultimoDiaFechado,
   type RelatorioCasa,
 } from './relatorio-diario';
-import { dateToBrYmd } from './datas';
+import { dateToBrYmd, hojeBr } from './datas';
 
 const BASE_URL = 'https://app.prainhabar.com';
 /** Folga antes das 24 h da Meta: toque de ontem 07:30 ainda vale no cron de hoje 07:00. */
@@ -516,6 +516,74 @@ export async function enviarModelo(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Reservas de hoje no zap do resumo (21/10/2026, dono: "ela pode ir no zap de
+// resumo"). Quem recebe o resumo E está na lista de reservas ganha as reservas
+// de HOJE junto: no aviso, uma linha a mais no fim; no texto (janela aberta ou
+// toque no "Ver resumo"), a lista inteira logo depois do resumo. O envio
+// separado das 07:00 pula essas pessoas. Quem só está na lista de reservas
+// continua recebendo o aviso próprio, igual antes.
+// ---------------------------------------------------------------------------
+
+/** Casas de reservas dessa pessoa (vazio = não recebe reservas). Só no resumo do último dia fechado. */
+async function casasDeReservasDoResumo(organizacaoId: string, telefone: string, dia: string): Promise<string[]> {
+  if (dia !== ultimoDiaFechado()) return [];
+  const { destinosReservas } = await import('./reservas-do-dia-envio');
+  const chave = chaveTelefone(telefone);
+  const ids = new Set<string>();
+  for (const d of await destinosReservas(organizacaoId)) {
+    if (d.ativo && chaveTelefone(d.telefone) === chave) for (const id of d.filialIds) ids.add(id);
+  }
+  return [...ids];
+}
+
+/** "Reservas hoje: Prainha Bar 3 (12p) · Tabuará nenhuma" pro fim do aviso. */
+async function linhaReservasDoAviso(filialIds: string[]): Promise<string> {
+  const { reservasDoDia } = await import('./reservas-do-dia-envio');
+  const casas = await reservasDoDia(filialIds, hojeBr());
+  const partes = casas.map((c) => {
+    if (!c.reservas.length) return `${c.nome} nenhuma`;
+    const p = c.reservas.reduce((s, r) => s + (Number(r.pessoas) || 0), 0);
+    return `${c.nome} ${c.reservas.length} (${p}p)`;
+  });
+  return `Reservas hoje: ${partes.join(' · ')}`;
+}
+
+/** Depois do resumo em texto: a lista de reservas de hoje. Nunca derruba o resumo. */
+async function enviarReservasJuntoDoResumo(
+  alvo: { organizacaoId: string; telefone: string; para: string; phoneNumberId: string },
+  dia: string,
+  origem: OrigemEnvio,
+): Promise<void> {
+  try {
+    const filialIds = await casasDeReservasDoResumo(alvo.organizacaoId, alvo.telefone, dia);
+    if (!filialIds.length) return;
+    const { reservasDoDia, textoReservas } = await import('./reservas-do-dia-envio');
+    const hoje = hojeBr();
+    const casas = await reservasDoDia(filialIds, hoje);
+    let erro: string | null = null;
+    for (const corpo of textoReservas(casas, hoje)) {
+      const r = await enviarTexto(alvo.phoneNumberId, alvo.para, corpo);
+      if (!r.waMessageId) {
+        erro = r.erro ?? 'falhou';
+        break;
+      }
+    }
+    await registrar({
+      organizacaoId: alvo.organizacaoId,
+      dia: hoje,
+      telefone: alvo.telefone,
+      canal: 'reservas',
+      origem,
+      ok: !erro,
+      erro: erro ? `junto do resumo: ${erro}` : 'junto do resumo',
+      phoneNumberId: alvo.phoneNumberId,
+    });
+  } catch (e) {
+    console.error('[relatorio-diario] reservas junto do resumo:', e);
+  }
+}
+
 /** Manda o relatório inteiro em texto por um número da casa. true = a Meta aceitou tudo. */
 async function enviarTextoCompleto(
   alvo: { organizacaoId: string; telefone: string; para: string; phoneNumberId: string },
@@ -543,6 +611,7 @@ async function enviarTextoCompleto(
       break;
     }
   }
+  if (tudoOk) await enviarReservasJuntoDoResumo(alvo, dia, origem);
   return tudoOk;
 }
 
@@ -611,7 +680,11 @@ export async function enviarRelatorioDiario(opts: {
       }
       // texto recusado na hora → cai no modelo
     }
-    const m = await enviarModelo(telefone, dia, resumo);
+    // Quem também recebe reservas: uma linha a mais no aviso; o toque no
+    // "Ver resumo" traz o resumo e a lista inteira de reservas de hoje.
+    const reservasIds = await casasDeReservasDoResumo(opts.organizacaoId, telefone, dia).catch(() => [] as string[]);
+    const linhaReservas = reservasIds.length ? await linhaReservasDoAviso(reservasIds).catch(() => '') : '';
+    const m = await enviarModelo(telefone, dia, linhaReservas ? `${resumo} | ${linhaReservas}` : resumo);
     await registrar({
       organizacaoId: opts.organizacaoId,
       dia,
@@ -623,6 +696,19 @@ export async function enviarRelatorioDiario(opts: {
       waMessageId: m.waMessageId,
       phoneNumberId: m.phoneNumberId || null,
     });
+    if (linhaReservas && m.waMessageId) {
+      await registrar({
+        organizacaoId: opts.organizacaoId,
+        dia: hojeBr(),
+        telefone,
+        canal: 'reservas',
+        origem: opts.origem,
+        ok: true,
+        erro: 'no aviso do resumo',
+        waMessageId: null,
+        phoneNumberId: m.phoneNumberId || null,
+      }).catch(() => {});
+    }
     resultados.push({ telefone, canal: 'modelo', ok: !!m.waMessageId, erro: m.erro });
   }
   return { dia, resultados };

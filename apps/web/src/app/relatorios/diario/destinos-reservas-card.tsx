@@ -115,7 +115,8 @@ export function DestinosReservasCard({ organizacaoId, destinos, filiais }: Props
         Todo dia às 07:00 cada pessoa recebe no WhatsApp as reservas de hoje das casas marcadas: hora, nome, pessoas,
         mesa, área, quem confirmou, pago e observação. Chega um aviso com o botão &quot;Ver resumo&quot;; o toque traz a
         lista inteira, atualizada na hora. Quem falou com a gente nas últimas 24 h já recebe a lista direto. Também dá
-        pra pedir a qualquer hora escrevendo &quot;reservas de hoje&quot;.
+        pra pedir a qualquer hora escrevendo &quot;reservas de hoje&quot;. Quem também recebe o resumo diário ganha as
+        reservas de hoje no mesmo zap do resumo, sem aviso separado.
       </p>
 
       <div className="mt-3 space-y-2">

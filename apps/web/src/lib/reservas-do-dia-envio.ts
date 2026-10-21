@@ -15,7 +15,7 @@ import { and, eq, gte, isNotNull, sql } from 'drizzle-orm';
 import { enviarTexto } from '@/lib/atendimento/zap';
 import { hojeBr } from '@/lib/datas';
 import { rotuloDia } from '@/lib/relatorio-diario';
-import { chaveTelefone, enviarModelo, registrar, type OrigemEnvio } from '@/lib/relatorio-diario-envio';
+import { chaveTelefone, enviarModelo, lerConfig, registrar, type OrigemEnvio } from '@/lib/relatorio-diario-envio';
 
 const JANELA_MS = (23 * 60 + 45) * 60 * 1000;
 /** 01 Bar, 02 Tabuará, 03 Mar — ordem das casas na mensagem. */
@@ -310,7 +310,18 @@ export async function enviarReservasDoDia(opts: {
     (d) => d.ativo && d.filialIds.length && (!opts.soTelefone || chaveTelefone(d.telefone) === chaveTelefone(opts.soTelefone)),
   );
   const out: ResultadoReservas[] = [];
+  // 21/10/2026: quem recebe o resumo diário ganha as reservas de hoje no mesmo
+  // zap (relatorio-diario-envio). No cron, essas pessoas não levam outro aviso.
+  const doResumo = new Set<string>();
+  if (opts.origem === 'cron' && opts.dia === hojeBr()) {
+    const cfg = await lerConfig(opts.organizacaoId).catch(() => null);
+    if (cfg?.ativo) for (const t of cfg.telefones) doResumo.add(chaveTelefone(t));
+  }
   for (const d of destinos) {
+    if (doResumo.has(chaveTelefone(d.telefone))) {
+      out.push({ nome: d.nome, telefone: d.telefone, ok: true, canal: 'nenhum', pulado: true });
+      continue;
+    }
     if (opts.origem === 'cron' && (await jaFoiHoje(opts.organizacaoId, d.telefone, opts.dia))) {
       out.push({ nome: d.nome, telefone: d.telefone, ok: true, canal: 'nenhum', pulado: true });
       continue;
