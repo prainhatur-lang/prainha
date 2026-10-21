@@ -53,6 +53,10 @@
       "schedule": "0 10 * * *"
     },
     {
+      "path": "/api/cron/reservas-do-dia",
+      "schedule": "0 10 * * *"
+    },
+    {
       "path": "/api/cron/regime-agendado",
       "schedule": "10 8 * * *"
     },

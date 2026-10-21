@@ -377,7 +377,7 @@ export async function registrar(linha: {
   organizacaoId: string;
   dia: string;
   telefone: string;
-  canal: 'modelo' | 'texto' | 'toque' | 'mensal';
+  canal: 'modelo' | 'texto' | 'toque' | 'mensal' | 'reservas';
   origem: OrigemEnvio;
   ok: boolean;
   erro?: string | null;
@@ -455,6 +455,8 @@ export async function enviarModelo(
   resumo: string,
   /** {{1}} no lugar do dia ("setembro/2026" no resumo do mês) */
   rotulo?: string,
+  /** payload do botão "Ver resumo" (padrão `relatorio:<dia>`; reservas do dia usa `reservas:<dia>`) */
+  payloadBotao?: string,
 ): Promise<{ waMessageId: string | null; erro?: string; phoneNumberId: string }> {
   const phoneNumberId = phoneIdPadrao();
   if (!token() || !phoneNumberId) {
@@ -478,7 +480,7 @@ export async function enviarModelo(
         type: 'button',
         sub_type: 'quick_reply',
         index: String(botaoIndice),
-        parameters: [{ type: 'payload', payload: `relatorio:${dia}` }],
+        parameters: [{ type: 'payload', payload: payloadBotao ?? `relatorio:${dia}` }],
       });
     }
     const resp = await fetch(`https://graph.facebook.com/${versaoApi()}/${phoneNumberId}/messages`, {

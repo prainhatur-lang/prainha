@@ -35,6 +35,8 @@ import {
 } from '@/lib/relatorio-diario-envio';
 import { EnvioCard } from './envio-card';
 import { DestinosCasaCard } from './destinos-casa-card';
+import { DestinosReservasCard } from './destinos-reservas-card';
+import { destinosReservas } from '@/lib/reservas-do-dia-envio';
 import { destinosDaOrganizacao } from '@/lib/relatorio-casa-envio';
 
 /** "1 mesa", "2 mesas". */
@@ -674,6 +676,7 @@ export default async function RelatorioDiarioPage(props: { searchParams: Promise
         destinosDaOrganizacao(orgDono.id),
       ])
     : [null, [], null, []];
+  const listaReservas = orgDono ? await destinosReservas(orgDono.id).catch(() => []) : [];
 
   const totalPdv = casas.reduce((s, c) => s + c.movimento.total, 0);
   const ticketsEvento = casas.reduce((s, c) => s + ticketsDeEvento(c), 0);
@@ -807,6 +810,15 @@ export default async function RelatorioDiarioPage(props: { searchParams: Promise
               destinos={destinosCasa}
               filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
               ontem={ultimoDiaFechado()}
+            />
+          </section>
+        )}
+        {orgDono && config && (
+          <section className="mt-6 rounded-xl border border-slate-200 bg-white p-4">
+            <DestinosReservasCard
+              organizacaoId={orgDono.id}
+              destinos={listaReservas}
+              filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
             />
           </section>
         )}

@@ -35,6 +35,7 @@ import {
   responderPedidoRelatorio,
   registrarFalhaRelatorio,
 } from '@/lib/relatorio-diario-envio';
+import { tratarPedidoReservas } from '@/lib/reservas-do-dia-envio';
 import {
   registrarEntrada,
   processarEntrada,
@@ -133,6 +134,19 @@ export async function POST(req: Request) {
           // Resposta de botao de template (quick_reply) chega como type 'button'.
           // Botao interativo (lista/reply) chega como 'interactive'.
           const payload = msg.button?.payload ?? msg.interactive?.button_reply?.id ?? '';
+          // Reservas do dia (20/10): toque no "Ver resumo" do aviso das 07:00
+          // (payload reservas:<dia>) ou um cadastrado pedindo "reservas de hoje".
+          const pedidoReservas = await tratarPedidoReservas({
+            id: msg.id,
+            from: msg.from,
+            payload,
+            texto: msg.type === 'text' ? msg.text?.body : undefined,
+            phoneNumberId: value?.metadata?.phone_number_id,
+          }).catch(() => null);
+          if (pedidoReservas) {
+            after(() => pedidoReservas());
+            continue;
+          }
           // Relatório diário das casas: toque no botão "Ver resumo" do modelo, ou
           // um destinatário do relatório escrevendo "relatório". Só pega quem está
           // na lista de destinatários — todo o resto segue o fluxo de sempre.

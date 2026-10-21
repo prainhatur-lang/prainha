@@ -25,6 +25,15 @@ export interface DestinoCasaConfig {
   desde: string;
 }
 
+/** Quem recebe às 07:00 a lista de reservas de hoje (20/10/2026). */
+export interface DestinoReservasConfig {
+  nome: string;
+  /** só dígitos, com 55 */
+  telefone: string;
+  filialIds: string[];
+  ativo: boolean;
+}
+
 export const relatorioDiarioConfig = pgTable('relatorio_diario_config', {
   organizacaoId: uuid('organizacao_id')
     .primaryKey()
@@ -37,6 +46,8 @@ export const relatorioDiarioConfig = pgTable('relatorio_diario_config', {
    * tela → vale a lista fixa de apps/web/src/lib/relatorio-casa-envio.ts.
    */
   destinosCasa: jsonb('destinos_casa').$type<DestinoCasaConfig[]>(),
+  /** Lista de reservas do dia, todo dia às 07:00 (NULL = ninguém cadastrado). */
+  destinosReservas: jsonb('destinos_reservas').$type<DestinoReservasConfig[]>(),
   atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
   atualizadoPor: uuid('atualizado_por'),
 });
