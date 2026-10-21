@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import { idsComGemea } from '@/lib/juntar-pedido-foto';
+import { tipoCompra } from '@/lib/nota-tipo';
 import { exigirPerm } from '@/lib/exigir-perm';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
@@ -34,30 +35,6 @@ interface SP {
 // Filtro em linguagem simples: nota fiscal de verdade × pedido sem nota (foto).
 type TipoFiltro = 'TODOS' | 'NF' | 'PEDIDO';
 const TIPO_SQL_NF = ['PEDIDO_FOTO', 'NFSE_PDF'];
-
-/** Selo do tipo da compra, pra quem não sabe o que é "SEFAZ DF-e". */
-function tipoCompra(origem: string | null): { icone: string; texto: string; dica: string; cls: string } {
-  if (origem === 'PEDIDO_FOTO')
-    return {
-      icone: '📸',
-      texto: 'Pedido sem nota',
-      dica: 'Compra sem nota fiscal: entrou pela foto do pedido/romaneio do fornecedor',
-      cls: 'border-emerald-200 bg-emerald-50 text-emerald-800',
-    };
-  if (origem === 'NFSE_PDF')
-    return {
-      icone: '🛠',
-      texto: 'Nota de serviço',
-      dica: 'Nota de serviço (NFS-e): só vira conta a pagar, não mexe no estoque',
-      cls: 'border-indigo-200 bg-indigo-50 text-indigo-800',
-    };
-  return {
-    icone: '🧾',
-    texto: 'Nota fiscal',
-    dica: 'Nota fiscal eletrônica (NF-e) registrada na SEFAZ',
-    cls: 'border-sky-200 bg-sky-50 text-sky-800',
-  };
-}
 
 type OrigemFiltro = 'TODAS' | 'UPLOAD' | 'SEFAZ_DFE' | 'SEFAZ_DFE_RESUMO' | 'SEFAZ_DFE_RESUMO_CIENTE' | 'PEDIDO_FOTO';
 

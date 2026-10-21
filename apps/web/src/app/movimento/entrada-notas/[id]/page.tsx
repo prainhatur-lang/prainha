@@ -20,6 +20,7 @@ import { sugestoesDoPedido } from '@/lib/sugestao-pedido-nota';
 import { VincularPeloPedidoBtn } from './vincular-pelo-pedido';
 import { CelularLeuOutra } from './celular-leu-outra';
 import { JuntarGemea } from './juntar-gemea';
+import { FaixaTipoNota } from './faixa-tipo';
 import { acharGemea } from '@/lib/juntar-pedido-foto';
 
 export const dynamic = 'force-dynamic';
@@ -450,6 +451,19 @@ export default async function NotaDetalhePage(props: {
             </p>
           </div>
         )}
+
+        <FaixaTipoNota
+          origem={nota.origemImportacao}
+          situacao={nota.situacao}
+          totalItens={totalItens}
+          mapeados={mapeados}
+          lancados={lancados}
+          conferida={conferencia.conferidaEm != null}
+          temFornecedor={nota.fornecedorId != null}
+          emDobro={gemea != null}
+          outraCasa={casaDest?.nome ?? null}
+          transferencia={nfeTransf?.transferenciaId != null}
+        />
 
         <div className="mt-2 flex items-start justify-between gap-4">
           <div>
