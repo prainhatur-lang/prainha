@@ -71,6 +71,12 @@ export async function POST(req: Request) {
       const video = new Uint8Array(await r.arrayBuffer());
       publishId = await rascunhoVideoTiktok(tt.accessToken, video);
       tipo = 'video';
+    } else if (m.tipo === 'VIDEO') {
+      // A API do Instagram omite o media_url de Reels com música protegida por direito autoral.
+      return erro(
+        'O Instagram não libera o arquivo deste Reels (costuma ser música com direito autoral). Mande pelo app do TikTok ou escolha outro post.',
+        422,
+      );
     } else {
       return erro('Este post não tem foto nem vídeo que dê pra mandar.', 422);
     }
