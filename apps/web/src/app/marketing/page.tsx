@@ -29,6 +29,13 @@ import {
 } from '@/lib/marketing/tiktok';
 import { Desconectar } from './desconectar';
 import { MandarTiktok } from './mandar-tiktok';
+import { Publicar, type PostVisto } from './publicar';
+import { db, schema } from '@concilia/db';
+import { desc, eq } from 'drizzle-orm';
+import { createAdminClient } from '@/lib/supabase/server';
+import { temPublicarInstagram } from '@/lib/marketing/instagram';
+import { temRascunhoTiktok } from '@/lib/marketing/tiktok';
+import { BUCKET_MARKETING } from '@/lib/marketing/midia-link';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -86,6 +93,39 @@ async function lerTiktok(filialId: string): Promise<Leitura<PerfilTiktok, VideoT
   }
 }
 
+/** Últimos posts feitos pela tela Publicar, com a 1ª foto assinada pra miniatura. */
+async function lerPostsPublicar(filialId: string): Promise<PostVisto[]> {
+  const T = schema.marketingPost;
+  const linhas = await db.select().from(T).where(eq(T.filialId, filialId)).orderBy(desc(T.criadoEm)).limit(20);
+  const capas = new Map<string, string>();
+  const fotos = linhas.map((l) => l.midias.find((m) => m.tipo === 'foto')?.path).filter((x): x is string => !!x);
+  if (fotos.length) {
+    try {
+      const admin = await createAdminClient();
+      const { data } = await admin.storage.from(BUCKET_MARKETING).createSignedUrls(fotos, 3600);
+      for (const d of data ?? []) if (d.path && d.signedUrl) capas.set(d.path, d.signedUrl);
+    } catch {
+      // sem miniatura: a lista mostra o ícone
+    }
+  }
+  return linhas.map((l) => {
+    const foto = l.midias.find((m) => m.tipo === 'foto')?.path;
+    return {
+      id: l.id,
+      status: l.status,
+      legenda: l.legenda,
+      redes: l.redes,
+      midias: l.midias.map((m) => ({ tipo: m.tipo, nome: m.nome })),
+      capa: foto ? (capas.get(foto) ?? null) : null,
+      agendadoPara: l.agendadoPara ? l.agendadoPara.toISOString() : null,
+      criadoEm: l.criadoEm.toISOString(),
+      publicadoEm: l.publicadoEm ? l.publicadoEm.toISOString() : null,
+      erro: l.erro,
+      resultado: (l.resultado ?? {}) as PostVisto['resultado'],
+    };
+  });
+}
+
 function Numero({ rotulo, valor }: { rotulo: string; valor: number | null | undefined }) {
   return (
     <div className="rounded-md bg-slate-50 px-3 py-2">
@@ -129,7 +169,13 @@ export default async function MarketingPage(props: {
   }
   const filial = escolhida;
 
-  const [ig, tt] = await Promise.all([lerInstagram(filial.id), lerTiktok(filial.id)]);
+  const [ig, tt, ligIg, ligTt, postsFeitos] = await Promise.all([
+    lerInstagram(filial.id),
+    lerTiktok(filial.id),
+    podeConectar ? ligacaoRede(filial.id, 'instagram').catch(() => null) : null,
+    podeConectar ? ligacaoRede(filial.id, 'tiktok').catch(() => null) : null,
+    podeConectar ? lerPostsPublicar(filial.id).catch(() => [] as PostVisto[]) : ([] as PostVisto[]),
+  ]);
   const aviso = sp.aviso ? AVISOS[sp.aviso] : null;
   const nomeRede = sp.rede === 'tiktok' ? 'TikTok' : 'Instagram';
   const conectarHref = (rede: string) => `/api/marketing/${rede}/conectar?filialId=${filial.id}`;
@@ -166,6 +212,20 @@ export default async function MarketingPage(props: {
           >
             {nomeRede}: {aviso.texto}
           </p>
+        )}
+
+        {podeConectar && (ig.estado === 'ok' || tt.estado === 'ok' || postsFeitos.length > 0) && (
+          <Publicar
+            filialId={filial.id}
+            casa={filial.nome}
+            redes={{
+              igLigado: ig.estado === 'ok',
+              igPodePublicar: !!ligIg && temPublicarInstagram(ligIg.escopos),
+              ttLigado: tt.estado === 'ok',
+              ttRascunho: !!ligTt && temRascunhoTiktok(ligTt.escopos),
+            }}
+            posts={postsFeitos}
+          />
         )}
 
         {/* INSTAGRAM */}
@@ -366,7 +426,8 @@ export default async function MarketingPage(props: {
         </div>
 
         <p className="mt-6 text-xs text-slate-400">
-          Em breve aqui: responder comentários do Instagram, Direct atendido pela Nina e publicar posts pelo sistema.
+          Em breve aqui: responder comentários do Instagram, Direct atendido pela Nina e publicar posts pelo sistema
+          (o bloco 📤 Publicar já agenda e manda pro TikTok; no Instagram sai assim que a Meta liberar a permissão de publicar).
           O TikTok não libera comentários nem mensagens pra sistemas de fora.
         </p>
       </section>

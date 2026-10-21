@@ -61,3 +61,4 @@ export * from './portador';
 export * from './nfse';
 export * from './registro-exclusao';
 export * from './pix-pagamento';
+export * from './marketing-post';

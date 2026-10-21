@@ -282,3 +282,104 @@ export async function midiaPostInstagram(token: string, id: string): Promise<Mid
   }
   return out;
 }
+
+// ── Publicar (tela /marketing → Publicar) ─────────────────────────────────
+// Precisa do escopo `instagram_business_content_publish` na ligação. Fluxo da
+// Meta: cria o "container" de cada mídia (ela busca o arquivo no link), espera
+// ficar FINISHED e manda publicar. Foto TEM que ser JPEG; proporção do feed
+// entre 4:5 e 1,91:1 (a tela corta antes de subir). Vídeo vai como Reels.
+
+export function temPublicarInstagram(escopos: string): boolean {
+  return escopos.split(/[,\s]+/).includes('instagram_business_content_publish');
+}
+
+async function postar(caminho: string, token: string, params: Record<string, string>) {
+  let resp: Response;
+  try {
+    resp = await fetch(`${GRAPH}/${VERSAO()}/${caminho}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ ...params, access_token: token }).toString(),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(60000),
+    });
+  } catch {
+    throw new ErroInstagram('O Instagram não respondeu a tempo.');
+  }
+  return lerJson(resp);
+}
+
+export interface MidiaParaPublicar {
+  tipo: 'foto' | 'video';
+  /** link que a Meta consegue baixar (assinado, vale algumas horas) */
+  url: string;
+}
+
+/** Cria o(s) container(s) e devolve o id do container principal. */
+export async function criarContainerInstagram(
+  token: string,
+  contaId: string,
+  midias: MidiaParaPublicar[],
+  legenda: string,
+): Promise<string> {
+  const conta = contaId || 'me';
+  if (!midias.length) throw new ErroInstagram('Post sem foto nem vídeo.');
+  if (midias.length === 1) {
+    const m = midias[0]!;
+    const j =
+      m.tipo === 'video'
+        ? await postar(`${conta}/media`, token, { media_type: 'REELS', video_url: m.url, caption: legenda, share_to_feed: 'true' })
+        : await postar(`${conta}/media`, token, { image_url: m.url, caption: legenda });
+    return String(j.id ?? '');
+  }
+  const filhos: string[] = [];
+  for (const m of midias.slice(0, 10)) {
+    const j =
+      m.tipo === 'video'
+        ? await postar(`${conta}/media`, token, { media_type: 'VIDEO', video_url: m.url, is_carousel_item: 'true' })
+        : await postar(`${conta}/media`, token, { image_url: m.url, is_carousel_item: 'true' });
+    filhos.push(String(j.id ?? ''));
+  }
+  // carrossel só fecha com os filhos prontos
+  for (const f of filhos) {
+    const s = await esperarContainerInstagram(token, f, 180000);
+    if (s !== 'FINISHED') throw new ErroInstagram(`Um item do carrossel não ficou pronto no Instagram (${s}).`);
+  }
+  const j = await postar(`${conta}/media`, token, { media_type: 'CAROUSEL', children: filhos.join(','), caption: legenda });
+  return String(j.id ?? '');
+}
+
+/** Situação do container: FINISHED · IN_PROGRESS · ERROR · EXPIRED · PUBLISHED */
+export async function situacaoContainerInstagram(token: string, id: string): Promise<{ status: string; detalhe: string }> {
+  const j = await chamar(id, token, { fields: 'status_code,status' });
+  return { status: String(j.status_code ?? ''), detalhe: String(j.status ?? '') };
+}
+
+/** Espera o container sair de IN_PROGRESS (até `limiteMs`). Devolve o último status. */
+export async function esperarContainerInstagram(token: string, id: string, limiteMs: number): Promise<string> {
+  const fim = Date.now() + limiteMs;
+  let s = '';
+  for (;;) {
+    s = (await situacaoContainerInstagram(token, id)).status;
+    if (s && s !== 'IN_PROGRESS') return s;
+    if (Date.now() + 5000 > fim) return s || 'IN_PROGRESS';
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+}
+
+/** Publica o container pronto. Devolve {id, link}. */
+export async function publicarContainerInstagram(
+  token: string,
+  contaId: string,
+  containerId: string,
+): Promise<{ id: string; link: string }> {
+  const j = await postar(`${contaId || 'me'}/media_publish`, token, { creation_id: containerId });
+  const id = String(j.id ?? '');
+  let link = '';
+  try {
+    link = String((await chamar(id, token, { fields: 'permalink' })).permalink ?? '');
+  } catch {
+    // publicado; só sem o link
+  }
+  return { id, link };
+}

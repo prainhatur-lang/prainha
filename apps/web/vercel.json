@@ -69,6 +69,10 @@
       "schedule": "30 8 * * *"
     },
     {
+      "path": "/api/cron/marketing-publicar",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/cron/tripadvisor",
       "schedule": "45 9 * * *"
     },
