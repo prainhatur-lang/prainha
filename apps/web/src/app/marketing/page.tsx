@@ -29,6 +29,7 @@ import {
 } from '@/lib/marketing/tiktok';
 import { Desconectar } from './desconectar';
 import { MandarTiktok } from './mandar-tiktok';
+import { BaixarTiktok } from './baixar-tiktok';
 import { Publicar, type PostVisto } from './publicar';
 import { KitPerfil } from './kit-perfil';
 import { db, schema } from '@concilia/db';
@@ -323,6 +324,7 @@ export default async function MarketingPage(props: {
                     </div>
                   </a>
                   {tt.estado === 'ok' && podeConectar && <MandarTiktok filialId={filial.id} postId={p.id} />}
+                  {podeConectar && <BaixarTiktok filialId={filial.id} postId={p.id} />}
                   </div>
                 ))}
               </div>
@@ -330,6 +332,11 @@ export default async function MarketingPage(props: {
               {tt.estado === 'ok' && podeConectar && (
                 <p className="mt-1 text-[11px] text-slate-400">
                   🎵 Mandar pro TikTok = vai pro rascunho/caixa de entrada do TikTok desta casa; quem publica é você, pelo app do TikTok.
+                </p>
+              )}
+              {podeConectar && (
+                <p className="mt-1 text-[11px] text-slate-400">
+                  📲 Baixar pro TikTok = pelo celular, salva a foto no tamanho do TikTok e copia a legenda; no TikTok, toque em +, escolha da galeria e cole a legenda.
                 </p>
               )}
             </>
