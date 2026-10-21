@@ -25,6 +25,9 @@ export function ResponderComIA({ filiais }: { filiais: Array<{ id: string; nome:
   const [resposta, setResposta] = useState('');
   const [conferir, setConferir] = useState<string[]>([]);
   const [copiado, setCopiado] = useState(false);
+  // link da avaliação no TripAdvisor, quando a pessoa veio pelo botão "abrir e
+  // responder" do card (#responder-ia:<filialId>:<link>)
+  const [linkAvaliacao, setLinkAvaliacao] = useState('');
   const textoRef = useRef<HTMLTextAreaElement>(null);
 
   // atalho dos cards do TripAdvisor: #responder-ia:<filialId> escolhe a casa e
@@ -32,9 +35,17 @@ export function ResponderComIA({ filiais }: { filiais: Array<{ id: string; nome:
   // do TripAdvisor não deixa o conteúdo da API ir pra IA)
   useEffect(() => {
     function lerHash() {
-      const m = /^#responder-ia:([0-9a-f-]{36})$/i.exec(window.location.hash);
+      const m = /^#responder-ia:([0-9a-f-]{36})(?::(.+))?$/i.exec(window.location.hash);
       if (!m) return;
       if (filiais.some((f) => f.id === m[1])) setFilialId(m[1]);
+      let link = '';
+      try {
+        link = m[2] ? decodeURIComponent(m[2]) : '';
+      } catch {
+        link = '';
+      }
+      setLinkAvaliacao(/^https:\/\/([a-z0-9-]+\.)*tripadvisor\.[a-z.]+\//i.test(link) ? link : '');
+      setCopiado(false);
       setCanal('tripadvisor');
       setResposta('');
       setConferir([]);
@@ -50,7 +61,8 @@ export function ResponderComIA({ filiais }: { filiais: Array<{ id: string; nome:
 
   if (filiais.length === 0) return null;
 
-  async function gerar() {
+  async function gerar(textoColado?: string) {
+    const avaliacao = textoColado ?? texto;
     setGerando(true);
     setErro('');
     setCopiado(false);
@@ -58,7 +70,7 @@ export function ResponderComIA({ filiais }: { filiais: Array<{ id: string; nome:
       const r = await fetch('/api/avaliacoes/sugerir-resposta', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ filialId, canal, nota: nota ? Number(nota) : null, texto, orientacao }),
+        body: JSON.stringify({ filialId, canal, nota: nota ? Number(nota) : null, texto: avaliacao, orientacao }),
       });
       const j = (await r.json().catch(() => null)) as
         | { ok?: boolean; resposta?: string; conferir?: string[]; error?: string }
@@ -83,6 +95,37 @@ export function ResponderComIA({ filiais }: { filiais: Array<{ id: string; nome:
     } catch {
       setErro('Não deu pra copiar sozinho — selecione o texto e copie.');
     }
+  }
+
+  // um clique: cola o que a pessoa copiou da página do TripAdvisor/Google e já escreve
+  async function colarEEscrever() {
+    setErro('');
+    let colado = '';
+    try {
+      colado = (await navigator.clipboard.readText()).trim().slice(0, 4000);
+    } catch {
+      setErro('O navegador não deixou colar sozinho — cole na caixa (Ctrl/Cmd+V) e clique em Escrever resposta.');
+      textoRef.current?.focus();
+      return;
+    }
+    if (colado.length < 5) {
+      setErro('Nada copiado ainda: na página da avaliação, selecione o texto do cliente e copie.');
+      return;
+    }
+    setTexto(colado);
+    await gerar(colado);
+  }
+
+  // um clique: copia a resposta e abre a avaliação no TripAdvisor pra colar e enviar
+  async function copiarEAbrir() {
+    const janela = window.open(linkAvaliacao, '_blank', 'noopener');
+    try {
+      await navigator.clipboard.writeText(resposta);
+      setCopiado(true);
+    } catch {
+      setErro('Não deu pra copiar sozinho — selecione o texto e copie.');
+    }
+    if (!janela) window.location.href = linkAvaliacao;
   }
 
   const campo =
@@ -156,7 +199,15 @@ export function ResponderComIA({ filiais }: { filiais: Array<{ id: string; nome:
 
       <div className="mt-3 flex flex-wrap items-center gap-3">
         <button
-          onClick={gerar}
+          onClick={colarEEscrever}
+          disabled={gerando}
+          className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-700 disabled:opacity-50"
+          title="Cola o que você copiou da avaliação e a IA já escreve"
+        >
+          {gerando ? 'Escrevendo…' : '📋 Colar e escrever'}
+        </button>
+        <button
+          onClick={() => gerar()}
           disabled={gerando || texto.trim().length < 5}
           className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
         >
@@ -192,6 +243,15 @@ export function ResponderComIA({ filiais }: { filiais: Array<{ id: string; nome:
           )}
 
           <div className="mt-3 flex flex-wrap items-center gap-3">
+            {linkAvaliacao && (
+              <button
+                onClick={copiarEAbrir}
+                className="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800"
+                title="Copia a resposta e abre a avaliação: lá é só colar e enviar"
+              >
+                {copiado ? '✓ Copiada — cole no TripAdvisor' : 'Copiar e abrir a avaliação ↗'}
+              </button>
+            )}
             <button
               onClick={copiar}
               className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"

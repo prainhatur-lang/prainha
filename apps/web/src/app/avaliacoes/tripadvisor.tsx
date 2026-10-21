@@ -6,6 +6,7 @@
 import { db, schema } from '@concilia/db';
 import { and, asc, desc, eq, inArray, lte, sql } from 'drizzle-orm';
 import { diasAtrasBr } from '@/lib/datas';
+import { AbrirEResponder } from './abrir-e-responder';
 
 const FUSO = 'America/Sao_Paulo';
 
@@ -246,6 +247,7 @@ export async function BlocoTripadvisor({ filiais }: { filiais: Array<{ id: strin
                           ✨ responder com IA
                         </a>
                       )}
+                      {!a.respondida && a.url && <AbrirEResponder filialId={r.filialId} url={a.url} />}
                     </li>
                   ))}
                 </ul>
