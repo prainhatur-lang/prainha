@@ -78,6 +78,19 @@ function unidadeIndefinida(unidade: string): boolean {
   return !['kg', 'g', 'l', 'lt', 'litro', 'ml'].includes(t);
 }
 
+/** Peso digitado pelo fornecedor ("3,5" ou "3.5"): aqui o ponto é decimal,
+ *  não milhar — ninguém digita peça de 3.500 kg. */
+function pesoParaNumero(valor: string): number {
+  const t = valor.trim().replace(/\s/g, '');
+  if (!t) return NaN;
+  if (t.includes(',')) return Number(t.replace(/\./g, '').replace(',', '.'));
+  return Number(t);
+}
+
+function fmtPeso(n: number): string {
+  return n.toLocaleString('pt-BR', { maximumFractionDigits: 3 });
+}
+
 function nomePacote(unidade: string): string {
   const t = unidade.toLowerCase();
   if (t === 'un' || t === 'und' || t === 'unid') return 'caixa/pacote fechado (várias unidades)';
@@ -101,6 +114,13 @@ function fatorDe(r: RespostaItem, item: Item): number {
     const q = moedaParaNumero(r.qtdPorEmbalagem);
     return q > 0 ? q : NaN;
   }
+  // 'kg' = item pedido em cx/peça e o fornecedor vende por peso (dono 21/10:
+  // frango a 9,99 o kg, mas a caixa tem 20 kg; queijo a 65 o kg, peça de
+  // 3,5 kg). Preço digitado é do kg; fator = 1/peso → normalizado = preço da cx.
+  if (r.tipoPreco === 'kg') {
+    const peso = pesoParaNumero(r.qtdPorEmbalagem);
+    return peso > 0 ? 1 / peso : NaN;
+  }
   return 1;
 }
 
@@ -111,6 +131,10 @@ function rotuloEmbalagem(r: RespostaItem, item: Item): string {
   }
   if (r.tipoPreco === 'ml') return `embalagem ${r.qtdPorEmbalagem} ml`;
   if (r.tipoPreco === 'pacote') return `embalagem c/ ${r.qtdPorEmbalagem} ${item.unidade}`;
+  if (r.tipoPreco === 'kg') {
+    const peso = pesoParaNumero(r.qtdPorEmbalagem);
+    return `kg (1 ${item.unidade} ≈ ${Number.isFinite(peso) ? fmtPeso(peso) : r.qtdPorEmbalagem} kg)`.slice(0, 40);
+  }
   // 'unidade' com descrição do fornecedor ("pote 500 g", "cx c/ 24")
   if (r.embalagem.trim()) return r.embalagem.trim().slice(0, 40);
   return item.unidade;
@@ -134,6 +158,9 @@ export function PreencherForm(props: {
       const fator = r.qtdPorEmbalagem.trim() ? moedaParaNumero(r.qtdPorEmbalagem) : 1;
       if (!Number.isFinite(fator) || fator === 1 || fator <= 0) {
         init[i.id] = { ...r, qtdPorEmbalagem: '', tipoPreco: 'unidade' };
+      } else if (unidadeIndefinida(i.unidade) && fator < 1) {
+        // Vendido por peso: o fator gravado é 1/peso da cx/peça
+        init[i.id] = { ...r, qtdPorEmbalagem: fmtPeso(Math.round((1 / fator) * 1000) / 1000), tipoPreco: 'kg' };
       } else if (ehLitro(i.unidade) && fator < 1) {
         init[i.id] = {
           ...r,
@@ -399,6 +426,11 @@ export function PreencherForm(props: {
                           <option value="ml">embalagem em ml (750 ml, 600 ml…)</option>
                         )}
                         <option value="pacote">outra: {nomePacote(i.unidade)}</option>
+                        {unidadeIndefinida(i.unidade) && (
+                          <option value="kg">
+                            1 kg (vendo por peso — digo quanto pesa 1 {i.unidade})
+                          </option>
+                        )}
                       </select>
                       {i.embalagemEsperada && (
                         <p className="mt-0.5 text-[10px] text-slate-500">
@@ -422,6 +454,24 @@ export function PreencherForm(props: {
                           />
                         </div>
                       )}
+                    {respostas[i.id]?.tipoPreco === 'kg' && (
+                      <div>
+                        <label className="block text-[11px] font-medium text-slate-700">
+                          Quanto pesa 1 {i.unidade}? (kg) <span className="text-rose-600">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          placeholder="ex: 20 ou 3,5"
+                          value={respostas[i.id]?.qtdPorEmbalagem ?? ''}
+                          onChange={(e) => setCampo(i.id, 'qtdPorEmbalagem', e.target.value)}
+                          className="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-sm"
+                        />
+                        <p className="mt-0.5 text-[10px] text-slate-500">
+                          Peso médio da {i.unidade} que você entrega
+                        </p>
+                      </div>
+                    )}
                     {['ml', 'pacote'].includes(respostas[i.id]?.tipoPreco ?? 'unidade') && (
                       <div>
                         <label className="block text-[11px] font-medium text-slate-700">
@@ -438,13 +488,21 @@ export function PreencherForm(props: {
                           onChange={(e) => setCampo(i.id, 'qtdPorEmbalagem', e.target.value)}
                           className="mt-0.5 w-full rounded border border-slate-200 px-2 py-1 text-sm"
                         />
+                        {respostas[i.id]?.tipoPreco === 'pacote' && unidadeIndefinida(i.unidade) && (
+                          <p className="mt-0.5 text-[10px] text-amber-700">
+                            É quantas {i.unidade} juntas, não o peso. Preço por kg? Escolha
+                            &quot;1 kg (vendo por peso)&quot;.
+                          </p>
+                        )}
                       </div>
                     )}
                     <div>
                       <label className="block text-[11px] font-medium text-slate-700">
                         {(respostas[i.id]?.tipoPreco ?? 'unidade') === 'unidade'
                           ? `Preço de 1 ${nomeUnidade(i.unidade)} (R$)`
-                          : 'Preço da embalagem (R$)'}{' '}
+                          : respostas[i.id]?.tipoPreco === 'kg'
+                            ? 'Preço de 1 kg (R$)'
+                            : 'Preço da embalagem (R$)'}{' '}
                         <span className="text-rose-600">*</span>
                       </label>
                       <input

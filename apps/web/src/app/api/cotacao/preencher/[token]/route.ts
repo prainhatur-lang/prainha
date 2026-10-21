@@ -161,7 +161,11 @@ export async function POST(
       if (!ref || ref <= 0) continue;
       // Mensagem SEM o valor de referência: dizer "última compra foi R$ X"
       // contava pro fornecedor quanto a casa pagou — vaza poder de negociação.
-      if (normalizado > ref * 20 || normalizado < ref / 20) {
+      // Preço por kg de item em cx/peça (fator < 1): a nota pode estar por kg
+      // ou por cx — vale se um dos dois (preço do kg ou da cx) bate.
+      const foraDe = (v: number) => v > ref * 20 || v < ref / 20;
+      const porKgOk = fator < 1 && !foraDe(Number(r.precoUnitario));
+      if (foraDe(normalizado) && !porKgOk) {
         precoAbsurdo.push(
           `${item.produtoNome}: deu R$ ${normalizado.toFixed(2)} por ${item.unidade} — ` +
             `confira a vírgula e o campo "Quanto vem nela?"`,

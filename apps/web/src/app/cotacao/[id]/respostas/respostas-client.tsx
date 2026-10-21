@@ -59,6 +59,58 @@ interface Resp {
   observacao: string | null;
 }
 
+interface NotaRef {
+  data: string;
+  casa: string;
+  fornecedor: string;
+  descricao: string;
+  unidade: string;
+  qtd: number;
+  vu: number;
+  vt: number;
+}
+
+/** Item pedido numa unidade que não diz o peso (cx, peça, un, pct…). */
+function unidadeSemPeso(unidade: string): boolean {
+  return !['kg', 'g', 'l', 'lt', 'litro', 'ml'].includes(unidade.toLowerCase());
+}
+
+/** Resposta que não se compara com o pedido (dono 21/10/2026): item em cx/peça
+ *  e o fornecedor deu o preço do kg sem dizer o peso, ou escreveu "c/ 16 cx"
+ *  querendo dizer caixa de 16 kg. null = resposta normal. */
+function alertaUnidade(item: Item, r: Resp): string | null {
+  if (!unidadeSemPeso(item.unidade)) return null;
+  const emb = (r.embalagem ?? '').toLowerCase();
+  if (emb.startsWith('kg (1 ')) return null; // já veio com o peso
+  if (r.fator === 1 && /\b(kg|kgs|kilo|kilos|quilo|quilos|kl)\b/.test(emb))
+    return `preço do kg — falta o peso da ${item.unidade}; não compara`;
+  const m = emb.match(/c\/\s*([\d.,]+)\s*(\S+)/);
+  if (r.fator > 1 && m && m[2].replace(/\.$/, '') === item.unidade.toLowerCase())
+    return `confira: ${m[1]} ${item.unidade} juntas ou ${item.unidade} de ${m[1]} kg?`;
+  return null;
+}
+
+function fmtQtd(n: number): string {
+  return n.toLocaleString('pt-BR', { maximumFractionDigits: 3 });
+}
+
+/** Média ponderada (total ÷ quantidade) na unidade mais frequente das notas. */
+function mediaNotas(notas: NotaRef[]): { unidade: string; valor: number } | null {
+  const por = new Map<string, { q: number; t: number; n: number }>();
+  for (const n of notas) {
+    if (!(n.qtd > 0) || !(n.vt > 0)) continue;
+    const u = n.unidade.toUpperCase() || '?';
+    const a = por.get(u) ?? { q: 0, t: 0, n: 0 };
+    a.q += n.qtd;
+    a.t += n.vt;
+    a.n += 1;
+    por.set(u, a);
+  }
+  const melhor = [...por.entries()].sort((a, b) => b[1].n - a[1].n)[0];
+  if (!melhor) return null;
+  return { unidade: melhor[0], valor: melhor[1].t / melhor[1].q };
+}
+
 interface LinhaConferencia {
   cotacaoItemId: string;
   preco: string; // texto com vírgula
@@ -76,6 +128,8 @@ export function RespostasClient(props: {
   fornecedores: Forn[];
   respostas: Resp[];
   exclusoesIniciais: Record<string, string[]>;
+  /** Últimas notas fiscais do item (referência pro gestor, nunca vai pro fornecedor) */
+  notasPorItem?: Record<string, NotaRef[]>;
 }) {
   const router = useRouter();
   const [exclusoes, setExclusoes] = useState<Record<string, Set<string>>>(() => {
@@ -124,6 +178,8 @@ export function RespostasClient(props: {
         const r = respostaDe.get(`${f.cfId}:${item.id}`);
         if (!r || r.precoNorm == null) continue;
         if (!marcaValida(item, r.marca)) continue;
+        // Preço do kg num item em cx/peça não disputa o verde (não compara)
+        if (alertaUnidade(item, r)) continue;
         if (r.precoNorm < melhor) melhor = r.precoNorm;
       }
       if (melhor < Infinity) m.set(item.id, melhor);
@@ -458,6 +514,33 @@ export function RespostasClient(props: {
                         {item.marcasAceitas.join(' / ')}
                       </div>
                     )}
+                    {(() => {
+                      const notas = props.notasPorItem?.[item.id];
+                      if (!notas?.length) return null;
+                      const media = mediaNotas(notas);
+                      return (
+                        <details className="mt-1 max-w-[260px] text-[10px] text-slate-600">
+                          <summary className="cursor-pointer text-sky-700">
+                            📄 últimas notas ({notas.length})
+                            {media && ` · média ${brl(media.valor)}/${media.unidade}`}
+                          </summary>
+                          <ul className="mt-0.5 space-y-0.5">
+                            {notas.map((n, k) => (
+                              <li key={k} className="border-l-2 border-slate-200 pl-1">
+                                <span className="text-slate-400">
+                                  {n.data.slice(8, 10)}/{n.data.slice(5, 7)} · {n.casa.replace(/^Prainha\s*/i, '').slice(0, 10)} ·{' '}
+                                  {n.fornecedor.slice(0, 18)}
+                                </span>
+                                <div>{n.descricao.slice(0, 48)}</div>
+                                <div className="font-medium text-slate-700">
+                                  {fmtQtd(n.qtd)} {n.unidade} × {brl(n.vu)} = {brl(n.vt)}
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      );
+                    })()}
                   </td>
                   {props.fornecedores.map((f) => {
                     const excluido = estaExcluido(f.cfId, item.id);
@@ -481,8 +564,9 @@ export function RespostasClient(props: {
                       );
                     }
                     const marcaOk = r ? marcaValida(item, r.marca) : true;
+                    const alerta = r ? alertaUnidade(item, r) : null;
                     const ehMelhor =
-                      r?.precoNorm != null && melhor != null && marcaOk && r.precoNorm <= melhor + 1e-9;
+                      r?.precoNorm != null && melhor != null && marcaOk && !alerta && r.precoNorm <= melhor + 1e-9;
                     return (
                       <td
                         key={f.cfId}
@@ -505,6 +589,11 @@ export function RespostasClient(props: {
                             {r.fator !== 1 && r.preco != null && (
                               <div className="text-[10px] text-slate-500">
                                 {r.embalagem ?? 'embalagem'}: {brl(r.preco)}
+                              </div>
+                            )}
+                            {alerta && (
+                              <div className="max-w-[160px] text-[10px] font-semibold text-amber-700">
+                                ⚠ {alerta}
                               </div>
                             )}
                             {r.marca && (

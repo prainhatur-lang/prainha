@@ -7,7 +7,7 @@ import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { exigirPerm } from '@/lib/exigir-perm';
 import { db, schema } from '@concilia/db';
-import { eq, asc, inArray } from 'drizzle-orm';
+import { eq, asc, inArray, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { formatDateTime } from '@/lib/format';
 import { lerExclusoesPorCotacao } from '@/lib/cotacao-exclusao';
@@ -37,6 +37,7 @@ export default async function CotacaoRespostasPage(props: { params: Promise<{ id
       observacao: schema.cotacaoItem.observacao,
       produtoNome: schema.produto.nome,
       categoria: schema.produto.categoriaCompras,
+      produtoId: schema.cotacaoItem.produtoId,
     })
     .from(schema.cotacaoItem)
     .innerJoin(schema.produto, eq(schema.produto.id, schema.cotacaoItem.produtoId))
@@ -80,6 +81,70 @@ export default async function CotacaoRespostasPage(props: { params: Promise<{ id
               fornecedores.map((f) => f.cfId),
             ),
           );
+
+  // Últimas notas de cada item (dono 21/10/2026): "tem que ver nas últimas
+  // notas o que tem, qual é o preço que está vindo, para ter uma média" — o
+  // frango vem em caixa de ~20 kg e o gorgonzola em peça de ~3 kg, e a resposta
+  // por kg não se compara com o pedido em cx/peça. Casa pelo produto ligado na
+  // nota OU pelas 2 primeiras palavras do nome (sem acento), nas casas da
+  // mesma organização, 180 dias. Só leitura, só pro gestor.
+  const PARADAS = new Set(['com', 'sem', 'tipo', 'para', 'pra', 'und', 'unid', 'pct', 'cxa']);
+  const alvoNota = sql`translate(lower(coalesce(it.descricao, '')), 'áàãâäéèêëíìîïóòõôöúùûüç', 'aaaaaeeeeiiiiooooouuuuc')`;
+  const notasPorItem: Record<
+    string,
+    Array<{ data: string; casa: string; fornecedor: string; descricao: string; unidade: string; qtd: number; vu: number; vt: number }>
+  > = {};
+  await Promise.all(
+    itens.map(async (i) => {
+      const palavras = (i.produtoNome ?? '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter((w) => w.length >= 3 && !PARADAS.has(w))
+        .slice(0, 2)
+        .map((w) => w.slice(0, 5));
+      const porNome =
+        palavras.length === 0
+          ? sql`FALSE`
+          : palavras.map((w) => sql`${alvoNota} LIKE ${'%' + w + '%'}`).reduce((a, b) => sql`${a} AND ${b}`);
+      const linhas = (await db.execute(sql`
+        SELECT (n.data_emissao AT TIME ZONE 'America/Sao_Paulo')::date::text AS data,
+               f.nome AS casa,
+               COALESCE(n.emit_fantasia, n.emit_nome, '') AS fornecedor,
+               COALESCE(it.descricao, '') AS descricao,
+               COALESCE(it.unidade, '') AS unidade,
+               it.quantidade::float AS qtd,
+               it.valor_unitario::float AS vu,
+               it.valor_total::float AS vt
+        FROM nota_compra_item it
+        JOIN nota_compra n ON n.id = it.nota_compra_id
+        JOIN filial f ON f.id = it.filial_id
+        WHERE f.organizacao_id = (SELECT organizacao_id FROM filial WHERE id = ${c.filialId})
+          AND n.data_emissao > now() - interval '180 days'
+          AND (it.produto_id = ${i.produtoId} OR (${porNome}))
+        ORDER BY n.data_emissao DESC
+        LIMIT 12
+      `)) as unknown as Array<{ data: string; casa: string; fornecedor: string; descricao: string; unidade: string; qtd: number | null; vu: number | null; vt: number | null }>;
+      // Mesma linha repetida (nota importada 2x / item lançado 2x) aparece uma vez só
+      const vistas = new Set<string>();
+      const unicas = linhas
+        .filter((l) => {
+          const k = `${l.data}|${l.fornecedor}|${l.descricao.toLowerCase()}|${l.qtd}|${l.vt}`;
+          if (vistas.has(k)) return false;
+          vistas.add(k);
+          return true;
+        })
+        .slice(0, 6);
+      if (unicas.length)
+        notasPorItem[i.id] = unicas.map((l) => ({
+          ...l,
+          qtd: Number(l.qtd ?? 0),
+          vu: Number(l.vu ?? 0),
+          vt: Number(l.vt ?? 0),
+        }));
+    }),
+  );
 
   const exclusoesMap = await lerExclusoesPorCotacao(id);
   const exclusoes: Record<string, string[]> = {};
@@ -140,6 +205,7 @@ export default async function CotacaoRespostasPage(props: { params: Promise<{ id
             observacao: r.observacao,
           }))}
           exclusoesIniciais={exclusoes}
+          notasPorItem={notasPorItem}
         />
       </div>
     </main>
