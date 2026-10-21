@@ -270,3 +270,27 @@ export async function statusEnvioTiktok(token: string, publishId: string): Promi
   const d = await chamar('post/publish/status/fetch/', token, { metodo: 'POST', corpo: { publish_id: publishId } });
   return { status: String(d.status ?? ''), motivo: String(d.fail_reason ?? '') };
 }
+
+/** Foto por link: o TikTok busca e confere depois do init, e a recusa
+ *  (ex.: picture_size_check_failed) só aparece na situação. Espera sair do
+ *  PROCESSING_* por até `ms` e devolve a última situação lida. */
+export async function esperarEnvioTiktok(
+  token: string,
+  publishId: string,
+  ms = 20_000,
+): Promise<{ status: string; motivo: string }> {
+  const ate = Date.now() + ms;
+  let ultimo = { status: '', motivo: '' };
+  for (;;) {
+    try {
+      ultimo = await statusEnvioTiktok(token, publishId);
+    } catch {
+      // segue tentando até o prazo
+    }
+    if (ultimo.status && !ultimo.status.startsWith('PROCESSING')) break;
+    if (Date.now() + 2500 > ate) break;
+    await new Promise((ok) => setTimeout(ok, 2500));
+  }
+  console.log('[marketing/tiktok] envio', publishId, ultimo.status || '(sem situação)', ultimo.motivo);
+  return ultimo;
+}

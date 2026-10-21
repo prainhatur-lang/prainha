@@ -4,6 +4,7 @@
 // privado marketing-midia.
 
 import { createAdminClient } from '@/lib/supabase/server';
+import { fotoParaTiktok } from '@/lib/marketing/foto-tiktok';
 import { BUCKET_MARKETING, lerLinkArquivo } from '@/lib/marketing/midia-link';
 
 export const dynamic = 'force-dynamic';
@@ -24,6 +25,24 @@ export async function GET(req: Request) {
     return new Response('o depósito não respondeu', { status: 502 });
   }
   if (!r.ok || !r.body) return new Response('arquivo não encontrado', { status: 404 });
+  // Foto pro TikTok: no máximo 1080p em JPEG. Se a conversão falhar, repassa como veio.
+  if ((r.headers.get('content-type') ?? '').startsWith('image/')) {
+    try {
+      const jpeg = await fotoParaTiktok(new Uint8Array(await r.arrayBuffer()));
+      return new Response(new Uint8Array(jpeg), {
+        status: 200,
+        headers: { 'content-type': 'image/jpeg', 'content-length': String(jpeg.length), 'cache-control': 'private, max-age=600' },
+      });
+    } catch (e) {
+      console.error('[marketing/arquivo] não converti a foto', (e as Error).message);
+      try {
+        r = await fetch(data.signedUrl, { cache: 'no-store', signal: AbortSignal.timeout(30000) });
+      } catch {
+        return new Response('o depósito não respondeu', { status: 502 });
+      }
+      if (!r.ok || !r.body) return new Response('arquivo não encontrado', { status: 404 });
+    }
+  }
   const headers: Record<string, string> = {
     'content-type': r.headers.get('content-type') ?? 'application/octet-stream',
     'cache-control': 'private, max-age=600',

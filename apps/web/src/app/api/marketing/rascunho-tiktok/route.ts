@@ -16,7 +16,7 @@ import {
   ErroTiktok,
   rascunhoFotosTiktok,
   rascunhoVideoTiktok,
-  statusEnvioTiktok,
+  esperarEnvioTiktok, statusEnvioTiktok,
   temRascunhoTiktok,
 } from '@/lib/marketing/tiktok';
 import { cdnDaMeta, linkMidia } from '@/lib/marketing/midia-link';
@@ -85,7 +85,9 @@ export async function POST(req: Request) {
     let status = '';
     let motivo = '';
     try {
-      ({ status, motivo } = await statusEnvioTiktok(tt.accessToken, publishId));
+      // foto: o TikTok busca o link e só depois diz se aceitou — espera até 20 s
+      ({ status, motivo } =
+        tipo === 'fotos' ? await esperarEnvioTiktok(tt.accessToken, publishId) : await statusEnvioTiktok(tt.accessToken, publishId));
     } catch {
       // sem situação: o envio já foi aceito
     }

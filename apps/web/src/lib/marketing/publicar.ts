@@ -19,7 +19,7 @@ import {
   situacaoContainerInstagram,
   temPublicarInstagram,
 } from './instagram';
-import { ErroTiktok, rascunhoFotosTiktok, rascunhoVideoTiktok, statusEnvioTiktok, temRascunhoTiktok } from './tiktok';
+import { ErroTiktok, esperarEnvioTiktok, rascunhoFotosTiktok, rascunhoVideoTiktok, statusEnvioTiktok, temRascunhoTiktok } from './tiktok';
 import { BUCKET_MARKETING, linkArquivo } from './midia-link';
 
 const T = schema.marketingPost;
@@ -119,7 +119,9 @@ async function noTiktok(p: PostMarketing, base: string): Promise<ResultadoRede> 
     obs = 'Fotos com a legenda na caixa de entrada do TikTok. Abra o app, escolha a música e publique.';
   }
   try {
-    const { status, motivo } = await statusEnvioTiktok(tt.accessToken, publishId);
+    const { status, motivo } = video
+      ? await statusEnvioTiktok(tt.accessToken, publishId)
+      : await esperarEnvioTiktok(tt.accessToken, publishId);
     if (status === 'FAILED') return { estado: 'erro', erro: `O TikTok recusou o envio (${motivo || 'sem motivo'}).` };
   } catch {
     // sem situação: o envio já foi aceito
