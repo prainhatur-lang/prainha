@@ -388,6 +388,10 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
                 ⚠ Tem DANFE? Então <b>é nota fiscal</b> — use o caminho da esquerda, senão a compra entra
                 duas vezes.
               </p>
+              <p className="mt-2 rounded-md bg-white/70 px-2 py-1 text-[11px] text-emerald-900">
+                🛠 <b>Serviço</b> (aluguel de espaço, andaime, conserto, manutenção de computador): mesmo botão
+                📸. Recibo ou nota de serviço não tem produto pra vincular — vai direto pro contas a pagar.
+              </p>
             </div>
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-800">
               <p className="text-sm font-semibold">🔁 Veio de outra casa</p>

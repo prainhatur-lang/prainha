@@ -22,11 +22,13 @@ import {
   catalogoDaFilial,
   chaveDoPedido,
   fornecedorDoServico,
+  garantirFornecedorDoServico,
   gravarNotaServico,
   gravarPedido,
   hashArquivo,
   lerPedido,
   lerPedidoPaginas,
+  servicoJaLancado,
 } from '@/lib/pedido-sem-nota';
 
 export const dynamic = 'force-dynamic';
@@ -166,7 +168,13 @@ export async function POST(req: Request) {
     // Nota de serviço (NFS-e): sem insumo, vai direto pro contas a pagar.
     if (e instanceof NotaServicoLida) {
       const s = e.lido;
-      if (!fornecedorDoServico(s, cat)) {
+      if (!(Number(s.total) > 0)) {
+        return NextResponse.json({ error: 'é uma nota de serviço, mas não deu pra ler o valor total' }, { status: 422 });
+      }
+      // Prestador fora do cadastro (recibo de aluguel, andaime, conserto…):
+      // copia das outras casas pelo CPF/CNPJ ou cadastra pelo nome do recibo.
+      const fornServico = fornecedorDoServico(s, cat) ?? (await garantirFornecedorDoServico(filialId, s, cat));
+      if (!fornServico) {
         return NextResponse.json(
           {
             error: `é uma nota de serviço de ${s.fornecedorNome ?? 'fornecedor não identificado'}${s.fornecedorCnpj ? ` (CNPJ ${s.fornecedorCnpj})` : ''}, mas esse fornecedor não está no cadastro desta casa — cadastre em Cadastros → Fornecedores e envie de novo`,
@@ -174,8 +182,17 @@ export async function POST(req: Request) {
           { status: 422 },
         );
       }
-      if (!(Number(s.total) > 0)) {
-        return NextResponse.json({ error: 'é uma nota de serviço, mas não deu pra ler o valor total' }, { status: 422 });
+      // Mesmo serviço já lançado (outra foto do mesmo recibo): não cria 2ª conta.
+      const jaLancado = await servicoJaLancado(filialId, fornServico.id, s);
+      if (jaLancado) {
+        return NextResponse.json({
+          ok: true,
+          id: jaLancado.id,
+          duplicada: true,
+          servico: true,
+          emitNome: jaLancado.emitNome,
+          lancadoEm: jaLancado.lancadoEm,
+        });
       }
       const pathServico = `pedidos-sem-nota/${filialId}/${hash}.${extOf(mime)}`;
       const supaServico = await createAdminClient();
@@ -185,7 +202,15 @@ export async function POST(req: Request) {
       if (upServico.error) {
         return NextResponse.json({ error: `storage: ${upServico.error.message}` }, { status: 500 });
       }
-      const rs = await gravarNotaServico({ filialId, lido: s, cat, hash, storagePath: pathServico, usuarioId: user.id });
+      const rs = await gravarNotaServico({
+        filialId,
+        lido: s,
+        cat,
+        hash,
+        storagePath: pathServico,
+        usuarioId: user.id,
+        fornecedor: fornServico,
+      });
       return NextResponse.json({ ok: true, servico: true, ...rs });
     }
     return NextResponse.json({ error: (e as Error).message }, { status: 422 });

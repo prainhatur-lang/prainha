@@ -86,6 +86,16 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
         detalhes: [],
       };
     }
+    if (d.duplicada && d.servico) {
+      // Mesmo serviço (prestador + número, ou valor + data) já estava lançado.
+      return {
+        arquivo: f.name,
+        ok: true,
+        titulo: `Este serviço já tinha sido lançado${d.lancadoEm ? ` em ${d.lancadoEm}` : ''}${d.emitNome ? ` — ${d.emitNome}` : ''}`,
+        detalhes: ['não foi criada outra conta a pagar — abra a nota pra conferir'],
+        notaId: d.id,
+      };
+    }
     if (d.duplicada) {
       return { arquivo: f.name, ok: true, titulo: 'Este pedido já tinha sido enviado', detalhes: [], notaId: d.id };
     }
@@ -122,7 +132,11 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
         det.push(`${d.contasAproveitadas} conta(s) a pagar já existia(m) com esse valor — não foi criada outra`);
       }
       if (d.semPrazo) det.push('a nota não traz parcelas que fechem com o total — ficou uma conta só; ajuste no financeiro');
+      if (d.fornecedorNovo) det.push(`${d.emitNome ?? 'prestador'} não estava no cadastro desta casa — cadastrado agora`);
+      if (d.categoriaNome) det.push(`categoria: ${d.categoriaNome}`);
+      if (d.chavePix) det.push(`chave Pix do recibo: ${d.chavePix} (guardada no fornecedor e na conta)`);
       if (!d.categoriaId) det.push('conta a pagar ficou sem categoria (fornecedor ainda não tem histórico)');
+      det.push('serviço não tem produto pra vincular — não mexe no estoque');
       return {
         arquivo: f.name,
         ok: true,
@@ -215,6 +229,11 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
       <p className="mt-0.5 text-xs text-slate-500">
         Fotografe o pedido ou romaneio do fornecedor. O sistema lê os itens e os valores, dá entrada dos insumos no
         estoque e cria a conta a pagar.
+      </p>
+      <p className="mt-1 text-xs text-slate-500">
+        🛠 <strong>Serviço também entra aqui</strong> — recibo ou nota de aluguel de espaço, locação de andaime ou
+        equipamento, conserto e manutenção (computador, ar, freezer), mão de obra, frete. Não tem produto pra vincular:
+        vira direto conta a pagar, com a chave Pix do recibo e o prestador cadastrado se ainda não existir.
       </p>
 
       <div className="mt-4 space-y-3">

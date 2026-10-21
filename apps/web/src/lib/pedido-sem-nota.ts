@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { hojeBr } from '@/lib/datas';
+import { resolverFornecedorParaNota } from '@/lib/match-fornecedor';
 
 export const ORIGEM_PEDIDO_FOTO = 'PEDIDO_FOTO';
 export const BUCKET_PEDIDO = 'producao-fotos';
@@ -102,7 +103,12 @@ Exceção — NOTA DE SERVIÇO (NFS-e de prefeitura ou nota/recibo de prestaçã
 - O fornecedor é o PRESTADOR do serviço — nunca o tomador (o tomador é o próprio restaurante).
 - "numero" = número da nota; "data" = data de emissão; "descricao" = o serviço em poucas palavras, como está na discriminação.
 - "total" = valor total do serviço / valor total cobrado, como está ESCRITO.
-- "vencimentos": mesmas regras do pedido. Sinal/entrada vence na data de emissão. "Restante em N boletos" = o restante dividido em N partes iguais, com a diferença de centavos na última; prazo em dias conta da emissão. A soma tem que dar o total. Sem condição de pagamento escrita: lista vazia.`;
+- "vencimentos": mesmas regras do pedido. Sinal/entrada vence na data de emissão. "Restante em N boletos" = o restante dividido em N partes iguais, com a diferença de centavos na última; prazo em dias conta da emissão. A soma tem que dar o total. Sem condição de pagamento escrita: lista vazia.
+- RECIBO DE SERVIÇO também entra aqui, mesmo sem nota fiscal, escrito à mão ou de pessoa física (CPF): aluguel de espaço/salão/casa, locação de equipamento (andaime, betoneira, gerador, som, mesas e cadeiras, toldo), manutenção/conserto (computador, impressora, ar-condicionado, freezer, máquina, elétrica, hidráulica), mão de obra (pedreiro, pintor, eletricista, encanador), diária, frete/carreto, limpeza, dedetização, consultoria. O que manda é: cobra um SERVIÇO ou USO de algo, e não entrega mercadoria pro estoque. Recibo de compra de mercadoria (peixe, verdura, bebida, material) continua sendo pedido.
+- Recibo sem número: "numero": null. Prestador pessoa física: "fornecedorCnpj" = o CPF (11 dígitos) se estiver escrito; senão null. "fornecedorNome" = o nome de quem RECEBE o valor (quem assina "recebi de").
+- "descricao": o serviço e, se houver, o período ou o objeto — ex.: "Locação de andaime 01/10 a 15/10", "Aluguel do espaço — outubro/2026", "Manutenção do computador do caixa".
+- "chavePix": a chave Pix escrita no papel (CPF, CNPJ, telefone, e-mail ou aleatória), exatamente como está; sem chave: null. "pixFavorecido": o nome do titular da chave quando for diferente do fornecedor; senão null.
+- "categoria": o código C… da lista "Plano de contas de despesa" que melhor descreve o serviço (ex.: aluguel de máquina/andaime → algo como "Aluguel de máquinas"; conserto de computador → "Tecnologia"/"Manutenção de máquinas"). Sem lista ou sem nenhuma que sirva: null.`;
 
 type Bloco =
   | { type: 'text'; text: string }
@@ -180,6 +186,12 @@ export interface ServicoLido {
   descricao: string | null;
   total: number | null;
   vencimentos: Array<{ data: string; valor: number }>;
+  /** Chave Pix escrita no recibo (como está). */
+  chavePix?: string | null;
+  /** Titular da chave quando não é o próprio prestador. */
+  pixFavorecido?: string | null;
+  /** Índice (0-based) na lista de categorias de despesa que a IA sugeriu. */
+  categoriaIdx?: number | null;
 }
 
 /** A leitura achou uma nota de serviço em vez de pedido — a rota trata à parte. */
@@ -192,7 +204,7 @@ export class NotaServicoLida extends Error {
   }
 }
 
-function normalizarServico(o: Record<string, unknown>, qtdFornecedores: number): ServicoLido {
+function normalizarServico(o: Record<string, unknown>, qtdFornecedores: number, qtdCategorias = 0): ServicoLido {
   const vencimentos: ServicoLido['vencimentos'] = [];
   for (const v of Array.isArray(o.vencimentos) ? o.vencimentos : []) {
     if (!Array.isArray(v)) continue;
@@ -210,14 +222,23 @@ function normalizarServico(o: Record<string, unknown>, qtdFornecedores: number):
     descricao: typeof o.descricao === 'string' && o.descricao.trim() ? o.descricao.trim().slice(0, 120) : null,
     total: num(o.total),
     vencimentos,
+    chavePix: typeof o.chavePix === 'string' && o.chavePix.trim() ? o.chavePix.trim().slice(0, 100) : null,
+    pixFavorecido:
+      typeof o.pixFavorecido === 'string' && o.pixFavorecido.trim() ? o.pixFavorecido.trim().slice(0, 200) : null,
+    categoriaIdx: idx(o.categoria, 'C', qtdCategorias),
   };
 }
 
 /** Normaliza o JSON da IA e completa o número que faltar em cada item. */
-export function normalizarPedido(bruto: unknown, qtdProdutos: number, qtdFornecedores: number): PedidoLido {
+export function normalizarPedido(
+  bruto: unknown,
+  qtdProdutos: number,
+  qtdFornecedores: number,
+  qtdCategorias = 0,
+): PedidoLido {
   const o = (bruto ?? {}) as Record<string, unknown>;
   if (o.pedido === false && o.servico === true) {
-    throw new NotaServicoLida(normalizarServico(o, qtdFornecedores));
+    throw new NotaServicoLida(normalizarServico(o, qtdFornecedores, qtdCategorias));
   }
   const chaveCedo = chaveDoJson(o);
   const cnpjCedo = typeof o.fornecedorCnpj === 'string' ? o.fornecedorCnpj.replace(/\D/g, '') : '';
@@ -307,6 +328,8 @@ export class DanfeLida extends Error {
 export interface CatalogoPedido {
   produtos: Array<{ id: string; nome: string; unidade: string }>;
   fornecedores: Array<{ id: string; nome: string; cnpj: string | null }>;
+  /** Plano de contas de despesa da casa — a IA sugere a categoria do serviço. */
+  categorias?: Array<{ id: string; nome: string }>;
 }
 
 /** Insumos e fornecedores da casa — o que a IA recebe pra reconhecer. */
@@ -373,7 +396,21 @@ export async function catalogoDaFilial(filialId: string): Promise<CatalogoPedido
     }
     return partes.join(' / ');
   };
+  // Plano de contas de despesa (a Mar veio do Consumer com tipo 'P').
+  const categorias = await db
+    .select({ id: schema.categoriaConta.id, nome: schema.categoriaConta.descricao })
+    .from(schema.categoriaConta)
+    .where(
+      and(
+        eq(schema.categoriaConta.filialId, filialId),
+        isNull(schema.categoriaConta.excluidaEm),
+        inArray(schema.categoriaConta.tipo, ['DESPESA', 'P']),
+        isNotNull(schema.categoriaConta.descricao),
+      ),
+    )
+    .orderBy(schema.categoriaConta.descricao);
   return {
+    categorias: categorias.map((c) => ({ id: c.id, nome: (c.nome ?? '').trim() })).filter((c) => c.nome),
     produtos: produtos.map((p) => ({
       id: p.id,
       nome: p.descricaoCompra && p.descricaoCompra !== p.nome ? `${p.nome} (${p.descricaoCompra})` : (p.nome ?? ''),
@@ -413,11 +450,12 @@ export async function lerPedidoPaginas(
       : '';
   const listaForn = cat.fornecedores.map((f, i) => `F${i + 1}|${f.nome}${f.cnpj ? `|${f.cnpj}` : ''}`).join('\n');
   const listaProd = cat.produtos.map((p, i) => `P${i + 1}|${p.nome}|${p.unidade}`).join('\n');
+  const listaCat = (cat.categorias ?? []).map((c, i) => `C${i + 1}|${c.nome}`).join('\n');
   const blocos: Bloco[] = [
     ...arquivos,
     {
       type: 'text',
-      text: `Arquivo: ${nome}. Hoje é ${hojeBr()}.${varias}\n\nFornecedores cadastrados:\n${listaForn || '(nenhum)'}\n\nCatálogo de insumos:\n${listaProd || '(nenhum)'}\n\nDevolva o JSON do pedido.`,
+      text: `Arquivo: ${nome}. Hoje é ${hojeBr()}.${varias}\n\nFornecedores cadastrados:\n${listaForn || '(nenhum)'}\n\nCatálogo de insumos:\n${listaProd || '(nenhum)'}\n\nPlano de contas de despesa (só pra nota/recibo de serviço):\n${listaCat || '(nenhum)'}\n\nDevolva o JSON do pedido.`,
     },
   ];
 
@@ -440,7 +478,7 @@ export async function lerPedidoPaginas(
   } catch {
     throw new Error('a IA devolveu um JSON quebrado — envie a foto de novo');
   }
-  return normalizarPedido(json, cat.produtos.length, cat.fornecedores.length);
+  return normalizarPedido(json, cat.produtos.length, cat.fornecedores.length, cat.categorias?.length ?? 0);
 }
 
 // ───────────────────────── gravação ─────────────────────────
@@ -695,6 +733,109 @@ export function fornecedorDoServico(lido: ServicoLido, cat: CatalogoPedido): Cat
   return porDoc ?? (lido.fornecedorIdx != null ? cat.fornecedores[lido.fornecedorIdx] : undefined) ?? null;
 }
 
+type FornecedorServico = CatalogoPedido['fornecedores'][number] & { novo?: boolean };
+
+/**
+ * Prestador que ainda não está no cadastro da casa (recibo de aluguel, andaime,
+ * conserto…): copia das outras casas pelo CPF/CNPJ ou cria um novo — fora da
+ * lista de compras (ativo_compras false), codigo_externo NULL = criado na nuvem.
+ * Sem nome legível devolve null e a rota mantém o aviso de cadastrar na mão.
+ */
+export async function garantirFornecedorDoServico(
+  filialId: string,
+  lido: ServicoLido,
+  cat: CatalogoPedido,
+): Promise<FornecedorServico | null> {
+  const doCatalogo = fornecedorDoServico(lido, cat);
+  if (doCatalogo) return doCatalogo;
+  const doc = lido.fornecedorCnpj;
+  if (doc) {
+    // Mesma pessoa/empresa em outra casa → cópia nesta (sem criar do zero).
+    const copiado = await resolverFornecedorParaNota({ filialId, emitCnpj: doc, emitNome: null });
+    if (copiado) {
+      const [f] = await db
+        .select({ id: schema.fornecedor.id, nome: schema.fornecedor.nome, cnpj: schema.fornecedor.cnpjOuCpf })
+        .from(schema.fornecedor)
+        .where(eq(schema.fornecedor.id, copiado))
+        .limit(1);
+      if (f) return { id: f.id, nome: f.nome ?? lido.fornecedorNome ?? '', cnpj: f.cnpj, novo: true };
+    }
+  }
+  const nome = lido.fornecedorNome?.trim();
+  if (!nome) return null;
+  if (!doc) {
+    // Sem documento: mesmo nome já cadastrado nesta casa (a IA pode ter perdido).
+    const [mesmoNome] = await db
+      .select({ id: schema.fornecedor.id, nome: schema.fornecedor.nome, cnpj: schema.fornecedor.cnpjOuCpf })
+      .from(schema.fornecedor)
+      .where(
+        and(
+          eq(schema.fornecedor.filialId, filialId),
+          isNull(schema.fornecedor.dataDelete),
+          sql`(upper(trim(${schema.fornecedor.nome})) = upper(${nome}) OR upper(trim(${schema.fornecedor.razaoSocial})) = upper(${nome}))`,
+        ),
+      )
+      .limit(1);
+    if (mesmoNome) return { id: mesmoNome.id, nome: mesmoNome.nome ?? nome, cnpj: mesmoNome.cnpj };
+  }
+  const [novo] = await db
+    .insert(schema.fornecedor)
+    .values({
+      filialId,
+      codigoExterno: null,
+      cnpjOuCpf: doc,
+      nome: nome.slice(0, 200),
+      razaoSocial: nome.slice(0, 200),
+      ativoCompras: false,
+      chavePix: lido.chavePix ?? null,
+      pixFavorecido: lido.pixFavorecido ?? null,
+    })
+    .returning({ id: schema.fornecedor.id });
+  return novo ? { id: novo.id, nome, cnpj: doc, novo: true } : null;
+}
+
+/**
+ * Serviço que já entrou nesta casa (outra foto do mesmo recibo, ou o mesmo PDF
+ * reenviado com outro tamanho): mesmo prestador e mesmo número; sem número,
+ * mesmo valor e mesma data. Evita duas contas a pagar pro mesmo serviço.
+ */
+export async function servicoJaLancado(
+  filialId: string,
+  fornecedorId: string,
+  lido: ServicoLido,
+): Promise<{ id: string; emitNome: string | null; lancadoEm: string | null } | null> {
+  const numero = lido.numero && /^\d{1,9}$/.test(lido.numero) ? Number(lido.numero) : null;
+  const total = lido.total != null && lido.total > 0 ? r2(lido.total) : null;
+  const filtro =
+    numero != null
+      ? eq(schema.notaCompra.numero, numero)
+      : total != null && lido.data
+        ? and(
+            eq(schema.notaCompra.valorTotal, total.toFixed(2)),
+            sql`(${schema.notaCompra.dataEmissao} AT TIME ZONE 'America/Sao_Paulo')::date = ${lido.data}::date`,
+          )
+        : null;
+  if (!filtro) return null;
+  const [ja] = await db
+    .select({
+      id: schema.notaCompra.id,
+      emitNome: schema.notaCompra.emitNome,
+      lancadoEm: sql<string | null>`to_char(${schema.notaCompra.dataEntrada} AT TIME ZONE 'America/Sao_Paulo', 'DD/MM')`,
+    })
+    .from(schema.notaCompra)
+    .where(
+      and(
+        eq(schema.notaCompra.filialId, filialId),
+        eq(schema.notaCompra.fornecedorId, fornecedorId),
+        eq(schema.notaCompra.origemImportacao, ORIGEM_NOTA_SERVICO),
+        filtro,
+      ),
+    )
+    .orderBy(schema.notaCompra.dataEntrada)
+    .limit(1);
+  return ja ?? null;
+}
+
 export interface ResultadoServico {
   id: string;
   emitNome: string | null;
@@ -705,6 +846,12 @@ export interface ResultadoServico {
   categoriaId: string | null;
   /** true quando o papel não trazia prazo que fechasse com o total — ficou 1 parcela */
   semPrazo: boolean;
+  /** Prestador entrou no cadastro agora (não existia nesta casa). */
+  fornecedorNovo?: boolean;
+  /** Nome da categoria usada (do histórico do fornecedor ou sugerida pela IA). */
+  categoriaNome?: string | null;
+  /** Chave Pix lida no recibo. */
+  chavePix?: string | null;
 }
 
 /**
@@ -720,9 +867,11 @@ export async function gravarNotaServico(opts: {
   hash: string;
   storagePath: string;
   usuarioId: string;
+  /** Já resolvido pela rota (inclusive cadastrado agora); senão sai do catálogo. */
+  fornecedor?: FornecedorServico | null;
 }): Promise<ResultadoServico> {
   const { filialId, lido, cat, hash, storagePath, usuarioId } = opts;
-  const fornecedor = fornecedorDoServico(lido, cat);
+  const fornecedor: FornecedorServico | null = opts.fornecedor ?? fornecedorDoServico(lido, cat);
   if (!fornecedor) throw new Error('fornecedor da nota de serviço não está no cadastro desta casa');
   const total = lido.total != null && lido.total > 0 ? r2(lido.total) : 0;
   if (!(total > 0)) throw new Error('não deu pra ler o valor total da nota de serviço');
@@ -792,9 +941,40 @@ export async function gravarNotaServico(opts: {
     .groupBy(schema.contaPagar.categoriaId)
     .orderBy(desc(sql`count(*)`))
     .limit(1);
-  const categoriaId = cat1?.categoriaId ?? null;
+  // Sem histórico: a categoria que a IA sugeriu do plano de contas da casa.
+  const sugerida = lido.categoriaIdx != null ? cat.categorias?.[lido.categoriaIdx] : undefined;
+  const categoriaId = cat1?.categoriaId ?? sugerida?.id ?? null;
+  let categoriaNome: string | null = null;
+  if (categoriaId) {
+    categoriaNome =
+      cat.categorias?.find((c) => c.id === categoriaId)?.nome ??
+      (
+        await db
+          .select({ d: schema.categoriaConta.descricao })
+          .from(schema.categoriaConta)
+          .where(eq(schema.categoriaConta.id, categoriaId))
+          .limit(1)
+      )[0]?.d ??
+      null;
+  }
 
-  const base = `NFS-e${lido.numero ? ` nº ${lido.numero}` : ''}${lido.descricao ? ` — ${lido.descricao}` : ''}`;
+  // Chave Pix do recibo: guarda no fornecedor só se ele ainda não tiver.
+  if (lido.chavePix) {
+    await db
+      .update(schema.fornecedor)
+      .set({
+        chavePix: sql`coalesce(nullif(${schema.fornecedor.chavePix}, ''), ${lido.chavePix})`,
+        pixFavorecido: sql`coalesce(nullif(${schema.fornecedor.pixFavorecido}, ''), ${lido.pixFavorecido ?? null})`,
+      })
+      .where(eq(schema.fornecedor.id, fornecedor.id));
+  }
+  const observacao = lido.chavePix
+    ? `Pix do recibo: ${lido.chavePix}${lido.pixFavorecido ? ` (${lido.pixFavorecido})` : ''}`
+    : null;
+
+  // Recibo sem nota fiscal não é NFS-e: a descrição diz "Recibo".
+  const rotulo = lido.numero ? 'NFS-e' : 'Recibo de serviço';
+  const base = `${rotulo}${lido.numero ? ` nº ${lido.numero}` : ''}${lido.descricao ? ` — ${lido.descricao}` : ''}`;
   let contasCriadas = 0;
   let contasAproveitadas = 0;
   for (let i = 0; i < duplicatas.length; i++) {
@@ -834,6 +1014,7 @@ export async function gravarNotaServico(opts: {
           dataVencimento: d.dataVencimento,
           valor: d.valor,
           descricao: duplicatas.length > 1 ? `${base} — parcela ${i + 1}/${duplicatas.length}` : base,
+          observacao,
         })
         .returning({ id: schema.contaPagar.id });
       contaId = novaConta?.id ?? null;
@@ -853,5 +1034,8 @@ export async function gravarNotaServico(opts: {
     contasAproveitadas,
     categoriaId,
     semPrazo: !prazoFecha,
+    fornecedorNovo: !!fornecedor.novo,
+    categoriaNome,
+    chavePix: lido.chavePix ?? null,
   };
 }
