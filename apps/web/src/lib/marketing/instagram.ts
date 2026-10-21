@@ -25,6 +25,14 @@ export const ESCOPOS_INSTAGRAM = [
 
 const env = (n: string) => (process.env[n] ?? '').trim();
 
+// Opcional: INSTAGRAM_ESCOPOS (separados por vírgula) quando o app da Meta
+// ainda não tem todas as permissões (20/10: comentários/mensagens/publicar
+// davam "Ocorreu um erro" ao adicionar). Sem a env, pede as cinco.
+function escoposInstagram(): string[] {
+  const e = env('INSTAGRAM_ESCOPOS');
+  return e ? e.split(/[,\s]+/).filter(Boolean) : ESCOPOS_INSTAGRAM;
+}
+
 export function instagramConfigurado(): boolean {
   return Boolean(env('INSTAGRAM_APP_ID') && env('INSTAGRAM_APP_SECRET'));
 }
@@ -44,7 +52,7 @@ export function urlAutorizacaoInstagram(redirectUri: string, state: string): str
     client_id: env('INSTAGRAM_APP_ID'),
     redirect_uri: redirectUri,
     response_type: 'code',
-    scope: ESCOPOS_INSTAGRAM.join(','),
+    scope: escoposInstagram().join(','),
     state,
     // conta errada logada no navegador: deixa trocar
     force_reauth: 'true',
