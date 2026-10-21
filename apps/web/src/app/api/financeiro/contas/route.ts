@@ -11,7 +11,11 @@
 //     fornecedorId?: uuid,
 //     categoriaId?: uuid,              // categoria OU subcategoria do plano
 //     observacao?: string,
+//     forcar?: boolean,               // lança mesmo com o aviso "nota de outra casa"
 //   }
+//
+// 409 { casaErrada } quando o histórico/observação traz o número de uma NF-e
+// do mesmo fornecedor que está em OUTRA casa (lib/conta-casa-errada, 21/10).
 //
 // origem='MANUAL'; codigo_externo fica NULL (não existe no Consumer).
 
@@ -22,6 +26,7 @@ import { db, schema } from '@concilia/db';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { hojeBr } from '@/lib/datas';
 import { garantirFornecedorNaFilial } from '@/lib/fornecedor-unico';
+import { notaDeOutraCasa } from '@/lib/conta-casa-errada';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,6 +41,7 @@ const Body = z.object({
   fornecedorId: z.string().uuid().nullable().optional(),
   categoriaId: z.string().uuid().nullable().optional(),
   observacao: z.string().trim().max(1000).nullable().optional(),
+  forcar: z.boolean().optional(),
 });
 
 export async function POST(req: Request) {
@@ -96,6 +102,25 @@ export async function POST(req: Request) {
       } catch {
         return NextResponse.json({ error: 'fornecedor não é da filial' }, { status: 400 });
       }
+    }
+  }
+
+  // Trava "nota de outra casa" — só avisa; com forcar=true lança igual.
+  if (!b.forcar) {
+    const outra = await notaDeOutraCasa({
+      filialId: b.filialId,
+      fornecedorId,
+      textos: [b.descricao, b.observacao],
+    }).catch(() => null);
+    if (outra) {
+      const v = Number(outra.valorTotal).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      return NextResponse.json(
+        {
+          error: `A NF-e ${outra.numero} de ${outra.fornecedor ?? 'este fornecedor'} (R$ ${v}) está na ${outra.casa}. Conta de nota de outra casa vira despesa em dobro: lance lá, ou confirme se esta casa pagou mesmo.`,
+          casaErrada: outra,
+        },
+        { status: 409 },
+      );
     }
   }
 

@@ -252,22 +252,37 @@ export function NovaContaForm({
     }
     setSalvando(true);
     try {
-      const r = await fetch('/api/financeiro/contas', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          filialId,
-          descricao: descricao.trim(),
-          valor: v,
-          dataVencimento,
-          dataLancamento,
-          dataPagamento: status === 'PAGA' ? dataPagamento : null,
-          fornecedorId: fornecedorId || null,
-          categoriaId,
-          observacao: observacao.trim() || null,
-        }),
-      });
-      const d = await r.json().catch(() => ({}));
+      const enviar = (forcar: boolean) =>
+        fetch('/api/financeiro/contas', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            filialId,
+            descricao: descricao.trim(),
+            valor: v,
+            dataVencimento,
+            dataLancamento,
+            dataPagamento: status === 'PAGA' ? dataPagamento : null,
+            fornecedorId: fornecedorId || null,
+            categoriaId,
+            observacao: observacao.trim() || null,
+            ...(forcar ? { forcar: true } : {}),
+          }),
+        });
+      let r = await enviar(false);
+      let d = await r.json().catch(() => ({}));
+      // Nota de outra casa (21/10/2026): pergunta antes; confirmando, lança igual.
+      if (r.status === 409 && d.casaErrada) {
+        const ok = window.confirm(
+          `⚠️ ${d.error}\n\nLançar nesta casa mesmo assim?`,
+        );
+        if (!ok) {
+          setErro(d.error);
+          return;
+        }
+        r = await enviar(true);
+        d = await r.json().catch(() => ({}));
+      }
       if (!r.ok) {
         setErro(d.error ?? `HTTP ${r.status}`);
         return;
