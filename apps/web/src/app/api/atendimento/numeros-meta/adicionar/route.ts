@@ -55,7 +55,12 @@ export async function POST(request: Request) {
     if (!waba) return NextResponse.json({ error: 'Não achei a conta do WhatsApp na Meta.' }, { status: 502 });
 
     const completo = `55${digitos}`;
-    const jaNaConta = (await numerosDaWaba(waba)).find((n) => n.digitos === completo);
+    // A Meta mostra celular sem o 9 da frente (+55 79 9981-2578 pra quem digitou
+    // 79 99981-2578) — sem isso o número que já estava na conta não era achado e
+    // a rota tentava criar de novo (Prainha Mar 20/10, erro 100).
+    const jaNaConta = (await numerosDaWaba(waba)).find(
+      (n) => n.digitos === completo || semNoveDoCelular(n.digitos) === semNoveDoCelular(completo),
+    );
     let phoneNumberId = jaNaConta?.id ?? '';
     if (!phoneNumberId) {
       const r = await adicionarNumeroNaWaba(waba, '55', digitos, nome);
@@ -106,4 +111,9 @@ export async function POST(request: Request) {
   }
 
   return NextResponse.json({ error: 'ação desconhecida' }, { status: 400 });
+}
+
+/** 55 + DDD + 9XXXXXXXX → 55 + DDD + XXXXXXXX (pra comparar com o que a Meta mostra). */
+function semNoveDoCelular(d: string): string {
+  return d.length === 13 && d.startsWith('55') && d[4] === '9' ? d.slice(0, 4) + d.slice(5) : d;
 }
