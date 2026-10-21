@@ -12,6 +12,8 @@
 //   modo 'uma_de_n_kg'      → "c/ N" era o peso: o preço é de 1 {un} de N kg
 //   modo 'uma_de_n_un'      → "c/ N" era o que vem dentro: 1 fardo de 27 latas (dono 21/10)
 //   modo 'juntas'           → "c/ N" era mesmo N {un} juntas: a conta fica como está
+//   modo 'unidade_de_dentro'→ o número é de 1 garrafa/pacote de dentro; 1 {un} tem
+//                             qtdDentro → preço da {un} = preço × qtd (óleo 8,99 × 20, dono 21/10)
 // Só enquanto a cotação não foi aprovada.
 
 import { NextResponse } from 'next/server';
@@ -22,7 +24,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
 
 const TRAVADAS = new Set(['APROVADA', 'CONCLUIDA', 'CANCELADA']);
-type Modo = 'peso' | 'preco_da_unidade' | 'uma_de_n_kg' | 'uma_de_n_un' | 'juntas';
+type Modo = 'peso' | 'preco_da_unidade' | 'uma_de_n_kg' | 'uma_de_n_un' | 'juntas' | 'unidade_de_dentro';
 
 function fmtKg(n: number): string {
   return n.toLocaleString('pt-BR', { maximumFractionDigits: 3 });
@@ -39,7 +41,7 @@ export async function POST(
   if (semPerm) return semPerm;
 
   const { id: cotacaoId } = await params;
-  let body: { cotacaoFornecedorId?: string; cotacaoItemId?: string; modo?: Modo; pesoKg?: number };
+  let body: { cotacaoFornecedorId?: string; cotacaoItemId?: string; modo?: Modo; pesoKg?: number; qtdDentro?: number };
   try {
     body = await req.json();
   } catch {
@@ -48,11 +50,14 @@ export async function POST(
   const modo = body.modo;
   if (!body.cotacaoFornecedorId || !body.cotacaoItemId || !modo)
     return NextResponse.json({ error: 'cotacaoFornecedorId, cotacaoItemId e modo obrigatorios' }, { status: 400 });
-  if (!['peso', 'preco_da_unidade', 'uma_de_n_kg', 'uma_de_n_un', 'juntas'].includes(modo))
+  if (!['peso', 'preco_da_unidade', 'uma_de_n_kg', 'uma_de_n_un', 'juntas', 'unidade_de_dentro'].includes(modo))
     return NextResponse.json({ error: 'modo inválido' }, { status: 400 });
   const peso = Number(body.pesoKg);
   if (modo === 'peso' && (!Number.isFinite(peso) || peso <= 0 || peso > 1000))
     return NextResponse.json({ error: 'peso em kg inválido' }, { status: 400 });
+  const qtdDentro = Number(body.qtdDentro);
+  if (modo === 'unidade_de_dentro' && (!Number.isFinite(qtdDentro) || qtdDentro < 1 || qtdDentro > 1000))
+    return NextResponse.json({ error: 'quantidade de unidades inválida' }, { status: 400 });
 
   const [cot] = await db
     .select({ id: schema.cotacao.id, filialId: schema.cotacao.filialId, status: schema.cotacao.status })
@@ -118,6 +123,10 @@ export async function POST(
     fator = 1;
     norm = preco;
     rotulo = `✓ 1 ${un} de ${nAtual} kg`;
+  } else if (modo === 'unidade_de_dentro') {
+    fator = 1 / qtdDentro;
+    norm = preco * qtdDentro;
+    rotulo = `un (1 ${un} = ${fmtKg(qtdDentro)} un)`;
   } else if (modo === 'uma_de_n_un') {
     fator = 1;
     norm = preco;

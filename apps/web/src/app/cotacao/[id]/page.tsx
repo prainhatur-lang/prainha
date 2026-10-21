@@ -155,6 +155,7 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
           precoUnitarioNormalizado: schema.cotacaoRespostaItem.precoUnitarioNormalizado,
           unidadeFornecedor: schema.cotacaoRespostaItem.unidadeFornecedor,
           fatorConversao: schema.cotacaoRespostaItem.fatorConversao,
+          observacaoResp: schema.cotacaoRespostaItem.observacao,
           marcaNome: schema.marca.nome,
         })
         .from(schema.cotacaoRespostaItem)
@@ -337,7 +338,12 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
           if (r.precoUnitarioNormalizado == null) return [];
           const item = itens.find((i) => i.id === r.cotacaoItemId);
           if (!item) return [];
-          const alerta = alertaUnidadeResposta(item.unidade, r.unidadeFornecedor, Number(r.fatorConversao) || 1);
+          const alerta = alertaUnidadeResposta(
+            item.unidade,
+            r.unidadeFornecedor,
+            Number(r.fatorConversao) || 1,
+            r.observacaoResp,
+          );
           if (!alerta) return [];
           const forn = fornecedores.find((f) => f.id === r.cotacaoFornecedorId);
           return [{ id: r.id, produto: item.produtoNome, fornecedor: forn?.fornecedorNome ?? '?', alerta }];

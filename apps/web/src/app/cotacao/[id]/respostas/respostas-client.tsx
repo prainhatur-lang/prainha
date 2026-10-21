@@ -8,7 +8,7 @@
 
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { alertaUnidadeResposta } from '@/lib/cotacao-alerta-unidade';
+import { alertaUnidadeResposta, qtdDentroDaObservacao } from '@/lib/cotacao-alerta-unidade';
 
 /** Mesma normalização de marca de @/lib/cotacao-alocacao (duplicada aqui
  *  porque aquele módulo importa o driver do banco e não pode ir pro client). */
@@ -73,7 +73,7 @@ interface NotaRef {
 
 /** Resposta que não se compara com o pedido — regra em lib/cotacao-alerta-unidade. */
 function alertaUnidade(item: Item, r: Resp): string | null {
-  return alertaUnidadeResposta(item.unidade, r.embalagem, r.fator);
+  return alertaUnidadeResposta(item.unidade, r.embalagem, r.fator, r.observacao);
 }
 
 function fmtQtd(n: number): string {
@@ -247,6 +247,9 @@ export function RespostasClient(props: {
 
   // Acerto de resposta com ⚠ (preço do kg sem peso / "c/ N cx"): chave cfId:itemId.
   const [pesoDigitado, setPesoDigitado] = useState<Record<string, string>>({});
+  // "Preço da unidade de dentro" (óleo 8,99 a garrafa, cx com 20): quantas vêm na {un}.
+  const [qtdDentroDigitada, setQtdDentroDigitada] = useState<Record<string, string>>({});
+  const [abrirDentro, setAbrirDentro] = useState<Record<string, boolean>>({});
   const [ajusteStatus, setAjusteStatus] = useState<
     Record<string, { tipo: 'salvando' | 'erro'; msg?: string }>
   >({});
@@ -254,9 +257,18 @@ export function RespostasClient(props: {
   async function ajustarResposta(
     f: Forn,
     item: Item,
-    modo: 'peso' | 'preco_da_unidade' | 'uma_de_n_kg' | 'uma_de_n_un' | 'juntas',
+    modo: 'peso' | 'preco_da_unidade' | 'uma_de_n_kg' | 'uma_de_n_un' | 'juntas' | 'unidade_de_dentro',
+    qtdSugerida?: number | null,
   ) {
     const k = `${f.cfId}:${item.id}`;
+    const qtdDentro =
+      modo === 'unidade_de_dentro'
+        ? Number((qtdDentroDigitada[k] ?? (qtdSugerida ? String(qtdSugerida) : '')).trim().replace(',', '.')) || 0
+        : undefined;
+    if (modo === 'unidade_de_dentro' && !(qtdDentro! >= 1)) {
+      setAjusteStatus((p) => ({ ...p, [k]: { tipo: 'erro', msg: `digite quantas unidades vêm em 1 ${item.unidade}` } }));
+      return;
+    }
     const pesoKg = modo === 'peso' ? Number((pesoDigitado[k] ?? '').trim().replace(',', '.')) || 0 : undefined; // "2,5" ou "2.5" = 2,5 kg
     if (modo === 'peso' && !(pesoKg! > 0)) {
       setAjusteStatus((p) => ({ ...p, [k]: { tipo: 'erro', msg: `digite quantos kg tem 1 ${item.unidade}` } }));
@@ -267,7 +279,7 @@ export function RespostasClient(props: {
       const resp = await fetch(`/api/cotacao/${props.cotacaoId}/ajustar-resposta`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ cotacaoFornecedorId: f.cfId, cotacaoItemId: item.id, modo, pesoKg }),
+        body: JSON.stringify({ cotacaoFornecedorId: f.cfId, cotacaoItemId: item.id, modo, pesoKg, qtdDentro }),
       });
       const j = await resp.json().catch(() => ({}));
       if (!resp.ok) throw new Error(j.error ?? `HTTP ${resp.status}`);
@@ -276,10 +288,52 @@ export function RespostasClient(props: {
         delete novo[k];
         return novo;
       });
+      setAbrirDentro((p) => ({ ...p, [k]: false }));
       router.refresh();
     } catch (e) {
       setAjusteStatus((p) => ({ ...p, [k]: { tipo: 'erro', msg: e instanceof Error ? e.message : String(e) } }));
     }
+  }
+
+  /** Campo "1 {un} tem [N] un" → preço da {un} = preço × N. Sugere o N da observação. */
+  function caixaDentro(f: Forn, item: Item, r: Resp) {
+    const k = `${f.cfId}:${item.id}`;
+    const sugerida = qtdDentroDaObservacao(r.observacao);
+    const valor = qtdDentroDigitada[k] ?? (sugerida ? String(sugerida) : '');
+    const n = Number(valor.replace(',', '.'));
+    const ocupado = ajusteStatus[k]?.tipo === 'salvando';
+    return (
+      <div className="flex flex-col gap-0.5">
+        <div className="flex items-center gap-1 text-[10px] text-amber-900">
+          1 {item.unidade} tem
+          <input
+            inputMode="numeric"
+            placeholder="?"
+            value={valor}
+            onChange={(e) => setQtdDentroDigitada((p) => ({ ...p, [k]: e.target.value }))}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void ajustarResposta(f, item, 'unidade_de_dentro', sugerida);
+            }}
+            className="w-10 rounded border border-amber-300 px-1 py-0.5 text-[10px]"
+            title={`Quantas unidades (garrafa, pacote, lata) vêm em 1 ${item.unidade}`}
+          />
+          un
+          <button
+            type="button"
+            disabled={ocupado}
+            onClick={() => void ajustarResposta(f, item, 'unidade_de_dentro', sugerida)}
+            className="rounded border border-amber-300 bg-white px-1 py-0.5 text-[10px] text-amber-800 hover:bg-amber-50 disabled:opacity-50"
+          >
+            OK
+          </button>
+        </div>
+        {n > 1 && r.preco != null && (
+          <span className="text-[10px] text-amber-800">
+            = {brl(r.preco * n)}/{item.unidade}
+          </span>
+        )}
+      </div>
+    );
   }
 
   async function zerarResposta(f: Forn) {
@@ -628,7 +682,20 @@ export function RespostasClient(props: {
                               const nCx = (r.embalagem ?? '').match(/c\/\s*([\d.,]+)/)?.[1] ?? '';
                               return (
                                 <div className="mt-1 flex max-w-[180px] flex-col gap-1 rounded bg-amber-50 p-1">
-                                  {alerta.startsWith('preço do kg') ? (
+                                  {alerta.startsWith('preço da unidade') ? (
+                                    <>
+                                      {caixaDentro(f, item, r)}
+                                      <button
+                                        type="button"
+                                        disabled={ocupado}
+                                        onClick={() => void ajustarResposta(f, item, 'preco_da_unidade')}
+                                        className={btn}
+                                        title={`O número já é o preço da ${item.unidade} inteira`}
+                                      >
+                                        já é o preço da {item.unidade}
+                                      </button>
+                                    </>
+                                  ) : alerta.startsWith('preço do kg') ? (
                                     <>
                                       <div className="flex items-center gap-1">
                                         <input
@@ -692,6 +759,37 @@ export function RespostasClient(props: {
                                     </>
                                   )}
                                   {ocupado && <span className="text-[10px] text-slate-500">salvando…</span>}
+                                  {st?.tipo === 'erro' && (
+                                    <span className="text-[10px] font-semibold text-rose-600">⚠ {st.msg?.slice(0, 60)}</span>
+                                  )}
+                                </div>
+                              );
+                            })()}
+                            {!alerta && props.podeEditar && r.fator === 1 && (() => {
+                              const k = `${f.cfId}:${item.id}`;
+                              const st = ajusteStatus[k];
+                              if (!abrirDentro[k])
+                                return (
+                                  <button
+                                    type="button"
+                                    onClick={() => setAbrirDentro((p) => ({ ...p, [k]: true }))}
+                                    className="mt-0.5 hidden rounded border border-slate-200 px-1 py-0.5 text-[10px] text-slate-600 hover:bg-slate-50 group-hover:inline-block"
+                                    title={`O fornecedor deu o preço de 1 unidade de dentro (garrafa, pacote), não da ${item.unidade} inteira`}
+                                  >
+                                    🔧 é preço da unidade?
+                                  </button>
+                                );
+                              return (
+                                <div className="mt-1 flex max-w-[180px] flex-col gap-1 rounded bg-amber-50 p-1">
+                                  {caixaDentro(f, item, r)}
+                                  <button
+                                    type="button"
+                                    onClick={() => setAbrirDentro((p) => ({ ...p, [k]: false }))}
+                                    className="text-left text-[10px] text-slate-500 underline"
+                                  >
+                                    fechar
+                                  </button>
+                                  {st?.tipo === 'salvando' && <span className="text-[10px] text-slate-500">salvando…</span>}
                                   {st?.tipo === 'erro' && (
                                     <span className="text-[10px] font-semibold text-rose-600">⚠ {st.msg?.slice(0, 60)}</span>
                                   )}
