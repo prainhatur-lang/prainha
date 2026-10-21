@@ -176,7 +176,7 @@ function linhaReserva(r: LinhaReserva): string {
   let txt = partes.join(' · ') + (marcas.length ? ` ${marcas.join(' ')}` : '');
   const extra = [r.observacao ?? '', textoPreferencias(r.preferencias)]
     .map((x) => x.trim())
-    .filter((x) => x && !/^Reserva feita pela Nina/i.test(x));
+    .filter((x) => x && !/^Reserva feita pel[ao] \S+ \(WhatsApp\)$/i.test(x));
   if (extra.length) txt += `\n   _${corta(extra.join(' · '), 120)}_`;
   return txt;
 }

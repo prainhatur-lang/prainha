@@ -924,6 +924,17 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
   const valorAtual = typeof cfg.valorAtual === 'number' ? cfg.valorAtual : 0;
   const cancelToken = randomBytes(24).toString('hex');
 
+  // Nome da atendente da casa da reserva (20/10/2026: reserva da Prainha Mar
+  // feita pela Marina saía "feita pela Nina"). Sem config, continua "Nina".
+  const [cfgAtend] = await db
+    .select({ nome: schema.atendimentoConfig.nomeAtendente })
+    .from(schema.atendimentoConfig)
+    .where(eq(schema.atendimentoConfig.filialId, p.filialId))
+    .limit(1)
+    .catch(() => []);
+  const atendente = cfgAtend?.nome?.trim() || 'Nina';
+  const pelaAtendente = `${/o$/i.test(atendente) ? 'pelo' : 'pela'} ${atendente}`; // Otávio → "pelo"
+
   await db.insert(schema.reserva).values({
     filialId: p.filialId,
     clienteNome: nome,
@@ -938,7 +949,7 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
     mesa: mesaAlocada,
     mesaJuntada: mesaJuntadaAlocada,
     canal: 'whatsapp',
-    observacao: p.observacao?.trim() ? `${p.observacao.trim().slice(0, 1900)} (via Nina)` : 'Reserva feita pela Nina (WhatsApp)',
+    observacao: p.observacao?.trim() ? `${p.observacao.trim().slice(0, 1900)} (via ${atendente})` : `Reserva feita ${pelaAtendente} (WhatsApp)`,
     valor: String(valorAtual.toFixed(2)),
     cancelToken,
   });
