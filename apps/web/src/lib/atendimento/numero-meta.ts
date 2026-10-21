@@ -175,3 +175,99 @@ export async function registrarNumeroMeta(
     return { ok: false, erro: e instanceof Error ? e.message : String(e) };
   }
 }
+
+// ── NÚMERO NOVO NA CONTA (20/10, Prainha Mar) ────────────────────────────────
+// Adicionar o número na conta do WhatsApp (WABA), pedir o código por SMS ou
+// ligação e confirmar o código — os passos que antes só existiam no Gerenciador
+// do WhatsApp. Depois disso entra o registro com PIN de sempre (acima).
+
+type RespostaGraph = Record<string, unknown> & {
+  error?: { message?: string; code?: number; error_user_msg?: string; error_data?: { details?: string } };
+};
+
+async function chamarGraph(
+  caminho: string,
+  metodo: 'GET' | 'POST',
+  corpo?: Record<string, unknown>,
+): Promise<{ ok: true; j: RespostaGraph } | { ok: false; erro: string; codigo?: number }> {
+  if (!token()) return { ok: false, erro: 'WHATSAPP_TOKEN/META ausente' };
+  try {
+    const r = await fetch(`https://graph.facebook.com/${versao()}/${caminho}`, {
+      method: metodo,
+      headers: { Authorization: `Bearer ${token()}`, 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      ...(corpo ? { body: JSON.stringify(corpo) } : {}),
+    });
+    const j = ((await r.json().catch(() => null)) ?? {}) as RespostaGraph;
+    if (r.ok && !j.error) return { ok: true, j };
+    const e = j.error;
+    const msg = [e?.error_user_msg || e?.message, e?.error_data?.details].filter(Boolean).join(' — ');
+    return { ok: false, erro: msg || `HTTP ${r.status}`, codigo: e?.code };
+  } catch (e) {
+    return { ok: false, erro: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** A conta (WABA) dos números já ligados — sai da saúde do número. */
+export async function wabaDosNumeros(phoneNumberIds: string[]): Promise<string | null> {
+  for (const id of phoneNumberIds) {
+    const r = await chamarGraph(`${id}?fields=health_status`, 'GET');
+    if (!r.ok) continue;
+    const saude = r.j.health_status as SaudeMeta | undefined;
+    const waba = (saude?.entities ?? []).find((e) => e.entity_type === 'WABA') as { id?: string } | undefined;
+    if (waba?.id) return waba.id;
+  }
+  return null;
+}
+
+/** Números que já estão na conta: [{ id, numero (só dígitos), nome }]. */
+export async function numerosDaWaba(waba: string): Promise<Array<{ id: string; digitos: string; nome: string }>> {
+  const r = await chamarGraph(`${waba}/phone_numbers?fields=id,display_phone_number,verified_name&limit=100`, 'GET');
+  if (!r.ok) return [];
+  const data = (r.j.data as Array<{ id?: string; display_phone_number?: string; verified_name?: string }>) ?? [];
+  return data
+    .filter((n) => n.id)
+    .map((n) => ({ id: n.id!, digitos: (n.display_phone_number ?? '').replace(/\D/g, ''), nome: n.verified_name ?? '' }));
+}
+
+/** POST /<waba>/phone_numbers — devolve o phone_number_id novo. */
+export async function adicionarNumeroNaWaba(
+  waba: string,
+  ddi: string,
+  numero: string,
+  nomeExibicao: string,
+): Promise<{ ok: true; id: string } | { ok: false; erro: string }> {
+  const r = await chamarGraph(`${waba}/phone_numbers`, 'POST', {
+    cc: ddi,
+    phone_number: numero,
+    verified_name: nomeExibicao,
+  });
+  if (!r.ok) return { ok: false, erro: `Meta recusou: ${r.erro}${r.codigo ? ` (${r.codigo})` : ''}` };
+  const id = typeof r.j.id === 'string' ? r.j.id : '';
+  return id ? { ok: true, id } : { ok: false, erro: 'A Meta não devolveu o id do número.' };
+}
+
+const RECUSAS_CODIGO: Record<number, string> = {
+  136024: 'Código errado ou vencido. Peça um novo.',
+  136025: 'Código errado. Confira o SMS e digite de novo.',
+  133010: 'Este número ainda não foi adicionado na conta do WhatsApp.',
+};
+
+/** POST /<id>/request_code — manda o código de 6 dígitos por SMS ou ligação. */
+export async function pedirCodigoMeta(
+  phoneNumberId: string,
+  metodo: 'SMS' | 'VOICE',
+): Promise<{ ok: boolean; erro?: string }> {
+  const r = await chamarGraph(`${phoneNumberId}/request_code`, 'POST', { code_method: metodo, language: 'pt_BR' });
+  if (r.ok) return { ok: true };
+  const dica = r.codigo ? RECUSAS_CODIGO[r.codigo] : undefined;
+  return { ok: false, erro: dica ? `${dica} (Meta ${r.codigo}: ${r.erro})` : `Meta recusou: ${r.erro}` };
+}
+
+/** POST /<id>/verify_code — confirma o código que chegou no telefone. */
+export async function confirmarCodigoMeta(phoneNumberId: string, codigo: string): Promise<{ ok: boolean; erro?: string }> {
+  const r = await chamarGraph(`${phoneNumberId}/verify_code`, 'POST', { code: codigo });
+  if (r.ok) return { ok: true };
+  const dica = r.codigo ? RECUSAS_CODIGO[r.codigo] : undefined;
+  return { ok: false, erro: dica ? `${dica} (Meta ${r.codigo}: ${r.erro})` : `Meta recusou: ${r.erro}` };
+}

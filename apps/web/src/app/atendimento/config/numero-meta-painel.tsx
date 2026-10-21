@@ -63,6 +63,7 @@ export function NumeroMetaPainel({ phoneNumberId }: { phoneNumberId: string }) {
   const [pin, setPin] = useState('');
   const [enviando, setEnviando] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; texto: string } | null>(null);
+  const [codigo, setCodigo] = useState('');
 
   const ler = useCallback(async () => {
     setLendo(true);
@@ -106,6 +107,31 @@ export function NumeroMetaPainel({ phoneNumberId }: { phoneNumberId: string }) {
         });
       } else {
         setMsg({ ok: false, texto: d?.error ?? 'A Meta recusou o registro.' });
+      }
+    } finally {
+      setEnviando(false);
+    }
+  }
+
+  // Código por SMS/ligação (20/10, Prainha Mar): antes só dava no Gerenciador.
+  async function codigoMeta(acao: 'pedir_codigo' | 'confirmar_codigo', metodo?: 'SMS' | 'VOICE') {
+    if (enviando) return;
+    setEnviando(true);
+    setMsg(null);
+    try {
+      const r = await fetch('/api/atendimento/numeros-meta/adicionar', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ acao, phoneNumberId, metodo, codigo }),
+      });
+      const d = await r.json().catch(() => null);
+      if (d?.estado) setEstado(d.estado);
+      if (!r.ok) setMsg({ ok: false, texto: d?.error ?? 'A Meta recusou.' });
+      else if (acao === 'pedir_codigo')
+        setMsg({ ok: true, texto: metodo === 'VOICE' ? 'Ligação pedida. Atenda o número.' : 'SMS enviado pro número.' });
+      else {
+        setCodigo('');
+        setMsg({ ok: true, texto: 'Código confirmado. Agora escolha o PIN e registre.' });
       }
     } finally {
       setEnviando(false);
@@ -191,6 +217,43 @@ export function NumeroMetaPainel({ phoneNumberId }: { phoneNumberId: string }) {
           O código de confirmação (SMS ou ligação) deste número ainda não foi validado. Conclua essa etapa no
           Gerenciador do WhatsApp → Números de telefone; depois o botão de registrar aparece aqui.
         </p>
+      )}
+      {!estado.registrado && estado.codigo !== 'VERIFIED' && (
+        <div className="mt-1.5 flex flex-wrap items-center gap-2">
+          <span>Ou aqui mesmo:</span>
+          <button
+            type="button"
+            onClick={() => codigoMeta('pedir_codigo', 'SMS')}
+            disabled={enviando}
+            className="rounded-md border border-amber-300 bg-white px-2 py-1 text-amber-800 hover:bg-amber-50 disabled:opacity-50"
+          >
+            Mandar código por SMS
+          </button>
+          <button
+            type="button"
+            onClick={() => codigoMeta('pedir_codigo', 'VOICE')}
+            disabled={enviando}
+            className="rounded-md border border-amber-300 bg-white px-2 py-1 text-amber-800 hover:bg-amber-50 disabled:opacity-50"
+          >
+            por ligação
+          </button>
+          <input
+            value={codigo}
+            onChange={(e) => setCodigo(e.target.value.replace(/\D/g, '').slice(0, 6))}
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            placeholder="código de 6 dígitos"
+            className="w-36 rounded-md border border-amber-300 bg-white px-2 py-1 font-mono text-sm tracking-widest text-slate-900"
+          />
+          <button
+            type="button"
+            onClick={() => codigoMeta('confirmar_codigo')}
+            disabled={enviando || codigo.length !== 6}
+            className="rounded-md bg-amber-600 px-3 py-1 font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+          >
+            {enviando ? 'Enviando…' : 'Confirmar código'}
+          </button>
+        </div>
       )}
 
       {msg && <p className={`mt-1 font-medium ${msg.ok ? 'text-emerald-700' : 'text-rose-700'}`}>{msg.texto}</p>}

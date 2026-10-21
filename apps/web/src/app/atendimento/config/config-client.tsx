@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { NumeroMetaPainel } from './numero-meta-painel';
+import { AdicionarNumeroMeta } from './adicionar-numero-meta';
 
 interface Bloco {
   id: string;
@@ -168,6 +169,14 @@ export function ConfigNinaClient() {
                 <NumeroMetaPainel key={`meta-${n.phoneNumberId}`} phoneNumberId={n.phoneNumberId} />
               ))}
             </div>
+          )}
+          {filialId && (
+            <AdicionarNumeroMeta
+              key={`add-${filialId}`}
+              filialId={filialId}
+              nomeCasa={filiais.find((f) => f.id === filialId)?.nome ?? ''}
+              onPronto={() => carregar(filialId)}
+            />
           )}
         </section>
 
