@@ -12,11 +12,13 @@ interface Props {
   dias: string[];
   pessoas: PessoaEscala[];
   podeEditar: boolean;
+  /** Atestado (21/10/2026): funcionarioId → dias cobertos. */
+  atestados?: Record<string, string[]>;
 }
 
 const moeda = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
-export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar }: Props) {
+export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar, atestados = {} }: Props) {
   // Por pessoa: sexo e folga fixa (mexem na sugestão) + cliques na grade.
   const [sexo, setSexo] = useState<Record<string, Sexo | null>>(() =>
     Object.fromEntries(pessoas.map((p) => [p.funcionarioId, p.sexo])),
@@ -257,16 +259,17 @@ export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar }: 
                     const w = diaDaSemana(d);
                     const bateu = l.ponto.has(d);
                     const passado = d < hoje;
+                    const atestado = (atestados[fid] ?? []).includes(d);
                     if (f === undefined) {
                       return <td key={d} className={`bg-slate-100 ${d.endsWith('-16') ? 'border-l-2 border-slate-300' : ''}`} />;
                     }
                     // Dia passado em que o ponto contradiz a escala.
-                    const diverge = passado && (f ? bateu : !bateu);
+                    const diverge = passado && !atestado && (f ? bateu : !bateu);
                     return (
                       <td
                         key={d}
                         onClick={() => alternar(fid, d, f)}
-                        title={`${d.split('-').reverse().join('/')} · ${f ? 'folga' : 'trabalha'}${o === 'sugestao' ? ' (sugestão)' : o === 'editado' ? ' (não salvo)' : ''}${passado ? (bateu ? ' · bateu ponto' : ' · sem ponto') : ''}`}
+                        title={`${d.split('-').reverse().join('/')} · ${f ? 'folga' : 'trabalha'}${o === 'sugestao' ? ' (sugestão)' : o === 'editado' ? ' (não salvo)' : ''}${passado ? (bateu ? ' · bateu ponto' : ' · sem ponto') : ''}${atestado ? ' · 🩺 atestado' : ''}`}
                         className={`relative select-none px-0.5 py-1 text-center ${podeEditar ? 'cursor-pointer' : ''} ${
                           f
                             ? o === 'sugestao'
@@ -280,6 +283,7 @@ export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar }: 
                         {f ? 'F' : '·'}
                         {passado && bateu && <span className="absolute right-0.5 top-0 text-[8px] text-blue-500">•</span>}
                         {diverge && <span className="absolute bottom-0 left-0.5 text-[8px] text-red-500">!</span>}
+                        {atestado && <span className="absolute bottom-0 right-0 text-[8px]">🩺</span>}
                       </td>
                     );
                   })}
@@ -311,7 +315,7 @@ export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar }: 
       </div>
       <p className="mt-2 text-xs text-slate-500 print:hidden">
         F = folga. Os dias de trabalho de cada quinzena viram os dias do vale transporte (R$ do dia × dias). Dia passado com
-        <span className="text-red-500"> !</span> = o ponto não bate com a escala.
+        <span className="text-red-500"> !</span> = o ponto não bate com a escala. 🩺 = atestado (lançado em RH → Banco de horas).
       </p>
     </div>
   );

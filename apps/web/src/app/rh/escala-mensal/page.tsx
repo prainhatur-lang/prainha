@@ -13,6 +13,7 @@ import { AppHeader } from '@/components/app-header';
 import { hojeBr } from '@/lib/datas';
 import { montarEscalaMes } from '@/lib/rh/escala-mensal';
 import { EscalaGrade } from './grade';
+import { atestadosNoPeriodo, diasDeAtestado } from '@/lib/rh/atestado';
 
 export const dynamic = 'force-dynamic';
 
@@ -59,6 +60,15 @@ export default async function EscalaMensalPage(props: { searchParams: Promise<SP
     montarEscalaMes(filial.id, mes, hoje),
     podeUsuario(user.id, 'funcionario.update'),
   ]);
+  // Atestados do mês (21/10/2026): 🩺 no dia e não conta como divergência.
+  const diaAtestado = diasDeAtestado(
+    await atestadosNoPeriodo(escala.pessoas.map((p) => p.funcionarioId), escala.dias[0] ?? `${mes}-01`, escala.dias[escala.dias.length - 1] ?? `${mes}-31`),
+  );
+  const atestados: Record<string, string[]> = {};
+  for (const chave of diaAtestado.keys()) {
+    const [fid, dia] = chave.split('|');
+    (atestados[fid] ??= []).push(dia);
+  }
   const link = (m: string) => `?filialId=${filial.id}&mes=${m}`;
 
   return (
@@ -121,6 +131,7 @@ export default async function EscalaMensalPage(props: { searchParams: Promise<SP
           dias={escala.dias}
           pessoas={escala.pessoas}
           podeEditar={podeEditar}
+          atestados={atestados}
         />
       </section>
     </main>

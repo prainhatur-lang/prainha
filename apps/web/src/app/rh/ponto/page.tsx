@@ -13,6 +13,7 @@ import { AppHeader } from '@/components/app-header';
 import { semanaAtual, semanaContemDia, diasDaSemana, labelSemana, nomeDia, toIsoDate } from '@/lib/folha/semana';
 import { calcularDia } from '@/lib/rh/calcular-ponto';
 import { PontoManager } from './manager';
+import { atestadosNoPeriodo, diasDeAtestado } from '@/lib/rh/atestado';
 
 export const dynamic = 'force-dynamic';
 
@@ -130,6 +131,13 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
     }
   }
 
+  // Atestados da semana (21/10/2026): 🩺 na célula do dia.
+  const diaAtestado = diasDeAtestado(
+    await atestadosNoPeriodo(funcionarios.map((f) => f.id), semana.inicio, semana.fim),
+    semana.inicio,
+    semana.fim,
+  );
+
   const semanaAnteriorInicio = toIsoDate(new Date(new Date(semana.inicio + 'T12:00:00').getTime() - 7 * 86400000));
   const semanaSeguinteInicio = toIsoDate(new Date(new Date(semana.inicio + 'T12:00:00').getTime() + 7 * 86400000));
 
@@ -195,6 +203,7 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
           funcionarios={funcionarios}
           gemeos={gemeos}
           grade={[...grade.entries()].map(([chave, v]) => ({ chave, ...v }))}
+          atestados={[...diaAtestado.entries()].map(([chave, a]) => ({ chave, descricao: a.descricao }))}
         />
       </section>
     </main>

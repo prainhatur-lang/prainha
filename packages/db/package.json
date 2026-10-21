@@ -163,6 +163,7 @@
     "migrate:combo-regra": "tsx scripts/migrate-combo-regra.ts",
     "migrate:vale-transporte": "tsx scripts/migrate-vale-transporte.ts",
     "migrate:escala-mensal": "tsx scripts/migrate-escala-mensal.ts",
+    "migrate:atestado": "tsx scripts/migrate-atestado.ts",
     "migrate:eb-faturas": "tsx scripts/migrate-eb-faturas.ts",
     "migrate:fatura-servico-dividir": "tsx scripts/migrate-fatura-servico-dividir.ts",
     "migrate:lista-compra": "tsx scripts/migrate-lista-compra.ts",

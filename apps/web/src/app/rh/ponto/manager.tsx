@@ -31,6 +31,8 @@ interface Props {
   /** Quem está marcado como gêmeo(a) de alguém (a câmera do ponto não separa
    *  gêmeos idênticos; o tablet pergunta "Quem é você?" pra esse par). */
   gemeos?: { id: string; gemeoDeId: string; gemeoNome: string }[];
+  /** Atestado (21/10/2026): chave `funcionarioId|dia` → observação do atestado. */
+  atestados?: { chave: string; descricao: string | null }[];
 }
 
 // O horário digitado é o da loja (BRT, sem horário de verão). Vai com o fuso
@@ -49,7 +51,8 @@ function nomeCurto(nome: string): string {
   return nome.trim().split(/\s+/).slice(0, 2).join(' ');
 }
 
-export function PontoManager({ filialId, dias, funcionarios, grade, gemeos = [] }: Props) {
+export function PontoManager({ filialId, dias, funcionarios, grade, gemeos = [], atestados = [] }: Props) {
+  const atestadoDe = new Map(atestados.map((a) => [a.chave, a]));
   const router = useRouter();
   const [modal, setModal] = useState<{ funcionarioId: string; funcionarioNome: string; dia: string } | null>(null);
   const byChave = new Map(grade.map((c) => [c.chave, c]));
@@ -257,6 +260,7 @@ export function PontoManager({ filialId, dias, funcionarios, grade, gemeos = [] 
                     const cel = byChave.get(`${f.id}|${d.iso}`);
                     totalSemana += cel?.totalMin ?? 0;
                     const incompleto = cel?.status === 'incompleto';
+                    const atestado = atestadoDe.get(`${f.id}|${d.iso}`);
                     return (
                       <td
                         key={d.iso}
@@ -265,8 +269,16 @@ export function PontoManager({ filialId, dias, funcionarios, grade, gemeos = [] 
                           incompleto ? 'bg-amber-50' : ''
                         }`}
                       >
+                        {atestado && (
+                          <div
+                            className="mb-0.5 inline-block rounded bg-sky-100 px-1.5 text-[10px] font-medium text-sky-800"
+                            title={`Atestado${atestado.descricao ? `: ${atestado.descricao}` : ''} (lançado em RH → Banco de horas)`}
+                          >
+                            🩺 atestado
+                          </div>
+                        )}
                         {!cel || cel.batidas.length === 0 ? (
-                          <span className="text-slate-300">—</span>
+                          atestado ? null : <span className="text-slate-300">—</span>
                         ) : (
                           <div>
                             <div className="font-mono text-slate-700">

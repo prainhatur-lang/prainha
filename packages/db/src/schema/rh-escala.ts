@@ -179,3 +179,30 @@ export const rhEscalaDia = pgTable(
     porCasa: index('idx_rh_escala_dia_filial').on(t.filialId, t.dia),
   }),
 );
+
+/** Atestado médico (pedido do dono 21/10/2026): pessoa + dias + foto. Abona
+ *  no banco de horas (o dia conta como cumprido) e aparece no ponto e na
+ *  escala. A foto fica no bucket privado (dado de saúde). Cancelar só marca. */
+export const funcionarioAtestado = pgTable(
+  'funcionario_atestado',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    funcionarioId: uuid('funcionario_id').notNull().references(() => funcionario.id, { onDelete: 'cascade' }),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    dataInicio: date('data_inicio').notNull(),
+    dataFim: date('data_fim').notNull(),
+    /** CID, médico, observação. */
+    descricao: text('descricao'),
+    arquivoPath: text('arquivo_path'),
+    arquivoNome: varchar('arquivo_nome', { length: 200 }),
+    usuarioId: uuid('usuario_id'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    canceladoEm: timestamp('cancelado_em', { withTimezone: true }),
+    canceladoPor: uuid('cancelado_por'),
+    canceladoMotivo: text('cancelado_motivo'),
+  },
+  (t) => ({
+    porPessoa: index('idx_funcionario_atestado_pessoa').on(t.funcionarioId, t.dataInicio),
+    porCasa: index('idx_funcionario_atestado_filial').on(t.filialId, t.dataInicio),
+  }),
+);

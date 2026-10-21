@@ -3,6 +3,7 @@
 import { Fragment, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { fmtHoras, fmtSaldo, folgasDaJornada, lerHoras, minutosSemana } from '@/lib/rh/banco-horas';
+import { createClient } from '@/lib/supabase/client';
 
 export interface LinhaPessoa {
   id: string;
@@ -26,7 +27,20 @@ export interface LinhaPessoa {
   incompletos: number;
   movimentoMin: number;
   saldoMin: number;
+  /** Atestado (21/10/2026): minutos abonados no banco e dias cobertos desde a virada. */
+  abonadoMin?: number;
+  atestadoDias?: number;
+  atestados?: AtestadoPessoa[];
   lancamentos: { id: string; dia: string; minutos: number; tipo: string; descricao: string | null }[];
+}
+
+export interface AtestadoPessoa {
+  id: string;
+  dataInicio: string;
+  dataFim: string;
+  descricao: string | null;
+  arquivoNome: string | null;
+  temArquivo: boolean;
 }
 
 interface Jornada {
@@ -93,6 +107,31 @@ export function BancoHorasManager({ hoje, podeLancar, linhas, jornadas }: Props)
   const [acerto, setAcerto] = useState<LinhaPessoa | null>(null);
   const [escala, setEscala] = useState<LinhaPessoa | null>(null);
   const [novaJornada, setNovaJornada] = useState(false);
+  // undefined = fechado; null = aberto sem pessoa escolhida.
+  const [atestado, setAtestado] = useState<LinhaPessoa | null | undefined>(undefined);
+  const [cancelando, setCancelando] = useState<string | null>(null);
+
+  const todosAtestados = linhas
+    .flatMap((l) => (l.atestados ?? []).map((a) => ({ ...a, nome: l.nome })))
+    .sort((a, b) => (a.dataInicio < b.dataInicio ? 1 : -1));
+
+  async function cancelarAtestado(id: string, nome: string) {
+    const motivo = window.prompt(`Cancelar o atestado de ${nome}? Diga o motivo:`);
+    if (!motivo) return;
+    if (motivo.trim().length < 5) return window.alert('Motivo muito curto (pelo menos 5 letras).');
+    setCancelando(id);
+    const res = await fetch('/api/rh/atestado', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ acao: 'cancelar', id, motivo: motivo.trim() }),
+    });
+    setCancelando(null);
+    if (!res.ok) {
+      const j = await res.json().catch(() => null);
+      return window.alert(j?.error ?? 'Não deu pra cancelar');
+    }
+    router.refresh();
+  }
 
   const mensalistas = linhas.filter((l) => l.jornadaTipo === 'fixa');
   const intermitentes = linhas.filter((l) => l.jornadaTipo === 'intermitente');
@@ -103,11 +142,72 @@ export function BancoHorasManager({ hoje, podeLancar, linhas, jornadas }: Props)
     setAcerto(null);
     setEscala(null);
     setNovaJornada(false);
+    setAtestado(undefined);
     router.refresh();
   }
 
   return (
     <div className="space-y-8">
+      {/* ---------- atestados ---------- */}
+      <div className="rounded-xl border border-sky-200 bg-white">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-sky-100 px-4 py-3">
+          <div>
+            <h2 className="text-sm font-semibold text-slate-900">
+              🩺 Atestados <span className="font-normal text-slate-500">({todosAtestados.length})</span>
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Dia de atestado conta como cumprido no banco de horas e aparece no ponto e na escala do mês.
+            </p>
+          </div>
+          {podeLancar && (
+            <button
+              type="button"
+              onClick={() => setAtestado(null)}
+              className="rounded-md bg-sky-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-800"
+            >
+              Lançar atestado
+            </button>
+          )}
+        </div>
+        {todosAtestados.length === 0 ? (
+          <p className="px-4 py-3 text-xs text-slate-400">Nenhum atestado lançado no último ano.</p>
+        ) : (
+          <ul className="divide-y divide-slate-100 text-sm">
+            {todosAtestados.map((a) => (
+              <li key={a.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-2">
+                <div>
+                  <span className="font-medium text-slate-900">{a.nome}</span>
+                  <span className="ml-2 tabular-nums text-slate-600">
+                    {a.dataInicio === a.dataFim ? dmy(a.dataInicio) : `${dmy(a.dataInicio)} a ${dmy(a.dataFim)}`}
+                  </span>
+                  <span className="ml-1 text-xs text-slate-400">({diasEntre(a.dataInicio, a.dataFim)} dia{diasEntre(a.dataInicio, a.dataFim) > 1 ? 's' : ''})</span>
+                  {a.descricao && <div className="text-xs text-slate-500">{a.descricao}</div>}
+                </div>
+                <div className="flex items-center gap-2 text-xs">
+                  {a.temArquivo ? (
+                    <a href={`/api/rh/atestado?id=${a.id}`} target="_blank" rel="noreferrer" className="text-sky-700 hover:underline">
+                      ver foto
+                    </a>
+                  ) : (
+                    <span className="text-amber-700">sem foto</span>
+                  )}
+                  {podeLancar && (
+                    <button
+                      type="button"
+                      disabled={cancelando === a.id}
+                      onClick={() => cancelarAtestado(a.id, a.nome)}
+                      className="rounded border border-slate-200 px-2 py-0.5 text-slate-500 hover:bg-slate-100 disabled:opacity-50"
+                    >
+                      cancelar
+                    </button>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
       {/* ---------- mensalistas ---------- */}
       <div className="rounded-xl border border-slate-200 bg-white">
         <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-slate-100 px-4 py-3">
@@ -187,6 +287,12 @@ export function BancoHorasManager({ hoje, podeLancar, linhas, jornadas }: Props)
                               {l.incompletos} dia{l.incompletos > 1 ? 's' : ''} sem saída
                             </div>
                           )}
+                          {(l.atestadoDias ?? 0) > 0 && (
+                            <div className="text-[11px] text-sky-700">
+                              🩺 {l.atestadoDias} dia{(l.atestadoDias ?? 0) > 1 ? 's' : ''} de atestado
+                              {(l.abonadoMin ?? 0) > 0 && ` (+${fmtHoras(l.abonadoMin ?? 0)} abonadas)`}
+                            </div>
+                          )}
                         </td>
                         <td className={`px-3 py-2 text-right tabular-nums ${corSaldo(l.movimentoMin)}`}>
                           {fmtSaldo(l.movimentoMin)}
@@ -211,6 +317,14 @@ export function BancoHorasManager({ hoje, podeLancar, linhas, jornadas }: Props)
                               >
                                 Escala
                               </button>
+                              <button
+                                type="button"
+                                onClick={() => setAtestado(l)}
+                                title="Lançar atestado"
+                                className="ml-1 rounded border border-sky-200 px-2 py-1 text-xs text-sky-800 hover:bg-sky-50"
+                              >
+                                🩺
+                              </button>
                             </>
                           )}
                         </td>
@@ -224,6 +338,7 @@ export function BancoHorasManager({ hoje, podeLancar, linhas, jornadas }: Props)
                               batido {fmtHoras(l.trabalhadoMin)}
                               {l.semBatidaDias > 0 &&
                                 ` — ${fmtHoras(l.semBatidaMin)} do que falta são ${l.semBatidaDias} dia(s) de escala sem nenhuma batida (folga trocada, falta ou esqueceu de bater: conferir no Ponto da semana)`}
+                              {(l.abonadoMin ?? 0) > 0 && ` · atestado abonou ${fmtHoras(l.abonadoMin ?? 0)} em ${l.atestadoDias} dia(s)`}
                               .
                             </p>
                             {l.lancamentos.length === 0 ? (
@@ -386,6 +501,9 @@ export function BancoHorasManager({ hoje, podeLancar, linhas, jornadas }: Props)
         <ModalEscala pessoa={escala} hoje={hoje} jornadas={jornadas} onFechar={() => setEscala(null)} onFeito={feito} />
       )}
       {novaJornada && <ModalNovaJornada onFechar={() => setNovaJornada(false)} onFeito={feito} />}
+      {atestado !== undefined && (
+        <ModalAtestado pessoas={linhas} inicial={atestado} hoje={hoje} onFechar={() => setAtestado(undefined)} onFeito={feito} />
+      )}
     </div>
   );
 }
@@ -407,6 +525,152 @@ function Modal({ titulo, onFechar, children }: { titulo: string; onFechar: () =>
 }
 
 const CAMPO = 'mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm';
+
+function diasEntre(de: string, ate: string): number {
+  return Math.round((Date.parse(`${ate}T12:00:00Z`) - Date.parse(`${de}T12:00:00Z`)) / 86400000) + 1;
+}
+
+async function chamarAtestado(body: unknown): Promise<Record<string, unknown>> {
+  const res = await fetch('/api/rh/atestado', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const j = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+  if (!res.ok) throw new Error(String(j?.error ?? 'Não deu pra salvar'));
+  return j ?? {};
+}
+
+function ModalAtestado({
+  pessoas,
+  inicial,
+  hoje,
+  onFechar,
+  onFeito,
+}: {
+  pessoas: LinhaPessoa[];
+  inicial: LinhaPessoa | null;
+  hoje: string;
+  onFechar: () => void;
+  onFeito: () => void;
+}) {
+  const [pessoaId, setPessoaId] = useState(inicial?.id ?? '');
+  const [de, setDe] = useState(hoje);
+  const [ate, setAte] = useState(hoje);
+  const [descricao, setDescricao] = useState('');
+  const [arquivo, setArquivo] = useState<File | null>(null);
+  const [erro, setErro] = useState<string | null>(null);
+  const [salvando, setSalvando] = useState<string | null>(null);
+  const ordenadas = [...pessoas].sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+  const dias = de && ate && ate >= de ? diasEntre(de, ate) : 0;
+
+  async function salvar() {
+    setErro(null);
+    if (!pessoaId) return setErro('Escolha a pessoa.');
+    if (!de || !ate) return setErro('Diga os dias do atestado.');
+    if (ate < de) return setErro('O último dia é antes do primeiro.');
+    if (!arquivo && !window.confirm('Lançar sem a foto do atestado? Dá pra cancelar e lançar de novo com a foto depois.')) return;
+    try {
+      let arquivoPath: string | undefined;
+      if (arquivo) {
+        setSalvando('enviando a foto…');
+        const p = await chamarAtestado({ acao: 'upload_url', funcionarioId: pessoaId, nome: arquivo.name, tamanho: arquivo.size });
+        const up = await createClient()
+          .storage.from(String(p.bucket))
+          .uploadToSignedUrl(String(p.path), String(p.token), arquivo, { contentType: arquivo.type || 'application/octet-stream' });
+        if (up.error) throw new Error(`não consegui guardar a foto: ${up.error.message}`);
+        arquivoPath = String(p.path);
+      }
+      setSalvando('salvando…');
+      await chamarAtestado({
+        acao: 'criar',
+        funcionarioId: pessoaId,
+        dataInicio: de,
+        dataFim: ate,
+        descricao: descricao.trim() || undefined,
+        arquivoPath,
+        arquivoNome: arquivo?.name,
+      });
+      setSalvando(null);
+      onFeito();
+    } catch (e) {
+      setSalvando(null);
+      setErro(e instanceof Error ? e.message : 'Não deu pra salvar');
+    }
+  }
+
+  return (
+    <Modal titulo="🩺 Lançar atestado" onFechar={onFechar}>
+      <label className="block text-xs font-medium text-slate-600">
+        Pessoa
+        <select value={pessoaId} onChange={(e) => setPessoaId(e.target.value)} className={CAMPO}>
+          <option value="">— escolha —</option>
+          {ordenadas.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.nome}
+              {p.cargo ? ` · ${p.cargo}` : ''}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="mt-3 grid grid-cols-2 gap-3">
+        <label className="block text-xs font-medium text-slate-600">
+          Primeiro dia
+          <input
+            type="date"
+            value={de}
+            onChange={(e) => {
+              setDe(e.target.value);
+              if (!ate || ate < e.target.value) setAte(e.target.value);
+            }}
+            className={CAMPO}
+          />
+        </label>
+        <label className="block text-xs font-medium text-slate-600">
+          Último dia
+          <input type="date" value={ate} min={de} onChange={(e) => setAte(e.target.value)} className={CAMPO} />
+        </label>
+      </div>
+      {dias > 0 && <p className="mt-1 text-xs text-slate-500">{dias} dia{dias > 1 ? 's' : ''} de atestado</p>}
+      <label className="mt-3 block text-xs font-medium text-slate-600">
+        Foto do atestado
+        <input
+          type="file"
+          accept="image/*,application/pdf"
+          onChange={(e) => setArquivo(e.target.files?.[0] ?? null)}
+          className="mt-1 block w-full text-sm text-slate-600 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-sm file:text-slate-700"
+        />
+      </label>
+      <label className="mt-3 block text-xs font-medium text-slate-600">
+        Observação (opcional)
+        <textarea
+          value={descricao}
+          onChange={(e) => setDescricao(e.target.value)}
+          rows={2}
+          className={CAMPO}
+          placeholder="Ex.: CID, médico, meio período"
+        />
+      </label>
+      <p className="mt-2 text-[11px] text-slate-400">
+        No banco de horas, o dia de atestado conta como cumprido (abona o que faltou pra escala do dia).
+      </p>
+      {erro && <p className="mt-2 text-xs text-rose-700">{erro}</p>}
+      <div className="mt-4 flex justify-end gap-2">
+        <button type="button" onClick={onFechar} className="rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50">
+          Cancelar
+        </button>
+        <button
+          type="button"
+          onClick={salvar}
+          disabled={!!salvando}
+          className="rounded-md bg-sky-700 px-3 py-2 text-sm font-medium text-white hover:bg-sky-800 disabled:opacity-50"
+        >
+          {salvando ?? 'Lançar atestado'}
+        </button>
+      </div>
+    </Modal>
+  );
+}
 
 function ModalAcerto({ pessoa, hoje, onFechar, onFeito }: { pessoa: LinhaPessoa; hoje: string; onFechar: () => void; onFeito: () => void }) {
   const [tipo, setTipo] = useState<'ajuste' | 'pagamento' | 'folga'>('ajuste');

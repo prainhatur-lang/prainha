@@ -18,6 +18,7 @@ import { calcularDia } from '@/lib/rh/calcular-ponto';
 import { pontoProprioDesde } from '@/lib/rh/ponto-vigencia';
 import { somarDias } from '@/lib/rh/dia-operacional';
 import { jornadaNoDia, minutosPrevistos, type VigenciaJornada } from '@/lib/rh/banco-horas';
+import { atestadosNoPeriodo, diasDeAtestado } from '@/lib/rh/atestado';
 import { BancoHorasManager, type LinhaPessoa } from './manager';
 
 export const dynamic = 'force-dynamic';
@@ -154,6 +155,10 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
   }
 
   const ontem = somarDias(hoje, -1);
+  // Atestado (21/10/2026): o dia coberto conta como cumprido — abona o que
+  // faltou pra jornada. A lista mostra o último ano e os que ainda vão vir.
+  const atestados = await atestadosNoPeriodo(ids, somarDias(hoje, -365), somarDias(hoje, 60));
+  const diaAtestado = diasDeAtestado(atestados, virada, ontem);
   const linhas: LinhaPessoa[] = funcionarios.map((f) => {
     const vigencias: VigenciaJornada[] = vigRows
       .filter((v) => v.funcionarioId === f.id)
@@ -180,6 +185,8 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
     let semBatidaDias = 0;
     let semBatidaMin = 0;
     let incompletos = 0;
+    let abonadoMin = 0;
+    let atestadoDias = 0;
     for (let dia = virada; dia <= ontem; dia = somarDias(dia, 1)) {
       const t = trabalhado.get(`${f.id}|${dia}`);
       if (t) {
@@ -191,6 +198,11 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
       const j = jornadaNoDia(vigencias, dia);
       const prev = j ? minutosPrevistos(j, dia) : 0;
       previstoMin += prev;
+      if (diaAtestado.has(`${f.id}|${dia}`)) {
+        atestadoDias++;
+        if (prev > 0) abonadoMin += Math.max(prev - (t?.min ?? 0), 0);
+        continue;
+      }
       if (prev > 0 && !t) {
         semBatidaDias++;
         semBatidaMin += prev;
@@ -198,7 +210,7 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
     }
 
     const temBanco = atual?.tipo === 'fixa';
-    const movimentoMin = temBanco ? trabalhadoNaContaMin - previstoMin : 0;
+    const movimentoMin = temBanco ? trabalhadoNaContaMin + abonadoMin - previstoMin : 0;
     return {
       id: f.id,
       nome: f.nome,
@@ -218,6 +230,18 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
       semBatidaDias,
       semBatidaMin,
       incompletos,
+      abonadoMin: temBanco ? abonadoMin : 0,
+      atestadoDias,
+      atestados: atestados
+        .filter((a) => a.funcionarioId === f.id)
+        .map((a) => ({
+          id: a.id,
+          dataInicio: a.dataInicio,
+          dataFim: a.dataFim,
+          descricao: a.descricao,
+          arquivoNome: a.arquivoNome,
+          temArquivo: a.temArquivo,
+        })),
       movimentoMin,
       saldoMin: (inicial?.minutos ?? 0) + acertosMin + movimentoMin,
       lancamentos: lancamentos.map((l) => ({
