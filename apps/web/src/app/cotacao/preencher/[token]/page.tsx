@@ -159,7 +159,11 @@ export default async function PreencherCotacaoPage(props: {
           )}
         </div>
 
-        {expirou ? (
+        {cotacao.status === 'CANCELADA' ? (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-800">
+            Esta cotação foi cancelada. Não é mais possível responder.
+          </div>
+        ) : expirou ? (
           <div className="rounded-xl border border-rose-200 bg-rose-50 p-5 text-sm text-rose-800">
             Esta cotação já fechou. Não é mais possível responder.
           </div>

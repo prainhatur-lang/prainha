@@ -14,6 +14,7 @@ import { EnviarTodosButton } from './enviar-todos-button';
 import { GerarPedidoButton, type ItemPraPedido } from './gerar-pedido-button';
 import { TirarDasCotacoes } from './tirar-das-cotacoes';
 import { IncluirFornecedor } from './incluir-fornecedor';
+import { CancelarCotacaoButton } from './cancelar-cotacao';
 import { agruparDuplicados } from '@/lib/fornecedor-duplicado';
 import { ItemEditor } from './item-editor';
 import { conviteCotacaoConfigurado } from '@/lib/whatsapp-otp';
@@ -358,6 +359,8 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
             {(c.status === 'ABERTA' || c.status === 'AGUARDANDO_APROVACAO') && (
               <AprovarButton cotacaoId={c.id} />
             )}
+            {(c.status === 'RASCUNHO' || c.status === 'ABERTA' || c.status === 'AGUARDANDO_APROVACAO') &&
+              pedidosVivos.length === 0 && <CancelarCotacaoButton cotacaoId={c.id} numero={c.numero} />}
           </div>
         </div>
 
