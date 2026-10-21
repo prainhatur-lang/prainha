@@ -30,6 +30,10 @@ export interface AtestadoLinha {
   descricao: string | null;
   arquivoNome: string | null;
   temArquivo: boolean;
+  /** false = guardado sem abonar no banco (21/10/2026). */
+  abona: boolean;
+  /** 'manual' (tela) ou 'celular' (QR + leitura). */
+  origem: string;
 }
 
 /** Atestados válidos (não cancelados) das pessoas que tocam [de, ate]. */
@@ -45,6 +49,8 @@ export async function atestadosNoPeriodo(ids: string[], de: string, ate: string)
       descricao: t.descricao,
       arquivoNome: t.arquivoNome,
       arquivoPath: t.arquivoPath,
+      abona: t.abona,
+      origem: t.origem,
     })
     .from(t)
     .where(and(inArray(t.funcionarioId, ids), isNull(t.canceladoEm), lte(t.dataInicio, ate), gte(t.dataFim, de)))
@@ -57,6 +63,8 @@ export async function atestadosNoPeriodo(ids: string[], de: string, ate: string)
     descricao: r.descricao,
     arquivoNome: r.arquivoNome,
     temArquivo: !!r.arquivoPath,
+    abona: r.abona !== false,
+    origem: r.origem ?? 'manual',
   }));
 }
 

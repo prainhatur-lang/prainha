@@ -200,9 +200,44 @@ export const funcionarioAtestado = pgTable(
     canceladoEm: timestamp('cancelado_em', { withTimezone: true }),
     canceladoPor: uuid('cancelado_por'),
     canceladoMotivo: text('cancelado_motivo'),
+    /** false = guardado sem abonar (a falta segue contando no banco). */
+    abona: boolean('abona').notNull().default(true),
+    /** manual | celular */
+    origem: varchar('origem', { length: 20 }).notNull().default('manual'),
+    /** O que a IA leu da foto (paciente, CID, médico, dias...). */
+    lido: jsonb('lido'),
   },
   (t) => ({
     porPessoa: index('idx_funcionario_atestado_pessoa').on(t.funcionarioId, t.dataInicio),
     porCasa: index('idx_funcionario_atestado_filial').on(t.filialId, t.dataInicio),
+  }),
+);
+
+/** Atestado que chegou pelo celular (QR do Banco de horas, 21/10/2026): a
+ *  foto já está no bucket e a IA leu; fica 'pendente' até alguém dizer quem
+ *  é e se abona ('lancado' → atestadoId) ou descartar. */
+export const atestadoLeitura = pgTable(
+  'atestado_leitura',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    /** Vencimento do link do QR (identifica a sessão do painel). */
+    linkE: integer('link_e').notNull(),
+    /** Quem gerou o QR (responde pelo lançamento feito no celular). */
+    usuarioId: uuid('usuario_id'),
+    arquivoPath: text('arquivo_path').notNull(),
+    arquivoNome: varchar('arquivo_nome', { length: 200 }),
+    lido: jsonb('lido'),
+    erro: text('erro'),
+    /** [{ id, nome, cargo, nota }] em ordem de parecença. */
+    candidatos: jsonb('candidatos'),
+    /** pendente | lancado | descartado */
+    status: varchar('status', { length: 20 }).notNull().default('pendente'),
+    atestadoId: uuid('atestado_id'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    resolvidoEm: timestamp('resolvido_em', { withTimezone: true }),
+  },
+  (t) => ({
+    porCasa: index('idx_atestado_leitura_filial').on(t.filialId, t.criadoEm),
   }),
 );

@@ -133,6 +133,8 @@ export async function proxy(request: NextRequest) {
   // vence em 24 h). /zxing/ eh o leitor de codigo de barras do iPhone (.wasm)
   // que essa pagina carrega.
   const isNotaChavePublico = path === '/nota-chave' || path.startsWith('/zxing/');
+  // /atestado-celular: foto do atestado pelo celular (link assinado, sem login)
+  const isAtestadoCelularPublico = path === '/atestado-celular';
   // /agente-release/* sao bundles do agente local baixados pelo PowerShell
   // direto do PC da filial (.ps1 atualizador) — sem sessao do navegador.
   const isAgenteRelease = path.startsWith('/agente-release/');
@@ -179,6 +181,7 @@ export async function proxy(request: NextRequest) {
     isCozinheiroPublico ||
     isNotaBoletoPublico ||
     isNotaChavePublico ||
+    isAtestadoCelularPublico ||
     isAgenteRelease ||
     isAvaliarPublico ||
     isReservarPublico ||

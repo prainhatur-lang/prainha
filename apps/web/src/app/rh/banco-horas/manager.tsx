@@ -4,6 +4,7 @@ import { Fragment, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { fmtHoras, fmtSaldo, folgasDaJornada, lerHoras, minutosSemana } from '@/lib/rh/banco-horas';
 import { createClient } from '@/lib/supabase/client';
+import { AtestadoCelularPainel } from './atestado-celular-painel';
 
 export interface LinhaPessoa {
   id: string;
@@ -41,6 +42,8 @@ export interface AtestadoPessoa {
   descricao: string | null;
   arquivoNome: string | null;
   temArquivo: boolean;
+  abona?: boolean;
+  origem?: string;
 }
 
 interface Jornada {
@@ -59,6 +62,8 @@ interface Jornada {
 }
 
 interface Props {
+  /** casa da tela — liga o "📱 Pelo celular" (QR do atestado) */
+  filialId?: string;
   hoje: string;
   podeLancar: boolean;
   linhas: LinhaPessoa[];
@@ -101,7 +106,7 @@ async function enviar(body: unknown): Promise<string | null> {
   return j?.error ?? 'Não deu pra salvar';
 }
 
-export function BancoHorasManager({ hoje, podeLancar, linhas, jornadas }: Props) {
+export function BancoHorasManager({ filialId, hoje, podeLancar, linhas, jornadas }: Props) {
   const router = useRouter();
   const [aberta, setAberta] = useState<string | null>(null);
   const [acerto, setAcerto] = useState<LinhaPessoa | null>(null);
@@ -110,6 +115,7 @@ export function BancoHorasManager({ hoje, podeLancar, linhas, jornadas }: Props)
   // undefined = fechado; null = aberto sem pessoa escolhida.
   const [atestado, setAtestado] = useState<LinhaPessoa | null | undefined>(undefined);
   const [cancelando, setCancelando] = useState<string | null>(null);
+  const [celular, setCelular] = useState(false);
 
   const todosAtestados = linhas
     .flatMap((l) => (l.atestados ?? []).map((a) => ({ ...a, nome: l.nome })))
@@ -160,15 +166,28 @@ export function BancoHorasManager({ hoje, podeLancar, linhas, jornadas }: Props)
             </p>
           </div>
           {podeLancar && (
-            <button
-              type="button"
-              onClick={() => setAtestado(null)}
-              className="rounded-md bg-sky-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-800"
-            >
-              Lançar atestado
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              {filialId && (
+                <button
+                  type="button"
+                  onClick={() => setCelular((v) => !v)}
+                  className="rounded-md border border-sky-300 bg-white px-3 py-1.5 text-xs font-medium text-sky-800 hover:bg-sky-50"
+                  title="QR pro celular: tira a foto do atestado e o sistema lê quem é e os dias"
+                >
+                  📱 Pelo celular
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setAtestado(null)}
+                className="rounded-md bg-sky-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-800"
+              >
+                Lançar atestado
+              </button>
+            </div>
           )}
         </div>
+        {celular && filialId && <AtestadoCelularPainel filialId={filialId} onFechar={() => setCelular(false)} />}
         {todosAtestados.length === 0 ? (
           <p className="px-4 py-3 text-xs text-slate-400">Nenhum atestado lançado no último ano.</p>
         ) : (
@@ -181,6 +200,12 @@ export function BancoHorasManager({ hoje, podeLancar, linhas, jornadas }: Props)
                     {a.dataInicio === a.dataFim ? dmy(a.dataInicio) : `${dmy(a.dataInicio)} a ${dmy(a.dataFim)}`}
                   </span>
                   <span className="ml-1 text-xs text-slate-400">({diasEntre(a.dataInicio, a.dataFim)} dia{diasEntre(a.dataInicio, a.dataFim) > 1 ? 's' : ''})</span>
+                  {a.abona === false && (
+                    <span className="ml-2 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">sem abono</span>
+                  )}
+                  {a.origem === 'celular' && (
+                    <span className="ml-1 text-[10px] text-slate-400" title="Enviado pelo celular">📱</span>
+                  )}
                   {a.descricao && <div className="text-xs text-slate-500">{a.descricao}</div>}
                 </div>
                 <div className="flex items-center gap-2 text-xs">
@@ -559,6 +584,7 @@ function ModalAtestado({
   const [ate, setAte] = useState(hoje);
   const [descricao, setDescricao] = useState('');
   const [arquivo, setArquivo] = useState<File | null>(null);
+  const [abona, setAbona] = useState(true);
   const [erro, setErro] = useState<string | null>(null);
   const [salvando, setSalvando] = useState<string | null>(null);
   const ordenadas = [...pessoas].sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
@@ -590,6 +616,7 @@ function ModalAtestado({
         descricao: descricao.trim() || undefined,
         arquivoPath,
         arquivoNome: arquivo?.name,
+        abona,
       });
       setSalvando(null);
       onFeito();
@@ -651,8 +678,14 @@ function ModalAtestado({
           placeholder="Ex.: CID, médico, meio período"
         />
       </label>
-      <p className="mt-2 text-[11px] text-slate-400">
-        No banco de horas, o dia de atestado conta como cumprido (abona o que faltou pra escala do dia).
+      <label className="mt-3 flex items-center gap-2 text-xs font-medium text-slate-700">
+        <input type="checkbox" checked={abona} onChange={(e) => setAbona(e.target.checked)} />
+        Abonar no banco de horas
+      </label>
+      <p className="mt-1 text-[11px] text-slate-400">
+        {abona
+          ? 'No banco de horas, o dia de atestado conta como cumprido (abona o que faltou pra escala do dia).'
+          : 'Fica guardado com a foto e aparece no ponto/escala, mas o banco de horas conta o dia normal (sem abonar).'}
       </p>
       {erro && <p className="mt-2 text-xs text-rose-700">{erro}</p>}
       <div className="mt-4 flex justify-end gap-2">

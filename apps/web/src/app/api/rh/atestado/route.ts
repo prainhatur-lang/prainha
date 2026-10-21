@@ -1,7 +1,7 @@
 // Atestado médico (21/10/2026) — lib/rh/atestado.ts explica a regra.
 // POST { acao: 'upload_url', funcionarioId, nome, tamanho } → endereço assinado
 //      pro navegador mandar a foto direto pro bucket (Vercel não aguenta >4,5 MB)
-// POST { acao: 'criar', funcionarioId, dataInicio, dataFim, descricao?, arquivoPath?, arquivoNome? }
+// POST { acao: 'criar', funcionarioId, dataInicio, dataFim, descricao?, arquivoPath?, arquivoNome?, abona? }
 // POST { acao: 'cancelar', id, motivo } — só marca, não apaga
 // GET  ?id=<atestado> → redireciona pra foto (endereço assinado de 1 minuto)
 
@@ -43,6 +43,7 @@ const Body = z.discriminatedUnion('acao', [
     descricao: z.string().trim().max(500).optional(),
     arquivoPath: z.string().max(500).optional(),
     arquivoNome: z.string().max(200).optional(),
+    abona: z.boolean().optional(),
   }),
   z.object({
     acao: z.literal('cancelar'),
@@ -135,6 +136,7 @@ export async function POST(req: Request) {
       arquivoPath: d.arquivoPath || null,
       arquivoNome: d.arquivoNome || null,
       usuarioId: user.id,
+      abona: d.abona ?? true,
     })
     .returning({ id: schema.funcionarioAtestado.id });
   return NextResponse.json({ ok: true, id: criado?.id });

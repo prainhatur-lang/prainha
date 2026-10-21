@@ -198,7 +198,9 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
       const j = jornadaNoDia(vigencias, dia);
       const prev = j ? minutosPrevistos(j, dia) : 0;
       previstoMin += prev;
-      if (diaAtestado.has(`${f.id}|${dia}`)) {
+      // atestado guardado "sem abonar" (abona=false) segue a conta normal do dia
+      const atest = diaAtestado.get(`${f.id}|${dia}`);
+      if (atest && atest.abona !== false) {
         atestadoDias++;
         if (prev > 0) abonadoMin += Math.max(prev - (t?.min ?? 0), 0);
         continue;
@@ -241,6 +243,8 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
           descricao: a.descricao,
           arquivoNome: a.arquivoNome,
           temArquivo: a.temArquivo,
+          abona: a.abona,
+          origem: a.origem,
         })),
       movimentoMin,
       saldoMin: (inicial?.minutos ?? 0) + acertosMin + movimentoMin,
@@ -307,6 +311,7 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
         )}
 
         <BancoHorasManager
+          filialId={filial.id}
           hoje={hoje}
           podeLancar={podeLancar}
           linhas={linhas}
