@@ -198,6 +198,11 @@ export async function proxy(request: NextRequest) {
     // /soea é o cadastro público do benefício da 81ª SOEA (soea.prainhabar.com).
     path === '/soea' ||
     path === '/jipeshow' ||
+    // Termos e Privacidade públicos (exigidos pelo cadastro do app no TikTok)
+    // + arquivo de verificação de URL do TikTok (tiktokXXXX.txt na raiz).
+    path === '/termos' ||
+    path === '/privacidade' ||
+    /^\/tiktok[A-Za-z0-9_-]*\.txt$/.test(path) ||
     // /convite/[token] é o link do botão do convite de campanha (zap): registra
     // o toque e redireciona pro site da casa. O painel é /campanha (protegido).
     path.startsWith('/convite/');
