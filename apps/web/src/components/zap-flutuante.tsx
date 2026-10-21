@@ -1,11 +1,12 @@
 // Botão flutuante "fale no WhatsApp" dos sites públicos (dono, 19/10/2026:
 // "colocar atendimento por zap em todos os sites"). Cai no número da
-// atendente da casa — Nina no Prainha Bar e na Prainha Mar (casa coberta, a
-// Mar não tem número próprio), Otávio na Tabuará. Mesmos números de
-// whatsapp_numero; casa nova sem número cai na Nina.
+// atendente da casa — Nina no Prainha Bar, Otávio na Tabuará e Marina na
+// Prainha Mar (número próprio desde 20/10; antes caía na Nina). Mesmos números
+// de whatsapp_numero; casa nova sem número cai na Nina.
 
 const NINA = '5579996749949';
 const OTAVIO = '557935120567';
+const MARINA = '5579999812578';
 
 const PRAINHA_BAR = '7c5c66ce-cceb-4e89-9c6d-d0785255c4f9';
 const TABUARA = 'fde37b95-7c7e-4b41-a618-2aba1fbc0de7';
@@ -14,7 +15,7 @@ const PRAINHA_MAR = 'e899dae2-38bf-4f3f-9149-7effd059fab8';
 const POR_FILIAL: Record<string, { numero: string; atendente: string; casa: string }> = {
   [PRAINHA_BAR]: { numero: NINA, atendente: 'Nina', casa: 'Prainha Bar' },
   [TABUARA]: { numero: OTAVIO, atendente: 'Otávio', casa: 'Tabuará' },
-  [PRAINHA_MAR]: { numero: NINA, atendente: 'Nina', casa: 'Prainha Mar e Grill' },
+  [PRAINHA_MAR]: { numero: MARINA, atendente: 'Marina', casa: 'Prainha Mar e Grill' },
 };
 
 /** Acha a casa pelo nome da filial ("Tabuara", "Prainha Mar"...), pra telas que só têm o nome. */

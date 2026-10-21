@@ -21,7 +21,7 @@ const ArrowRight = (p: IconProps) => <S {...p}><path d="M5 12h14M13 6l6 6-6 6" /
 
 // WhatsApp da casa (atendimento da Nina) e telefone do salão.
 const WHATSAPP_URL =
-  'https://wa.me/5579996749949?text=' + encodeURIComponent('Olá! Quero reservar uma mesa na Prainha Mar e Grill.');
+  'https://wa.me/5579999812578?text=' + encodeURIComponent('Olá! Quero reservar uma mesa na Prainha Mar e Grill.');
 const TELEFONE = '(79) 99600-7289';
 const TELEFONE_URL = 'tel:+5579996007289';
 const ENDERECO = 'Shopping Praia Sul, loja 198 · Rod. dos Náufragos, 4880 · Aruana, Aracaju - SE';
