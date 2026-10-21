@@ -19,6 +19,8 @@ import { ConfrontoPedido } from './confronto-pedido';
 import { sugestoesDoPedido } from '@/lib/sugestao-pedido-nota';
 import { VincularPeloPedidoBtn } from './vincular-pelo-pedido';
 import { CelularLeuOutra } from './celular-leu-outra';
+import { JuntarGemea } from './juntar-gemea';
+import { acharGemea } from '@/lib/juntar-pedido-foto';
 
 export const dynamic = 'force-dynamic';
 
@@ -51,6 +53,9 @@ export default async function NotaDetalhePage(props: {
     )
     .limit(1);
   if (!link) notFound();
+
+  // Pedido sem nota (foto do DANFE) × NF-e da SEFAZ da mesma compra.
+  const gemea = await acharGemea(nota.id).catch(() => null);
 
   // Nota que NÓS emitimos (NF-e de transferência entre casas): o estoque
   // entra pelo recebimento da transferência — lançar aqui dobraria a entrada.
@@ -417,6 +422,14 @@ export default async function NotaDetalhePage(props: {
           </Link>
         </nav>
         <CelularLeuOutra filialId={nota.filialId} notaId={nota.id} />
+        {gemea && (
+          <JuntarGemea
+            notaId={nota.id}
+            euSouFoto={gemea.fotoId === nota.id}
+            outra={gemea}
+            nfeId={gemea.nfeId}
+          />
+        )}
 
         {casaDest && (
           <div className="mt-3 rounded-xl border border-red-300 bg-red-50 p-4 text-sm text-red-900">

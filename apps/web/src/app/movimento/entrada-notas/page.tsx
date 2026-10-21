@@ -1,4 +1,5 @@
 import { redirect } from 'next/navigation';
+import { idsComGemea } from '@/lib/juntar-pedido-foto';
 import { exigirPerm } from '@/lib/exigir-perm';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
@@ -219,6 +220,9 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
     .orderBy(desc(schema.notaCompra.dataEmissao))
     .limit(PAGE_SIZE)
     .offset(page * PAGE_SIZE);
+
+  // Pedido sem nota (foto do DANFE) e NF-e da SEFAZ da mesma compra: selo "em dobro".
+  const emDobro = await idsComGemea(notas.map((n) => n.id)).catch(() => new Set<string>());
 
   const totalPag = Math.max(1, Math.ceil(Number(stats?.qtd ?? 0) / PAGE_SIZE));
   const hrefPag = (p: number) => {
@@ -587,6 +591,15 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
                               </span>
                             );
                           })()}
+                          {emDobro.has(n.id) && (
+                            <Link
+                              href={`/movimento/entrada-notas/${n.id}`}
+                              className="ml-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 hover:bg-amber-200"
+                              title="Mesma compra como Pedido sem nota e como NF-e da SEFAZ — abra e use 🔗 Juntar na NF-e"
+                            >
+                              em dobro
+                            </Link>
+                          )}
                           {n.origemImportacao === 'SEFAZ_DFE_RESUMO' && (
                             <div className="mt-1">
                               <ManifestarUmaBtn
