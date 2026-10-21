@@ -5,7 +5,8 @@ export type MenuIconName =
   | 'inventory'
   | 'finance'
   | 'people'
-  | 'admin';
+  | 'admin'
+  | 'marketing';
 
 export type NotificationKey = 'opsAguardandoRevisao';
 
@@ -162,6 +163,17 @@ export const MENU_AREAS: MenuArea[] = [
             perm: 'atendimento.config',
           },
         ],
+      },
+    ],
+  },
+  {
+    id: 'marketing',
+    label: 'Marketing',
+    icon: 'marketing',
+    sections: [
+      {
+        label: 'Redes sociais',
+        links: [{ label: 'Instagram e TikTok', href: '/marketing', perm: 'atendimento.read' }],
       },
     ],
   },
