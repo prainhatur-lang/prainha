@@ -23,6 +23,6 @@ export function alertaUnidadeResposta(
     return `preço do kg — falta o peso da ${unidadeItem}; não compara`;
   const m = emb.match(/c\/\s*([\d.,]+)\s*(\S+)/);
   if (fator > 1 && m && m[2].replace(/\.$/, '') === unidadeItem.toLowerCase())
-    return `confira: ${m[1]} ${unidadeItem} juntas ou ${unidadeItem} de ${m[1]} kg?`;
+    return `confira: ${m[1]} ${unidadeItem} juntas, ou 1 ${unidadeItem} com ${m[1]} dentro (un ou kg)?`;
   return null;
 }

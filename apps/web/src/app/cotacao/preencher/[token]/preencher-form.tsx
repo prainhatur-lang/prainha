@@ -491,7 +491,9 @@ export function PreencherForm(props: {
                         {respostas[i.id]?.tipoPreco === 'pacote' && unidadeIndefinida(i.unidade) && (
                           <p className="mt-0.5 text-[10px] text-amber-700">
                             É quantas {i.unidade} juntas, não o peso. Preço por kg? Escolha
-                            &quot;1 kg (vendo por peso)&quot;.
+                            &quot;1 kg (vendo por peso)&quot;. Preço de 1 {i.unidade} com várias
+                            unidades dentro (ex: 1 {i.unidade} de 27 latas)? Escolha &quot;1{' '}
+                            {nomeUnidade(i.unidade)}&quot; e escreva o que vem dentro.
                           </p>
                         )}
                       </div>

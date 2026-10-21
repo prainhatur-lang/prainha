@@ -10,6 +10,7 @@
 //   modo 'peso'             → preço é do kg; 1 {un} pesa pesoKg → preço da {un} = preço × peso
 //   modo 'preco_da_unidade' → o número já é o preço da {un} (fornecedor errou o rótulo)
 //   modo 'uma_de_n_kg'      → "c/ N" era o peso: o preço é de 1 {un} de N kg
+//   modo 'uma_de_n_un'      → "c/ N" era o que vem dentro: 1 fardo de 27 latas (dono 21/10)
 //   modo 'juntas'           → "c/ N" era mesmo N {un} juntas: a conta fica como está
 // Só enquanto a cotação não foi aprovada.
 
@@ -21,7 +22,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
 
 const TRAVADAS = new Set(['APROVADA', 'CONCLUIDA', 'CANCELADA']);
-type Modo = 'peso' | 'preco_da_unidade' | 'uma_de_n_kg' | 'juntas';
+type Modo = 'peso' | 'preco_da_unidade' | 'uma_de_n_kg' | 'uma_de_n_un' | 'juntas';
 
 function fmtKg(n: number): string {
   return n.toLocaleString('pt-BR', { maximumFractionDigits: 3 });
@@ -47,7 +48,7 @@ export async function POST(
   const modo = body.modo;
   if (!body.cotacaoFornecedorId || !body.cotacaoItemId || !modo)
     return NextResponse.json({ error: 'cotacaoFornecedorId, cotacaoItemId e modo obrigatorios' }, { status: 400 });
-  if (!['peso', 'preco_da_unidade', 'uma_de_n_kg', 'juntas'].includes(modo))
+  if (!['peso', 'preco_da_unidade', 'uma_de_n_kg', 'uma_de_n_un', 'juntas'].includes(modo))
     return NextResponse.json({ error: 'modo inválido' }, { status: 400 });
   const peso = Number(body.pesoKg);
   if (modo === 'peso' && (!Number.isFinite(peso) || peso <= 0 || peso > 1000))
@@ -117,6 +118,10 @@ export async function POST(
     fator = 1;
     norm = preco;
     rotulo = `✓ 1 ${un} de ${nAtual} kg`;
+  } else if (modo === 'uma_de_n_un') {
+    fator = 1;
+    norm = preco;
+    rotulo = `✓ 1 ${un} de ${nAtual} un`;
   } else {
     fator = fatorAtual;
     norm = preco / fatorAtual;

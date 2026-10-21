@@ -254,7 +254,7 @@ export function RespostasClient(props: {
   async function ajustarResposta(
     f: Forn,
     item: Item,
-    modo: 'peso' | 'preco_da_unidade' | 'uma_de_n_kg' | 'juntas',
+    modo: 'peso' | 'preco_da_unidade' | 'uma_de_n_kg' | 'uma_de_n_un' | 'juntas',
   ) {
     const k = `${f.cfId}:${item.id}`;
     const pesoKg = modo === 'peso' ? Number((pesoDigitado[k] ?? '').trim().replace(',', '.')) || 0 : undefined; // "2,5" ou "2.5" = 2,5 kg
@@ -663,6 +663,15 @@ export function RespostasClient(props: {
                                     </>
                                   ) : (
                                     <>
+                                      <button
+                                        type="button"
+                                        disabled={ocupado}
+                                        onClick={() => void ajustarResposta(f, item, 'uma_de_n_un')}
+                                        className={btn}
+                                        title={`${brl(r.preco ?? 0)} é o preço de 1 ${item.unidade} com ${nCx} unidades dentro`}
+                                      >
+                                        1 {item.unidade} de {nCx} un
+                                      </button>
                                       <button
                                         type="button"
                                         disabled={ocupado}
