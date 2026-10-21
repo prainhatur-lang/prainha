@@ -118,25 +118,32 @@ export async function trocarCodigoInstagram(
   const escopos = Array.isArray(perms) ? perms.join(',') : String(perms ?? '');
   if (!curta) throw new ErroInstagram('O Instagram não devolveu a chave.');
 
-  // chave curta (1 h) → longa (60 dias)
-  let r2: Response;
-  try {
-    r2 = await fetch(
-      `${GRAPH}/access_token?${new URLSearchParams({
-        grant_type: 'ig_exchange_token',
-        client_secret: env('INSTAGRAM_APP_SECRET'),
-        access_token: curta,
-      }).toString()}`,
-      { cache: 'no-store', signal: AbortSignal.timeout(ESPERA_MS) },
-    );
-  } catch {
-    throw new ErroInstagram('O Instagram não respondeu a tempo.');
+  // chave curta (1 h) → longa (60 dias). 20/10: a Meta respondeu "Unsupported
+  // request - method type: get" na troca sem versão; tenta com versão e, se as
+  // duas falharem, guarda a curta (vale 1 h, a tela pede pra religar depois).
+  const q = new URLSearchParams({
+    grant_type: 'ig_exchange_token',
+    client_secret: env('INSTAGRAM_APP_SECRET'),
+    access_token: curta,
+  }).toString();
+  let ultimoErro = '';
+  for (const url of [`${GRAPH}/access_token?${q}`, `${GRAPH}/${VERSAO()}/access_token?${q}`]) {
+    try {
+      const r2 = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(ESPERA_MS) });
+      const corpo = (await r2.json().catch(() => null)) as Record<string, unknown> | null;
+      const accessToken = String(corpo?.access_token ?? '');
+      if (r2.ok && accessToken) {
+        const seg = Number(corpo?.expires_in) || 60 * 24 * 3600;
+        return { accessToken, expiraEm: new Date(Date.now() + seg * 1000).toISOString(), contaId, escopos };
+      }
+      ultimoErro = `HTTP ${r2.status} ${JSON.stringify(corpo)}`;
+    } catch (e) {
+      ultimoErro = e instanceof Error ? e.message : String(e);
+    }
+    console.error('[marketing/instagram] troca pela chave de 60 dias falhou:', url.split('?')[0], ultimoErro);
   }
-  const longa = await lerJson(r2);
-  const accessToken = String(longa.access_token ?? '');
-  const seg = Number(longa.expires_in) || 60 * 24 * 3600;
-  if (!accessToken) throw new ErroInstagram('O Instagram não devolveu a chave de 60 dias.');
-  return { accessToken, expiraEm: new Date(Date.now() + seg * 1000).toISOString(), contaId, escopos };
+  const segCurta = Number(d.expires_in) || 3600;
+  return { accessToken: curta, expiraEm: new Date(Date.now() + segCurta * 1000).toISOString(), contaId, escopos };
 }
 
 /** Renova a chave de 60 dias (precisa ter mais de 24 h). */
