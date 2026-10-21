@@ -27,7 +27,36 @@ interface SP {
   dataIni?: string;
   dataFim?: string;
   origem?: string;
+  tipo?: string;
   page?: string;
+}
+
+// Filtro em linguagem simples: nota fiscal de verdade × pedido sem nota (foto).
+type TipoFiltro = 'TODOS' | 'NF' | 'PEDIDO';
+const TIPO_SQL_NF = ['PEDIDO_FOTO', 'NFSE_PDF'];
+
+/** Selo do tipo da compra, pra quem não sabe o que é "SEFAZ DF-e". */
+function tipoCompra(origem: string | null): { icone: string; texto: string; dica: string; cls: string } {
+  if (origem === 'PEDIDO_FOTO')
+    return {
+      icone: '📸',
+      texto: 'Pedido sem nota',
+      dica: 'Compra sem nota fiscal: entrou pela foto do pedido/romaneio do fornecedor',
+      cls: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+    };
+  if (origem === 'NFSE_PDF')
+    return {
+      icone: '🛠',
+      texto: 'Nota de serviço',
+      dica: 'Nota de serviço (NFS-e): só vira conta a pagar, não mexe no estoque',
+      cls: 'border-indigo-200 bg-indigo-50 text-indigo-800',
+    };
+  return {
+    icone: '🧾',
+    texto: 'Nota fiscal',
+    dica: 'Nota fiscal eletrônica (NF-e) registrada na SEFAZ',
+    cls: 'border-sky-200 bg-sky-50 text-sky-800',
+  };
 }
 
 type OrigemFiltro = 'TODAS' | 'UPLOAD' | 'SEFAZ_DFE' | 'SEFAZ_DFE_RESUMO' | 'SEFAZ_DFE_RESUMO_CIENTE' | 'PEDIDO_FOTO';
@@ -84,6 +113,7 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
   const dataIni = sp.dataIni && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataIni) ? sp.dataIni : diasAtrasBr(365);
   const dataFim = sp.dataFim && /^\d{4}-\d{2}-\d{2}$/.test(sp.dataFim) ? sp.dataFim : hojeBr();
   const origem = (sp.origem ?? 'TODAS') as OrigemFiltro;
+  const tipo: TipoFiltro = sp.tipo === 'NF' || sp.tipo === 'PEDIDO' ? sp.tipo : 'TODOS';
   const page = Math.max(0, Number(sp.page ?? '0') || 0);
 
   if (!filialSelecionada) {
@@ -107,6 +137,13 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
     gte(schema.notaCompra.dataEmissao, dtIni),
     lte(schema.notaCompra.dataEmissao, dtFim),
     origem !== 'TODAS' ? eq(schema.notaCompra.origemImportacao, origem) : undefined,
+    tipo === 'PEDIDO' ? eq(schema.notaCompra.origemImportacao, 'PEDIDO_FOTO') : undefined,
+    tipo === 'NF'
+      ? sql`coalesce(${schema.notaCompra.origemImportacao}, 'UPLOAD') NOT IN (${sql.join(
+          TIPO_SQL_NF.map((o) => sql`${o}`),
+          sql`, `,
+        )})`
+      : undefined,
     q
       ? qDigits.length > 0
         ? sql`(${buscaIlike(schema.notaCompra.emitNome, q)} OR ${ilike(
@@ -224,6 +261,44 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
   // Pedido sem nota (foto do DANFE) e NF-e da SEFAZ da mesma compra: selo "em dobro".
   const emDobro = await idsComGemea(notas.map((n) => n.id)).catch(() => new Set<string>());
 
+  // Quantos itens de cada nota já entraram no estoque — vira o "O que fazer".
+  const lancamento = new Map<string, { itens: number; lancados: number }>();
+  if (notas.length > 0) {
+    const rows = await db
+      .execute(
+        sql`SELECT i.nota_compra_id AS nota_id,
+                   count(*)::int AS itens,
+                   count(*) FILTER (WHERE EXISTS (
+                     SELECT 1 FROM movimento_estoque m WHERE m.nota_compra_item_id = i.id
+                   ))::int AS lancados
+              FROM nota_compra_item i
+             WHERE i.nota_compra_id IN (${sql.join(
+               notas.map((n) => sql`${n.id}::uuid`),
+               sql`, `,
+             )})
+             GROUP BY i.nota_compra_id`,
+      )
+      .catch(() => []);
+    for (const r of rows as unknown as { nota_id: string; itens: number; lancados: number }[]) {
+      lancamento.set(r.nota_id, { itens: Number(r.itens), lancados: Number(r.lancados) });
+    }
+  }
+  const proximoPasso = (n: (typeof notas)[number]): { texto: string; cls: string } => {
+    if (n.situacao === 'CANCELADA' || n.situacao === 'DENEGADA')
+      return { texto: 'Cancelada pelo fornecedor — não lançar', cls: 'text-rose-700' };
+    if (n.origemImportacao === 'SEFAZ_DFE_RESUMO')
+      return { texto: 'Só o resumo chegou: dê ciência pra SEFAZ mandar os itens', cls: 'text-amber-700' };
+    if (n.origemImportacao === 'SEFAZ_DFE_RESUMO_CIENTE')
+      return { texto: 'Esperando a SEFAZ mandar os itens', cls: 'text-violet-700' };
+    if (n.origemImportacao === 'NFSE_PDF') return { texto: 'Serviço: só conta a pagar', cls: 'text-slate-500' };
+    const l = lancamento.get(n.id);
+    if (!l || l.itens === 0) return { texto: 'Sem itens — abra pra ver', cls: 'text-slate-500' };
+    if (l.lancados >= l.itens) return { texto: '✓ Já está no estoque', cls: 'text-emerald-700' };
+    if (l.lancados > 0)
+      return { texto: `Lançada em parte (${l.lancados} de ${l.itens}) — abra e termine`, cls: 'text-amber-700' };
+    return { texto: '→ Abrir, conferir e lançar no estoque', cls: 'font-semibold text-sky-700' };
+  };
+
   const totalPag = Math.max(1, Math.ceil(Number(stats?.qtd ?? 0) / PAGE_SIZE));
   const hrefPag = (p: number) => {
     const qs = new URLSearchParams();
@@ -232,6 +307,7 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
     if (dataIni) qs.set('dataIni', dataIni);
     if (dataFim) qs.set('dataFim', dataFim);
     if (origem !== 'TODAS') qs.set('origem', origem);
+    if (tipo !== 'TODOS') qs.set('tipo', tipo);
     if (p > 0) qs.set('page', String(p));
     return `/movimento/entrada-notas?${qs.toString()}`;
   };
@@ -243,6 +319,18 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
     if (dataIni) qs.set('dataIni', dataIni);
     if (dataFim) qs.set('dataFim', dataFim);
     if (o !== 'TODAS') qs.set('origem', o);
+    if (tipo !== 'TODOS') qs.set('tipo', tipo);
+    return `/movimento/entrada-notas?${qs.toString()}`;
+  };
+
+  const hrefTipo = (t: TipoFiltro) => {
+    const qs = new URLSearchParams();
+    qs.set('filialId', filialSelecionada.id);
+    if (q) qs.set('q', q);
+    if (dataIni) qs.set('dataIni', dataIni);
+    if (dataFim) qs.set('dataFim', dataFim);
+    if (origem !== 'TODAS') qs.set('origem', origem);
+    if (t !== 'TODOS') qs.set('tipo', t);
     return `/movimento/entrada-notas?${qs.toString()}`;
   };
 
@@ -253,6 +341,7 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
     if (dataIni) qs.set('dataIni', dataIni);
     if (dataFim) qs.set('dataFim', dataFim);
     if (origem !== 'TODAS') qs.set('origem', origem);
+    if (tipo !== 'TODOS') qs.set('tipo', tipo);
     return `/movimento/entrada-notas?${qs.toString()}`;
   };
 
@@ -280,6 +369,64 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
           </Link>
           .
         </p>
+
+        {/* Guia em linguagem simples: o que é cada coisa e por onde entra. */}
+        <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-sm font-semibold text-slate-900">Chegou mercadoria? Veja qual é o seu caso:</p>
+          <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+            <div className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-xs text-sky-900">
+              <p className="text-sm font-semibold">🧾 Veio com nota fiscal</p>
+              <p className="mt-1 text-sky-800">
+                É o papel do fornecedor com <b>DANFE</b> escrito e um código de barras com a chave de 44
+                números. Na maioria das vezes ela <b>já aparece sozinha</b> na lista abaixo (a SEFAZ manda).
+              </p>
+              <ul className="mt-2 list-disc space-y-0.5 pl-4 text-sky-800">
+                <li>Está na lista → abra a nota, confira e lance no estoque.</li>
+                <li>
+                  Não está →{' '}
+                  <a href="#por-chave" className="font-semibold underline">
+                    📱 ler a chave pelo celular ou digitar
+                  </a>
+                  .
+                </li>
+                <li>
+                  O fornecedor mandou o arquivo XML →{' '}
+                  <a href="#xml" className="font-semibold underline">
+                    importar XML
+                  </a>
+                  .
+                </li>
+              </ul>
+            </div>
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900">
+              <p className="text-sm font-semibold">📸 Veio sem nota fiscal</p>
+              <p className="mt-1 text-emerald-800">
+                Só um pedido, romaneio ou recibo, <b>sem DANFE e sem chave</b>. Fotografe em{' '}
+                <a href="#pedido-foto" className="font-semibold underline">
+                  📸 Pedido sem nota
+                </a>
+                : o sistema lê os itens, dá entrada no estoque e cria a conta a pagar.
+              </p>
+              <p className="mt-2 rounded-md bg-white/70 px-2 py-1 text-[11px] text-emerald-900">
+                ⚠ Tem DANFE? Então <b>é nota fiscal</b> — use o caminho da esquerda, senão a compra entra
+                duas vezes.
+              </p>
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-800">
+              <p className="text-sm font-semibold">🔁 Veio de outra casa</p>
+              <p className="mt-1 text-slate-600">
+                Mercadoria mandada por outra casa do grupo não entra por aqui: confira em{' '}
+                <Link
+                  href={`/movimento/transferencias?filialId=${filialSelecionada.id}`}
+                  className="font-semibold underline"
+                >
+                  Transferências
+                </Link>
+                .
+              </p>
+            </div>
+          </div>
+        </div>
 
         {(transfACaminho?.n ?? 0) > 0 && (
           <Link
@@ -384,20 +531,32 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
           </div>
         )}
 
-        <TrazerPorChaveForm filialId={filialSelecionada.id} />
+        <div id="por-chave" className="scroll-mt-20">
+          <TrazerPorChaveForm filialId={filialSelecionada.id} />
+        </div>
 
         <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-[380px_1fr]">
           {/* Coluna esquerda: upload + filtro */}
           <div className="space-y-4">
-            <UploadNotasForm
-              filialId={filialSelecionada.id}
-              filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
-            />
+            <div id="xml" className="scroll-mt-20">
+              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-sky-700">
+                🧾 Com nota fiscal (arquivo XML)
+              </p>
+              <UploadNotasForm
+                filialId={filialSelecionada.id}
+                filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
+              />
+            </div>
 
-            <PedidoFotoForm
-              filialId={filialSelecionada.id}
-              filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
-            />
+            <div id="pedido-foto" className="scroll-mt-20">
+              <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-emerald-700">
+                📸 Sem nota fiscal (foto do pedido)
+              </p>
+              <PedidoFotoForm
+                filialId={filialSelecionada.id}
+                filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
+              />
+            </div>
 
           </div>
 
@@ -442,6 +601,30 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
               </div>
             </div>
 
+            {/* Filtro simples por tipo */}
+            <div className="flex flex-wrap items-center gap-1 text-xs">
+              <span className="mr-1 text-slate-500">Mostrar:</span>
+              {(
+                [
+                  ['TODOS', 'Tudo'],
+                  ['NF', '🧾 Notas fiscais'],
+                  ['PEDIDO', '📸 Pedidos sem nota'],
+                ] as const
+              ).map(([t, label]) => (
+                <Link
+                  key={t}
+                  href={hrefTipo(t)}
+                  className={`rounded-md border px-2.5 py-1 font-medium ${
+                    t === tipo
+                      ? 'border-slate-900 bg-slate-900 text-white'
+                      : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  {label}
+                </Link>
+              ))}
+            </div>
+
             {/* Tabs de origem */}
             <div className="flex flex-wrap items-center gap-1 text-xs">
               <span className="mr-1 text-slate-500">Origem:</span>
@@ -471,6 +654,7 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
             <form method="GET" className="flex flex-wrap items-end gap-2">
               <input type="hidden" name="filialId" value={filialSelecionada.id} />
               {origem !== 'TODAS' && <input type="hidden" name="origem" value={origem} />}
+              {tipo !== 'TODOS' && <input type="hidden" name="tipo" value={tipo} />}
               <label className="text-xs text-slate-600">
                 Busca
                 <input
@@ -512,6 +696,7 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
               <table className="w-full text-sm">
                 <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
                   <tr>
+                    <th className="px-4 py-2">Tipo</th>
                     <th className="px-4 py-2">Emissão</th>
                     <th className="px-4 py-2">Nº / Série</th>
                     <th className="px-4 py-2">Fornecedor</th>
@@ -519,18 +704,32 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
                     <th className="px-4 py-2 text-right">Valor</th>
                     <th className="px-4 py-2">Situação</th>
                     <th className="px-4 py-2">Origem</th>
+                    <th className="px-4 py-2">O que fazer</th>
                   </tr>
                 </thead>
                 <tbody>
                   {notas.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-4 py-8 text-center text-xs text-slate-500">
+                      <td colSpan={9} className="px-4 py-8 text-center text-xs text-slate-500">
                         {q ? 'Nenhuma nota com esse filtro.' : 'Nenhuma nota no período. Faça upload de um XML pra começar.'}
                       </td>
                     </tr>
                   ) : (
                     notas.map((n) => (
                       <tr key={n.id} className="border-t border-slate-100 hover:bg-slate-50">
+                        <td className="px-4 py-2">
+                          {(() => {
+                            const t = tipoCompra(n.origemImportacao);
+                            return (
+                              <span
+                                className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-semibold ${t.cls}`}
+                                title={t.dica}
+                              >
+                                {t.icone} {t.texto}
+                              </span>
+                            );
+                          })()}
+                        </td>
                         <td className="px-4 py-2 font-mono text-xs text-slate-700">
                           {n.dataEmissao ? new Date(n.dataEmissao).toLocaleDateString('pt-BR') : '—'}
                         </td>
@@ -634,6 +833,19 @@ export default async function EntradaNotasPage(props: { searchParams: Promise<SP
                                 <BuscarXmlBtn filialId={filialSelecionada.id} chave={n.chave} />
                               </div>
                             )}
+                        </td>
+                        <td className="px-4 py-2">
+                          {(() => {
+                            const ps = proximoPasso(n);
+                            return (
+                              <Link
+                                href={`/movimento/entrada-notas/${n.id}`}
+                                className={`block max-w-[200px] whitespace-normal text-[11px] leading-tight hover:underline ${ps.cls}`}
+                              >
+                                {emDobro.has(n.id) ? '⚠ Está em dobro: abra e junte na NF-e' : ps.texto}
+                              </Link>
+                            );
+                          })()}
                         </td>
                       </tr>
                     ))
