@@ -30,6 +30,7 @@ import {
 import { Desconectar } from './desconectar';
 import { MandarTiktok } from './mandar-tiktok';
 import { Publicar, type PostVisto } from './publicar';
+import { KitPerfil } from './kit-perfil';
 import { db, schema } from '@concilia/db';
 import { desc, eq } from 'drizzle-orm';
 import { createAdminClient } from '@/lib/supabase/server';
@@ -39,6 +40,11 @@ import { BUCKET_MARKETING } from '@/lib/marketing/midia-link';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
+
+// logo oficial pra baixar no kit do perfil (só a casa que já tem arquivo)
+const LOGOS: Record<string, string> = {
+  '7c5c66ce-cceb-4e89-9c6d-d0785255c4f9': '/marketing/prainha-bar-logo-1024.png', // 01 Prainha Bar
+};
 
 const AVISOS: Record<string, { ok: boolean; texto: string }> = {
   ok: { ok: true, texto: 'Conta conectada.' },
@@ -227,6 +233,8 @@ export default async function MarketingPage(props: {
             posts={postsFeitos}
           />
         )}
+
+        {podeConectar && <KitPerfil filialId={filial.id} casa={filial.nome} logo={LOGOS[filial.id] ?? null} />}
 
         {/* INSTAGRAM */}
         <div className="mt-6 rounded-xl border border-slate-200 bg-white p-4">

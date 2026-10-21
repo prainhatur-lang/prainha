@@ -383,3 +383,13 @@ export async function publicarContainerInstagram(
   }
   return { id, link };
 }
+
+/** Bio atual do perfil (campo `biography`); vazio se a API não devolver. */
+export async function bioInstagram(token: string): Promise<string> {
+  try {
+    const j = await chamar('me', token, { fields: 'biography' });
+    return String(j.biography ?? '');
+  } catch {
+    return '';
+  }
+}
