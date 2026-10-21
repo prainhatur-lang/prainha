@@ -229,6 +229,13 @@ function montarSystemPrompt(params: {
     ? `\n\n🚨 SITUAÇÃO ESPECIAL — CONVERSA DEVOLVIDA PRA VOCÊ:\nA equipe te devolveu esta conversa com uma pergunta do cliente SEM resposta. No histórico você (ou a equipe) prometeu "confirmar e retornar" — esse retorno é AGORA, e é SEU:\n- RESOLVA a pergunta pendente: PRIMEIRO releia os blocos de "O QUE VOCÊ SABE" — a resposta costuma já estar lá (a base foi atualizada DEPOIS da sua promessa); se for preço/prato/mesa/vaga, use as ferramentas. Responda com a informação CONCRETA.\n- Se você prometeu "confirmar com a equipe" algo que AGORA está nos blocos: a confirmação já aconteceu — VOCÊ é o retorno. Entregue como boa notícia ("confirmei aqui: pode sim!").\n- É PROIBIDO prometer retorno de novo, dizer "a equipe vai te responder" ou repetir "vou confirmar". Só transfira se NEM os blocos NEM as ferramentas tiverem a resposta.\n- Comece a resposta reconhecendo a espera com uma palavrinha ("prontinho!", "confirmei aqui") e entregue a resposta.`
     : '';
 
+  // HORÁRIO POR CASA (21/10/2026, caso Moisés): a regra "depois das 19h" é
+  // do Prainha Bar e ia pro prompt de todas as casas — o Otávio disse que a
+  // Tabuará (aberta até 23h na quarta) "já estava fechada" às 19:46.
+  const blocoForaHorario = params.filialId === FILIAL_PRAINHA_BAR
+    ? '- FORA DO HORÁRIO (depois das 19h ou antes das 9h): o Prainha abre 9h–19h. Se o cliente contacta com problema relacionado ao LOCAL (carro no estacionamento, perdeu algo na mesa, etc), avise com carinho: "A gente funciona 9h–19h — seu carro está seguro no nosso estacionamento, você busca amanhã durante o horário. Se é algo na mesa, a equipe verifica pra você amanhã." Aí transfira SOMENTE se o cliente insistir ou se for algo urgente de verdade (vazamento, incêndio, emergência). Se é só dúvida/informação (cardápio, preço, evento), responda normalmente e ofereça vir durante o horário.'
+    : `- HORÁRIO DE FUNCIONAMENTO: o horário do ${filialNome} é o que está escrito nos blocos DESTA casa — o "9h–19h" é só do Prainha Bar e NÃO vale aqui. Antes de dizer que a casa está aberta ou fechada (hoje, agora, amanhã), pegue o dia da semana e a hora de AGORA (fim deste prompt) e confira contra o horário escrito nos blocos. Na dúvida, NUNCA diga "fechado": diga o horário do dia e siga com a reserva.`;
+
   // PASSAGEM ENTRE CASAS (dono, 14/10/2026): cada casa com número próprio tem
   // atendente própria; assunto de lá vai pra ela, com o resumo, pelo link.
   const outras = params.outrasCasas ?? [];
@@ -337,7 +344,7 @@ REGRAS DE VERDADE:
 - Se você disser que vai confirmar/verificar/perguntar algo pra equipe (ou "chamar um colega"), é OBRIGATÓRIO chamar transferir_para_humano nessa mesma resposta — prometer retorno sem transferir é proibido (ninguém seria avisado).
 - RESPOSTA DA EQUIPE NO HISTÓRICO ([UM COLEGA HUMANO DA EQUIPE respondeu...]): aquilo É a resposta oficial da casa pra pergunta que estava pendente — trate como verdade, converse EM CIMA dela ("sim, o que o colega indicou é nossa recomendação") e responda as perguntas seguintes do cliente sobre ela. É PROIBIDO re-prometer "vou chamar um colega" pra algo que a equipe já respondeu, e proibido pedir desculpas dizendo que não sabe — a resposta está ali.
 - Nunca invente preço, horário, promoção nem exceção. Nunca prometa nada em nome da casa.
-- FORA DO HORÁRIO (depois das 19h ou antes das 9h): o Prainha abre 9h–19h. Se o cliente contacta com problema relacionado ao LOCAL (carro no estacionamento, perdeu algo na mesa, etc), avise com carinho: "A gente funciona 9h–19h — seu carro está seguro no nosso estacionamento, você busca amanhã durante o horário. Se é algo na mesa, a equipe verifica pra você amanhã." Aí transfira SOMENTE se o cliente insistir ou se for algo urgente de verdade (vazamento, incêndio, emergência). Se é só dúvida/informação (cardápio, preço, evento), responda normalmente e ofereça vir durante o horário.
+${blocoForaHorario}
 - PEDIDO DE DELIVERY / iFOOD ("cadê meu pedido", "já saiu?", "o entregador não chegou", "o motoboy não acha minha casa") — vale a qualquer hora, inclusive fora do horário: chame consultar_pedido_delivery ANTES de responder e siga o COMO RESPONDER e a AÇÃO que ela devolver; quando ela mandar transferir, transfira NESSA mesma resposta. É PROIBIDO dizer que não tem como falar com o entregador, ou mandar o cliente resolver no app do iFood, sem ter consultado (caso Cíntya, 14/10: o pedido já tinha saído com o nosso motoboy e ela ouviu que a casa não falava com o entregador). Endereço, telefone e nome do motoboy que a ferramenta marcar como USO INTERNO nunca vão pro cliente — só pro resumo da transferência. Peça o número do pedido só quando a ferramenta pedir.${ehTabuara
     ? ''
     : `
@@ -1232,6 +1239,16 @@ Como usar, SEM EXCEÇÃO:
   // de evento do Bar. Fora do Bar, recado por último em qualquer modo.
   if (params.filialId !== FILIAL_PRAINHA_BAR) {
     mensagens.push({ role: 'system', content: RECADO_SEM_TERRACO });
+    // HORÁRIO DESTA CASA (21/10/2026, caso Moisés na Tabuará às 19:46 de
+    // quarta): recado por último, com a hora de agora, pra não puxar o
+    // "9h–19h" do Prainha Bar.
+    mensagens.push({
+      role: 'system',
+      content:
+        `HORÁRIO: agora é ${agoraBrtLegivel()}. O horário de funcionamento do ${params.filialNome} é SÓ o que está escrito nos blocos desta casa — o "9h–19h" é do Prainha Bar e não vale aqui. ` +
+        'Antes de dizer "hoje já fechamos" ou "estamos fechados", confira o dia da semana e a hora de agora contra esse horário; se a casa está aberta agora ou ainda abre hoje, diga isso e siga com a reserva pra hoje. ' +
+        'E o Prainha Bar à noite (depois das 19h) não abre ao público — nunca indique o Bar pra jantar ou comemorar à noite.',
+    });
   }
 
   // DIA DA SEMANA das datas citadas (20/10/2026, caso Gabriella): a Nina
