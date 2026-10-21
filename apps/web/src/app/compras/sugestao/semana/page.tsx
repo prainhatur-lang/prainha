@@ -572,7 +572,10 @@ export default async function ListaSemanaPage(props: { searchParams: Promise<SP>
           toda semana, de 15 em 15 dias ou 1 vez por mês, e o que vence nesta semana.
         </div>
 
+        {/* key: ao salvar a sugestão, a tela troca pra lista salva e remonta com os
+            ids dos itens — sem isso a cotação seguinte saía sem ligar aos itens (20/10). */}
         <ListaSemanaClient
+          key={lista ? String(lista.id) : 'historico'}
           filialId={filial.id}
           listaId={lista ? String(lista.id) : null}
           dataLista={dataLista}
