@@ -328,6 +328,12 @@ export default async function MarketingPage(props: {
                 <Numero rotulo="Vídeos" valor={tt.perfil.videos} />
               </div>
               {tt.itensErro && <p className="mt-3 text-sm text-rose-700">Vídeos: {tt.itensErro}</p>}
+              {!tt.itensErro && tt.itens.length === 0 && (
+                <p className="mt-4 rounded-lg border border-dashed border-slate-300 bg-slate-50 p-3 text-sm text-slate-600">
+                  Nenhum vídeo publicado nesta conta do TikTok ainda. O que vai pelo “Mandar pro TikTok” fica no
+                  rascunho/caixa de entrada do app do TikTok e só aparece aqui depois que for publicado lá.
+                </p>
+              )}
               <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
                 {tt.itens.map((v) => (
                   <a
