@@ -242,8 +242,18 @@ export async function adicionarNumeroNaWaba(
     phone_number: numero,
     verified_name: nomeExibicao,
   });
-  if (!r.ok) return { ok: false, erro: `Meta recusou: ${r.erro}${r.codigo ? ` (${r.codigo})` : ''}` };
-  const id = typeof r.j.id === 'string' ? r.j.id : '';
+  if (!r.ok) {
+    // O usuário de sistema do token não pode criar número na conta (20/10).
+    if (r.codigo === 200) {
+      return {
+        ok: false,
+        erro:
+          'A Meta não deixa o app criar número na conta. Adicione pelo Gerenciador do WhatsApp → Números de telefone → "Adicionar telefone" (com o código por SMS) e depois clique aqui de novo: o app liga o número a esta casa e mostra o PIN.',
+      };
+    }
+    return { ok: false, erro: `Meta recusou: ${r.erro}${r.codigo ? ` (${r.codigo})` : ''}` };
+  }
+  const id =typeof r.j.id === 'string' ? r.j.id : '';
   return id ? { ok: true, id } : { ok: false, erro: 'A Meta não devolveu o id do número.' };
 }
 
