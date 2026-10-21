@@ -28,6 +28,7 @@ import {
   type VideoTiktok,
 } from '@/lib/marketing/tiktok';
 import { Desconectar } from './desconectar';
+import { MandarTiktok } from './mandar-tiktok';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -231,13 +232,8 @@ export default async function MarketingPage(props: {
               {ig.itensErro && <p className="mt-3 text-sm text-rose-700">Posts: {ig.itensErro}</p>}
               <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
                 {ig.itens.map((p) => (
-                  <a
-                    key={p.id}
-                    href={p.link}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="overflow-hidden rounded-lg border border-slate-200 hover:shadow"
-                  >
+                  <div key={p.id} className="overflow-hidden rounded-lg border border-slate-200 hover:shadow">
+                  <a href={p.link} target="_blank" rel="noreferrer" className="block">
                     {p.imagem ? (
                       <img src={p.imagem} alt="" className="aspect-square w-full object-cover" />
                     ) : (
@@ -258,9 +254,16 @@ export default async function MarketingPage(props: {
                       </p>
                     </div>
                   </a>
+                  {tt.estado === 'ok' && podeConectar && <MandarTiktok filialId={filial.id} postId={p.id} />}
+                  </div>
                 ))}
               </div>
               <p className="mt-2 text-[11px] text-slate-400">👁 visualizações · 📣 alcance (pessoas) · 🔖 salvos · ↗ compartilhamentos</p>
+              {tt.estado === 'ok' && podeConectar && (
+                <p className="mt-1 text-[11px] text-slate-400">
+                  🎵 Mandar pro TikTok = vai pro rascunho/caixa de entrada do TikTok desta casa; quem publica é você, pelo app do TikTok.
+                </p>
+              )}
             </>
           )}
         </div>

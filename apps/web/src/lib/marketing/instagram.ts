@@ -259,3 +259,26 @@ export async function postsInstagram(token: string, limite = 12): Promise<PostIn
   );
   return posts;
 }
+
+export interface MidiaPostInstagram {
+  tipo: string;
+  legenda: string;
+  videos: string[];
+  fotos: string[];
+}
+
+/** Links frescos das mídias de um post (o media_url do CDN vence em horas).
+ *  Carrossel: cada item. */
+export async function midiaPostInstagram(token: string, id: string): Promise<MidiaPostInstagram> {
+  const j = await chamar(id, token, { fields: 'id,media_type,media_url,caption,children{media_type,media_url}' });
+  const out: MidiaPostInstagram = { tipo: String(j.media_type ?? ''), legenda: String(j.caption ?? ''), videos: [], fotos: [] };
+  const filhos = ((j.children as { data?: unknown } | undefined)?.data ?? []) as Array<Record<string, unknown>>;
+  const itens = filhos.length ? filhos : [j];
+  for (const it of itens) {
+    const url = String(it.media_url ?? '');
+    if (!url) continue;
+    if (it.media_type === 'VIDEO') out.videos.push(url);
+    else out.fotos.push(url);
+  }
+  return out;
+}

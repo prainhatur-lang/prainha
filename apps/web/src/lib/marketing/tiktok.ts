@@ -196,3 +196,77 @@ export async function videosTiktok(token: string, limite = 12): Promise<VideoTik
     compartilhamentos: n(v.share_count),
   }));
 }
+
+// ── Rascunho (caixa de entrada do TikTok) ─────────────────────────────────
+// Escopo `video.upload` (produto Content Posting API no app). O post NÃO sai
+// publicado: cai na caixa de entrada/rascunhos da conta e quem posta é a casa,
+// pelo app do TikTok (edita, põe música e publica). Publicar direto precisa
+// de `video.publish` + auditoria do app.
+
+const MB = 1024 * 1024;
+
+/** A chave da casa tem o escopo de rascunho? (`escopos` da ligação) */
+export function temRascunhoTiktok(escopos: string): boolean {
+  return escopos.split(/[,\s]+/).includes('video.upload');
+}
+
+/** Manda o vídeo (arquivo inteiro na memória) pra caixa de entrada. Devolve o publish_id. */
+export async function rascunhoVideoTiktok(token: string, video: Uint8Array<ArrayBuffer>): Promise<string> {
+  const total = video.byteLength;
+  if (total < 1) throw new ErroTiktok('O vídeo veio vazio.');
+  // regra do TikTok: pedaço de 5 a 64 MB; até 64 MB vai inteiro; o último
+  // pedaço leva a sobra
+  const pedaco = total <= 64 * MB ? total : 10 * MB;
+  const qtd = Math.max(1, Math.floor(total / pedaco));
+  const d = await chamar('post/publish/inbox/video/init/', token, {
+    metodo: 'POST',
+    corpo: {
+      source_info: { source: 'FILE_UPLOAD', video_size: total, chunk_size: pedaco, total_chunk_count: qtd },
+    },
+  });
+  const publishId = String(d.publish_id ?? '');
+  const uploadUrl = String(d.upload_url ?? '');
+  if (!publishId || !uploadUrl) throw new ErroTiktok('O TikTok não devolveu o endereço de envio.');
+  for (let i = 0; i < qtd; i++) {
+    const ini = i * pedaco;
+    const fim = i === qtd - 1 ? total : ini + pedaco;
+    let r: Response;
+    try {
+      r = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'video/mp4', 'Content-Range': `bytes ${ini}-${fim - 1}/${total}` },
+        body: video.subarray(ini, fim),
+        cache: 'no-store',
+        signal: AbortSignal.timeout(180000),
+      });
+    } catch {
+      throw new ErroTiktok('O envio do vídeo pro TikTok caiu no meio. Tente de novo.');
+    }
+    if (!r.ok) throw new ErroTiktok(`O TikTok recusou o vídeo (pedaço ${i + 1}/${qtd}, HTTP ${r.status}).`);
+  }
+  return publishId;
+}
+
+/** Fotos (até 35) pro rascunho, com a legenda. O TikTok BUSCA cada foto no
+ *  link — o endereço tem que ser de domínio verificado no app (app.prainhabar.com). */
+export async function rascunhoFotosTiktok(token: string, fotos: string[], legenda: string): Promise<string> {
+  const titulo = (legenda.split('\n').find((l) => l.trim()) ?? '').trim().slice(0, 90);
+  const d = await chamar('post/publish/content/init/', token, {
+    metodo: 'POST',
+    corpo: {
+      post_info: { title: titulo, description: legenda.slice(0, 4000) },
+      source_info: { source: 'PULL_FROM_URL', photo_cover_index: 0, photo_images: fotos.slice(0, 35) },
+      post_mode: 'MEDIA_UPLOAD',
+      media_type: 'PHOTO',
+    },
+  });
+  const publishId = String(d.publish_id ?? '');
+  if (!publishId) throw new ErroTiktok('O TikTok não devolveu o número do envio.');
+  return publishId;
+}
+
+/** Situação do envio: PROCESSING_UPLOAD, PROCESSING_DOWNLOAD, SEND_TO_USER_INBOX, FAILED… */
+export async function statusEnvioTiktok(token: string, publishId: string): Promise<{ status: string; motivo: string }> {
+  const d = await chamar('post/publish/status/fetch/', token, { metodo: 'POST', corpo: { publish_id: publishId } });
+  return { status: String(d.status ?? ''), motivo: String(d.fail_reason ?? '') };
+}
