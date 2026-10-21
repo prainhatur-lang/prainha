@@ -76,6 +76,25 @@ export async function GET(req: Request) {
     }
   }
 
+  // O campo whatsapp_business_account não existe no número (#100) e a lista
+  // pelo negócio vem vazia — então nenhum número novo aparecia (Prainha Mar,
+  // 20/10). A saúde de cada número cadastrado traz a WABA dele.
+  if (wabas.size === 0) {
+    const atuais = await db.select().from(schema.whatsappNumero);
+    for (const n of atuais) {
+      const r = await graph<{ health_status?: { entities?: Array<{ entity_type?: string; id?: string }> } }>(
+        `${n.phoneNumberId}?fields=health_status`,
+      );
+      if ('erro' in r) {
+        diag.pela_saude = r.erro;
+        continue;
+      }
+      for (const e of r.health_status?.entities ?? []) {
+        if (e.entity_type === 'WABA' && e.id) wabas.set(e.id, '');
+      }
+    }
+  }
+
   const numeros: Array<{ id: string; numero: string; nome: string; waba: string }> = [];
   for (const waba of wabas.keys()) {
     const r = await graph<{ data?: Array<{ id?: string; display_phone_number?: string; verified_name?: string }> }>(
