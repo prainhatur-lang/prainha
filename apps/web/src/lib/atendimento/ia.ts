@@ -16,6 +16,10 @@ const RECUSA_ORCAMENTO_EVENTO =
   'Na Tabuará, agência ou empresa querendo pagar antes (premiação, voucher, incentivo): diga que a casa aceita pagamento antecipado de agência, anote data, nº de pessoas, o que incluir, valor, nome e empresa, e chame transferir_para_humano nesta resposta pra equipe fechar. ' +
   'Evento de grupo fora do Terraço do Bar: registre o lead e ofereça visita.';
 import { horarioFoiCombinado, jaAvisouDiaCheio } from './horario-combinado';
+const RECADO_SEM_TERRACO =
+  'ESTA CASA NÃO TEM TERRAÇO. Terraço, Gramado, Varandinha, Deck Superior e AquaArena são do Prainha Bar, não desta casa: nunca ofereça, cite ou orce esses espaços aqui. ' +
+  'O espaço de evento desta casa é só o que está nos blocos de conhecimento (na Prainha Mar: o salão de eventos, até 60 pessoas). ' +
+  'Pedido de evento: pergunte data, horário, nº de pessoas, tipo de evento e nome, registre o lead e transfira pra equipe montar o orçamento. Não cite preço nem menu de evento.';
 import { terracoDescritoSemEsclarecer, recadoTerraco, reservaSeguradaTerraco } from './terraco-vidro';
 import { hojeBr } from '@/lib/datas';
 import { proximosFeriados } from '@/lib/reservas/feriados';
@@ -1223,6 +1227,13 @@ Como usar, SEM EXCEÇÃO:
     if (recado) mensagens.push({ role: 'system', content: recado });
   }
 
+  // TERRAÇO SÓ NO PRAINHA BAR (20/10/2026, teste do dono na Prainha Mar): a
+  // Marina inventou "Terraço exclusivo pra eventos" na Mar, puxando das regras
+  // de evento do Bar. Fora do Bar, recado por último em qualquer modo.
+  if (params.filialId !== FILIAL_PRAINHA_BAR) {
+    mensagens.push({ role: 'system', content: RECADO_SEM_TERRACO });
+  }
+
   // DIA DA SEMANA das datas citadas (20/10/2026, caso Gabriella): a Nina
   // chamou o sábado 07/11 de "segunda-feira, dia útil". Calculado aqui, não
   // pelo modelo.
@@ -1395,6 +1406,8 @@ Como usar, SEM EXCEÇÃO:
               : 'nenhuma',
             observacoes: String(args.observacoes ?? '') || null,
           });
+        } else if (tc.function.name === 'gerar_orcamento_espaco' && params.filialId !== FILIAL_PRAINHA_BAR) {
+          resultado = RECADO_SEM_TERRACO;
         } else if (tc.function.name === 'gerar_orcamento_espaco') {
           resultado = params.executores.gerarOrcamentoEspaco
             ? await params.executores.gerarOrcamentoEspaco({
