@@ -349,6 +349,8 @@ async function initSchemaNativo() {
   await addCol('comanda', 'sync_nuvem_em timestamptz');
   await addCol('pagamento_local', 'sync_nuvem_em timestamptz');
   await addCol('cliente_local', 'sync_nuvem_em timestamptz');
+  // movimento de fiado sobe pra nuvem (loopContaCorrenteNativoNuvem)
+  await addCol('conta_corrente_local', 'sync_nuvem_em timestamptz');
 }
 /** Próximo código nosso (≥ 5.000.000). */
 async function proxCodigo(seq) {
@@ -10685,6 +10687,63 @@ async function loopClienteNativoNuvem() {
     console.log(`[sync-nativo] ${clientes.length} cliente(s) na nuvem`);
   } catch (err) { console.error('[sync-nativo] cliente:', err.message); }
   finally { clienteNativoNuvemRodando = false; }
+}
+
+// Movimentos de fiado (conta_corrente_local) → movimento_conta_corrente da
+// nuvem. Até 22/10/2026 só o SALDO do cliente subia (loopClienteNativoNuvem);
+// os movimentos ficavam só na loja e o extrato do /financeiro/receber parava
+// no dia em que a casa virou banco próprio. O movimento nunca é alterado
+// depois de gravado (só fbLancarContaCorrente insere), então basta mandar o
+// que ainda não subiu. Na primeira rodada sobe o histórico todo, aos lotes.
+let contaCorrenteNativoNuvemRodando = false;
+async function loopContaCorrenteNativoNuvem() {
+  if (contaCorrenteNativoNuvemRodando || !nativo() || !AGENTE_TOKEN) return;
+  contaCorrenteNativoNuvemRodando = true;
+  try {
+    const num = (x) => (x == null || x === '' ? null : Number(x));
+    for (let volta = 0; volta < 20; volta++) {
+      const movs = await sql`SELECT codigo, cliente_codigo, pedido, credito, debito, saldo_inicial, saldo_final,
+          observacao, pagamento_codigo, login, quando
+        FROM conta_corrente_local WHERE sync_nuvem_em IS NULL
+        ORDER BY codigo LIMIT 500`;
+      if (!movs.length) return;
+      const codigos = movs.map((m) => Number(m.codigo));
+      const rows = movs.map((m) => {
+        const login = m.login == null ? NaN : Number(m.login);
+        return {
+          codigoExterno: Number(m.codigo),
+          codigoClienteExterno: num(m.cliente_codigo),
+          codigoPedidoExterno: num(m.pedido),
+          dataHora: m.quando ? new Date(m.quando).toISOString() : null,
+          saldoInicial: num(m.saldo_inicial),
+          credito: num(m.credito),
+          debito: num(m.debito),
+          saldoFinal: num(m.saldo_final),
+          codigoPagamento: num(m.pagamento_codigo),
+          codigoUsuario: Number.isInteger(login) && Math.abs(login) < 2147483647 ? login : null,
+          codigoContaEstornada: null,
+          observacao: m.observacao || null,
+          // mesmo padrão do Consumer: dívida = 'N', pagamento = sem marca
+          importado: m.credito != null && Number(m.credito) !== 0 ? 'N' : null,
+          versaoReg: null,
+        };
+      });
+      const r = await fetch(`${PAGAR_MESA_URL}/api/ingest/financeiro`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${AGENTE_TOKEN}` },
+        body: JSON.stringify({ movimentosContaCorrente: rows }),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!r.ok) {
+        console.error('[sync-nativo] fiado: nuvem recusou', r.status, await r.text().catch(() => ''));
+        return;
+      }
+      await sql`UPDATE conta_corrente_local SET sync_nuvem_em = now() WHERE codigo = ANY(${codigos})`;
+      console.log(`[sync-nativo] ${movs.length} movimento(s) de fiado na nuvem`);
+      if (movs.length < 500) return;
+    }
+  } catch (err) { console.error('[sync-nativo] fiado:', err.message); }
+  finally { contaCorrenteNativoNuvemRodando = false; }
 }
 
 // ---- FILA DE COMANDOS DA NUVEM (modo próprio) ----
@@ -31596,6 +31655,9 @@ async function main() {
   setInterval(() => loopPagamentoNativoNuvem().catch(() => {}), 60 * 1000);
   setTimeout(() => loopClienteNativoNuvem().catch(() => {}), 58 * 1000);
   setInterval(() => loopClienteNativoNuvem().catch(() => {}), 60 * 1000);
+  // depois do cliente, pra nuvem já ter o cliente quando o movimento chega
+  setTimeout(() => loopContaCorrenteNativoNuvem().catch(() => {}), 66 * 1000);
+  setInterval(() => loopContaCorrenteNativoNuvem().catch(() => {}), 60 * 1000);
   // fila agente_comando da nuvem (só em modo próprio: sem Consumer não há agente-local)
   setTimeout(() => loopComandosNuvem().catch(() => {}), 30 * 1000);
   loopPontoRoster().catch(() => {});
