@@ -4,7 +4,7 @@
 // Inter da outra — entra no encontro de contas, decisão do dono 14/10/2026).
 
 import { db, schema } from '@concilia/db';
-import { and, eq, gte, inArray, isNull, lte } from 'drizzle-orm';
+import { and, eq, gte, ilike, inArray, isNull, lte } from 'drizzle-orm';
 import type { InterPagamento } from '@/lib/inter';
 
 export const soDigitos = (v: string | null | undefined) => (v ?? '').replace(/\D/g, '');
@@ -57,6 +57,71 @@ export async function contasDaJanela(filialIds: string[], dataIni: string, dataF
 
 export type ContaJanela = Awaited<ReturnType<typeof contasDaJanela>>[number];
 
+/** O texto da baixa cita este boleto? Formato da tela ("Boleto pago no Inter
+ *  (<codigo>)") e o antigo, com só os 8 primeiros ("(transação e073a7bd)"). */
+export function baixaCitaBoleto(observacao: string | null | undefined, codigo: string): boolean {
+  const t = observacao ?? '';
+  if (!codigo || !t) return false;
+  if (t.includes(`(${codigo})`)) return true;
+  return codigo.length >= 8 && t.includes(`transação ${codigo.slice(0, 8)}`);
+}
+
+/** Contas que JÁ foram baixadas por cada boleto (o texto da baixa cita o
+ *  código do Inter). Esse é o casamento que vale: o boleto já quitou aquela
+ *  conta, então não pode casar com outra — nem ir pro encontro como conta da
+ *  outra casa. Caso Laticínios (14/10/2026): o boleto do Inter do Bar foi pro
+ *  encontro como conta da Mar e, depois, a conta do Bar foi lançada e baixada
+ *  pelo mesmo boleto — a Mar ficou devendo uma conta que o Bar pagou pra ele
+ *  mesmo. Chave = codigoTransacao do boleto. */
+export async function contasBaixadasPorBoleto(
+  filialIds: string[],
+  pagamentos: InterPagamento[],
+  dataIni: string,
+  dataFim: string,
+): Promise<Map<string, ContaJanela[]>> {
+  const res = new Map<string, ContaJanela[]>();
+  if (!filialIds.length || !pagamentos.length) return res;
+  const baixas = await db
+    .select({
+      observacao: schema.contaPagarBaixa.observacao,
+      id: schema.contaPagar.id,
+      filialId: schema.contaPagar.filialId,
+      valor: schema.contaPagar.valor,
+      dataVencimento: schema.contaPagar.dataVencimento,
+      dataPagamento: schema.contaPagar.dataPagamento,
+      valorPago: schema.contaPagar.valorPago,
+      jurosMulta: schema.contaPagar.jurosMulta,
+      origem: schema.contaPagar.origem,
+      descricao: schema.contaPagar.descricao,
+      fornecedorNome: schema.fornecedor.nome,
+      fornecedorCnpj: schema.fornecedor.cnpjOuCpf,
+    })
+    .from(schema.contaPagarBaixa)
+    .innerJoin(schema.contaPagar, eq(schema.contaPagar.id, schema.contaPagarBaixa.contaPagarId))
+    .leftJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.contaPagar.fornecedorId))
+    .where(
+      and(
+        inArray(schema.contaPagarBaixa.filialId, filialIds),
+        isNull(schema.contaPagar.dataDelete),
+        ilike(schema.contaPagarBaixa.observacao, '%Inter%'),
+        gte(schema.contaPagarBaixa.data, somaDias(dataIni, -30)),
+        lte(schema.contaPagarBaixa.data, somaDias(dataFim, 30)),
+      ),
+    );
+  for (const p of pagamentos) {
+    const vistas = new Set<string>();
+    const cs: ContaJanela[] = [];
+    for (const b of baixas) {
+      if (vistas.has(b.id) || !baixaCitaBoleto(b.observacao, p.codigoTransacao)) continue;
+      vistas.add(b.id);
+      const { observacao: _obs, ...conta } = b;
+      cs.push(conta);
+    }
+    if (cs.length) res.set(p.codigoTransacao, cs);
+  }
+  return res;
+}
+
 /** Casa cada boleto com UMA conta: mesmo valor (o do título ou o pago, com
  *  juros) e mesmo CNPJ do fornecedor; sem CNPJ batendo, mesmo valor e mesmo
  *  vencimento. Conta já usada não casa de novo. Procura primeiro na casa dona
@@ -73,6 +138,8 @@ export function casarBoletos(
   pagamentos: InterPagamento[],
   contas: ContaJanela[],
   filialId: string | null | undefined,
+  /** contasBaixadasPorBoleto: a conta que o boleto já baixou ganha de tudo */
+  baixadas?: Map<string, ContaJanela[]>,
 ): Array<ContaJanela | null> {
   const usadas = new Set<string>();
   const res: Array<ContaJanela | null> = pagamentos.map(() => null);
@@ -92,8 +159,18 @@ export function casarBoletos(
     usadas.add(c.id);
   };
 
+  // passada 0: a conta que este boleto já baixou (da casa primeiro). Sem
+  // isso, a conta de outra casa com o mesmo valor ganhava a da própria casa e
+  // o boleto ia pro encontro "ao contrário" (Prime Food, Mar × Bar, 10/2026).
+  if (baixadas) {
+    pagamentos.forEach((p, i) => {
+      const cs = (baixadas.get(p.codigoTransacao) ?? []).filter((c) => !usadas.has(c.id));
+      usar(i, cs.find((c) => c.filialId === filialId) ?? cs[0]);
+    });
+  }
   // 1ª passada: valor + CNPJ + vencimento (da casa, depois de fora)
   regras.forEach((r, i) => {
+    if (res[i]) return;
     const cand = r.livres();
     const exato = (c: ContaJanela) => r.mesmoCnpj(c) && r.mesmoVenc(c);
     usar(

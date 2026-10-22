@@ -5,10 +5,16 @@
 // junto com as transferências (ver previaEncontro em lib/transferencia.ts).
 
 import { db, schema } from '@concilia/db';
-import { and, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, eq, gte, ilike, inArray, isNull, lte, ne, sql } from 'drizzle-orm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { buscarPagamentosInter, resolverCredenciaisInterPagamentos } from '@/lib/inter';
-import { centavos, pagamentoAgendado, pagamentoCancelado } from '@/lib/boletos-inter';
+import {
+  baixaCitaBoleto,
+  centavos,
+  pagamentoAgendado,
+  pagamentoCancelado,
+  somaDias,
+} from '@/lib/boletos-inter';
 import { RecusaTransf } from '@/lib/transferencia';
 import { consumerParado } from '@/lib/consumer-contas';
 import { recalcularAgregado } from '@/lib/conta-pagar-baixa';
@@ -72,6 +78,28 @@ export async function lancarPagamentosEntreCasas(opts: {
     ).map((r) => [r.contaPagarId, r.codigo]),
   );
 
+  // Boleto que já baixou uma conta da PRÓPRIA casa que pagou: a conta é dela,
+  // não entra no encontro (senão a outra casa fica devendo o que a pagadora
+  // pagou pra ela mesma — Laticínios, Bar × Mar, 14/10/2026).
+  const baixasDaPagadora = await db
+    .select({
+      observacao: schema.contaPagarBaixa.observacao,
+      fornecedorNome: schema.fornecedor.nome,
+      descricao: schema.contaPagar.descricao,
+    })
+    .from(schema.contaPagarBaixa)
+    .innerJoin(schema.contaPagar, eq(schema.contaPagar.id, schema.contaPagarBaixa.contaPagarId))
+    .leftJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.contaPagar.fornecedorId))
+    .where(
+      and(
+        eq(schema.contaPagarBaixa.filialId, filialPagadoraId),
+        isNull(schema.contaPagar.dataDelete),
+        ilike(schema.contaPagarBaixa.observacao, '%Inter%'),
+        gte(schema.contaPagarBaixa.data, somaDias(opts.dataIni, -30)),
+        lte(schema.contaPagarBaixa.data, somaDias(opts.dataFim, 30)),
+      ),
+    );
+
   const lancados: string[] = [];
   const recusados: Array<{ codigo: string; motivo: string }> = [];
   for (const it of opts.itens) {
@@ -90,6 +118,13 @@ export async function lancarPagamentosEntreCasas(opts: {
     }
     const outro = jaUsadas.get(c.id);
     if (outro && outro !== p.codigoTransacao) { recusa('essa conta já está em outro pagamento entre casas'); continue; }
+    const daPropria = baixasDaPagadora.find((b) => baixaCitaBoleto(b.observacao, p.codigoTransacao));
+    if (daPropria) {
+      recusa(
+        `esse boleto já baixou a conta ${daPropria.fornecedorNome ?? daPropria.descricao ?? ''} da ${nome.get(filialPagadoraId)} — a conta é dela, não entra no encontro`,
+      );
+      continue;
+    }
 
     const data = p.dataPagamento.slice(0, 10);
     const valor = Number(p.valorPago ?? p.valorNominal ?? 0).toFixed(2);
