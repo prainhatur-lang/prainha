@@ -22,6 +22,7 @@ import { CelularLeuOutra } from './celular-leu-outra';
 import { JuntarGemea } from './juntar-gemea';
 import { FaixaTipoNota } from './faixa-tipo';
 import { acharGemea } from '@/lib/juntar-pedido-foto';
+import { EditPix } from '@/app/cadastros/fornecedores/edit-pix';
 
 export const dynamic = 'force-dynamic';
 
@@ -223,7 +224,12 @@ export default async function NotaDetalhePage(props: {
   // Nome do fornecedor já vinculado (card "Fornecedor vinculado · Trocar")
   const [fornecedorAtual] = nota.fornecedorId
     ? await db
-        .select({ nome: schema.fornecedor.nome, cnpjOuCpf: schema.fornecedor.cnpjOuCpf })
+        .select({
+          nome: schema.fornecedor.nome,
+          cnpjOuCpf: schema.fornecedor.cnpjOuCpf,
+          chavePix: schema.fornecedor.chavePix,
+          pixFavorecido: schema.fornecedor.pixFavorecido,
+        })
         .from(schema.fornecedor)
         .where(eq(schema.fornecedor.id, nota.fornecedorId))
         .limit(1)
@@ -638,7 +644,7 @@ export default async function NotaDetalhePage(props: {
             nota não gerou conta a pagar (vínculo errado no clique). */}
         {nota.fornecedorId && (
           <div className="mt-4 flex items-center justify-between gap-4 rounded-xl border border-slate-200 bg-white p-3">
-            <p className="min-w-0 text-xs text-slate-600">
+            <div className="min-w-0 text-xs text-slate-600">
               Fornecedor vinculado:{' '}
               <span className="font-medium text-slate-900">{fornecedorAtual?.nome ?? '(sem nome)'}</span>
               {fornecedorAtual?.cnpjOuCpf && (
@@ -649,7 +655,17 @@ export default async function NotaDetalhePage(props: {
                   (já tem conta a pagar — pra trocar, exclua as parcelas antes)
                 </span>
               )}
-            </p>
+              {/* Pix já na nota (22/10/2026): conferido contra o CPF/CNPJ. */}
+              <div className="mt-1 flex items-center gap-1 text-[11px]">
+                <span className="text-slate-500">Pix:</span>
+                <EditPix
+                  fornecedorId={nota.fornecedorId}
+                  chaveAtual={fornecedorAtual?.chavePix ?? null}
+                  favorecidoAtual={fornecedorAtual?.pixFavorecido ?? null}
+                  docFornecedor={fornecedorAtual?.cnpjOuCpf ?? null}
+                />
+              </div>
+            </div>
             {podeEscolherFornecedor && (
               <VincularFornecedorBtn
                 notaId={id}

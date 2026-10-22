@@ -10,6 +10,7 @@ import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { propagarParaIrmaos } from '@/lib/fornecedor-unico';
+import { conferirChavePix } from '@/lib/pix-titular';
 
 export async function PATCH(
   req: Request,
@@ -80,6 +81,26 @@ export async function PATCH(
   // Como o fornecedor recebe: chave Pix e quem recebe (quando o Pix cai no nome de outra pessoa)
   if ('chavePix' in body) updates.chavePix = body.chavePix?.trim().slice(0, 100) || null;
   if ('pixFavorecido' in body) updates.pixFavorecido = body.pixFavorecido?.trim().slice(0, 200) || null;
+
+  // Anti-fraude (22/10/2026): chave CPF/CNPJ de OUTRA pessoa/empresa só entra
+  // dizendo em nome de quem o Pix cai. Telefone/e-mail/aleatória seguem livres.
+  if (updates.chavePix) {
+    const [atual] = await db
+      .select({ doc: schema.fornecedor.cnpjOuCpf, favorecido: schema.fornecedor.pixFavorecido })
+      .from(schema.fornecedor)
+      .where(eq(schema.fornecedor.id, id))
+      .limit(1);
+    const favorecido = 'pixFavorecido' in updates ? updates.pixFavorecido : atual?.favorecido;
+    const c = conferirChavePix({ chave: updates.chavePix, docFornecedor: atual?.doc, favorecido });
+    if (c?.nivel === 'diverge') {
+      return NextResponse.json(
+        {
+          error: `${c.msg} Se o Pix cai mesmo nessa pessoa, preencha "quem recebe" com o nome dela; senão, corrija a chave.`,
+        },
+        { status: 400 },
+      );
+    }
+  }
 
   if (Object.keys(updates).length === 0) {
     return NextResponse.json({ error: 'nenhum campo pra atualizar' }, { status: 400 });

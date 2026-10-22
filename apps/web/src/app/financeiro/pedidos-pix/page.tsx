@@ -33,6 +33,7 @@ import { SaldoInterFaixa } from './saldo-inter';
 import { contasEmPixAberto, podePagarPix } from '@/lib/pix-pagamento';
 import { resolverCredenciaisInterPagamentos } from '@/lib/inter';
 import { urlFotoPedido } from '@/lib/pedido-sem-nota';
+import { recebedorBate } from '@/lib/pix-titular';
 
 export const dynamic = 'force-dynamic';
 
@@ -116,14 +117,21 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
       quem: string | null;
       baixado: boolean;
       qtd: number;
+      rec_nome: string | null;
+      rec_doc: string | null;
+      forn_doc: string | null;
     };
     const rows = (await db.execute(sql`
       SELECT p.id, to_char(p.criado_em AT TIME ZONE 'America/Sao_Paulo', 'DD/MM HH24:MI') AS quando,
              p.favorecido, p.chave, p.valor::text AS valor, p.status, p.status_inter, p.codigo_solicitacao,
              p.erro, coalesce(u.nome, p.usuario_email) AS quem, (p.baixado_em IS NOT NULL) AS baixado,
-             jsonb_array_length(p.conta_ids) AS qtd
+             jsonb_array_length(p.conta_ids) AS qtd,
+             p.retorno->'transacaoPix'->'recebedor'->>'nome' AS rec_nome,
+             p.retorno->'transacaoPix'->'recebedor'->>'cpfCnpj' AS rec_doc,
+             fo.cnpj_ou_cpf AS forn_doc
         FROM pix_pagamento p
         LEFT JOIN usuario u ON u.id = p.usuario_id
+        LEFT JOIN fornecedor fo ON fo.id = p.fornecedor_id
        WHERE p.filial_id = ${escolhida.id}::uuid
          AND (p.criado_em > now() - interval '30 days'
               OR (p.baixado_em IS NULL AND p.status NOT IN ('ERRO','CANCELADO')))
@@ -143,6 +151,9 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
       quem: r.quem && r.quem.includes('@') ? r.quem.split('@')[0]! : r.quem,
       baixado: r.baixado,
       qtdContas: Number(r.qtd),
+      recebedorNome: r.rec_nome,
+      recebedorDoc: r.rec_doc,
+      recebedorBate: recebedorBate({ recebedorDoc: r.rec_doc, docFornecedor: r.forn_doc }),
     }));
   } catch (e) {
     console.error('[pedidos-pix] pix enviados', e);

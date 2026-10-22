@@ -13,7 +13,8 @@
 
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { EditPix } from '@/app/cadastros/fornecedores/edit-pix';
+import { EditPix, ConferenciaPixLinha } from '@/app/cadastros/fornecedores/edit-pix';
+import { conferirChavePix, type ConferenciaPix } from '@/lib/pix-titular';
 import { EVENTO_SALDO_PIX, useSaldoPix } from './saldo-inter';
 
 export interface PedidoPix {
@@ -218,6 +219,8 @@ export function GrupoPix({
     [grupo.contas, marcadas],
   );
   const chave = grupo.chavePix?.trim() || null;
+  // Anti-fraude (22/10/2026): chave × CPF/CNPJ do fornecedor.
+  const conferencia = conferirChavePix({ chave, docFornecedor: grupo.documento, favorecido: grupo.pixFavorecido });
   const travadas = useMemo(() => new Set(contasTravadas), [contasTravadas]);
   const [confirmandoId, setConfirmandoId] = useState<string | null>(null);
   const contaConfirmando = grupo.contas.find((c) => c.id === confirmandoId) ?? null;
@@ -329,11 +332,17 @@ export function GrupoPix({
           {grupo.pixFavorecido && (
             <div className="mt-1 text-xs text-slate-600">Recebe em nome de {grupo.pixFavorecido}</div>
           )}
+          {conferencia && (
+            <div className="mt-1 text-xs">
+              <ConferenciaPixLinha c={conferencia} />
+            </div>
+          )}
           {grupo.fornecedorId && podeEditarFornecedor && (
             <EditPix
               fornecedorId={grupo.fornecedorId}
               chaveAtual={grupo.chavePix}
               favorecidoAtual={grupo.pixFavorecido}
+              docFornecedor={grupo.documento}
             />
           )}
         </div>
@@ -406,6 +415,7 @@ export function GrupoPix({
                 filialId={filialId}
                 recebe={grupo.pixFavorecido || grupo.nome}
                 chave={chave}
+                conferencia={conferencia}
                 conta={c}
                 valorDigitado={valorDigitado}
                 setValorDigitado={setValorDigitado}
@@ -464,6 +474,7 @@ function PainelConfirmar({
   filialId,
   recebe,
   chave,
+  conferencia,
   conta,
   valorDigitado,
   setValorDigitado,
@@ -475,6 +486,7 @@ function PainelConfirmar({
   filialId?: string;
   recebe: string;
   chave: string;
+  conferencia: ConferenciaPix | null;
   conta: PedidoPix;
   valorDigitado: string;
   setValorDigitado: (v: string) => void;
@@ -486,6 +498,7 @@ function PainelConfirmar({
   const { saldo, erro: erroSaldo, carregando: lendoSaldo, ler: lerSaldo } = useSaldoPix(filialId);
   const faltaCentavos = saldo ? Math.round(conta.saldo * 100) - Math.round(saldo.livre * 100) : 0;
   const semSaldo = !!saldo && faltaCentavos > 0;
+  const chaveDiverge = conferencia?.nivel === 'diverge';
   return (
     <div className="mx-4 mb-3 space-y-2 rounded-md border border-violet-200 bg-violet-50/60 p-3 text-sm">
       <div className="font-semibold text-violet-900">Confira antes de mandar o Pix desta conta pelo Inter:</div>
@@ -509,6 +522,31 @@ function PainelConfirmar({
           <div className="text-base font-bold text-slate-900">{brl(conta.saldo)}</div>
         </div>
       </div>
+      {conferencia && (
+        <div
+          className={`rounded-md border px-3 py-2 text-xs ${
+            conferencia.nivel === 'ok'
+              ? 'border-emerald-200 bg-emerald-50'
+              : conferencia.nivel === 'diverge'
+                ? 'border-rose-300 bg-rose-50'
+                : 'border-amber-200 bg-amber-50'
+          }`}
+        >
+          <ConferenciaPixLinha c={conferencia} />
+          {chaveDiverge && (
+            <span className="mt-1 block text-[11px] text-rose-800">
+              O Pix não vai sair pra esta chave. Corrija a chave no cadastro, ou preencha &quot;quem recebe&quot; se
+              o Pix cai mesmo nessa pessoa.
+            </span>
+          )}
+          {(conferencia.nivel === 'nao_conferivel' || conferencia.nivel === 'terceiro') && (
+            <span className="mt-1 block text-[11px] text-amber-800">
+              Depois do envio, o sistema confere o CPF/CNPJ de quem recebeu (o Inter devolve) e avisa em
+              &quot;Pix enviados&quot; se não for o fornecedor.
+            </span>
+          )}
+        </div>
+      )}
       <div
         className={`flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border px-3 py-2 text-xs ${
           semSaldo ? 'border-rose-300 bg-rose-50 text-rose-800' : 'border-violet-200 bg-white text-slate-700'
@@ -573,7 +611,7 @@ function PainelConfirmar({
         </button>
         <button
           type="button"
-          disabled={!valorConfere || enviando || semSaldo}
+          disabled={!valorConfere || enviando || semSaldo || chaveDiverge}
           onClick={confirmar}
           className="rounded-md bg-violet-700 px-3 py-1.5 text-xs font-semibold text-white disabled:bg-slate-400"
         >

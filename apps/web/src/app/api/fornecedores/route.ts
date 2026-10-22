@@ -5,7 +5,8 @@ import { negarSemPerm } from '@/lib/exigir-perm';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, or, sql } from 'drizzle-orm';
+import { conferirChavePix } from '@/lib/pix-titular';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -21,6 +22,9 @@ const Body = z.object({
   cidade: z.string().max(100).nullable().optional(),
   email: z.string().max(200).nullable().optional(),
   fonePrincipal: z.string().max(30).nullable().optional(),
+  // Pix já no cadastro na hora (22/10/2026), conferido contra o CPF/CNPJ.
+  chavePix: z.string().max(100).trim().nullable().optional(),
+  pixFavorecido: z.string().max(200).trim().nullable().optional(),
 });
 
 export async function POST(req: Request) {
@@ -39,6 +43,19 @@ export async function POST(req: Request) {
     );
   }
   const d = parsed.data;
+  const chavePix = d.chavePix?.trim() || null;
+  const pixFavorecido = d.pixFavorecido?.trim() || null;
+  if (chavePix) {
+    const c = conferirChavePix({ chave: chavePix, docFornecedor: d.cnpjOuCpf, favorecido: pixFavorecido });
+    if (c?.nivel === 'diverge') {
+      return NextResponse.json(
+        {
+          error: `${c.msg} Se o Pix cai mesmo nessa pessoa, preencha "quem recebe" com o nome dela; senão, corrija a chave.`,
+        },
+        { status: 400 },
+      );
+    }
+  }
 
   const [link] = await db
     .select({ filialId: schema.usuarioFilial.filialId })
@@ -67,6 +84,18 @@ export async function POST(req: Request) {
     )
     .limit(1);
   if (existente) {
+    // Já cadastrado: só preenche o Pix se ainda não tinha (não troca chave existente).
+    if (chavePix) {
+      await db
+        .update(schema.fornecedor)
+        .set({ chavePix, pixFavorecido })
+        .where(
+          and(
+            eq(schema.fornecedor.id, existente.id),
+            or(isNull(schema.fornecedor.chavePix), eq(schema.fornecedor.chavePix, '')),
+          ),
+        );
+    }
     return NextResponse.json({ id: existente.id, nome: existente.nome, criado: false });
   }
 
@@ -82,6 +111,8 @@ export async function POST(req: Request) {
       cidade: d.cidade ?? null,
       email: d.email ?? null,
       fonePrincipal: d.fonePrincipal ?? null,
+      chavePix,
+      pixFavorecido,
     })
     .returning({ id: schema.fornecedor.id, nome: schema.fornecedor.nome });
 

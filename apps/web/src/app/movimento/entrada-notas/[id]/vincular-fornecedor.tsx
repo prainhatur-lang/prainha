@@ -5,6 +5,8 @@ import { flushSync } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { maskCnpj } from '@/lib/format';
 import { normalizaBusca, palavrasBusca } from '@/lib/texto';
+import { conferirChavePix } from '@/lib/pix-titular';
+import { ConferenciaPixLinha } from '@/app/cadastros/fornecedores/edit-pix';
 
 interface FornecedorOpcao {
   id: string;
@@ -45,6 +47,10 @@ export function VincularFornecedorBtn({
   const [cnpjForm, setCnpjForm] = useState(emitCnpj ?? '');
   const [ufForm, setUfForm] = useState(emitUf ?? '');
   const [cidadeForm, setCidadeForm] = useState(emitCidade ?? '');
+  const [pixForm, setPixForm] = useState('');
+  const [favForm, setFavForm] = useState('');
+  const conferenciaPix = conferirChavePix({ chave: pixForm, docFornecedor: cnpjForm, favorecido: favForm });
+  const pixDiverge = conferenciaPix?.nivel === 'diverge';
 
   const opcoes = useMemo(() => {
     const b = normalizaBusca(busca);
@@ -106,6 +112,8 @@ export function VincularFornecedorBtn({
           nome: nomeForm.trim(),
           uf: ufForm || null,
           cidade: cidadeForm || null,
+          chavePix: pixForm.trim() || null,
+          pixFavorecido: favForm.trim() || null,
         }),
       });
       const d = await r.json().catch(() => ({}));
@@ -237,7 +245,7 @@ export function VincularFornecedorBtn({
                 </div>
                 <div>
                   <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                    CNPJ *
+                    CNPJ ou CPF *
                   </label>
                   <input
                     type="text"
@@ -272,9 +280,31 @@ export function VincularFornecedorBtn({
                     />
                   </div>
                 </div>
+                <div>
+                  <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                    Chave Pix (se paga por Pix)
+                  </label>
+                  <input
+                    type="text"
+                    value={pixForm}
+                    onChange={(e) => setPixForm(e.target.value)}
+                    placeholder="De preferência o próprio CNPJ/CPF"
+                    className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 font-mono text-sm"
+                  />
+                  {pixForm.trim() && (
+                    <input
+                      type="text"
+                      value={favForm}
+                      onChange={(e) => setFavForm(e.target.value)}
+                      placeholder="Quem recebe, se NÃO for o próprio fornecedor"
+                      className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+                    />
+                  )}
+                  <ConferenciaPixLinha c={conferenciaPix} />
+                </div>
                 <button
                   type="submit"
-                  disabled={salvando || !nomeForm.trim() || !cnpjForm.trim()}
+                  disabled={salvando || !nomeForm.trim() || !cnpjForm.trim() || pixDiverge}
                   className="w-full rounded-md border border-slate-900 bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
                 >
                   {salvando ? 'Criando...' : 'Criar e vincular'}

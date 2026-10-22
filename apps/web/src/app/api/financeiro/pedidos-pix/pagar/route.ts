@@ -21,7 +21,8 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
 import { sql } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
-import { incluirPagamentoPixInter, InterPixRecusado, InterSaldoErro, resolverCredenciaisInterPagamentos } from '@/lib/inter';
+import { consultarPagamentoPixInter, incluirPagamentoPixInter, InterPixRecusado, InterSaldoErro, resolverCredenciaisInterPagamentos } from '@/lib/inter';
+import { conferirChavePix, recebedorBate } from '@/lib/pix-titular';
 import { baixarContasDoPix, lerSaldoParaPix, podePagarPix, type SaldoParaPix } from '@/lib/pix-pagamento';
 
 export const dynamic = 'force-dynamic';
@@ -63,12 +64,28 @@ export async function POST(req: Request) {
   }
 
   const [forn] = await db
-    .select({ nome: schema.fornecedor.nome, chave: schema.fornecedor.chavePix, favorecido: schema.fornecedor.pixFavorecido })
+    .select({
+      nome: schema.fornecedor.nome,
+      chave: schema.fornecedor.chavePix,
+      favorecido: schema.fornecedor.pixFavorecido,
+      doc: schema.fornecedor.cnpjOuCpf,
+    })
     .from(schema.fornecedor)
     .where(eq(schema.fornecedor.id, fornecedorId))
     .limit(1);
   const chave = forn?.chave?.trim();
   if (!forn || !chave) return NextResponse.json({ error: 'Fornecedor sem chave Pix cadastrada.' }, { status: 400 });
+  // Anti-fraude (pedido do dono 22/10/2026): chave CPF/CNPJ de OUTRA pessoa ou
+  // empresa, sem "quem recebe" declarado no cadastro, não recebe Pix.
+  const conf = conferirChavePix({ chave, docFornecedor: forn.doc, favorecido: forn.favorecido });
+  if (conf?.nivel === 'diverge') {
+    return NextResponse.json(
+      {
+        error: `${conf.msg} O Pix NÃO foi enviado. Corrija a chave no cadastro do fornecedor, ou preencha "quem recebe" se o Pix cai mesmo nessa pessoa.`,
+      },
+      { status: 409 },
+    );
+  }
 
   const c = schema.contaPagar;
   const contas = await db
@@ -233,10 +250,32 @@ export async function POST(req: Request) {
 
   if (tipo === 'PROCESSADO') {
     const { baixadas } = await baixarContasDoPix(criado.id, resp.dataPagamento ?? null);
+    // Anti-fraude (22/10/2026): quem RECEBEU de fato. O Inter só diz na
+    // consulta (CPF/CNPJ + nome). Fica no retorno pra lista "Pix enviados".
+    // Melhor esforço: sem resposta em 8 s, segue sem a conferência.
+    let aviso = '';
+    if (resp.codigoSolicitacao) {
+      try {
+        const consulta = await Promise.race([
+          consultarPagamentoPixInter(cred, resp.codigoSolicitacao),
+          new Promise<null>((r) => setTimeout(() => r(null), 8_000)),
+        ]);
+        const rec = consulta?.transacaoPix?.recebedor;
+        if (consulta?.transacaoPix) {
+          await atualizar({ retorno: { ...(resp as object), transacaoPix: consulta.transacaoPix } as object });
+        }
+        if (rec && recebedorBate({ recebedorDoc: rec.cpfCnpj, docFornecedor: forn.doc }) === false) {
+          aviso = ` ⚠ ATENÇÃO: quem recebeu foi ${rec.nome ?? '?'} (${rec.cpfCnpj ?? '?'}), que NÃO é o CPF/CNPJ do fornecedor.`;
+          console.warn('[pix-pagar] recebedor diferente do fornecedor', { pix: criado.id, fornecedorId });
+        }
+      } catch (e) {
+        console.warn('[pix-pagar] consulta do recebedor falhou', e instanceof Error ? e.message : e);
+      }
+    }
     return NextResponse.json({
       ok: true,
       status: 'PAGO',
-      mensagem: `Pix de ${brl(total)} enviado pra ${forn.favorecido ?? forn.nome}. Baixa feita em ${baixadas} conta(s).`,
+      mensagem: `Pix de ${brl(total)} enviado pra ${forn.favorecido ?? forn.nome}. Baixa feita em ${baixadas} conta(s).${aviso}`,
     });
   }
   if (tipo === 'APROVACAO') {

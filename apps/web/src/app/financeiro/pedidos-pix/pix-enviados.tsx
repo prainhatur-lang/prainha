@@ -21,6 +21,11 @@ export interface PixEnviado {
   quem: string | null;
   baixado: boolean;
   qtdContas: number;
+  /** Quem recebeu de fato (o Inter devolve na consulta). */
+  recebedorNome?: string | null;
+  recebedorDoc?: string | null;
+  /** true = CPF/CNPJ de quem recebeu é o do fornecedor; false = OUTRO; null = sem como conferir. */
+  recebedorBate?: boolean | null;
 }
 
 const brl = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -79,6 +84,18 @@ export function PixEnviados({ itens, podeMexer }: { itens: PixEnviado[]; podeMex
                 </span>
                 <span className="w-24 shrink-0 text-right font-medium text-slate-900">{brl(p.valor)}</span>
               </div>
+              {(p.recebedorNome || p.recebedorDoc) && (
+                <div
+                  className={`pl-[7.5rem] text-[11px] ${
+                    p.recebedorBate === false ? 'font-semibold text-rose-700' : p.recebedorBate ? 'text-emerald-700' : 'text-slate-500'
+                  }`}
+                >
+                  {p.recebedorBate === false ? '🚫 Recebeu OUTRO CPF/CNPJ: ' : p.recebedorBate ? '✓ Recebeu: ' : 'Recebeu: '}
+                  {p.recebedorNome ?? '?'}
+                  {p.recebedorDoc ? ` (${p.recebedorDoc})` : ''}
+                  {p.recebedorBate === false ? ' — não é o documento do fornecedor. Confira se houve fraude ou chave trocada.' : ''}
+                </div>
+              )}
               {(p.erro || p.codigo) && (
                 <div className="pl-[7.5rem] text-[11px] text-slate-500">
                   {p.codigo && <span className="font-mono">cód. Inter {p.codigo}</span>}

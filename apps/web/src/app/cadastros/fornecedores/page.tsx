@@ -292,7 +292,12 @@ export default async function FornecedoresPage(props: { searchParams: Promise<SP
                           </Link>
                         )}
                         {f.email && <span className="ml-1 text-slate-400">· {f.email}</span>}
-                        <EditPix fornecedorId={f.id} chaveAtual={f.chavePix} favorecidoAtual={f.pixFavorecido} />
+                        <EditPix
+                          fornecedorId={f.id}
+                          chaveAtual={f.chavePix}
+                          favorecidoAtual={f.pixFavorecido}
+                          docFornecedor={f.cnpjOuCpf}
+                        />
                       </td>
                       <td className="px-4 py-2 text-right">
                         <EditPedidoMinimo fornecedorId={f.id} valorAtual={f.valorPedidoMinimo} />

@@ -7,15 +7,32 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { conferirChavePix, type ConferenciaPix } from '@/lib/pix-titular';
+
+const COR_NIVEL: Record<ConferenciaPix['nivel'], string> = {
+  ok: 'text-emerald-700',
+  terceiro: 'text-amber-700',
+  nao_conferivel: 'text-slate-500',
+  diverge: 'text-rose-700 font-semibold',
+};
+
+/** Linha da conferência chave × CPF/CNPJ do fornecedor (anti-fraude, 22/10/2026). */
+export function ConferenciaPixLinha({ c }: { c: ConferenciaPix | null }) {
+  if (!c) return null;
+  return <span className={`block text-[10px] leading-tight ${COR_NIVEL[c.nivel]}`}>{c.msg}</span>;
+}
 
 export function EditPix({
   fornecedorId,
   chaveAtual,
   favorecidoAtual,
+  docFornecedor,
 }: {
   fornecedorId: string;
   chaveAtual: string | null;
   favorecidoAtual: string | null;
+  /** CPF/CNPJ do fornecedor: liga a conferência da chave. */
+  docFornecedor?: string | null;
 }) {
   const router = useRouter();
   const [editando, setEditando] = useState(false);
@@ -45,9 +62,17 @@ export function EditPix({
     }
   }
 
+  const conferido =
+    docFornecedor !== undefined
+      ? conferirChavePix({ chave: chaveAtual, docFornecedor, favorecido: favorecidoAtual })
+      : null;
+  const conferindo =
+    docFornecedor !== undefined ? conferirChavePix({ chave, docFornecedor, favorecido }) : null;
+
   if (!editando) {
     const tem = chaveAtual || favorecidoAtual;
     return (
+      <>
       <button
         type="button"
         onClick={() => setEditando(true)}
@@ -67,6 +92,8 @@ export function EditPix({
           '+ Pix (chave e quem recebe)'
         )}
       </button>
+      <ConferenciaPixLinha c={conferido} />
+      </>
     );
   }
 
@@ -89,6 +116,7 @@ export function EditPix({
         }}
         className="w-56 rounded border border-slate-300 px-1.5 py-1 text-xs"
       />
+      <ConferenciaPixLinha c={conferindo} />
       <div className="flex gap-1">
         <button
           type="button"
