@@ -37,6 +37,7 @@ import {
   LancarEncontroLote,
   type BoletoEncontro,
 } from './entre-casas';
+import { ConferirOutraCasa, type LinhaOutraCasa } from './conferir-outra-casa';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -409,6 +410,20 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                       dataIni={dataIni}
                       dataFim={dataFim}
                       boletos={loteEncontro}
+                    />
+                    <ConferirOutraCasa
+                      filialPagadoraId={escolhida.id}
+                      casas={filiais.map((f) => ({ id: f.id, nome: f.nome, cnpj: f.cnpj }))}
+                      linhas={deOutraCasa.map(
+                        (l): LinhaOutraCasa => ({
+                          p: l.p,
+                          conta: l.conta!,
+                          casaDaConta: l.outraCasa ?? 'outra casa',
+                          encontro: l.encontro
+                            ? { status: l.encontro.status, competencia: compLabel(l.encontro.competencia) }
+                            : null,
+                        }),
+                      )}
                     />
                   </div>
                 )}
