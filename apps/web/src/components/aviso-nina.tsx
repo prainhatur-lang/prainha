@@ -57,6 +57,7 @@ function esperaTxt(desde: string | null): string {
 export function AvisoNina() {
   const [pendentes, setPendentes] = useState<Pendente[]>([]);
   const [antigas, setAntigas] = useState(0);
+  const [antigasIds, setAntigasIds] = useState<string[]>([]);
   const [recolhido, setRecolhido] = useState(false);
   const [notif, setNotif] = useState<'default' | 'granted' | 'denied' | 'sem'>('sem');
   const vistosRef = useRef<Set<string>>(new Set());
@@ -84,6 +85,7 @@ export function AvisoNina() {
         const lista: Pendente[] = Array.isArray(d?.pendentes) ? d.pendentes : [];
         setPendentes(lista);
         setAntigas(Number(d?.antigas) || 0);
+        setAntigasIds(Array.isArray(d?.antigasIds) ? d.antigasIds : []);
 
         const novos = lista.filter((p) => !vistosRef.current.has(p.id));
         vistosRef.current = new Set(lista.map((p) => p.id));
@@ -131,12 +133,14 @@ export function AvisoNina() {
   }, [pendentes.length]);
 
   // Só conversa parada há mais de 1 dia: sem bipe, só um lembrete discreto.
+  // Abre direto a conversa parada (antes caía na lista geral e ela não aparecia).
+  const hrefAntiga = antigasIds[0] ? `/atendimento?conversa=${antigasIds[0]}` : '/atendimento';
   if (pendentes.length === 0) {
     if (antigas === 0) return null;
     return (
       <a
-        href="/atendimento"
-        className="fixed bottom-4 right-4 z-50 rounded-full border border-rose-300 bg-white px-4 py-2 text-sm font-semibold text-rose-700 shadow-lg hover:bg-rose-50"
+        href={hrefAntiga}
+        className="fixed bottom-4 right-4 sm:right-14 z-50 rounded-full border border-rose-300 bg-white px-4 py-2 text-sm font-semibold text-rose-700 shadow-lg hover:bg-rose-50"
       >
         ⚠ {antigas === 1 ? '1 conversa sem resposta há mais de 1 dia' : `${antigas} conversas sem resposta há mais de 1 dia`}
       </a>
@@ -148,7 +152,7 @@ export function AvisoNina() {
       <button
         type="button"
         onClick={() => setRecolhido(false)}
-        className="fixed bottom-4 right-4 z-50 rounded-full bg-amber-500 px-4 py-2 text-sm font-semibold text-white shadow-lg hover:bg-amber-600"
+        className="fixed bottom-4 right-4 sm:right-14 z-50 rounded-full bg-amber-500 px-4 py-2 text-sm font-semibold text-white shadow-lg hover:bg-amber-600"
       >
         🙋 {pendentes.length} esperando atendente
       </button>
@@ -156,7 +160,7 @@ export function AvisoNina() {
   }
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 w-[min(22rem,calc(100vw-2rem))] rounded-xl border border-amber-300 bg-white shadow-xl">
+    <div className="fixed bottom-4 right-4 sm:right-14 z-50 w-[min(22rem,calc(100vw-2rem))] rounded-xl border border-amber-300 bg-white shadow-xl">
       <div className="flex items-center justify-between rounded-t-xl bg-amber-500 px-3 py-2 text-white">
         <span className="text-sm font-semibold">
           🙋 {pendentes.length === 1 ? '1 cliente esperando atendente' : `${pendentes.length} clientes esperando atendente`}
@@ -181,7 +185,7 @@ export function AvisoNina() {
         ))}
       </ul>
       {antigas > 0 && (
-        <a href="/atendimento" className="block border-t border-slate-100 px-3 py-2 text-xs font-medium text-rose-700 hover:bg-rose-50">
+        <a href={hrefAntiga} className="block border-t border-slate-100 px-3 py-2 text-xs font-medium text-rose-700 hover:bg-rose-50">
           ⚠ Mais {antigas} sem resposta há mais de 1 dia — ver todas
         </a>
       )}

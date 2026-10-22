@@ -48,7 +48,7 @@ export async function GET() {
   }>;
 
   const antigasRows = (await db.execute(sql`
-    SELECT count(*)::int AS n
+    SELECT count(*) OVER ()::int AS n, c.id
     FROM atendimento_conversa c
     WHERE c.filial_id IN (${ids})
       AND c.status = 'humano'
@@ -58,11 +58,14 @@ export async function GET() {
         WHERE m.conversa_id = c.id
         ORDER BY m.criado_em DESC LIMIT 1
       ), 'cliente') <> 'equipe'
-  `)) as unknown as Array<{ n: number }>;
+    ORDER BY c.ultima_msg_cliente_em DESC NULLS LAST
+  `)) as unknown as Array<{ n: number; id: string }>;
 
   const nomes = new Map(filiais.map((f) => [f.id, f.nome]));
   return NextResponse.json({
     antigas: Number(antigasRows[0]?.n ?? 0),
+    // ids das antigas (mais recente primeiro): o aviso abre direto a conversa
+    antigasIds: antigasRows.map((r) => r.id),
     pendentes: rows.map((r) => ({
       id: r.id,
       nome: r.nome_cliente || r.telefone,
