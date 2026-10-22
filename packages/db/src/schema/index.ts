@@ -60,5 +60,6 @@ export * from './comprovante-loterica';
 export * from './portador';
 export * from './nfse';
 export * from './registro-exclusao';
+export * from './imposto-guia';
 export * from './pix-pagamento';
 export * from './marketing-post';
