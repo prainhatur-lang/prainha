@@ -10,6 +10,7 @@ import { AppHeader } from '@/components/app-header';
 import { diasDaSemana, labelSemana, nomeDia } from '@/lib/folha/semana';
 import { UploadEspelho } from './upload-espelho';
 import { RecalcularPontoButton } from './recalcular-ponto-button';
+import { RecalcularDezPctButton } from './recalcular-dezpct-button';
 import { diaDoPontoProprio, pontoProprioDesde } from '@/lib/rh/ponto-vigencia';
 import { CalculoFechar } from './calculo-fechar';
 import { PerdasManager } from './perdas-manager';
@@ -382,6 +383,9 @@ export default async function FolhaDetalhePage(props: {
               />
             )}
             {diaDoPontoProprio(folha.filialId, folha.dataFim) && <RecalcularPontoButton folhaId={folha.id} />}
+            <div>
+              <RecalcularDezPctButton folhaId={folha.id} />
+            </div>
           </div>
         )}
 
