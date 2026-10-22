@@ -3,12 +3,26 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-export function FecharEncontroButton({ competencia, hoje }: { competencia: string; hoje: string }) {
+export function FecharEncontroButton({
+  competencia,
+  hoje,
+  avisos = 0,
+}: {
+  competencia: string;
+  hoje: string;
+  /** avisos da conferência mostrados acima do botão (22/10/2026) */
+  avisos?: number;
+}) {
   const router = useRouter();
   const [data, setData] = useState(hoje);
   const [busy, setBusy] = useState(false);
   async function fechar() {
     const [y, m] = competencia.split('-');
+    if (
+      avisos > 0 &&
+      !confirm(`Há ${avisos} aviso(s) em "Conferir antes de fechar" (boleto em dobro, transferência repetida...). Já conferiu e quer fechar mesmo assim?`)
+    )
+      return;
     if (!confirm(`Fechar o encontro de contas de ${m}/${y}? As contas das transferências são baixadas por compensação e fica 1 conta a pagar com a diferença.`)) return;
     setBusy(true);
     const r = await fetch('/api/transferencias/encontro', {

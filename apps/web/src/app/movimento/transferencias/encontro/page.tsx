@@ -13,6 +13,10 @@ import { brl } from '@/lib/format';
 import { hojeBr } from '@/lib/datas';
 import { compLabel, previaEncontro } from '@/lib/transferencia';
 import { FecharEncontroButton } from './fechar-btn';
+import { avisosEncontro } from '@/lib/encontro-avisos';
+import { podeUsuario } from '@/lib/permissoes-runtime';
+import { DesfazerEncontro } from '@/app/financeiro/boletos-inter/entre-casas';
+import { CancelarTransfButton } from '../cancelar-btn';
 
 export const dynamic = 'force-dynamic';
 
@@ -50,6 +54,14 @@ export default async function EncontroPage(props: { searchParams: Promise<{ comp
         .where(inArray(schema.pagamentoEntreCasas.id, idsPag))
         .orderBy(asc(schema.pagamentoEntreCasas.data))
     : [];
+  // conferência antes de fechar: boleto em dobro, conta excluída, mesma
+  // compra cobrada 2x, ida e volta, mês já fechado (22/10/2026)
+  const avisos = await avisosEncontro(comp, pares).catch((e) => {
+    console.error('[encontro] avisos', e);
+    return [];
+  });
+  const podeTirarBoleto = avisos.length ? await podeUsuario(user.id, 'conta_pagar.marcar_pago') : false;
+  const podeCancelarTransf = avisos.length ? await podeUsuario(user.id, 'nota_compra.lancar_estoque') : false;
   // outros meses com coisa em aberto (o encontro mostra um mês por vez)
   const outrosMeses = [
     ...new Set([
@@ -191,7 +203,53 @@ export default async function EncontroPage(props: { searchParams: Promise<{ comp
                 </table>
               </div>
             )}
-            <FecharEncontroButton competencia={comp} hoje={hoje} />
+            {avisos.length > 0 && (
+              <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 p-4">
+                <p className="text-sm font-semibold text-amber-900">⚠ Conferir antes de fechar ({avisos.length})</p>
+                <p className="mt-0.5 text-xs text-amber-800">
+                  Lançamentos que parecem repetidos, cobrados ao contrário ou de conta que não vale mais. Nada
+                  muda sozinho: confira e, se for o caso, tire o boleto ou cancele a transferência antes de fechar.
+                </p>
+                <ul className="mt-3 space-y-2">
+                  {avisos.map((a) => (
+                    <li
+                      key={a.chave}
+                      className={`rounded-lg border p-3 text-sm ${
+                        a.gravidade === 'alta' ? 'border-rose-200 bg-rose-50 text-rose-900' : 'border-amber-200 bg-white text-slate-800'
+                      }`}
+                    >
+                      <span className="mr-1">{a.gravidade === 'alta' ? '🔴' : '🟡'}</span>
+                      {a.texto}
+                      {(a.links.length > 0 ||
+                        (podeTirarBoleto && a.pagamentos.length > 0) ||
+                        (podeCancelarTransf && a.transferencias.length > 0)) && (
+                        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                          {a.links.map((l) => (
+                            <Link key={`${l.href}|${l.rotulo}`} href={l.href} className="text-sky-700 hover:underline">
+                              {l.rotulo} →
+                            </Link>
+                          ))}
+                          {podeTirarBoleto &&
+                            a.pagamentos.map((p) => (
+                              <span key={p.id} className="inline-flex items-center gap-1 text-slate-600">
+                                tirar o boleto do encontro: <DesfazerEncontro id={p.id} rotulo={p.rotulo} />
+                              </span>
+                            ))}
+                          {podeCancelarTransf &&
+                            a.transferencias.map((t) => (
+                              <span key={t.id} className="inline-flex items-center gap-1 text-slate-600">
+                                transferência #{t.numero}:{' '}
+                                <CancelarTransfButton id={t.id} numero={t.numero} emTransito={false} />
+                              </span>
+                            ))}
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <FecharEncontroButton competencia={comp} hoje={hoje} avisos={avisos.length} />
           </>
         )}
 
