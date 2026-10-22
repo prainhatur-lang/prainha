@@ -28,6 +28,7 @@ import { AppHeader } from '@/components/app-header';
 import { brl } from '@/lib/format';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
 import { GrupoPix, type GrupoPedidos } from './grupo-pix';
+import { conferirPixAbertosNoInter, situacaoPixDasContas } from '@/lib/pix-conferir-auto';
 import { PixEnviados, type PixEnviado } from './pix-enviados';
 import { SaldoInterFaixa } from './saldo-inter';
 import { contasEmPixAberto, podePagarPix } from '@/lib/pix-pagamento';
@@ -101,9 +102,13 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
   const pagaPix = await podePagarPix(user.id).catch(() => false);
   const temInterPix = !!resolverCredenciaisInterPagamentos(escolhida.id);
   let travadas: string[] = [];
+  let situacaoPix: Record<string, string> = {};
   let enviados: PixEnviado[] = [];
+  // 22/10/2026: confere sozinho no Inter os Pix em andamento (aprovado no app → baixa).
+  if (temInterPix) await conferirPixAbertosNoInter(escolhida.id).catch(() => null);
   try {
     travadas = [...(await contasEmPixAberto(escolhida.id))];
+    situacaoPix = await situacaoPixDasContas(escolhida.id).catch(() => ({}));
     type Row = {
       id: string;
       quando: string;
@@ -445,6 +450,7 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
                 podePagarPix={pagaPix}
                 temInterPix={temInterPix}
                 contasTravadas={travadas}
+                situacaoPix={situacaoPix}
               />
             ))
           )}

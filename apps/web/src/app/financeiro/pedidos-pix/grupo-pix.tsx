@@ -193,6 +193,7 @@ export function GrupoPix({
   podePagarPix = false,
   temInterPix = false,
   contasTravadas = [],
+  situacaoPix = {},
 }: {
   grupo: GrupoPedidos;
   hoje: string;
@@ -205,6 +206,8 @@ export function GrupoPix({
   temInterPix?: boolean;
   /** Contas que já estão num Pix enviado pelo sistema sem desfecho. */
   contasTravadas?: string[];
+  /** Conta → situação do Pix em andamento (ex.: "falta aprovar no app do Inter"). */
+  situacaoPix?: Record<string, string>;
 }) {
   const router = useRouter();
   const [marcadas, setMarcadas] = useState<Set<string>>(
@@ -282,6 +285,15 @@ export function GrupoPix({
   async function baixar() {
     const contas = grupo.contas.filter((c) => marcadas.has(c.id));
     if (contas.length === 0) return;
+    const emPix = contas.filter((c) => travadas.has(c.id));
+    if (emPix.length > 0) {
+      const segue = window.confirm(
+        `⚠ ${emPix.length} conta(s) marcada(s) já têm um Pix pelo sistema em andamento no Inter (${emPix
+          .map((c) => situacaoPix[c.id] ?? 'em andamento')
+          .join(', ')}).\n\nSe você pagou de outro jeito, REJEITE esse Pix pendente no app do Inter — senão o fornecedor recebe duas vezes.\nSe foi esse Pix que você aprovou, não precisa dar baixa: a tela confere sozinha no Inter.\n\nDar baixa manual mesmo assim?`,
+      );
+      if (!segue) return;
+    }
     const ok = window.confirm(
       `Dar baixa em ${contas.length} conta(s) de ${grupo.nome}, total ${brl(totalMarcado)}, pagas em ${dataBr(dataPgto)}?\n\nSó confirme depois que o Pix saiu no Inter.`,
     );
@@ -372,7 +384,7 @@ export function GrupoPix({
               <span className="w-20 shrink-0 font-mono text-xs text-slate-600">{dataBr(c.venc)}</span>
               {travadas.has(c.id) && (
                 <span className="shrink-0 rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700">
-                  Pix em andamento
+                  Pix em andamento{situacaoPix[c.id] ? `: ${situacaoPix[c.id]}` : ''}
                 </span>
               )}
               <a
