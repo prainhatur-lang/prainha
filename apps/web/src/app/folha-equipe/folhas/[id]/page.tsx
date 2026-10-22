@@ -14,6 +14,8 @@ import { RecalcularDezPctButton } from './recalcular-dezpct-button';
 import { diaDoPontoProprio, pontoProprioDesde } from '@/lib/rh/ponto-vigencia';
 import { CalculoFechar } from './calculo-fechar';
 import { PerdasManager } from './perdas-manager';
+import { BorderoFolha } from './bordero-folha';
+import { hojeBr } from '@/lib/datas';
 
 export const dynamic = 'force-dynamic';
 
@@ -546,6 +548,7 @@ export default async function FolhaDetalhePage(props: {
             valorDiariasRetroativas: Number(pgtoStatus?.valorDiariasRetroativas ?? 0),
           }}
         />
+        {folha.status === 'fechada' && <BorderoFolha folhaId={folha.id} hoje={hojeBr()} />}
       </section>
     </main>
   );

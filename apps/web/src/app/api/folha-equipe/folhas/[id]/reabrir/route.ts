@@ -83,6 +83,19 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     );
   }
 
+  // Borderô ativo (22/10/2026): reabrir apagaria as contas que estão nele.
+  const [bordero] = await db
+    .select({ id: schema.bordero.id })
+    .from(schema.bordero)
+    .where(and(eq(schema.bordero.folhaSemanaId, folha.id), eq(schema.bordero.status, 'ATIVO')))
+    .limit(1);
+  if (bordero) {
+    return NextResponse.json(
+      { error: 'Esta folha tem um borderô ativo. Desfaça o borderô (painel 📦 na folha) antes de reabrir.' },
+      { status: 409 },
+    );
+  }
+
   await db
     .update(schema.folhaSemana)
     .set({ status: 'aberta', fechadaEm: null, fechadaPor: null })

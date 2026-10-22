@@ -172,6 +172,7 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
         eq(c.filialId, escolhida.id),
         isNull(c.dataPagamento),
         isNull(c.dataDelete),
+        isNull(c.borderoId), // borderô: quem paga é a lotérica
         notInArray(c.origem, ORIGENS_FORA),
         lte(c.dataVencimento, ate),
       ),

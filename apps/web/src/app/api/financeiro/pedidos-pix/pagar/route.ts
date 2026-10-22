@@ -82,9 +82,9 @@ export async function POST(req: Request) {
       jaPago: sql<string>`coalesce((select sum(b.valor) from conta_pagar_baixa b where b.conta_pagar_id = ${c.id}), 0)::text`,
     })
     .from(c)
-    .where(and(inArray(c.id, contaIds), eq(c.filialId, filialId), isNull(c.dataPagamento), isNull(c.dataDelete)));
+    .where(and(inArray(c.id, contaIds), eq(c.filialId, filialId), isNull(c.dataPagamento), isNull(c.dataDelete), isNull(c.borderoId)));
   if (contas.length !== contaIds.length) {
-    return NextResponse.json({ error: 'Alguma conta já foi paga, excluída ou não é desta casa. Recarregue a tela.' }, { status: 409 });
+    return NextResponse.json({ error: 'Alguma conta já foi paga, excluída, está num borderô da folha ou não é desta casa. Recarregue a tela.' }, { status: 409 });
   }
   if (contas.some((x) => x.fornecedorId !== fornecedorId || ORIGENS_FORA.includes(x.origem ?? ''))) {
     return NextResponse.json({ error: 'Conta de outro fornecedor ou que não se paga por aqui.' }, { status: 400 });

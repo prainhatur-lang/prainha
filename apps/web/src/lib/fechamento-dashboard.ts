@@ -40,6 +40,7 @@ async function resumoMes(filialId: string, ano: number, mes: number) {
     .where(
       and(
         eq(schema.contaPagar.filialId, filialId),
+        isNull(schema.contaPagar.borderoId),
         isNotNull(schema.contaPagar.dataPagamento),
         gte(schema.contaPagar.dataPagamento, ymdStart),
         lte(schema.contaPagar.dataPagamento, ymdEnd),
@@ -285,6 +286,7 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
     .where(
       and(
         eq(schema.contaPagar.filialId, filialId),
+        isNull(schema.contaPagar.borderoId),
         isNotNull(schema.contaPagar.dataPagamento),
         gte(schema.contaPagar.dataPagamento, ymdStart),
         lte(schema.contaPagar.dataPagamento, ymdEnd),
@@ -300,6 +302,7 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
     .where(
       and(
         eq(schema.contaPagar.filialId, filialId),
+        isNull(schema.contaPagar.borderoId),
         isNull(schema.contaPagar.dataPagamento),
         gte(schema.contaPagar.dataVencimento, ymdStart),
         lte(schema.contaPagar.dataVencimento, ymdEnd),
@@ -316,6 +319,7 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
     .where(
       and(
         eq(schema.contaPagar.filialId, filialId),
+        isNull(schema.contaPagar.borderoId),
         isNotNull(schema.contaPagar.dataPagamento),
         gte(schema.contaPagar.dataPagamento, ymdStart),
         lte(schema.contaPagar.dataPagamento, ymdEnd),
@@ -335,6 +339,7 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
     .where(
       and(
         eq(schema.contaPagar.filialId, filialId),
+        isNull(schema.contaPagar.borderoId),
         isNotNull(schema.contaPagar.dataPagamento),
         gte(schema.contaPagar.dataPagamento, ymdStart),
         lte(schema.contaPagar.dataPagamento, ymdEnd),
@@ -403,6 +408,7 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
     .where(
       and(
         eq(schema.contaPagar.filialId, filialId),
+        isNull(schema.contaPagar.borderoId),
         isNotNull(schema.contaPagar.dataPagamento),
         gte(schema.contaPagar.dataPagamento, ymdStart),
         lte(schema.contaPagar.dataPagamento, ymdEnd),

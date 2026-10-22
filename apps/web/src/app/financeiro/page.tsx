@@ -136,9 +136,12 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
   // sobre o estado total da filial).
   const kpis = filialSelecionada
     ? await (async () => {
+        // Conta que está num borderô (folha paga pela lotérica) não soma:
+        // a saída de dinheiro é a conta do intermediário (origem BORDERO).
         const baseWhere = and(
           filtroFilial,
           isNull(schema.contaPagar.dataDelete),
+          isNull(schema.contaPagar.borderoId),
         );
         const [emAberto] = await db
           .select({
@@ -215,6 +218,7 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
           categoriaTipo: schema.categoriaConta.tipo,
           origem: schema.contaPagar.origem,
           notaCompraId: schema.contaPagar.notaCompraId,
+          borderoId: schema.contaPagar.borderoId,
         })
         .from(schema.contaPagar)
         .leftJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.contaPagar.fornecedorId))
@@ -310,6 +314,8 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
   // se achou alguma coisa e quanto dá. Só as linhas listadas (máx. 500).
   const resumo = contas.reduce(
     (acc, c) => {
+      // No borderô: aparece na lista, mas o dinheiro é a conta do intermediário.
+      if (c.borderoId) return acc;
       const valor = Number(c.valor);
       const pago = Number(c.valorPago ?? 0);
       acc.total += valor;
@@ -779,6 +785,22 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                                   title="Lançamento gerado pelo fechamento da folha semanal"
                                 >
                                   FOLHA
+                                </span>
+                              )}
+                              {c.borderoId && (
+                                <span
+                                  className="rounded bg-indigo-100 px-1 py-0.5 text-[9px] font-medium text-indigo-800"
+                                  title="Paga pela lotérica dentro de um borderô — não conta como saída; a saída é a conta do intermediário"
+                                >
+                                  📦 NO BORDERÔ
+                                </span>
+                              )}
+                              {c.origem === 'BORDERO' && (
+                                <span
+                                  className="rounded bg-indigo-100 px-1 py-0.5 text-[9px] font-medium text-indigo-800"
+                                  title="Borderô da folha: um Pix só pro intermediário, que paga cada pessoa"
+                                >
+                                  📦 BORDERÔ
                                 </span>
                               )}
                               {(c.origem === 'TRANSFERENCIA' || c.origem === 'ENCONTRO_CONTAS') && (

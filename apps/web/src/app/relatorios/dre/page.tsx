@@ -106,6 +106,7 @@ export default async function DrePage(props: { searchParams: Promise<SP> }) {
       and(
         eq(schema.contaPagar.filialId, filialSelecionada.id),
         isNull(schema.contaPagar.dataDelete),
+        isNull(schema.contaPagar.borderoId), // borderô: a saída é a conta do intermediário
         gte(schema.contaPagar.dataPagamento, range.ini),
         lte(schema.contaPagar.dataPagamento, range.fim),
       ),
@@ -131,6 +132,7 @@ export default async function DrePage(props: { searchParams: Promise<SP> }) {
       and(
         eq(schema.contaPagar.filialId, filialSelecionada.id),
         isNull(schema.contaPagar.dataDelete),
+        isNull(schema.contaPagar.borderoId),
         isNull(schema.contaPagar.dataPagamento),
         gte(schema.contaPagar.dataVencimento, range.ini),
         lte(schema.contaPagar.dataVencimento, range.fim),

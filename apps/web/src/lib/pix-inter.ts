@@ -132,7 +132,8 @@ function selecionarContas(onde: SQL | undefined) {
     })
     .from(schema.contaPagar)
     .leftJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.contaPagar.fornecedorId))
-    .where(and(isNull(schema.contaPagar.dataDelete), onde))
+    // Conta no borderô não casa com Pix: quem saiu foi o Pix do intermediário.
+    .where(and(isNull(schema.contaPagar.dataDelete), isNull(schema.contaPagar.borderoId), onde))
     .then((rows) =>
       rows.map((r) => ({
         ...r,

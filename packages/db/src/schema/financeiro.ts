@@ -300,6 +300,12 @@ export const contaPagar = pgTable(
      *  (vide schema/folha.ts) — usamos uuid raw aqui pra evitar ciclo
      *  de imports entre financeiro.ts e folha.ts. */
     folhaSemanaId: uuid('folha_semana_id'),
+    /** Conta que entrou num borderô (22/10/2026): foi paga junto, num Pix
+     *  só, pelo intermediário (lotérica Sobral). Enquanto estiver aqui ela
+     *  NÃO conta como saída de dinheiro (totais, DRE, fechamento, Pix): a
+     *  saída é a conta do intermediário (origem BORDERO). A baixa individual
+     *  continua vindo do comprovante da lotérica. */
+    borderoId: uuid('bordero_id'),
     /** Quem lançou (id do usuário logado) e quando. Vazio em conta antiga
      *  (antes de 13/10/2026) e no que vem do Consumer/agente. */
     criadoPor: uuid('criado_por'),
@@ -320,6 +326,35 @@ export const contaPagar = pgTable(
     pagamentoIdx: index('idx_conta_pagar_pgto').on(t.filialId, t.dataPagamento),
     notaIdx: index('idx_conta_pagar_nota').on(t.notaCompraId),
     origemIdx: index('idx_conta_pagar_origem').on(t.filialId, t.origem),
+  }),
+);
+
+/** Borderô (22/10/2026): junta contas a pagar (hoje as da folha semanal)
+ *  num pagamento só pra um intermediário (lotérica Sobral), que paga cada
+ *  pessoa e devolve os comprovantes. Gera UMA conta_pagar do intermediário
+ *  (origem BORDERO, `contaPagarId`) e marca as contas dos itens com
+ *  bordero_id. Desfazer só com a conta do intermediário em aberto. */
+export const bordero = pgTable(
+  'bordero',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    folhaSemanaId: uuid('folha_semana_id'),
+    intermediarioId: uuid('intermediario_id').notNull(),
+    contaPagarId: uuid('conta_pagar_id'),
+    valor: numeric('valor', { precision: 14, scale: 2 }).notNull(),
+    qtdContas: integer('qtd_contas').notNull(),
+    dataVencimento: date('data_vencimento').notNull(),
+    /** ATIVO | DESFEITO */
+    status: varchar('status', { length: 10 }).notNull().default('ATIVO'),
+    criadoPor: uuid('criado_por'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    desfeitoPor: uuid('desfeito_por'),
+    desfeitoEm: timestamp('desfeito_em', { withTimezone: true }),
+  },
+  (t) => ({
+    folhaIdx: index('bordero_folha_idx').on(t.folhaSemanaId),
+    filialIdx: index('bordero_filial_idx').on(t.filialId, t.status),
   }),
 );
 

@@ -160,6 +160,23 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }
   const r = await carregarContaManual(id, user.id);
   if (r.erro) return r.erro;
 
+  // Borderô da folha (22/10/2026): conta que está num borderô não sai sozinha,
+  // e a conta do intermediário só sai pelo "Desfazer borderô" da folha.
+  const [bord] = await db
+    .select({ borderoId: schema.contaPagar.borderoId, origem: schema.contaPagar.origem })
+    .from(schema.contaPagar)
+    .where(eq(schema.contaPagar.id, id))
+    .limit(1);
+  if (bord?.borderoId || bord?.origem === 'BORDERO') {
+    return NextResponse.json(
+      {
+        error:
+          'Esta conta faz parte de um borderô da folha. Desfaça o borderô na tela da folha (enquanto o Pix do intermediário não foi baixado) antes de excluir.',
+      },
+      { status: 409 },
+    );
+  }
+
   // Registro de quem excluiu (20/10/2026) — antes de apagar; se falhar, não apaga.
   const motivo = await lerMotivo(req);
   const [linha] = await db
