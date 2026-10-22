@@ -26157,8 +26157,30 @@ input.kalvo{border-color:var(--gold2)}
   .lst{grid-template-columns:repeat(auto-fill,minmax(96px,1fr))}
 }
 </style><script>if('serviceWorker' in navigator&&window.isSecureContext)navigator.serviceWorker.register('/sw.js').catch(function(){});</script></head><body>
-<header><h1>${LOJA_NOME} <b>Caixa</b></h1><span id="hdr"></span></header>
+<header><h1>${LOJA_NOME} <b>Caixa</b></h1><span style="display:flex;align-items:center;gap:10px"><button id="cxCheia" type="button" title="Tela cheia" style="display:none;font:inherit;font-size:13px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer">⛶ Tela cheia</button><span id="hdr"></span></span></header>
 <div class="wrap" id="app"></div>
+<script>
+/* TELA CHEIA NO ENDEREÇO SEGURO: o app instalado vale só pro endereço onde
+   foi instalado (http://IP:porta). No https (porta +1) o Chrome trata como
+   outro site e abre como aba comum, com a barra. Aqui o primeiro toque/clique
+   põe em tela cheia. No tablet, se sair (voltar do Android), o próximo toque
+   volta; no PC, se a pessoa saiu com Esc, não insiste — fica o botão ⛶.
+   Aberto como app instalado não faz nada (já está cheio). */
+(function(){
+  var el=document.documentElement,req=el.requestFullscreen||el.webkitRequestFullscreen,b=document.getElementById('cxCheia');
+  if(!req||document.fullscreenEnabled===false||!b)return;
+  var toque=navigator.maxTouchPoints>0,saiu=false;
+  function jaApp(){try{return window.matchMedia('(display-mode: fullscreen)').matches||window.matchMedia('(display-mode: standalone)').matches||navigator.standalone===true}catch(e){return false}}
+  function cheio(){return !!(document.fullscreenElement||document.webkitFullscreenElement)}
+  function pinta(){b.style.display=(jaApp()||cheio())?'none':''}
+  function entra(){if(jaApp()||cheio())return;try{var r=req.call(el,{navigationUI:'hide'});if(r&&r.catch)r.catch(function(){})}catch(e){}}
+  function mudou(){if(!cheio()&&!toque)saiu=true;pinta()}
+  document.addEventListener('fullscreenchange',mudou);document.addEventListener('webkitfullscreenchange',mudou);
+  document.addEventListener('pointerup',function(e){if(e.target===b||(!toque&&saiu))return;entra()},true);
+  b.addEventListener('click',function(){saiu=false;entra()});
+  pinta();
+})();
+</script>
 <script>
 var TOK=null; try{TOK=localStorage.getItem('caixa_tok')||null}catch(e){}
 var NOME=null,PODE={desconto:false,fiado:false,abrir:false,divergente:false,lancar:false,cancItem:false,cancPed:false,reabrir:false,estorno:false},MESA=null,CONTA=null,DMODO='valor',CANCIT=null;
