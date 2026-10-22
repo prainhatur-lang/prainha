@@ -16,6 +16,7 @@ import { AcoesConta } from './acoes-conta';
 import { ValorBoletoForm } from './valor-boleto-form';
 import { PagaOutraCasa } from './paga-outra-casa';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { ehAdmin } from '@/lib/usuario-admin';
 
 export const dynamic = 'force-dynamic';
 
@@ -342,6 +343,7 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
           valorConta={valor}
           podeBaixar={(!consumer || consumerAqui) && !pagaNoConsumer && saldo > 0.005}
           lancamentos={pagosPorOutra}
+          admin={await ehAdmin(user.id)}
         />
       </div>
     </main>

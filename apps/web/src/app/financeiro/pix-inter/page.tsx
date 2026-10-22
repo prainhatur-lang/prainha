@@ -28,6 +28,8 @@ import {
   type ResultadoPix,
 } from '@/lib/pix-inter';
 import { BaixarPix, BaixarPixLote, DesfazerPix, type PixBaixa } from './pix-acoes';
+import { BLOQUEIO_ENTRE_CASAS_DESDE, entreCasasBloqueado } from '@/lib/pagamento-entre-casas';
+import { ehAdmin } from '@/lib/usuario-admin';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -119,6 +121,11 @@ export default async function PixInterPage(props: { searchParams: Promise<SP> })
   });
 
   const podeBaixar = await podeUsuario(user.id, 'conta_pagar.marcar_pago');
+  // regra do dono 22/10/2026: Pix desta casa pagando conta de outra, da data
+  // em diante, fica travado (sem baixa e sem encontro) — só o Admin baixa
+  const admin = await ehAdmin(user.id);
+  const travada = (r: ResultadoPix, c: { filialId: string }) =>
+    !!outraCasa(c) && entreCasasBloqueado(r.pix.data, admin);
   const casados = resultados.filter((r): r is Extract<ResultadoPix, { tipo: 'casado' }> => r.tipo === 'casado');
   const noLote = (r: Extract<ResultadoPix, { tipo: 'casado' }>) =>
     !outraCasa(r.conta) && Math.abs(dias(r.pix.data, r.conta.dataVencimento)) <= PERTO_DIAS;
@@ -338,6 +345,16 @@ export default async function PixInterPage(props: { searchParams: Promise<SP> })
                   encontro de contas
                 </Link>{' '}
                 do mês do Pix. Esses ficam fora do botão de baixar todas — confira e baixe pela linha.
+                <span className="mt-2 block rounded-lg border border-rose-200 bg-rose-50 p-2 text-rose-900">
+                  <span className="font-semibold">🚫 Desde {BLOQUEIO_ENTRE_CASAS_DESDE.split('-').reverse().join('/')} uma casa não paga conta de outra</span>{' '}
+                  (regra do dono). A casa que está na nota paga o fornecedor; mercadoria pra outra
+                  casa vai por{' '}
+                  <Link href="/movimento/transferencias" className="font-medium underline">
+                    transferência
+                  </Link>
+                  , que gera o crédito, e as casas se acertam no encontro. Pix dessa data em diante
+                  pagando conta de outra casa fica travado aqui; só o Admin baixa.
+                </span>
               </div>
             )}
 
@@ -390,9 +407,15 @@ export default async function PixInterPage(props: { searchParams: Promise<SP> })
                                 {formatDate(r.conta.dataVencimento)}
                               </ContaLink>
                               <CasaBadge nome={outraCasa(r.conta)} />
-                              {podeBaixar && (
+                              {podeBaixar && !travada(r, r.conta) && (
                                 <span className="ml-1.5">
                                   <BaixarPix item={paraBaixa(r, r.conta)} />
+                                </span>
+                              )}
+                              {travada(r, r.conta) && (
+                                <span className="mt-1 block text-[10px] font-semibold text-rose-700">
+                                  🚫 casa errada: desde 22/10 uma casa não paga conta de outra — sem
+                                  baixa por aqui; só o Admin lança
                                 </span>
                               )}
                               {!noLote(r) && !outraCasa(r.conta) && (
@@ -452,7 +475,12 @@ export default async function PixInterPage(props: { searchParams: Promise<SP> })
                                         {rotuloConta(c)}
                                       </Link>
                                       <CasaBadge nome={outraCasa(c)} />
-                                      {podeBaixar && (
+                                      {travada(r, c) && (
+                                        <span className="text-[10px] font-semibold text-rose-700">
+                                          🚫 casa errada (desde 22/10)
+                                        </span>
+                                      )}
+                                      {podeBaixar && !travada(r, c) && (
                                         <BaixarPix
                                           item={paraBaixa(r, c)}
                                           texto="baixar esta"

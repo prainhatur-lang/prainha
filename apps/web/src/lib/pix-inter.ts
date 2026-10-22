@@ -9,7 +9,9 @@
 //
 // Conta de OUTRA casa paga pelo Pix desta: baixa na casa da conta e a dívida
 // vai pro encontro de contas (pagamento_entre_casas, origem INTER_PIX), igual
-// ao boleto.
+// ao boleto. Desde 22/10/2026 (regra do dono) isso vale só pra Pix de antes
+// da data; do dia em diante só o Admin baixa conta de outra casa por Pix —
+// ver BLOQUEIO_ENTRE_CASAS_DESDE em lib/pagamento-entre-casas.ts.
 
 import { db, schema } from '@concilia/db';
 import { and, eq, gte, ilike, inArray, isNotNull, isNull, lte, ne, sql, type SQL } from 'drizzle-orm';
@@ -18,6 +20,8 @@ import { consumerParado } from '@/lib/consumer-contas';
 import { recalcularAgregado } from '@/lib/conta-pagar-baixa';
 import { RecusaTransf } from '@/lib/transferencia';
 import { centavos, somaDias } from '@/lib/boletos-inter';
+import { entreCasasBloqueado, MSG_BLOQUEIO_ENTRE_CASAS } from '@/lib/pagamento-entre-casas';
+import { ehAdmin } from '@/lib/usuario-admin';
 
 /** Pix com descrição de pagamento entre as próprias casas (transferência) */
 const PIX_CASAS = /PRAINHA/i;
@@ -316,6 +320,7 @@ export async function baixarPorPix(opts: { userId: string; itens: Array<{ pixId:
   );
   const feitos = await baixasPorPix(pixIds);
 
+  let admin: boolean | null = null; // só consulta se aparecer conta de outra casa
   const baixados: string[] = [];
   const recusados: Array<{ pixId: string; motivo: string }> = [];
   const usados = new Set<string>();
@@ -337,6 +342,13 @@ export async function baixarPorPix(opts: { userId: string; itens: Array<{ pixId:
     }
 
     const outraCasa = c.filialId !== pix.filialId;
+    if (outraCasa) {
+      if (admin === null) admin = await ehAdmin(userId);
+      if (entreCasasBloqueado(pix.data, admin)) {
+        recusa(`conta da ${nome.get(c.filialId)} paga pelo Pix da ${nome.get(pix.filialId)}. ${MSG_BLOQUEIO_ENTRE_CASAS}`);
+        continue;
+      }
+    }
     const observacao = `Pix do Inter da ${nome.get(pix.filialId)} em ${dataBr(pix.data)}${pix.favorecido ? ` — ${pix.favorecido}` : ''}`;
     await db.transaction(async (tx) => {
       await tx.insert(schema.contaPagarBaixa).values({

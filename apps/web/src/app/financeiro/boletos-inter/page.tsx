@@ -30,6 +30,8 @@ import {
   pagamentoCancelado,
 } from '@/lib/boletos-inter';
 import { compLabel } from '@/lib/transferencia';
+import { BLOQUEIO_ENTRE_CASAS_DESDE, entreCasasBloqueado } from '@/lib/pagamento-entre-casas';
+import { ehAdmin } from '@/lib/usuario-admin';
 import { casasComConsumerParado } from '@/lib/consumer-contas';
 import { BaixarBoleto, BaixarBoletosLote, type BoletoBaixa } from './baixar-boletos';
 import {
@@ -188,6 +190,9 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
       : [],
   );
 
+  // regra do dono 22/10/2026: conta de outra casa paga por este Inter a
+  // partir da data fica travada (sem baixa e sem encontro) — só o Admin lança
+  const admin = await ehAdmin(user.id);
   const linhas = validos.map((p, i) => {
     const conta = casadas[i] ?? null;
     const outraCasa =
@@ -225,8 +230,11 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
     const jurosBanco = Math.max(0, centavos(p.valorPago) - centavos(p.valorNominal)) / 100;
     // conta de outra casa paga por este Inter: vai pro encontro de contas
     const encontro = outraCasa ? (noEncontro.get(p.codigoTransacao) ?? null) : null;
+    const bloqueada =
+      !!conta && !!outraCasa && !encontro && entreCasasBloqueado(p.dataPagamento ?? null, admin);
+    if (bloqueada) baixa = null;
     const paraEncontro: BoletoEncontro | null =
-      conta && outraCasa && !encontro && !pagamentoAgendado(p) && p.dataPagamento
+      conta && outraCasa && !encontro && !bloqueada && !pagamentoAgendado(p) && p.dataPagamento
         ? {
             codigo: p.codigoTransacao,
             contaId: conta.id,
@@ -236,7 +244,7 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
         : null;
     const emDobro =
       conta && !outraCasa ? (emDobroEncontro.get(p.codigoTransacao) ?? null) : null;
-    return { p, conta, situacao, baixa, conferir, jurosBanco, outraCasa, encontro, paraEncontro, emDobro };
+    return { p, conta, situacao, baixa, conferir, jurosBanco, outraCasa, encontro, paraEncontro, emDobro, bloqueada };
   });
   const podeBaixar = await podeUsuario(user.id, 'conta_pagar.marcar_pago');
   const lote = podeBaixar
@@ -259,6 +267,7 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
     consumer: abertas.filter((l) => baixaNoPdv(l.conta)).length,
     outraCasa: abertas.filter((l) => l.baixa && l.outraCasa).length,
     conferir: abertas.filter((l) => l.baixa && !l.outraCasa && l.conferir).length,
+    bloqueada: abertas.filter((l) => l.bloqueada && !baixaNoPdv(l.conta)).length,
   };
   const deOutraCasa = linhas.filter((l) => l.outraCasa);
   const totalOutraCasa = deOutraCasa.reduce(
@@ -269,6 +278,7 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
     ? deOutraCasa.map((l) => l.paraEncontro).filter((x): x is BoletoEncontro => !!x)
     : [];
   const jaNoEncontro = deOutraCasa.filter((l) => l.encontro);
+  const bloqueadas = deOutraCasa.filter((l) => l.bloqueada);
   const visiveis = ver === 'todos' ? linhas : linhas.filter((l) => l.situacao === ver);
 
   function href(next: Partial<SP>): string {
@@ -452,6 +462,17 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                     do mês do pagamento.
                     {jaNoEncontro.length > 0 &&
                       ` ${int(jaNoEncontro.length)} já ${jaNoEncontro.length === 1 ? 'está lançado' : 'estão lançados'} no encontro.`}
+                    <span className="mt-2 block rounded-lg border border-rose-200 bg-rose-50 p-2 text-rose-900">
+                      <span className="font-semibold">🚫 Desde {BLOQUEIO_ENTRE_CASAS_DESDE.split('-').reverse().join('/')} uma casa não paga conta de outra</span>{' '}
+                      (regra do dono). A casa que está na nota paga o fornecedor; mercadoria pra
+                      outra casa vai por{' '}
+                      <Link href="/movimento/transferencias" className="font-medium underline">
+                        transferência
+                      </Link>
+                      , que gera o crédito, e as casas se acertam no encontro.
+                      {bloqueadas.length > 0 &&
+                        ` ${int(bloqueadas.length)} ${bloqueadas.length === 1 ? 'boleto daqui pra frente está travado' : 'boletos daqui pra frente estão travados'} (sem baixa e sem encontro): agendado, cancele no Inter e pague pela casa da conta; já pago, só o Admin lança.`}
+                    </span>
                     <LancarEncontroLote
                       filialId={escolhida.id}
                       dataIni={dataIni}
@@ -486,6 +507,8 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                       ` ${int(foraLote.outraCasa)} de outra casa (baixe pela linha);`}
                     {foraLote.conferir > 0 &&
                       ` ${int(foraLote.conferir)} com vencimento diferente do boleto (confira e baixe pela linha);`}
+                    {foraLote.bloqueada > 0 &&
+                      ` ${int(foraLote.bloqueada)} de outra casa pagas pela casa errada desde 22/10 (travadas);`}
                   </p>
                 )}
 
@@ -510,7 +533,7 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                           </td>
                         </tr>
                       ) : (
-                        visiveis.map(({ p, conta, situacao, baixa, conferir, jurosBanco, outraCasa, encontro, paraEncontro, emDobro }) => (
+                        visiveis.map(({ p, conta, situacao, baixa, conferir, jurosBanco, outraCasa, encontro, paraEncontro, emDobro, bloqueada }) => (
                           <tr key={p.codigoTransacao} className="border-t border-slate-100">
                             <td className="px-4 py-2 font-mono text-xs text-slate-700">
                               {p.dataPagamento ? formatDate(p.dataPagamento) : '—'}
@@ -605,9 +628,17 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                                   casaDaConta={outraCasa ?? 'outra casa'}
                                 />
                               )}
-                              {outraCasa && !encontro && pagamentoAgendado(p) && (
+                              {outraCasa && !encontro && !bloqueada && pagamentoAgendado(p) && (
                                 <span className="ml-1.5 text-[10px] text-slate-500">
                                   agendado — lança no encontro depois de pago
+                                </span>
+                              )}
+                              {bloqueada && (
+                                <span className="mt-1 block text-[10px] font-semibold text-rose-700">
+                                  🚫 casa errada: desde 22/10 uma casa não paga conta de outra —{' '}
+                                  {pagamentoAgendado(p) || !p.dataPagamento
+                                    ? `cancele o agendamento no Inter e pague pela ${outraCasa}`
+                                    : 'sem baixa e sem encontro por aqui; só o Admin lança'}
                                 </span>
                               )}
                               {podeBaixar && baixa && <BaixarBoleto boleto={baixa} />}

@@ -18,8 +18,26 @@ import {
 import { RecusaTransf } from '@/lib/transferencia';
 import { consumerParado } from '@/lib/consumer-contas';
 import { recalcularAgregado } from '@/lib/conta-pagar-baixa';
+import { ehAdmin } from '@/lib/usuario-admin';
 
 const dataBr = (ymd: string) => ymd.split('-').reverse().join('/');
+
+// Regra do dono (22/10/2026): daqui pra frente uma casa NÃO paga conta de
+// outra. A casa que está na nota paga o fornecedor; mercadoria que vai pra
+// outra casa sai por transferência (que gera o crédito) e as casas se acertam
+// no encontro de contas. Pagamento feito antes da data segue lançando como
+// sempre; do dia em diante só o Admin lança (o banco já pagou pela casa
+// errada e o dinheiro precisa ser acertado de algum jeito).
+export const BLOQUEIO_ENTRE_CASAS_DESDE = '2026-10-22';
+export const MSG_BLOQUEIO_ENTRE_CASAS =
+  'Desde 22/10/2026 uma casa não paga conta de outra (regra do dono). A casa que está na nota paga o fornecedor; mercadoria pra outra casa vai por transferência, que gera o crédito, e as casas se acertam no encontro. Pagamento que já saiu pela casa errada: só o Admin lança.';
+
+/** Pagamento de conta de OUTRA casa feito nessa data fica travado pra quem
+ *  não é Admin. Sem data (ainda agendado) conta como daqui pra frente. */
+export function entreCasasBloqueado(data: string | null | undefined, admin: boolean) {
+  if (admin) return false;
+  return !data || data.slice(0, 10) >= BLOQUEIO_ENTRE_CASAS_DESDE;
+}
 
 /** Lança no encontro de contas os boletos que o Inter da `filialPagadoraId`
  *  pagou pra contas de outra casa. Confere tudo de novo no servidor: o
@@ -100,6 +118,7 @@ export async function lancarPagamentosEntreCasas(opts: {
       ),
     );
 
+  const admin = await ehAdmin(userId);
   const lancados: string[] = [];
   const recusados: Array<{ codigo: string; motivo: string }> = [];
   for (const it of opts.itens) {
@@ -123,6 +142,10 @@ export async function lancarPagamentosEntreCasas(opts: {
       recusa(
         `esse boleto já baixou a conta ${daPropria.fornecedorNome ?? daPropria.descricao ?? ''} da ${nome.get(filialPagadoraId)} — a conta é dela, não entra no encontro`,
       );
+      continue;
+    }
+    if (entreCasasBloqueado(p.dataPagamento, admin)) {
+      recusa(`pago em ${dataBr(p.dataPagamento.slice(0, 10))} pela casa errada. ${MSG_BLOQUEIO_ENTRE_CASAS}`);
       continue;
     }
 
@@ -221,6 +244,9 @@ export async function lancarPagamentoManualEntreCasas(opts: {
   if (!c || c.dataDelete) throw new RecusaTransf('conta não encontrada');
   if (!nome.has(c.filialId)) throw new RecusaTransf('sem acesso à casa da conta');
   if (c.filialId === filialPagadoraId) throw new RecusaTransf('a casa que pagou é a mesma da conta — use "Registrar pagamento"');
+  // regra do dono 22/10/2026: lançamento à mão de uma casa pagando outra só
+  // pelo Admin, qualquer data (não tem banco pra provar quando saiu)
+  if (!(await ehAdmin(userId))) throw new RecusaTransf(MSG_BLOQUEIO_ENTRE_CASAS);
 
   const [ativo] = await db
     .select({ id: schema.pagamentoEntreCasas.id })

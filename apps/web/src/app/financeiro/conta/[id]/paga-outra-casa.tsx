@@ -4,6 +4,8 @@
 // quem pagou foi outra (Pix de outro banco, cartão, dinheiro...). Entra no
 // encontro de contas do mês do pagamento e, marcado, já dá a baixa na conta.
 // Boleto pago pelo Inter de outra casa continua em /financeiro/boletos-inter.
+// Desde 22/10/2026 (regra do dono) uma casa não paga conta de outra: o botão
+// de lançar fica só pro Admin; o desfazer continua pra quem já lançou.
 
 import { useState } from 'react';
 import Link from 'next/link';
@@ -34,6 +36,7 @@ export function PagaOutraCasa({
   valorConta,
   podeBaixar,
   lancamentos,
+  admin = false,
 }: {
   contaId: string;
   /** casas que o usuário acessa, menos a da conta */
@@ -43,6 +46,8 @@ export function PagaOutraCasa({
   /** a conta aceita baixa aqui (não é do Consumer ativo) e tem saldo */
   podeBaixar: boolean;
   lancamentos: LancamentoOutraCasa[];
+  /** só o Admin lança (regra do dono 22/10/2026) */
+  admin?: boolean;
 }) {
   const router = useRouter();
   const ativo = lancamentos.find((l) => l.status !== 'CANCELADO');
@@ -101,7 +106,7 @@ export function PagaOutraCasa({
     <div className="mt-5 rounded-xl border border-violet-200 bg-white p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-semibold text-slate-900">Paga por outra casa</h2>
-        {!ativo && casas.length > 0 && !aberto && (
+        {admin && !ativo && casas.length > 0 && !aberto && (
           <button
             type="button"
             onClick={() => setAberto(true)}
@@ -158,9 +163,20 @@ export function PagaOutraCasa({
         </table>
       )}
 
-      {!ativo && lancamentos.length === 0 && !aberto && (
+      {admin && !ativo && lancamentos.length === 0 && !aberto && (
         <p className="mt-1 text-[11px] text-slate-500">
           A conta é desta casa, mas outra casa pagou? Lance aqui: ela entra no encontro de contas do mês do pagamento.
+        </p>
+      )}
+      {!admin && !ativo && !aberto && (
+        <p className="mt-1 rounded-md border border-rose-200 bg-rose-50 p-2 text-[11px] text-rose-900">
+          🚫 Desde 22/10/2026 uma casa não paga conta de outra (regra do dono). A casa que está na nota
+          paga o fornecedor; mercadoria pra outra casa vai por{' '}
+          <Link href="/movimento/transferencias" className="font-medium underline">
+            transferência
+          </Link>
+          , que gera o crédito, e as casas se acertam no encontro. Se o dinheiro já saiu pela casa
+          errada, só o Admin lança aqui.
         </p>
       )}
 
