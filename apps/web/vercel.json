@@ -83,6 +83,10 @@
     {
       "path": "/api/cron/energia-leitura",
       "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/certificado-loja",
+      "schedule": "25 * * * *"
     }
   ]
 }

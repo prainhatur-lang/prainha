@@ -12,6 +12,7 @@
 
 import http from 'node:http';
 import https from 'node:https';
+import tls from 'node:tls';
 import net from 'node:net';
 import dgram from 'node:dgram';
 import { createHmac, createHash, generateKeyPairSync, sign, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
@@ -15226,6 +15227,56 @@ function geraCertificado(cn, dns, ips) {
     `-----BEGIN ${tipo}-----\n${b.toString('base64').replace(/(.{64})/g, '$1\n').replace(/\n$/, '')}\n-----END ${tipo}-----\n`;
   return { cert: pem('CERTIFICATE', der), key: privateKey.export({ type: 'pkcs8', format: 'pem' }) };
 }
+// ---- certificado válido (*.loja.prainhabar.com, 22/10/2026) ----
+// O autoassinado acima continua igual (IP e localhost). Ao lado, a nuvem
+// entrega um certificado do Let's Encrypt e o nome desta casa
+// (bar./tabuara./mar.loja.prainhabar.com, apontado pro IP local daqui). Quem
+// abre pelo nome não vê a página de "não é seguro"; quem abre pelo IP segue
+// com o de sempre — escolha pelo nome pedido (SNI).
+const DOM_ARQ_C = path.join(process.cwd(), 'cert', 'dominio-cert.pem');
+const DOM_ARQ_K = path.join(process.cwd(), 'cert', 'dominio-key.pem');
+const DOM_ARQ_N = path.join(process.cwd(), 'cert', 'dominio-nome.txt');
+let certDominio = null; // { nome, ctx, expira }
+function carregaCertDominio(cert, key, nome, expira) {
+  try {
+    certDominio = { nome: String(nome).toLowerCase(), ctx: tls.createSecureContext({ cert, key }), expira: expira || null };
+    return true;
+  } catch (e) { console.log('[https] certificado do domínio inválido: ' + e.message); return false; }
+}
+try {
+  if (existsSync(DOM_ARQ_C) && existsSync(DOM_ARQ_K) && existsSync(DOM_ARQ_N)) {
+    carregaCertDominio(readFileSync(DOM_ARQ_C), readFileSync(DOM_ARQ_K), readFileSync(DOM_ARQ_N, 'utf8').trim());
+  }
+} catch { /* baixa de novo */ }
+function sniCertificado(servername, cb) {
+  const n = String(servername || '').toLowerCase();
+  if (certDominio && n && n === certDominio.nome) return cb(null, certDominio.ctx);
+  cb(null, undefined); // o autoassinado de sempre
+}
+function ipRedeLocal() {
+  const priv = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/;
+  return ipsLocais().find((x) => priv.test(x)) || '';
+}
+async function buscaCertDominio() {
+  if (!FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  try {
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const q = new URLSearchParams({ f: FILIAL_ID, e: String(e), s: nfceAssina('certificado', e), ip: ipRedeLocal() });
+    const r = await fetch(`${PAGAR_MESA_URL}/api/loja/certificado?${q}`, { signal: AbortSignal.timeout(20000) });
+    const j = await r.json().catch(() => null);
+    if (!j || !j.ok) { console.log('[https] certificado do domínio: ' + (j?.error || r.status)); return; }
+    if (!j.cert || !j.key || !j.nome) { if (j.pendente) console.log('[https] certificado do domínio: ' + j.pendente); return; }
+    const mudou = !certDominio || certDominio.nome !== String(j.nome).toLowerCase() || certDominio.expira !== j.expira;
+    if (!mudou) return;
+    if (!carregaCertDominio(j.cert, j.key, j.nome, j.expira)) return;
+    mkdirSync(path.dirname(DOM_ARQ_C), { recursive: true });
+    writeFileSync(DOM_ARQ_C, j.cert); writeFileSync(DOM_ARQ_K, j.key); writeFileSync(DOM_ARQ_N, j.nome);
+    console.log(`[https] certificado válido de ${j.nome} carregado (vence ${String(j.expira).slice(0, 10)})`);
+  } catch (e) { console.log('[https] certificado do domínio: ' + e.message); }
+}
+function loopCertDominio() {
+  buscaCertDominio().finally(() => setTimeout(loopCertDominio, 6 * 3600e3));
+}
 function certificado() {
   const dirC = path.join(process.cwd(), 'cert');
   const arqC = path.join(dirC, 'cert.pem'), arqK = path.join(dirC, 'key.pem');
@@ -29050,6 +29101,11 @@ ol{margin:8px 0 0;padding-left:20px;line-height:1.7}ol li{margin-bottom:4px}
     <button class="big" id="binst" onclick="instalar()" style="display:none">📲 Instalar em tela cheia</button>
     <button class="big g" onclick="atualizar()">🔄 Atualizar o sistema agora</button>
   </div>
+  <div class="card" id="cseg" style="display:none"><div class="tit">🔒 Endereço seguro (sem aviso do Chrome)</div>
+    <div class="mut">Abra por este endereço e instale o app: não aparece a página de "não é seguro", a câmera funciona e o caixa entra em tela cheia. Não precisa do passo 1.</div>
+    <div class="end"><span id="segurl"></span><button onclick="copiar('segurl',this)">copiar</button></div>
+    <button class="big" id="bseg">Abrir pelo endereço seguro</button>
+  </div>
   <div class="card"><div class="tit">Jeito rápido (sem instalar nada)</div>
     <div class="mut">No KDS (Produção/Entrega) basta <b>tocar em qualquer lugar da tela</b>: ele entra em tela cheia e a barra de endereço some. Se alguém apertar o voltar do Android e a barra voltar, o próximo toque esconde de novo. Pra abrir rápido, deixe um atalho do KDS na tela inicial (⋮ → Adicionar à tela inicial).</div>
   </div>
@@ -29114,6 +29170,11 @@ async function setKds(m){
   }catch(x){if(e)e.textContent='sem conexão com a loja'}
 }
 carregaKds();
+(async function(){try{var r=await (await fetch('/api/endereco-seguro',{cache:'no-store'})).json();
+  if(!r.ok||!r.url)return;var u=r.url+'/tablet';document.getElementById('segurl').textContent=r.url;
+  document.getElementById('cseg').style.display='block';
+  var b=document.getElementById('bseg');if(location.origin===r.url){b.style.display='none'}else{b.onclick=function(){location.href=u}}
+}catch(e){}})();
 var PROMPT=null;
 var base=location.protocol+'//'+location.host;
 window.addEventListener('beforeinstallprompt',function(e){e.preventDefault();PROMPT=e;pinta()});
@@ -30544,6 +30605,10 @@ const server = http.createServer(async (req, res) => {
         'cache-control': 'private, max-age=3600' });
       return createReadStream(arq).pipe(res);
     }
+    if (p === '/api/endereco-seguro') {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(JSON.stringify(certDominio ? { ok: true, url: `https://${certDominio.nome}:${PORT_HTTPS}`, expira: certDominio.expira } : { ok: false }));
+    }
     if (p === '/tablet') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(TABLET_HTML); }
     // etiqueta de validade: tela da cozinha (botão no KDS), sem login como o KDS
     if (p === '/etiqueta') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(ETIQUETA_HTML); }
@@ -31632,10 +31697,11 @@ async function main() {
   // HTTPS ao lado: é o endereço que libera a câmera nos tablets
   const cred = certificado();
   if (cred) {
-    https.createServer(cred, server.listeners('request')[0])
+    https.createServer({ ...cred, SNICallback: sniCertificado }, server.listeners('request')[0])
       .listen(PORT_HTTPS, () => console.log(`[https] no ar em https://localhost:${PORT_HTTPS}  (necessário pra câmera)`))
       .on('error', (e) => console.log('[https] não subiu: ' + e.message));
   }
+  setTimeout(loopCertDominio, 20_000);
   loopEspelho();
   loopPixPendente();
   loopPixSemBaixa();

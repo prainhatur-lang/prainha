@@ -215,7 +215,8 @@
     "migrate:google-resposta-auto": "tsx scripts/migrate-google-resposta-auto.ts",
     "migrate:nota-pagamento-xml": "tsx scripts/migrate-nota-pagamento-xml.ts",
     "migrate:nota-chave-leitura": "tsx scripts/migrate-nota-chave-leitura.ts",
-    "migrate:conta-valor-nota": "tsx scripts/migrate-conta-valor-nota.ts"
+    "migrate:conta-valor-nota": "tsx scripts/migrate-conta-valor-nota.ts",
+    "migrate:loja-certificado": "tsx scripts/migrate-loja-certificado.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",
