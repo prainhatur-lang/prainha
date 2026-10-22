@@ -226,6 +226,86 @@ export async function buscarSaldoInter(cred: InterCredenciais, data: string): Pr
   return Number.isFinite(n) ? n : null;
 }
 
+/** Saldo de AGORA da conta (GET /banking/v2/saldo sem data). */
+export interface InterSaldoAtual {
+  /** O que dá pra gastar agora. Não inclui o limite (cheque especial). */
+  disponivel: number;
+  bloqueadoCheque: number | null;
+  bloqueadoJudicialmente: number | null;
+  bloqueadoAdministrativo: number | null;
+  limite: number | null;
+}
+
+/** Não deu pra ler o saldo (status 0 = sem resposta / timeout). */
+export class InterSaldoErro extends Error {
+  constructor(
+    message: string,
+    public status: number,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * Saldo de agora (antes de mandar Pix — pedido do dono 22/10/2026). Mesmo
+ * escopo do extrato (extrato.read). Lança `InterSaldoErro` se o banco não
+ * responder em `timeoutMs`, responder fora do 200 ou sem o campo disponível:
+ * quem chama NÃO manda o Pix nesse caso.
+ */
+export async function consultarSaldoAtualInter(cred: InterCredenciais, timeoutMs = 15_000): Promise<InterSaldoAtual> {
+  const num = (v: unknown) => {
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const buscar = async (): Promise<InterSaldoAtual> => {
+    let token: string;
+    try {
+      token = await getAccessToken(cred);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const st = Number(/\((\d{3})\)/.exec(msg)?.[1] ?? 0);
+      throw new InterSaldoErro(`Inter saldo: token recusado. ${msg}`.slice(0, 500), st);
+    }
+    let resp: { status: number; data: Record<string, unknown> };
+    try {
+      resp = await requestJson<Record<string, unknown>>({
+        method: 'GET',
+        path: '/banking/v2/saldo',
+        authorization: `Bearer ${token}`,
+        timeoutMs,
+        cred,
+      });
+    } catch (e) {
+      throw new InterSaldoErro(`Inter saldo: ${e instanceof Error ? e.message : String(e)}`.slice(0, 500), 0);
+    }
+    if (resp.status !== 200) {
+      throw new InterSaldoErro(`Inter saldo erro (${resp.status}): ${JSON.stringify(resp.data)}`.slice(0, 500), resp.status);
+    }
+    const disponivel = num(resp.data.disponivel);
+    if (disponivel === null) {
+      throw new InterSaldoErro(`Inter saldo: resposta sem o campo disponível: ${JSON.stringify(resp.data)}`.slice(0, 500), 200);
+    }
+    return {
+      disponivel,
+      bloqueadoCheque: num(resp.data.bloqueadoCheque),
+      bloqueadoJudicialmente: num(resp.data.bloqueadoJudicialmente),
+      bloqueadoAdministrativo: num(resp.data.bloqueadoAdministrativo),
+      limite: num(resp.data.limite),
+    };
+  };
+  // O token não tem timeout próprio: o limite vale pra conta toda.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const limite = new Promise<never>((_, rej) => {
+    timer = setTimeout(() => rej(new InterSaldoErro('Inter saldo: sem resposta (timeout)', 0)), timeoutMs + 2_000);
+  });
+  try {
+    return await Promise.race([buscar(), limite]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /** Pagamento de boleto/convênio feito ou agendado pela conta (GET /banking/v2/pagamento). */
 export interface InterPagamento {
   codigoTransacao: string;

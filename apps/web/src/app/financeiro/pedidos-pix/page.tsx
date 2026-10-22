@@ -29,6 +29,7 @@ import { brl } from '@/lib/format';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
 import { GrupoPix, type GrupoPedidos } from './grupo-pix';
 import { PixEnviados, type PixEnviado } from './pix-enviados';
+import { SaldoInterFaixa } from './saldo-inter';
 import { contasEmPixAberto, podePagarPix } from '@/lib/pix-pagamento';
 import { resolverCredenciaisInterPagamentos } from '@/lib/inter';
 import { urlFotoPedido } from '@/lib/pedido-sem-nota';
@@ -404,6 +405,7 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
             destaque={semChave > 0}
           />
         </div>
+        {pagaPix && temInterPix && <SaldoInterFaixa filialId={escolhida.id} />}
         {!verTodas && escondidas > 0 && (
           <p className="mt-2 text-xs text-slate-500">
             {escondidas} conta(s) com cara de boleto, guia ou NF-e ficaram de fora —{' '}

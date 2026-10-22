@@ -9,7 +9,11 @@
 //    fornecedor); o valor digitado na confirmação tem que bater;
 //  - a linha nasce ENVIANDO antes de chamar o banco, com trava por casa, e a
 //    conta que já está num Pix sem desfecho é recusada (nada de pagar 2x);
-//  - resposta perdida (rede/timeout/5xx) fica ENVIANDO: conferir no Inter.
+//  - resposta perdida (rede/timeout/5xx) fica ENVIANDO: conferir no Inter;
+//  - SALDO (pedido do dono 22/10/2026): dentro da mesma trava, antes de criar
+//    a linha, lê o saldo de agora no Inter menos os Pix do sistema sem
+//    desfecho. Faltou saldo → não manda (409). Não deu pra ler o saldo → não
+//    manda (503). Só depois disso o Pix vai pro banco.
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -17,11 +21,12 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
 import { sql } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
-import { incluirPagamentoPixInter, InterPixRecusado, resolverCredenciaisInterPagamentos } from '@/lib/inter';
-import { baixarContasDoPix, podePagarPix } from '@/lib/pix-pagamento';
+import { incluirPagamentoPixInter, InterPixRecusado, InterSaldoErro, resolverCredenciaisInterPagamentos } from '@/lib/inter';
+import { baixarContasDoPix, lerSaldoParaPix, podePagarPix, type SaldoParaPix } from '@/lib/pix-pagamento';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+// 90: saldo (até ~12 s) + envio do Pix (até 45 s) + banco.
+export const maxDuration = 90;
 
 const ORIGENS_FORA = ['CONSUMER', 'FOLHA', 'TRANSFERENCIA', 'ENCONTRO_CONTAS'];
 
@@ -96,10 +101,13 @@ export async function POST(req: Request) {
     );
   }
 
-  // Trava por casa + confere conta presa + cria a linha ENVIANDO, tudo junto.
+  // Trava por casa + confere conta presa + confere saldo + cria a linha
+  // ENVIANDO, tudo junto. O saldo fica dentro da trava: dois Pix da mesma casa
+  // ao mesmo tempo não passam os dois no mesmo saldo (o primeiro já entra no
+  // comprometido do segundo).
   const conta0 = contas[0]!;
   const descricao = `${forn.nome} - ${conta0.descricao ?? 'pedido'} (venc ${conta0.venc})`.slice(0, 140);
-  const criado = await db.transaction(async (tx) => {
+  const resultado = await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${'pix_pagamento:' + filialId}))`);
     const presas = (await tx.execute(sql`
       SELECT p.id FROM pix_pagamento p, jsonb_array_elements(p.conta_ids) e
@@ -108,7 +116,19 @@ export async function POST(req: Request) {
          AND e->>'id' IN (${sql.join(contaIds.map((id) => sql`${id}`), sql`, `)})
        LIMIT 1
     `)) as unknown as unknown[];
-    if (presas.length > 0) return null;
+    if (presas.length > 0) return { tipo: 'presa' as const };
+
+    let saldo: SaldoParaPix;
+    try {
+      saldo = await lerSaldoParaPix(filialId, cred, tx);
+    } catch (e) {
+      return { tipo: 'saldo_erro' as const, erro: e };
+    }
+    console.info('[pix-pagar] saldo', { filialId, total, ...saldo });
+    if (Math.round(saldo.livre * 100) < Math.round(total * 100)) {
+      return { tipo: 'sem_saldo' as const, saldo };
+    }
+
     const [linha] = await tx
       .insert(schema.pixPagamento)
       .values({
@@ -124,14 +144,49 @@ export async function POST(req: Request) {
         usuarioEmail: user.email ?? null,
       })
       .returning({ id: schema.pixPagamento.id });
-    return linha!;
+    return { tipo: 'criado' as const, linha: linha! };
   });
-  if (!criado) {
+  if (resultado.tipo === 'presa') {
     return NextResponse.json(
       { error: 'Uma dessas contas já está num Pix enviado pelo sistema. Confira a lista "Pix enviados pelo sistema".' },
       { status: 409 },
     );
   }
+  if (resultado.tipo === 'saldo_erro') {
+    const e = resultado.erro;
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('[pix-pagar] saldo não lido — Pix NÃO enviado', { filialId, total, msg });
+    const st = e instanceof InterSaldoErro ? e.status : 0;
+    const semEscopo = st === 401 || st === 403 || /scope|escopo|invalid_client|unauthorized/i.test(msg);
+    return NextResponse.json(
+      {
+        saldoErro: true,
+        error: semEscopo
+          ? 'Não deu pra conferir o saldo: a integração de pagamentos desta casa no Inter não tem a permissão "Consultar extrato e saldo". O Pix NÃO foi enviado — nenhum dinheiro saiu.'
+          : `Não deu pra conferir o saldo da conta no Inter, então o Pix NÃO foi enviado — nenhum dinheiro saiu. Tente de novo em instantes. (${msg.slice(0, 200)})`,
+      },
+      { status: 503 },
+    );
+  }
+  if (resultado.tipo === 'sem_saldo') {
+    const s = resultado.saldo;
+    const falta = Math.round((total - s.livre) * 100) / 100;
+    const pendentes =
+      s.qtdComprometidos > 0
+        ? ` Já tem ${brl(s.comprometido)} em ${s.qtdComprometidos} Pix do sistema sem desfecho (esperando aprovação, agendado ou sem resposta do banco), então o livre é ${brl(s.livre)}. Se algum já saiu, clique em "Conferir no Inter" na lista "Pix enviados pelo sistema".`
+        : '';
+    return NextResponse.json(
+      {
+        semSaldo: true,
+        saldo: s,
+        valor: total,
+        falta,
+        error: `Sem saldo no Inter pra este Pix — ele NÃO foi enviado, nenhum dinheiro saiu. Saldo disponível agora: ${brl(s.disponivel)}.${pendentes} Este Pix: ${brl(total)}. Falta ${brl(falta)}.`,
+      },
+      { status: 409 },
+    );
+  }
+  const criado = resultado.linha;
 
   const atualizar = (campos: Partial<typeof schema.pixPagamento.$inferInsert>) =>
     db

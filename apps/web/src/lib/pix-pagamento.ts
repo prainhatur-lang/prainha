@@ -9,6 +9,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { podeUsuario } from '@/lib/permissoes-runtime';
 import { recalcularAgregado } from '@/lib/conta-pagar-baixa';
 import { hojeBr } from '@/lib/datas';
+import { consultarSaldoAtualInter, type InterCredenciais } from '@/lib/inter';
 
 export const STATUS_PIX_ABERTO = ['ENVIANDO', 'APROVACAO', 'AGENDADO'] as const;
 
@@ -35,6 +36,56 @@ export async function contasEmPixAberto(filialId: string): Promise<Set<string>> 
        AND (p.status IN ('ENVIANDO','APROVACAO','AGENDADO') OR (p.status = 'PAGO' AND p.baixado_em IS NULL))
   `)) as unknown as Array<{ id: string }>;
   return new Set(rows.map((r) => r.id));
+}
+
+type Exec = Pick<typeof db, 'execute'>;
+
+/**
+ * Valor de Pix do sistema desta casa que ainda pode sair da conta e que o
+ * saldo do Inter talvez ainda não mostre: esperando aprovação, agendado, ou
+ * mandado sem resposta do banco (ENVIANDO sem "PROCESSADO"). O que o Inter já
+ * processou fica de fora (já saiu do saldo).
+ */
+export async function pixComprometido(filialId: string, exec: Exec = db): Promise<{ valor: number; qtd: number }> {
+  const rows = (await exec.execute(sql`
+    SELECT coalesce(sum(valor), 0)::text AS valor, count(*)::int AS qtd
+      FROM pix_pagamento
+     WHERE filial_id = ${filialId}::uuid
+       AND (status IN ('APROVACAO','AGENDADO')
+            OR (status = 'ENVIANDO' AND upper(coalesce(status_inter, '')) <> 'PROCESSADO'))
+  `)) as unknown as Array<{ valor: string; qtd: number }>;
+  return { valor: Math.round(Number(rows[0]?.valor ?? 0) * 100) / 100, qtd: Number(rows[0]?.qtd ?? 0) };
+}
+
+export interface SaldoParaPix {
+  /** Saldo disponível no Inter agora (sem o limite). */
+  disponivel: number;
+  /** Pix do sistema sem desfecho (ver pixComprometido). */
+  comprometido: number;
+  qtdComprometidos: number;
+  /** disponivel − comprometido: o teto pra um Pix novo. */
+  livre: number;
+  consultadoEm: string;
+}
+
+/**
+ * Saldo pra decidir se um Pix novo pode sair (pedido do dono 22/10/2026).
+ * Lê o comprometido ANTES do saldo: se um Pix virar PROCESSADO no meio, ele
+ * conta duas vezes (recusa a mais), nunca zero vezes (manda sem saldo).
+ * Lança se o Inter não responder — quem chama não manda o Pix.
+ */
+export async function lerSaldoParaPix(filialId: string, cred: InterCredenciais, exec: Exec = db): Promise<SaldoParaPix> {
+  const comp = await pixComprometido(filialId, exec);
+  // 10 s: soma com os 45 s do envio do Pix e cabe no teto da rota (90 s).
+  const saldo = await consultarSaldoAtualInter(cred, 10_000);
+  const livre = Math.round((saldo.disponivel - comp.valor) * 100) / 100;
+  return {
+    disponivel: Math.round(saldo.disponivel * 100) / 100,
+    comprometido: comp.valor,
+    qtdComprometidos: comp.qtd,
+    livre,
+    consultadoEm: new Date().toISOString(),
+  };
 }
 
 /**

@@ -8,10 +8,13 @@
 // Inter (só Admin) e, se o banco processar, dá a baixa sozinho. Um Pix por
 // conta (nota/pedido), nunca somado — pra saber o que pagou o quê. O caminho
 // antigo (copiar, pagar no app, "Paguei no Inter") continua igual.
+// 22/10/2026: o painel de confirmar mostra o saldo do Inter e não deixa
+// confirmar quando já se vê que falta (o servidor confere de novo).
 
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { EditPix } from '@/app/cadastros/fornecedores/edit-pix';
+import { EVENTO_SALDO_PIX, useSaldoPix } from './saldo-inter';
 
 export interface PedidoPix {
   id: string;
@@ -260,6 +263,7 @@ export function GrupoPix({
     } else {
       setMsg({ tipo: 'erro', texto: d.error ?? `Falhou (${r.status}).` });
     }
+    window.dispatchEvent(new Event(EVENTO_SALDO_PIX));
     router.refresh();
   }
 
@@ -399,6 +403,7 @@ export function GrupoPix({
             </div>
             {contaConfirmando?.id === c.id && chave && (
               <PainelConfirmar
+                filialId={filialId}
                 recebe={grupo.pixFavorecido || grupo.nome}
                 chave={chave}
                 conta={c}
@@ -456,6 +461,7 @@ export function GrupoPix({
 }
 
 function PainelConfirmar({
+  filialId,
   recebe,
   chave,
   conta,
@@ -466,6 +472,7 @@ function PainelConfirmar({
   cancelar,
   confirmar,
 }: {
+  filialId?: string;
   recebe: string;
   chave: string;
   conta: PedidoPix;
@@ -476,6 +483,9 @@ function PainelConfirmar({
   cancelar: () => void;
   confirmar: () => void;
 }) {
+  const { saldo, erro: erroSaldo, carregando: lendoSaldo, ler: lerSaldo } = useSaldoPix(filialId);
+  const faltaCentavos = saldo ? Math.round(conta.saldo * 100) - Math.round(saldo.livre * 100) : 0;
+  const semSaldo = !!saldo && faltaCentavos > 0;
   return (
     <div className="mx-4 mb-3 space-y-2 rounded-md border border-violet-200 bg-violet-50/60 p-3 text-sm">
       <div className="font-semibold text-violet-900">Confira antes de mandar o Pix desta conta pelo Inter:</div>
@@ -498,6 +508,45 @@ function PainelConfirmar({
           <div className="text-slate-500">Valor</div>
           <div className="text-base font-bold text-slate-900">{brl(conta.saldo)}</div>
         </div>
+      </div>
+      <div
+        className={`flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border px-3 py-2 text-xs ${
+          semSaldo ? 'border-rose-300 bg-rose-50 text-rose-800' : 'border-violet-200 bg-white text-slate-700'
+        }`}
+      >
+        {saldo ? (
+          <>
+            <span>
+              🏦 Saldo no Inter agora: <b>{brl(saldo.disponivel)}</b>
+            </span>
+            {saldo.qtdComprometidos > 0 && (
+              <span className="text-amber-800">
+                − {brl(saldo.comprometido)} em {saldo.qtdComprometidos} Pix do sistema sem desfecho → livre{' '}
+                <b>{brl(saldo.livre)}</b>
+              </span>
+            )}
+            {semSaldo ? (
+              <b>Sem saldo pra este Pix: falta {brl(faltaCentavos / 100)}. O Pix não vai sair.</b>
+            ) : (
+              <span className="text-emerald-700">✓ tem saldo pra este Pix</span>
+            )}
+          </>
+        ) : erroSaldo ? (
+          <span className="text-amber-800">
+            Não deu pra ler o saldo agora ({erroSaldo}). Ao confirmar, o sistema confere de novo e só manda se tiver
+            saldo.
+          </span>
+        ) : (
+          <span className="text-slate-500">🏦 conferindo o saldo no Inter…</span>
+        )}
+        <button
+          type="button"
+          disabled={lendoSaldo || enviando}
+          onClick={() => void lerSaldo()}
+          className="ml-auto rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-700 disabled:opacity-50"
+        >
+          {lendoSaldo ? 'lendo…' : '↻ saldo'}
+        </button>
       </div>
       <div className="flex flex-wrap items-center justify-end gap-2">
         <label className="text-xs text-slate-600">
@@ -524,7 +573,7 @@ function PainelConfirmar({
         </button>
         <button
           type="button"
-          disabled={!valorConfere || enviando}
+          disabled={!valorConfere || enviando || semSaldo}
           onClick={confirmar}
           className="rounded-md bg-violet-700 px-3 py-1.5 text-xs font-semibold text-white disabled:bg-slate-400"
         >
@@ -533,7 +582,9 @@ function PainelConfirmar({
       </div>
       <p className="text-[11px] text-slate-500">
         Um Pix só desta conta, com a descrição dela. O dinheiro sai da conta do Inter desta casa. Se o Inter pedir
-        aprovação no app, o Pix fica esperando e a baixa sai depois, no &quot;Conferir no Inter&quot;.
+        aprovação no app, o Pix fica esperando e a baixa sai depois, no &quot;Conferir no Inter&quot;. Antes de
+        mandar, o sistema confere o saldo da conta no Inter: se faltar, ou se o Inter não responder o saldo, o Pix
+        não sai.
       </p>
     </div>
   );
