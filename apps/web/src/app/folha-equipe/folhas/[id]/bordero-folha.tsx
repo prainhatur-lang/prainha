@@ -189,8 +189,16 @@ export function BorderoFolha({ folhaId, hoje }: { folhaId: string; hoje: string 
                 {b.contaId && (
                   <>
                     {' · '}
-                    <Link href={`/financeiro/contas/${b.contaId}`} className="underline">
+                    <Link href={`/financeiro/conta/${b.contaId}`} className="underline">
                       abrir a conta
+                    </Link>
+                  </>
+                )}
+                {b.contaId && !b.contaPaga && (
+                  <>
+                    {' · '}
+                    <Link href={`/financeiro/pedidos-pix?ate=${b.dataVencimento}`} className="underline">
+                      pagar por Pix
                     </Link>
                   </>
                 )}
