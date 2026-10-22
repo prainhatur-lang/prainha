@@ -253,7 +253,9 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
     const temChave = !!l.chavePix?.trim();
     const semNota = /pedido sem nota/i.test(descricao);
     const boleto = pareceBoleto(descricao, nome, l.temBoleto);
-    const ehPix = semNota || (!boleto && (l.origem === 'MANUAL' || temChave));
+    // Borderô da folha (22/10/2026): conta única do intermediário (Sobral) se
+    // paga por Pix — aparece mesmo sem chave cadastrada, pra cadastrar e pagar.
+    const ehPix = l.origem === 'BORDERO' || semNota || (!boleto && (l.origem === 'MANUAL' || temChave));
     if (!ehPix && !verTodas) {
       escondidas += 1;
       continue;
