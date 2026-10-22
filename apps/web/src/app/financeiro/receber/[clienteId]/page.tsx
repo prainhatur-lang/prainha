@@ -140,6 +140,7 @@ export default async function ClienteFiadoPage(props: {
       debito: schema.movimentoContaCorrente.debito,
       saldoFinal: schema.movimentoContaCorrente.saldoFinal,
       observacao: schema.movimentoContaCorrente.observacao,
+      importado: schema.movimentoContaCorrente.importado,
       pagamentoForma: schema.pagamento.formaPagamento,
       pagamentoBandeira: schema.pagamento.bandeiraMfe,
       pagamentoNsu: schema.pagamento.nsuTransacao,
@@ -230,11 +231,16 @@ export default async function ClienteFiadoPage(props: {
   // NEGATIVO, então subtrair somava o pagamento. Quem manda é o saldo corrido
   // do cadastro (o mesmo número da tela do Consumer); a soma abaixo fica só
   // pros totais de crédito/pagamento e como reserva.
+  // ⚠️ E no Consumer a baixa (folha, acerto) também vem como CREDITO com
+  // IMPORTADO='S' — o saldo_final da linha cai. Esse crédito é PAGAMENTO, não
+  // dívida: somado como crédito, a baixa da folha aparecia como fiado novo
+  // (divergência que a Marta viu em 22/10/2026).
+  const mcc = schema.movimentoContaCorrente;
   const [saldoRow] = await db
     .select({
-      saldo: sql<string>`COALESCE(SUM(${schema.movimentoContaCorrente.credito}), 0) + COALESCE(SUM(${schema.movimentoContaCorrente.debito}), 0)`,
-      totalCredito: sql<string>`COALESCE(SUM(${schema.movimentoContaCorrente.credito}), 0)`,
-      totalDebito: sql<string>`COALESCE(SUM(${schema.movimentoContaCorrente.debito}), 0)`,
+      saldo: sql<string>`COALESCE(SUM(CASE WHEN ${mcc.importado} = 'S' THEN -${mcc.credito} ELSE ${mcc.credito} END), 0) + COALESCE(SUM(${mcc.debito}), 0)`,
+      totalCredito: sql<string>`COALESCE(SUM(CASE WHEN ${mcc.importado} = 'S' THEN 0 ELSE ${mcc.credito} END), 0)`,
+      totalDebito: sql<string>`COALESCE(SUM(ABS(${mcc.debito})), 0) + COALESCE(SUM(CASE WHEN ${mcc.importado} = 'S' THEN ${mcc.credito} ELSE 0 END), 0)`,
       qtdTotal: sql<number>`COUNT(*)::int`,
     })
     .from(schema.movimentoContaCorrente)
@@ -279,12 +285,15 @@ export default async function ClienteFiadoPage(props: {
   const qtdTotal = Number(saldoRow?.qtdTotal ?? 0);
 
   // Soma dos filtrados (pode bater com saldo se sem filtros)
+  // crédito com IMPORTADO='S' = baixa do Consumer (ver saldoRow)
+  const ehBaixaConsumer = (m: { importado: string | null; credito: string | null }) =>
+    m.importado === 'S' && Number(m.credito ?? 0) > 0;
   const somaCredFiltrados = movimentos.reduce(
-    (s, m) => s + Number(m.credito ?? 0),
+    (s, m) => s + (ehBaixaConsumer(m) ? 0 : Number(m.credito ?? 0)),
     0,
   );
   const somaDebFiltrados = movimentos.reduce(
-    (s, m) => s + Number(m.debito ?? 0),
+    (s, m) => s + Math.abs(Number(m.debito ?? 0)) + (ehBaixaConsumer(m) ? Number(m.credito ?? 0) : 0),
     0,
   );
 
@@ -427,8 +436,9 @@ export default async function ClienteFiadoPage(props: {
                 </tr>
               ) : (
                 movimentos.map((m) => {
-                  const cred = Number(m.credito ?? 0);
-                  const deb = Number(m.debito ?? 0);
+                  const baixa = ehBaixaConsumer(m);
+                  const cred = baixa ? 0 : Number(m.credito ?? 0);
+                  const deb = baixa ? Number(m.credito ?? 0) : Number(m.debito ?? 0);
                   const itens = m.codigoPedidoExterno ? itensPorPedido.get(m.codigoPedidoExterno) : undefined;
                   return (
                     <Fragment key={m.id}>
@@ -458,7 +468,7 @@ export default async function ClienteFiadoPage(props: {
                         )}
                       </td>
                       <td className="px-4 py-2 text-xs text-slate-700">
-                        {m.pagamentoForma ?? (cred > 0 ? 'Fiado (crédito)' : '—')}
+                        {m.pagamentoForma ?? (cred > 0 ? 'Fiado (crédito)' : baixa ? 'Baixa (pagamento)' : '—')}
                         {m.pagamentoBandeira && (
                           <span className="ml-1 text-slate-400">· {m.pagamentoBandeira}</span>
                         )}

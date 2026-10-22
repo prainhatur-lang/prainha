@@ -65,10 +65,15 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
     .select({
       clienteId: schema.movimentoContaCorrente.clienteId,
       codigoClienteExterno: schema.movimentoContaCorrente.codigoClienteExterno,
-      saldo: sql<string>`COALESCE(SUM(${schema.movimentoContaCorrente.credito}), 0)
+      // crédito com IMPORTADO='S' é a baixa (abate): entra como pago, não como fiado
+      saldo: sql<string>`COALESCE(SUM(CASE WHEN ${schema.movimentoContaCorrente.importado} = 'S'
+          THEN -${schema.movimentoContaCorrente.credito} ELSE ${schema.movimentoContaCorrente.credito} END), 0)
         + COALESCE(SUM(${schema.movimentoContaCorrente.debito}), 0)`,
-      totalCredito: sql<string>`COALESCE(SUM(${schema.movimentoContaCorrente.credito}), 0)`,
-      totalDebito: sql<string>`COALESCE(SUM(${schema.movimentoContaCorrente.debito}), 0)`,
+      totalCredito: sql<string>`COALESCE(SUM(CASE WHEN ${schema.movimentoContaCorrente.importado} = 'S'
+          THEN 0 ELSE ${schema.movimentoContaCorrente.credito} END), 0)`,
+      totalDebito: sql<string>`COALESCE(SUM(ABS(${schema.movimentoContaCorrente.debito})), 0)
+        + COALESCE(SUM(CASE WHEN ${schema.movimentoContaCorrente.importado} = 'S'
+          THEN ${schema.movimentoContaCorrente.credito} ELSE 0 END), 0)`,
       ultimoMov: sql<Date>`MAX(${schema.movimentoContaCorrente.dataHora})`,
       qtd: sql<number>`COUNT(*)::int`,
     })
