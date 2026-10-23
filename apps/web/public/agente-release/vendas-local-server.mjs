@@ -19385,6 +19385,7 @@ button:disabled{opacity:.5}
   <button class="seg" id="bInv" onclick="cfg('inv',0)">Invertida 180°</button>
   <button class="seg" onclick="calibrar()">Calibrar papel</button>
   <button class="seg" onclick="avancar()">Avançar em branco</button>
+  <button class="seg" onclick="empurra()" title="puxa o papel 1 mm sem imprimir — use quando a etiqueta sai cortada entre duas">Empurrar 1 mm</button>
   <button class="seg" onclick="trocarImp()">Trocar impressora</button>
   <span style="display:inline-flex;gap:8px;align-items:center">rolo<button class="seg" id="bR30" onclick="rolo(30)">50×30</button><button class="seg" id="bR50" onclick="rolo(50)">50×50</button></span>
   <div class="st" id="st">Rolo 50×30 (50 de largura, 30 no avanço). Bluetooth: Chrome do Android, no endereço https da loja. Imprima 1 mesa de teste antes de soltar todas.</div>
@@ -19516,7 +19517,31 @@ async function cmdImp(o){
       :'✓ calibração enviada pra '+nm+' (rolo 50×'+altR()+'). Ela deve puxar 1 ou 2 etiquetas em branco. Não puxou? Aperte "Avançar em branco".','ok')}
   catch(e){BTCH=null;st('não foi: '+(e&&e.message||e)+' — impressora ligada e perto? Se insistir, "Trocar impressora".','err')}
 }
-async function calibrar(){return cmdImp('calibrar')}
+/* 22/10: o dono avisou de novo que o calibrar não faz a impressora se mexer e a
+   etiqueta sai cortada entre duas — a XD-210 ignora o GAPDETECT puro. Agora o
+   botão manda, um depois do outro, os três jeitos de calibrar que as impressoras
+   TSPL aceitam (GAPDETECT, GAPDETECT com o tamanho em pontos, AUTODETECT) e por
+   fim HOME (vai pro começo da próxima etiqueta). A que entender, calibra; as
+   outras são ignoradas. Pode sair 2 a 6 etiquetas em branco. */
+async function calibrar(){
+  if(!navigator.bluetooth)return cmdImp('calibrar');
+  var alt=altR()*8,cmds=['GAPDETECT','GAPDETECT '+alt+',16','AUTODETECT '+alt+',16','HOME'],nm;
+  try{for(var i=0;i<cmds.length;i++){st('calibrando… passo '+(i+1)+' de '+cmds.length);
+      await envia(asc(cab()+cmds[i]+NL));await new Promise(function(r){setTimeout(r,2500)})}
+    nm=(BT&&BT.name)||'impressora';
+    st('✓ calibração enviada pra '+nm+' (rolo 50×'+altR()+', 4 jeitos diferentes). Imprima 1 mesa de teste. Continuou cortada entre duas? Calibre pelo botão da impressora: ligada, com a tampa fechada, segure o botão de avanço (FEED) uns 3 segundos até ela puxar etiquetas e apitar. Se ainda assim cortar, use "Empurrar 1 mm" até a próxima sair no lugar.','ok')}
+  catch(e){BTCH=null;st('não foi: '+(e&&e.message||e)+' — impressora ligada e perto? Se insistir, "Trocar impressora".','err')}
+}
+/* Empurrar 1 mm (FEED 8 pontos): sem sensor de picote funcionando, a impressora
+   anda o tamanho certo por etiqueta mas começa no lugar errado; puxar o papel
+   alguns mm encaixa o começo dela no começo da etiqueta. */
+var EMP=0;
+async function empurra(){
+  if(!navigator.bluetooth)return cmdImp('calibrar');
+  try{await envia(asc('FEED 8'+NL));EMP++;
+    st('✓ papel puxado '+EMP+' mm desde que abriu a tela. Imprima 1 mesa de teste: ainda cortada? Empurre mais 1 mm e teste de novo.','ok')}
+  catch(e){BTCH=null;st('não foi: '+(e&&e.message||e),'err')}
+}
 function avancar(){return cmdImp('avancar')}
 function trocarImp(){try{if(BT&&BT.gatt.connected)BT.gatt.disconnect();if(BT&&BT.forget)BT.forget()}catch(e){}BT=null;BTCH=null;PEDIR=true;
   st('Impressora esquecida — no próximo comando o Chrome mostra a lista pra escolher (a XD-210 aparece como PT-260_…).')}
