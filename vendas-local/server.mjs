@@ -17997,7 +17997,7 @@ function pintaVales(){
     (vs[n]||[]).forEach(function(v){
       var onde=Number(n)===Number(MESA)?'Mesa '+n:(((INFO.nomes||{})[n])?esc(INFO.nomes[n])+' · '+n:'Comanda '+n);
       h+='<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid #f3d27a">'+
-        '<div style="flex:1"><b>'+v.pendente+'x '+esc(v.nome)+'</b><div class="mut" style="font-size:12px">'+onde+' · já pago, a retirar</div></div>'+
+        '<div style="flex:1"><b>'+v.pendente+'x '+esc(v.nome)+'</b><div class="mut" style="font-size:12px">'+onde+' · já lançado na conta, a retirar</div></div>'+
         '<button class="chip on" style="background:#b45309;border-color:#b45309;color:#fff;font-weight:700" onclick="soltarVale(this,'+n+','+v.item+')">Soltar o 2º</button></div>';
     });
   });
@@ -27010,7 +27010,7 @@ function pinta(el){
     h+='<div style="margin:6px 0 10px;padding:10px 12px;border-radius:10px;background:#fff7e0;border:1px solid #f3d27a">'+
       '<b>🍺 2º do dobrado — a retirar</b>'+
       c.vales.map(function(v){return '<div style="display:flex;align-items:center;gap:8px;margin-top:6px"><span style="flex:1">'+
-        v.pendente+'× '+esc(v.nome)+' <small class="mut">já pago</small></span>'+
+        v.pendente+'× '+esc(v.nome)+' <small class="mut">já lançado na conta</small></span>'+
         '<button class="seg" style="background:#b45309;color:#fff;border:0" onclick="soltarValeCx(this,'+v.item+')">Soltar o 2º</button></div>'}).join('')+
       '</div>';
   }
