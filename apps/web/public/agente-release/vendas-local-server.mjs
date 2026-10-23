@@ -10840,6 +10840,32 @@ async function comandoNuvemExecutar(tipo, pl) {
       await fbJobCozinha(ped).catch((e) => console.error('[comandos] cozinha:', e.message));
       return { resultado: { lancado: true, pedidoCodigo: ped, mesaAberta: criado } };
     }
+    case 'mover_pagamento': {
+      // Pagamento lançado na mesa errada (23/10/2026, Bar: crédito da 23 era
+      // da 20). Move o lançamento inteiro (NSU, forma, hora) de uma conta
+      // aberta pra outra. Só mexe se achar UM pagamento com esse NSU e valor.
+      const deNum = Number(pl.deNumero), paraNum = Number(pl.paraNumero);
+      const dePed = Number(pl.dePedido), paraPed = Number(pl.paraPedido);
+      const valor = +Number(pl.valor || 0).toFixed(2);
+      const nsu = String(pl.nsu ?? '').replace(/\D/g, '').replace(/^0+/, '');
+      if (!(dePed > 0 && paraPed > 0 && dePed !== paraPed && valor > 0 && nsu)) throw new Error('dados inválidos');
+      if (!(await pedAbertoDoNumero(dePed, deNum))) throw new Error(`conta ${deNum}/${dePed} não está aberta`);
+      if (!(await pedAbertoDoNumero(paraPed, paraNum))) throw new Error(`conta ${paraNum}/${paraPed} não está aberta`);
+      const achados = await sql`SELECT codigo FROM pagamento_local WHERE pedido=${dePed} AND cancelado_em IS NULL
+        AND valor=${valor} AND ltrim(regexp_replace(COALESCE(nsu,''),'\\D','','g'),'0')=${nsu}`;
+      if (achados.length !== 1) throw new Error(`achei ${achados.length} pagamento(s) com NSU ${nsu} e R$ ${valor} na conta ${dePed} — nada mudou`);
+      const pag = Number(achados[0].codigo);
+      await sql.begin(async (tx) => {
+        await tx`UPDATE pagamento_local SET pedido=${paraPed} WHERE codigo=${pag} AND pedido=${dePed}`;
+        await tx`UPDATE venda_pagamento SET numero=${paraNum}, pedido_fb=${paraPed} WHERE pagamento_fb=${pag} AND pedido_fb=${dePed}`;
+      });
+      await pgAtualizarPago(dePed);
+      await pgAtualizarPago(paraPed);
+      espelho().catch(() => {});
+      const pagoDe = await pgPagoDoPedido(dePed), pagoPara = await pgPagoDoPedido(paraPed);
+      console.log(`[comandos] pagamento ${pag} (NSU ${nsu} R$ ${valor}) movido da conta ${deNum}/${dePed} pra ${paraNum}/${paraPed}`);
+      return { resultado: { pagamento: pag, de: { numero: deNum, pedido: dePed, pago: pagoDe }, para: { numero: paraNum, pedido: paraPed, pago: pagoPara } } };
+    }
     case 'auto_update': case 'instalar_cdc': case 'desinstalar_cdc':
       return { resultado: { aviso: 'modo próprio: esta loja não tem agente-local nem Consumer — nada a fazer' } };
     default:
