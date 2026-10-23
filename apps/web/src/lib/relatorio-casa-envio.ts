@@ -191,6 +191,49 @@ export async function enviarRelatoriosPorCasa(origem: OrigemEnvio = 'cron'): Pro
   return saida;
 }
 
+/**
+ * Reenvia dias escolhidos pra um destino por casa, mesmo os que já foram
+ * aceitos (23/10/2026: Lula pediu 18 e 19 da Mar de novo — o "mandar agora"
+ * só manda dia que falta, então não saía).
+ */
+export async function reenviarDiasCasa(
+  organizacaoId: string,
+  telefone: string,
+  dias: string[],
+  origem: OrigemEnvio = 'manual',
+): Promise<ResultadoCasa[]> {
+  const d = (await destinosDaOrganizacao(organizacaoId)).find((x) => x.telefone === telefone);
+  if (!d) throw new Error('destino não encontrado');
+  const filiais = await filiaisDe(organizacaoId, d.filialIds);
+  if (!filiais.length) throw new Error('destino sem casa');
+  const ate = ultimoDiaFechado();
+  const saida: ResultadoCasa[] = [];
+  for (const dia of dias.filter((x) => /^\d{4}-\d{2}-\d{2}$/.test(x) && x <= ate).slice(0, 7)) {
+    const casas = await montarRelatorioFiliais(filiais, dia);
+    const linha = filiais
+      .map((f) => {
+        const c = casas.find((x) => x.filialId === f.id);
+        return c ? linhaCasa(c, d.comServico, d.itens) : `${f.nome} — sem movimento no dia.`;
+      })
+      .join(' | ');
+    const m = await enviarModelo(d.telefone, dia, linha);
+    await registrar({
+      organizacaoId,
+      dia,
+      telefone: d.telefone,
+      canal: 'modelo',
+      origem,
+      ok: !!m.waMessageId,
+      erro: m.erro ?? null,
+      waMessageId: m.waMessageId,
+      phoneNumberId: m.phoneNumberId || null,
+    });
+    saida.push({ nome: d.nome, telefone: d.telefone, dia, ok: !!m.waMessageId, erro: m.erro });
+    if (!m.waMessageId) break;
+  }
+  return saida;
+}
+
 // ---------------------------------------------------------------------------
 // Resultado do mês (18/10/2026, pedido do dono): dia 01 cada destino recebe o
 // mês anterior da casa dele, sem os 10% — soma dos mesmos dias do relatório
