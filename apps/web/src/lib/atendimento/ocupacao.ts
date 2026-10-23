@@ -79,6 +79,9 @@ export interface OcupacaoHoje {
   casaTranquila: boolean;
   /** Grupos esperando mesa na recepção agora (lista de espera de hoje). */
   esperaRecepcao?: number;
+  /** Antes das 9h: a casa abre hoje e vai abrir vazia — reserva pra logo
+   *  depois da abertura (9h, 9h30) entra sem a antecedência de 1 h. */
+  antesDeAbrir?: boolean;
   /** De onde veio a contagem de mesas: 'loja' (ao vivo) ou 'nuvem' (antiga). */
   fonte?: 'loja' | 'nuvem';
   resumo: string;
@@ -107,7 +110,8 @@ export async function medirOcupacaoHoje(
       taxa: 0,
       corteEstendido: null,
       casaTranquila: false,
-      resumo: `A casa AINDA NÃO ABRIU — abre HOJE às ${ABRE} (funcionamento: ${ABRE} às ${FECHA}). HOJE É DIA ABERTO: é PROIBIDO dizer que hoje está fechado ou empurrar o cliente pra amanhã. Pedido de reserva pra HOJE vale normalmente: chame consultar_disponibilidade_reserva / criar_reserva com a data de hoje e deixe a ferramenta decidir horário e área. Só não diga que dá pra vir "agora" — o convite é a partir das ${ABRE}.`,
+      antesDeAbrir: true,
+      resumo: `A casa AINDA NÃO ABRIU — abre HOJE às ${ABRE} (funcionamento: ${ABRE} às ${FECHA}). HOJE É DIA ABERTO: é PROIBIDO dizer que hoje está fechado ou empurrar o cliente pra amanhã. Pedido de reserva pra HOJE vale normalmente: chame consultar_disponibilidade_reserva / criar_reserva com a data de hoje e deixe a ferramenta decidir horário e área. Cliente dizendo "hoje", "já estamos indo", "chegamos logo" = quer chegar assim que abrir: ofereça ${ABRE} ou ${ABRE.replace(':00', ':30')} e feche a reserva (a casa abre vazia, então horário logo depois da abertura está valendo). Só não diga que dá pra vir "agora" — o convite é a partir das ${ABRE}.`,
     };
   }
 

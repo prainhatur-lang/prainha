@@ -664,7 +664,9 @@ async function validarSlotEAlocarMesa(p: {
     // casa movimentada (>=70%) mantém a hora cheia.
     if (minutosAte < 60) {
       const oc = await medirOcupacaoHoje(p.filialId, p.cfg);
-      const minimo = oc?.corteEstendido ? 20 : 60;
+      // Antes das 9h a casa abre vazia (23/10/2026, caso Charles às 08:58):
+      // pedido pras 9h/9h30 de hoje entra sem antecedência mínima.
+      const minimo = oc?.antesDeAbrir ? 0 : oc?.corteEstendido ? 20 : 60;
       if (minutosAte < minimo) {
         return `Em cima da hora não dá mais pra reservar (faltam ${minutosAte} min e o mínimo agora é ${minimo}). ${convite(oc)}`;
       }
