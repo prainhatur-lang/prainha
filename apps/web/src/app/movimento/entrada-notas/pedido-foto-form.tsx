@@ -8,6 +8,7 @@
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { PedidoPeloCelular } from './pedido-pelo-celular';
 
 interface Filial {
   id: string;
@@ -55,6 +56,8 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
   const [lancarDireto, setLancarDireto] = useState(true);
   const [andamento, setAndamento] = useState<string | null>(null);
   const [resultados, setResultados] = useState<Resultado[]>([]);
+  // No computador o "Escanear pedido agora" mostra o QR pro celular tirar a foto
+  const [qrCelular, setQrCelular] = useState(false);
 
   async function enviarUm(f: File): Promise<Resultado> {
     return enviar([f]);
@@ -214,6 +217,24 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
     router.refresh();
   }
 
+  /** Pedido que chegou pelo QR (celular): lê igual a foto escaneada aqui. */
+  async function receberDoCelular(fotos: File[]) {
+    setAndamento(
+      fotos.length > 1
+        ? `Lendo as ${fotos.length} fotos do celular como um pedido só… (leva até 2 minutos)`
+        : 'Lendo o pedido que veio do celular… (leva até 1 minuto)',
+    );
+    let r: Resultado;
+    try {
+      r = await enviar(fotos);
+    } catch (err) {
+      r = { arquivo: fotos.map((x) => x.name).join(' + '), ok: false, titulo: (err as Error).message, detalhes: [] };
+    }
+    setResultados((ant) => [...ant, r]);
+    setAndamento(null);
+    router.refresh();
+  }
+
   function addPaginas(e: React.ChangeEvent<HTMLInputElement>) {
     const novos = Array.from(e.target.files ?? []);
     if (novos.length) setPaginas((ant) => [...ant, ...novos]);
@@ -256,7 +277,17 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
         )}
 
         {/* Escanear: no celular/tablet abre a câmera traseira direto, sem passar pela galeria */}
-        <label className="block">
+        <label
+          className="block"
+          onClick={(ev) => {
+            // Celular/tablet: câmera direto (como sempre). Computador: QR pro celular.
+            const noCelular = window.matchMedia('(pointer: coarse)').matches;
+            if (!noCelular && !enviando) {
+              ev.preventDefault();
+              setQrCelular(true);
+            }
+          }}
+        >
           <input
             ref={scanRef}
             type="file"
@@ -274,6 +305,16 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
             {andamento ?? '📷 Escanear pedido agora'}
           </div>
         </label>
+
+        {qrCelular && (
+          <PedidoPeloCelular
+            filialId={selecionada}
+            ocupado={enviando}
+            onFotos={receberDoCelular}
+            onFechar={() => setQrCelular(false)}
+            onArquivoAqui={() => inputRef.current?.click()}
+          />
+        )}
 
         <label className="block">
           <input
