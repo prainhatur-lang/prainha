@@ -17998,7 +17998,7 @@ function pintaVales(){
       var onde=Number(n)===Number(MESA)?'Mesa '+n:(((INFO.nomes||{})[n])?esc(INFO.nomes[n])+' · '+n:'Comanda '+n);
       h+='<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid #f3d27a">'+
         '<div style="flex:1"><b>'+v.pendente+'x '+esc(v.nome)+'</b><div class="mut" style="font-size:12px">'+onde+' · já pago, a retirar</div></div>'+
-        '<button class="chip on" style="background:#b45309;border-color:#b45309" onclick="soltarVale(this,'+n+','+v.item+')">Soltar 1</button></div>';
+        '<button class="chip on" style="background:#b45309;border-color:#b45309;color:#fff;font-weight:700" onclick="soltarVale(this,'+n+','+v.item+')">Soltar o 2º</button></div>';
     });
   });
   el.innerHTML=h?'<div style="margin-top:12px;padding:10px 12px;border-radius:12px;background:#fff7e0;border:1px solid #f3d27a">'+
@@ -18007,7 +18007,7 @@ function pintaVales(){
 async function soltarVale(bt,n,item){
   if(bt.disabled)return;bt.disabled=true;bt.textContent='enviando…';
   var r;try{r=await jpost('/api/venda/vale-soltar',{numero:n,item:item,qtd:1})}catch(e){r={ok:false,erro:'sem conexão'}}
-  if(!r||!r.ok){alert((r&&r.erro)||'não consegui soltar');bt.disabled=false;bt.textContent='Soltar 1';return}
+  if(!r||!r.ok){alert((r&&r.erro)||'não consegui soltar');bt.disabled=false;bt.textContent='Soltar o 2º';return}
   try{INFO=await jget('/api/venda/mesa?n='+MESA)}catch(e){}
   pintaVales();pintaConsumo();
 }
@@ -27011,7 +27011,7 @@ function pinta(el){
       '<b>🍺 2º do dobrado — a retirar</b>'+
       c.vales.map(function(v){return '<div style="display:flex;align-items:center;gap:8px;margin-top:6px"><span style="flex:1">'+
         v.pendente+'× '+esc(v.nome)+' <small class="mut">já pago</small></span>'+
-        '<button class="seg" style="background:#b45309;color:#fff;border:0" onclick="soltarValeCx(this,'+v.item+')">Soltar 1</button></div>'}).join('')+
+        '<button class="seg" style="background:#b45309;color:#fff;border:0" onclick="soltarValeCx(this,'+v.item+')">Soltar o 2º</button></div>'}).join('')+
       '</div>';
   }
   h+=(c.itens||[]).map(function(i,ix){
@@ -27757,7 +27757,7 @@ async function tiraServico(tirar){
 async function soltarValeCx(bt,item){
   if(bt.disabled)return;bt.disabled=true;bt.textContent='enviando…';
   var r;try{r=await jpost('/api/caixa/vale-soltar',{numero:MESA,item:item,qtd:1})}catch(e){r={ok:false,erro:'sem conexão'}}
-  if(!r||!r.ok){alert((r&&r.erro)||'não consegui soltar');bt.disabled=false;bt.textContent='Soltar 1';return}
+  if(!r||!r.ok){alert((r&&r.erro)||'não consegui soltar');bt.disabled=false;bt.textContent='Soltar o 2º';return}
   carregar(MESA);
 }
 async function fecharConta(){
