@@ -50,6 +50,7 @@ export async function GET(request: Request) {
       ncm: schema.produto.ncm,
       cfop: schema.produto.cfop,
       sem_servico: schema.produto.semTaxaServico,
+      dobrado_vale: schema.produto.dobradoVale,
       pausado: schema.produtoVariante.dataPausado,
       // saldo é do PRODUTO (o insumo/revenda), não do tamanho — é assim que o
       // motor de baixa trata, e é o que o garçom precisa ver como "esgotou"
@@ -170,6 +171,8 @@ export async function GET(request: Request) {
       cfop: l.cfop ?? null,
       // fora da base dos 10% (couvert, recreação) — loja antiga ignora o campo
       sem_servico: l.sem_servico === true,
+      // promoção dobrada: o 2º vira vale na conta — loja antiga ignora o campo
+      dobrado_vale: l.dobrado_vale === true,
       // sem_estoque só faz sentido em produto que controla estoque; no resto
       // fica null e a tela não mostra número nenhum (mesma regra do Firebird)
       saldo: saldoPraLoja(l),

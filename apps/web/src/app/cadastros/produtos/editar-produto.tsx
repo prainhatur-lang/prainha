@@ -27,6 +27,7 @@ interface Produto {
   pesoUnitarioPadraoKg?: string | null;
   pesoRelativoProducao?: string | null;
   semTaxaServico?: boolean | null;
+  dobradoVale?: boolean | null;
 }
 
 export function EditarProdutoButton({ produto }: { produto: Produto }) {
@@ -50,6 +51,7 @@ export function EditarProdutoButton({ produto }: { produto: Produto }) {
     produto.pesoRelativoProducao ? String(Number(produto.pesoRelativoProducao)) : '',
   );
   const [semServico, setSemServico] = useState(produto.semTaxaServico ?? false);
+  const [dobrado, setDobrado] = useState(produto.dobradoVale ?? false);
   const [pending, start] = useTransition();
   const [erro, setErro] = useState<string | null>(null);
 
@@ -92,6 +94,7 @@ export function EditarProdutoButton({ produto }: { produto: Produto }) {
     if (controla !== produto.controlaEstoque) body.controlaEstoque = controla;
     if (descontinuado !== (produto.descontinuado ?? false)) body.descontinuado = descontinuado;
     if (semServico !== (produto.semTaxaServico ?? false)) body.semTaxaServico = semServico;
+    if (dobrado !== (produto.dobradoVale ?? false)) body.dobradoVale = dobrado;
 
     const minAtual = produto.estoqueMinimo ? Number(produto.estoqueMinimo) : 0;
     const minNovo = estoqueMinimo.trim() ? Number(estoqueMinimo.replace(',', '.')) : 0;
@@ -340,6 +343,21 @@ export function EditarProdutoButton({ produto }: { produto: Produto }) {
                 <span className="block text-[10px] text-slate-500">
                   Couvert, recreação, ingresso: o item entra na conta, mas fica fora da base dos 10%.
                   Vale pros itens lançados depois que a loja atualizar o cardápio (alguns minutos).
+                </span>
+              </span>
+            </label>
+
+            <label className="flex items-start gap-2 text-xs text-slate-700">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={dobrado}
+                onChange={(e) => setDobrado(e.target.checked)}
+              />
+              <span>
+                Promoção dobrada (paga 1, leva 2)
+                <span className="block text-[10px] text-slate-500">
+                  Chope dobrado: o 1º sai na hora e o 2º fica de vale na conta até o garçom soltar.
                 </span>
               </span>
             </label>

@@ -171,6 +171,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
       pesoUnitarioPadraoKg: schema.produto.pesoUnitarioPadraoKg,
       pesoRelativoProducao: schema.produto.pesoRelativoProducao,
       semTaxaServico: schema.produto.semTaxaServico,
+      dobradoVale: schema.produto.dobradoVale,
       codigoEtiqueta: schema.produto.codigoEtiqueta,
     })
     .from(schema.produto)
@@ -631,6 +632,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
                             pesoUnitarioPadraoKg: p.pesoUnitarioPadraoKg,
                             pesoRelativoProducao: p.pesoRelativoProducao,
                             semTaxaServico: p.semTaxaServico,
+                            dobradoVale: p.dobradoVale,
                           }}
                         />
                       </td>

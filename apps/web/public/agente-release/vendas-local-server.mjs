@@ -320,6 +320,10 @@ async function initSchemaNativo() {
   // recreação): a marca é COPIADA pro item na hora do lançamento — mudar o
   // cadastro depois não mexe em conta que já está aberta.
   await addCol('comanda_item', 'sem_servico boolean DEFAULT false');
+  // promoção dobrada (paga 1, leva 2): o item vendido guarda a marca e o 2º
+  // sai depois como item de R$ 0 apontando pro de origem (vale_de).
+  await addCol('comanda_item', 'dobrado_vale boolean DEFAULT false');
+  await addCol('comanda_item', 'vale_de bigint');
   await sql`CREATE TABLE IF NOT EXISTS pagamento_local (codigo bigint PRIMARY KEY, pedido bigint, forma_codigo integer,
     valor numeric, caixa_codigo bigint, nsu text, autorizacao text, bandeira text, observacao text,
     conta_corrente bigint, quando timestamptz DEFAULT now(), cancelado_em timestamptz)`;
@@ -427,6 +431,7 @@ async function initSchema() {
   await addCol('produto_local', 'estoque numeric');
   await addCol('produto_local', 'cardapio_digital boolean DEFAULT true');
   await addCol('produto_local', 'sem_servico boolean DEFAULT false');
+  await addCol('produto_local', 'dobrado_vale boolean DEFAULT false');
   // grupos que a CASA decidiu esconder do cliente, independente do Consumer
   // (ex.: "Artistas" vem marcado como cardapio digital la, mas nao e' pra mesa)
   await sql`CREATE TABLE IF NOT EXISTS grupo_oculto (categoria text PRIMARY KEY, criado_em timestamptz DEFAULT now())`;
@@ -443,6 +448,8 @@ async function initSchema() {
   await addCol('produto_nuvem', 'cfop text');
   // fora da base dos 10% (vem do cadastro da nuvem)
   await addCol('produto_nuvem', 'sem_servico boolean DEFAULT false');
+  // promoção dobrada: o 2º fica de vale na conta (cadastro da nuvem)
+  await addCol('produto_nuvem', 'dobrado_vale boolean DEFAULT false');
   // vínculo comanda (300-400, a pessoa) -> mesa (o lugar)
   await sql`CREATE TABLE IF NOT EXISTS mesa_comanda (comanda integer PRIMARY KEY, mesa integer NOT NULL, aberta_em timestamptz DEFAULT now(), fechada_em timestamptz)`;
   // quem esta na comanda: identificacao por CPF (o nome curto e' o que aparece na tela)
@@ -2929,11 +2936,18 @@ async function pgInserirItem(ped, it) {
   const cod = await proxCodigo('item');
   const nomeItem = [it.nome, it.tamanho].filter(Boolean).join(' ');
   const aviso = it.junto ? '>> SAI JUNTO C/ ' + String(it.junto).toUpperCase() : '';
-  const detalhes = [it.obs, aviso].filter(Boolean).join(' | ') || 'NENHUM';
   const vt = +(Number(it.preco) * Number(it.qtd)).toFixed(2);
   const pdvCod = it.codigo_pdv == null ? null : Number(it.codigo_pdv);
   const [pl] = pdvCod == null ? [null]
-    : await sql`SELECT area_codigo, sem_servico FROM produto_local WHERE codigo_pdv=${pdvCod} LIMIT 1`;
+    : await sql`SELECT area_codigo, sem_servico, dobrado_vale FROM produto_local WHERE codigo_pdv=${pdvCod} LIMIT 1`;
+  // promoção dobrada: o bar serve só o 1º; o 2º fica de vale na conta e sai
+  // depois pelo "Soltar" (que lança com vale_de e não entra aqui de novo)
+  const valeDe = it.vale_de == null ? null : Number(it.vale_de);
+  const dobrado = !!pl && pl.dobrado_vale === true && valeDe == null && Number(it.tipo ?? 1) !== 2
+    && Number(it.preco) > 0; // brinde a R$ 0 não gera vale
+  const avisoDobrado = dobrado
+    ? 'PROMO DOBRADO: SERVIR ' + Number(it.qtd) + ' AGORA, O 2º FICA DE VALE' : '';
+  const detalhes = [it.obs, aviso, avisoDobrado].filter(Boolean).join(' | ') || 'NENHUM';
   let area = await pgAreaDoItem(nomeItem, pl ? pl.area_codigo : null);
   // produto que não cobra os 10% (cadastro da nuvem): a marca vai no item
   let semServico = !!pl && pl.sem_servico === true;
@@ -2951,10 +2965,12 @@ async function pgInserirItem(ped, it) {
   const baixado = fora.length > 0 && fora.some((t) => nm.includes(t));
   const agora = new Date();
   await sql`INSERT INTO comanda_item (item_codigo, codigo_pai, comanda_codigo, codigo_pdv, produto_codigo,
-      nome, quantidade, valor_unitario, valor_total, tipo, detalhes, area_codigo, criado, produzido, entregue, criado_por, sem_servico)
+      nome, quantidade, valor_unitario, valor_total, tipo, detalhes, area_codigo, criado, produzido, entregue, criado_por, sem_servico,
+      dobrado_vale, vale_de)
     VALUES (${cod}, ${it.codigo_pai ?? null}, ${Number(ped)}, ${pdvCod}, ${it.produto_codigo ?? null},
       ${nomeItem}, ${Number(it.qtd)}, ${Number(it.preco)}, ${vt}, ${it.tipo ?? 1}, ${detalhes}, ${area},
-      ${agora}, ${baixado ? agora : null}, ${baixado ? agora : null}, ${it.login ?? null}, ${semServico})`;
+      ${agora}, ${baixado ? agora : null}, ${baixado ? agora : null}, ${it.login ?? null}, ${semServico},
+      ${dobrado}, ${valeDe})`;
   return cod;
 }
 /** Quanto do pedido é de produto que NÃO cobra taxa de serviço (couvert,
@@ -4653,8 +4669,14 @@ async function apiVendaMesa(mesa) {
   // conta pedida: vem do ESPELHO (barato). apiVendaConta atualiza o espelho na
   // hora, entao nao ha janela em que a tela mostre "aberta" com a conta pedida.
   const cp = await sql`SELECT bool_or(conta_pedida) AS pedida FROM comanda WHERE numero = ANY(${numeros}) AND fechada_em IS NULL AND cancelada_em IS NULL`;
+  // promoção dobrada: o 2º que ainda não saiu, por número (campo a mais)
+  const vales = {};
+  for (const n of numeros) {
+    const vs = (await valesDoNumero(n)).filter((v) => v.pendente > 0);
+    if (vs.length) vales[n] = vs;
+  }
   return { mesa: m, comandas: comandas.map((x) => x.comanda), nomes, cliente: nomes[m] || null, abertos,
-    conta_pedida: !!cp[0]?.pedida };
+    conta_pedida: !!cp[0]?.pedida, vales };
 }
 // ---- QUANTAS PESSOAS NA MESA (10/10/2026) ----
 // A conta nascia sempre com 1 pessoa: ninguém perguntava. Agora quem abre a
@@ -5270,6 +5292,83 @@ async function apiVendaEnviar(body) {
   }
 }
 
+/* ---- PROMOÇÃO DOBRADA (paga 1, leva 2) — dono, 23/10/2026 ----
+   O cliente paga o "Chope Dobrado" e bebe um agora. O 2º fica de VALE na conta
+   (não vai pro bar). Quando ele pedir, o garçom toca "Soltar": entra um item de
+   R$ 0 com vale_de = item de origem, e aí sim sai no bar e baixa estoque.
+   Pendente = quantidade da origem − o que já saiu com vale_de dela. Cada vale
+   só se usa uma vez. Só no banco próprio (Mar e Bar). */
+async function valesDaConta(ped) {
+  if (!nativo() || !(Number(ped) > 0)) return [];
+  try {
+    const rs = await sql`SELECT o.item_codigo, o.nome, o.quantidade, o.codigo_pdv, o.produto_codigo,
+        COALESCE((SELECT SUM(v.quantidade) FROM comanda_item v
+          WHERE v.vale_de = o.item_codigo AND v.cancelado_em IS NULL), 0) AS soltos
+      FROM comanda_item o
+      WHERE o.comanda_codigo=${Number(ped)} AND o.dobrado_vale IS TRUE AND o.cancelado_em IS NULL
+      ORDER BY o.item_codigo`;
+    return rs.map((r) => {
+      const qtd = Number(r.quantidade) || 0, soltos = Number(r.soltos) || 0;
+      return { item: Number(r.item_codigo), nome: r.nome, quantidade: qtd, soltos,
+        pendente: Math.max(0, qtd - soltos) };
+    });
+  } catch (e) { console.error('[vale] leitura: ' + e.message); return []; }
+}
+/** Vales de um número (mesa ou comanda), já com o pedido aberto achado. */
+async function valesDoNumero(numero) {
+  if (!nativo()) return [];
+  try {
+    const ped = await fbAcharPedido(numero);
+    return ped ? await valesDaConta(ped) : [];
+  } catch { return []; }
+}
+async function apiValeSoltar(body) {
+  if (!nativo()) return { ok: false, erro: 'vale do dobrado só existe no banco próprio da loja' };
+  const numero = Number(body.numero), item = Number(body.item);
+  const qtd = Math.max(1, Math.min(20, Number(body.qtd) || 1));
+  if (!(numero >= 1 && numero <= NUMERO_MAX) || !(item > 0)) return { ok: false, erro: 'dados inválidos' };
+  // Não passa pela trava de "conta pedida": o vale já foi pago — é do cliente.
+  return naFilaDaMesa(numero, async () => {
+    const ped = await fbAcharPedido(numero);
+    if (!ped) return { ok: false, erro: 'conta ' + numero + ' não está aberta' };
+    const vales = await valesDaConta(ped);
+    const v = vales.find((x) => x.item === item);
+    if (!v) return { ok: false, erro: 'esse vale não é desta conta' };
+    if (v.pendente < qtd) return { ok: false, erro: v.pendente ? 'só falta soltar ' + v.pendente : 'esse vale já foi usado' };
+    const [o] = await sql`SELECT codigo_pdv, produto_codigo, nome FROM comanda_item WHERE item_codigo=${item}`;
+    const it = { codigo_pdv: o.codigo_pdv, produto_codigo: o.produto_codigo, nome: o.nome, tamanho: null,
+      preco: 0, qtd, tipo: 1, obs: '2º DO DOBRADO (VALE)', vale_de: item,
+      login: body._garcom ? String(body._garcom) : null,
+      nome_usuario: body._garcom_nome || (body._garcom ? String(body._garcom) : null) };
+    const cod = await fbInserirItem(ped, it);
+    await fbAtualizarTotal(ped);
+    await fbJobCozinha(ped);
+    espelho().catch(() => {});
+    console.log('[vale] conta ' + numero + ': soltou ' + qtd + 'x ' + o.nome + ' (vale do item ' + item + ')');
+    return { ok: true, item_codigo: cod, vales: await valesDaConta(ped) };
+  });
+}
+/** Relatório do dia: vendidos × soltos × não retirados (conta já fechada)
+ *  × ainda na conta aberta. Dia = data do lançamento do dobrado, em BRT. */
+async function apiDobradoDia(data) {
+  if (!nativo()) return { ok: true, produtos: [] };
+  const dia = /^\d{4}-\d{2}-\d{2}$/.test(String(data || '')) ? String(data) : null;
+  const rs = await sql`WITH o AS (
+      SELECT ci.item_codigo, ci.nome, ci.quantidade::numeric q, c.fechada_em,
+        COALESCE((SELECT SUM(v.quantidade) FROM comanda_item v
+          WHERE v.vale_de = ci.item_codigo AND v.cancelado_em IS NULL), 0)::numeric s
+      FROM comanda_item ci JOIN comanda c ON c.codigo = ci.comanda_codigo
+      WHERE ci.dobrado_vale IS TRUE AND ci.cancelado_em IS NULL AND c.cancelada_em IS NULL
+        AND (ci.criado AT TIME ZONE 'America/Maceio')::date =
+          COALESCE(${dia}::date, (now() AT TIME ZONE 'America/Maceio')::date))
+    SELECT nome, SUM(q) vendidos, SUM(LEAST(s, q)) soltos,
+      SUM(CASE WHEN fechada_em IS NOT NULL THEN GREATEST(q - s, 0) ELSE 0 END) nao_retirados,
+      SUM(CASE WHEN fechada_em IS NULL THEN GREATEST(q - s, 0) ELSE 0 END) em_aberto
+    FROM o GROUP BY nome ORDER BY nome`;
+  return { ok: true, produtos: rs.map((r) => ({ nome: r.nome, vendidos: Number(r.vendidos) || 0,
+    soltos: Number(r.soltos) || 0, nao_retirados: Number(r.nao_retirados) || 0, em_aberto: Number(r.em_aberto) || 0 })) };
+}
+
 // ---- API de CONTA / PAGAMENTO (Fase 2) ----
 // A conta lê do Consumer (fonte da verdade do total e do que já foi pago) —
 // assim nunca cobramos a mais por causa de espelho atrasado.
@@ -5320,6 +5419,7 @@ async function apiConta(numero, appLio = false, comAutor = false) {
     itens: it.rows.map((x) => ({ nome: x.NOME, qtd: Number(x.QTD), valor: Number(x.VT), tipo: Number(x.TIPO), ...autorDe(x) })),
     total, servico, pago: +pago.toFixed(2), saldo: +(total - pago).toFixed(2),
     pagamentos: await sql`SELECT id, forma, valor, origem, nsu, status, criado_em FROM venda_pagamento WHERE pedido_fb=${ped} ORDER BY id`,
+    vales: (await valesDaConta(ped)).filter((v) => v.pendente > 0),
   };
 }
 
@@ -8121,6 +8221,7 @@ async function apiCaixaConta(n, pedRaw) {
   }
   return { ok: true, numero: num, nome: ident?.nome_curto || (p.NOME || null),
     comandas_mesa: comandasMesa, geral,
+    vales: (await valesDaConta(ped)).filter((v) => v.pendente > 0),
     itens: itens.map((i) => {
       // minutos entre lançar e entregar; sem entrega ainda, conta até agora
       const t0 = i.criado ? new Date(i.criado).getTime() : null;
@@ -12049,16 +12150,16 @@ async function loopCatalogoNuvem() {
     await sql.begin(async (t) => {
       for (const p of j.produtos) {
         await t`INSERT INTO produto_nuvem (codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo,
-            comanda_mobile, cardapio_digital, categoria, descricao, saldo, ncm, cfop, sem_servico, atualizado)
+            comanda_mobile, cardapio_digital, categoria, descricao, saldo, ncm, cfop, sem_servico, dobrado_vale, atualizado)
           VALUES (${Number(p.codigo_pdv)}, ${Number(p.produto_codigo)}, ${p.nome || ''}, ${p.tamanho || null},
             ${Number(p.preco) || 0}, ${p.area_codigo == null ? null : Number(p.area_codigo)},
             ${p.comanda_mobile !== false}, ${!!p.cardapio_digital}, ${p.categoria || null},
-            ${p.descricao || null}, ${p.saldo == null ? null : Number(p.saldo)}, ${p.ncm || null}, ${p.cfop || null}, ${p.sem_servico === true}, now())
+            ${p.descricao || null}, ${p.saldo == null ? null : Number(p.saldo)}, ${p.ncm || null}, ${p.cfop || null}, ${p.sem_servico === true}, ${p.dobrado_vale === true}, now())
           ON CONFLICT (codigo_pdv) DO UPDATE SET produto_codigo=EXCLUDED.produto_codigo, nome=EXCLUDED.nome,
             tamanho=EXCLUDED.tamanho, preco=EXCLUDED.preco, area_codigo=EXCLUDED.area_codigo,
             comanda_mobile=EXCLUDED.comanda_mobile, cardapio_digital=EXCLUDED.cardapio_digital,
             categoria=EXCLUDED.categoria, descricao=EXCLUDED.descricao, saldo=EXCLUDED.saldo,
-            ncm=EXCLUDED.ncm, cfop=EXCLUDED.cfop, sem_servico=EXCLUDED.sem_servico, atualizado=now()`;
+            ncm=EXCLUDED.ncm, cfop=EXCLUDED.cfop, sem_servico=EXCLUDED.sem_servico, dobrado_vale=EXCLUDED.dobrado_vale, atualizado=now()`;
       }
       // pausado/descontinuado na nuvem some daqui — a resposta é a lista inteira
       if (codigos.length) await t`DELETE FROM produto_nuvem WHERE NOT (codigo_pdv = ANY(${codigos}))`;
@@ -12119,7 +12220,7 @@ async function loopCatalogoNuvem() {
  *  muda: garçom, KDS, caixa e cliente continuam lendo a mesma tabela. */
 async function catalogoNativo() {
   const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo,
-      comanda_mobile, cardapio_digital, categoria, descricao, saldo, sem_servico FROM produto_nuvem`;
+      comanda_mobile, cardapio_digital, categoria, descricao, saldo, sem_servico, dobrado_vale FROM produto_nuvem`;
   if (!rows.length) { console.error('[catalogo] nuvem não mandou nada — mantendo o cardápio atual'); return; }
   const redir = await mapaRedirPracas();
   const porItem = await mapaItemPraca();
@@ -12138,13 +12239,13 @@ async function catalogoNativo() {
       nome_busca: nm, categoria: x.categoria || 'Outros', categoria_ordem: 999,
       sem_estoque: saldo != null && saldo <= 0, estoque: saldo,
       cardapio_digital: !!x.cardapio_digital, descricao: x.descricao || null, preparo: null,
-      sem_servico: x.sem_servico === true };
+      sem_servico: x.sem_servico === true, dobrado_vale: x.dobrado_vale === true };
   });
   await sql.begin(async (t) => {
     await t`TRUNCATE produto_local`;
     await t`INSERT INTO produto_local ${t(linhas, 'codigo_pdv', 'produto_codigo', 'nome', 'tamanho', 'preco',
       'area_codigo', 'comanda_mobile', 'nome_busca', 'categoria', 'categoria_ordem', 'sem_estoque', 'estoque',
-      'cardapio_digital', 'descricao', 'preparo', 'sem_servico')}`;
+      'cardapio_digital', 'descricao', 'preparo', 'sem_servico', 'dobrado_vale')}`;
   });
   console.log('[catalogo] modo próprio: ' + linhas.length + ' itens no cardápio da loja');
 }
@@ -17843,6 +17944,7 @@ async function carregarMesa(){
                :'<span class="av vazio">+</span><b>Identificar o cliente</b><span class="mut">CPF ou WhatsApp</span>')+
       '<span class="seta">›</span></div>'+
     '<div id="pesbar"></div>'+
+    '<div id="valesbar"></div>'+
     '<div class="tit" style="margin-top:12px">Lançar em</div><div class="chips">'+chips+'</div>'+
     (INFO.conta_pedida
       ? '<div class="avisoc">🔒 Conta pedida — não entra mais lançamento nesta mesa.</div>'+
@@ -17867,6 +17969,30 @@ async function carregarMesa(){
     '<div class="mut" style="margin-top:8px">Cartão é na maquininha. O cliente também paga sozinho por Pix na tela da mesa dele.</div>');
   pintaConsumo();
   pintaPessoas();
+  pintaVales();
+}
+// PROMOÇÃO DOBRADA: o 2º chope fica guardado na conta; "Soltar" manda pro bar
+// (R$ 0). Cada vale sai uma vez só — o servidor confere.
+function pintaVales(){
+  var el=document.getElementById('valesbar');if(!el)return;
+  var vs=(INFO&&INFO.vales)||{},h='';
+  Object.keys(vs).forEach(function(n){
+    (vs[n]||[]).forEach(function(v){
+      var onde=Number(n)===Number(MESA)?'Mesa '+n:(((INFO.nomes||{})[n])?esc(INFO.nomes[n])+' · '+n:'Comanda '+n);
+      h+='<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid #f3d27a">'+
+        '<div style="flex:1"><b>'+v.pendente+'x '+esc(v.nome)+'</b><div class="mut" style="font-size:12px">'+onde+' · já pago, a retirar</div></div>'+
+        '<button class="chip on" style="background:#b45309;border-color:#b45309" onclick="soltarVale(this,'+n+','+v.item+')">Soltar 1</button></div>';
+    });
+  });
+  el.innerHTML=h?'<div style="margin-top:12px;padding:10px 12px;border-radius:12px;background:#fff7e0;border:1px solid #f3d27a">'+
+    '<div style="font-weight:700">🍺 2º do dobrado — a retirar</div>'+h+'</div>':'';
+}
+async function soltarVale(bt,n,item){
+  if(bt.disabled)return;bt.disabled=true;bt.textContent='enviando…';
+  var r;try{r=await jpost('/api/venda/vale-soltar',{numero:n,item:item,qtd:1})}catch(e){r={ok:false,erro:'sem conexão'}}
+  if(!r||!r.ok){alert((r&&r.erro)||'não consegui soltar');bt.disabled=false;bt.textContent='Soltar 1';return}
+  try{INFO=await jget('/api/venda/mesa?n='+MESA)}catch(e){}
+  pintaVales();pintaConsumo();
 }
 // O QUE A MESA JA CONSUMIU, com o estado de cada item.
 // Mesma leitura que o cliente ve no celular (/api/ja-pedido), pra garcom e
@@ -26862,6 +26988,15 @@ function pinta(el){
        '<button class="seg" style="color:#b91c1c" onclick="ifoodCxCancelar(\\''+f.id+'\\')">✕ Cancelar '+ondeVeio+'</button>'+
        '</div></div>';
   }
+  // PROMOÇÃO DOBRADA: 2º chope já pago que ainda não saiu do bar
+  if((c.vales||[]).length){
+    h+='<div style="margin:6px 0 10px;padding:10px 12px;border-radius:10px;background:#fff7e0;border:1px solid #f3d27a">'+
+      '<b>🍺 2º do dobrado — a retirar</b>'+
+      c.vales.map(function(v){return '<div style="display:flex;align-items:center;gap:8px;margin-top:6px"><span style="flex:1">'+
+        v.pendente+'× '+esc(v.nome)+' <small class="mut">já pago</small></span>'+
+        '<button class="seg" style="background:#b45309;color:#fff;border:0" onclick="soltarValeCx(this,'+v.item+')">Soltar 1</button></div>'}).join('')+
+      '</div>';
+  }
   h+=(c.itens||[]).map(function(i,ix){
     return '<div class="it"><span>'+
       (CANCEL_ON&&PODE.cancItem&&i.item_codigo&&i.tipo!==2?'<button class="x" onclick="cancItem('+ix+')" title="cancelar este item">✕</button> ':'')+
@@ -27602,7 +27737,16 @@ async function tiraServico(tirar){
          :('✓ 10% de volta na conta');
   await carregar(MESA);
 }
+async function soltarValeCx(bt,item){
+  if(bt.disabled)return;bt.disabled=true;bt.textContent='enviando…';
+  var r;try{r=await jpost('/api/caixa/vale-soltar',{numero:MESA,item:item,qtd:1})}catch(e){r={ok:false,erro:'sem conexão'}}
+  if(!r||!r.ok){alert((r&&r.erro)||'não consegui soltar');bt.disabled=false;bt.textContent='Soltar 1';return}
+  carregar(MESA);
+}
 async function fecharConta(){
+  // chope dobrado não retirado: só avisa, não trava (o cliente pode ter desistido)
+  var vp=((CONTA&&CONTA.vales)||[]).reduce(function(s,v){return s+(Number(v.pendente)||0)},0);
+  if(vp>0&&!confirm(vp+(vp>1?' chopes do dobrado não retirados':' chope do dobrado não retirado')+' nesta conta. Fechar assim mesmo?'))return;
   var r=await jpost('/api/caixa/fechar',alvo({numero:MESA}));
   if(!r.ok){var e=document.getElementById('cerr');if(e)e.textContent=r.erro||'não fechou';return}
   // pedido de canal (iFood/site): concluído, sai da grade. A nota dele é o
@@ -28101,12 +28245,23 @@ async function telaRel(el){
         '<div class="mut" style="font-size:12px;margin-top:2px">'+fmts+'</div>'+
         '<div class="mut" style="font-size:11.5px">'+st+'</div></div>';
     }).join('')||'<div class="mut">nenhum caixa nesse dia</div>')+'</div>';
+  h+='<div id="relDobrado"></div>';
   if(d.movs.length)h+='<div class="card"><div class="tit" style="margin-top:0">↕ Entradas/saídas da gaveta</div>'+
     d.movs.map(function(m){return '<div class="it"><span>'+esc(m.obs||'—')+'</span><b>'+(m.saida?'− '+brl(m.saida):'+ '+brl(m.entrada))+'</b></div>'}).join('')+'</div>';
   var nab=(d.caixas||[]).filter(function(c){return !c.fechado_em}).length;
   if(PODE.admin&&nab>0)h+='<div class="card"><button class="big" style="background:#dc2626;color:#fff" onclick="fechaTodosCx(this)">🔒 Fechar os '+nab+' caixas abertos</button>'+
     '<div class="mut" style="margin-top:6px">Fecha em lote, cada um pelo esperado. Organização — cartão/Pix já concilia por NSU.</div></div>';
   el.innerHTML=h;
+  relDobrado();
+}
+// promoção dobrada do dia: só aparece se vendeu
+async function relDobrado(){
+  var d;try{d=await jget('/api/caixa/dobrado'+(REL_DATA?('?data='+REL_DATA):''))}catch(e){return}
+  var el=document.getElementById('relDobrado');if(!el||!d||!d.ok||!(d.produtos||[]).length)return;
+  el.innerHTML='<div class="card"><div class="tit" style="margin-top:0">🍺 Chope dobrado</div>'+
+    d.produtos.map(function(p){return '<div class="it" style="display:block"><b>'+esc(p.nome)+'</b>'+
+      '<div class="mut" style="font-size:12.5px;margin-top:2px">vendidos '+p.vendidos+' · 2º servido '+p.soltos+
+      ' · não retirado '+p.nao_retirados+(p.em_aberto?' · em conta aberta '+p.em_aberto:'')+'</div></div>'}).join('')+'</div>';
 }
 async function fechaTodosCx(btn){
   if(!confirm('Fechar TODOS os caixas abertos agora? Cada um fecha pelo esperado (organização).'))return;
@@ -30935,8 +31090,15 @@ const server = http.createServer(async (req, res) => {
         return res.end(JSON.stringify(rf));
       }
       if (req.method === 'POST' && p === '/api/caixa/fechar') { const b = await readBody(req); return res.end(JSON.stringify(await apiCaixaFechar(b.numero, b.ped))); }
+      // 2º chope do dobrado: o caixa também solta o vale
+      if (req.method === 'POST' && p === '/api/caixa/vale-soltar') {
+        const b = await readBody(req);
+        b._garcom = quem.login; b._garcom_nome = quem.nome || quem.login;
+        return res.end(JSON.stringify(await apiValeSoltar(b)));
+      }
       if (req.method === 'POST' && p === '/api/caixa/desbloquear') return res.end(JSON.stringify(await apiCaixaDesbloquear(await readBody(req), quem)));
       if (p === '/api/caixa/estado') return res.end(JSON.stringify(await apiCaixaEstado(quem)));
+      if (p === '/api/caixa/dobrado') return res.end(JSON.stringify(await apiDobradoDia(u.searchParams.get('data'))));
       if (req.method === 'POST' && p === '/api/caixa/abrir') return res.end(JSON.stringify(await apiCaixaAbrir(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/conferir') return res.end(JSON.stringify(await apiCaixaConferir(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/fechar-caixa') return res.end(JSON.stringify(await apiCaixaFecharCaixa(await readBody(req), quem)));
@@ -31117,7 +31279,8 @@ const server = http.createServer(async (req, res) => {
     // Ações da comanda mobile: só quem está logado (login com AcessarComandaMobile
     // no Consumer). Leitura fica aberta; o que MEXE na conta exige sessão.
     if (req.method === 'POST' && (p === '/api/venda/vincular' || p === '/api/venda/transferir'
-        || p === '/api/venda/conta' || p === '/api/venda/enviar' || p === '/api/venda/comanda-baixa')) {
+        || p === '/api/venda/conta' || p === '/api/venda/enviar' || p === '/api/venda/comanda-baixa'
+        || p === '/api/venda/vale-soltar')) {
       const g = await garcomDaRequisicao(req, u);
       if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
       const body = await readBody(req);
@@ -31126,7 +31289,8 @@ const server = http.createServer(async (req, res) => {
       const fn = p === '/api/venda/vincular' ? apiVendaVincular
         : p === '/api/venda/transferir' ? apiTransferir
         : p === '/api/venda/conta' ? apiVendaConta
-        : p === '/api/venda/comanda-baixa' ? apiComandaBaixa : apiVendaEnviar;
+        : p === '/api/venda/comanda-baixa' ? apiComandaBaixa
+        : p === '/api/venda/vale-soltar' ? apiValeSoltar : apiVendaEnviar;
       res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await fn(body)));
     }
     // QUANTAS PESSOAS NA MESA — a tela de abrir a mesa (garçom, caixa e

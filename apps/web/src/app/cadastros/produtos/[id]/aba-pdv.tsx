@@ -95,6 +95,7 @@ interface Props {
   codigoEtiqueta: string | null;
   /** Fora da base da taxa de serviço (os 10%). Mora na nuvem, não na fila. */
   semTaxaServico?: boolean | null;
+  dobradoVale?: boolean | null;
   etiquetas: Array<{ codigo: number; nome: string }>;
   /** Praça do KDS onde o produto é produzido (codigo da area_producao). */
   codigoCozinha?: number | null;
@@ -189,6 +190,37 @@ export function AbaPdv(p: Props) {
     } catch {
       setSemServico(!novo);
       setMsgServico({ ok: false, texto: 'sem conexão' });
+    }
+  }
+
+  const [dobrado, setDobrado] = useState(!!p.dobradoVale);
+  const [msgDobrado, setMsgDobrado] = useState<{ ok: boolean; texto: string } | null>(null);
+  // Mesmo caminho da marca dos 10%: dono é a nuvem, a loja pega no catálogo.
+  async function salvarDobrado(novo: boolean) {
+    setDobrado(novo);
+    setMsgDobrado(null);
+    try {
+      const r = await fetch(`/api/produtos/${p.produtoId}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ dobradoVale: novo }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setDobrado(!novo);
+        setMsgDobrado({ ok: false, texto: j.error || 'não deu pra salvar' });
+        return;
+      }
+      setMsgDobrado({
+        ok: true,
+        texto: novo
+          ? 'Salvo — cada um lançado deixa 1 vale na conta pro 2º (em alguns minutos).'
+          : 'Salvo — este produto volta a ser lançado normal, sem vale.',
+      });
+      router.refresh();
+    } catch {
+      setDobrado(!novo);
+      setMsgDobrado({ ok: false, texto: 'sem conexão' });
     }
   }
 
@@ -400,6 +432,29 @@ export function AbaPdv(p: Props) {
         </label>
         {msgServico && (
           <p className={`mt-2 text-xs ${msgServico.ok ? 'text-blue-800' : 'text-rose-700'}`}>{msgServico.texto}</p>
+        )}
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-white p-5">
+        <h2 className="text-sm font-semibold text-slate-900">Promoção dobrada</h2>
+        <label className="mt-3 flex items-start gap-2 text-sm text-slate-700">
+          <input
+            type="checkbox"
+            className="mt-1"
+            checked={dobrado}
+            onChange={(e) => salvarDobrado(e.target.checked)}
+          />
+          <span>
+            Paga 1 e leva 2 — o 2º fica de vale na conta
+            <span className="block text-xs text-slate-500">
+              Chope dobrado: o 1º vai pro bar na hora; a conta mostra um vale de R$ 0 e o garçom
+              toca em <b>Soltar</b> quando o cliente pedir o 2º. Só nas lojas com servidor próprio
+              (Bar e Mar).
+            </span>
+          </span>
+        </label>
+        {msgDobrado && (
+          <p className={`mt-2 text-xs ${msgDobrado.ok ? 'text-blue-800' : 'text-rose-700'}`}>{msgDobrado.texto}</p>
         )}
       </div>
 

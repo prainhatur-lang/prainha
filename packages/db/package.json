@@ -185,6 +185,7 @@
     "migrate:pix-varias-contas": "tsx scripts/migrate-pix-varias-contas.ts",
     "migrate:reserva-prainha-mar": "tsx scripts/migrate-reserva-prainha-mar.ts",
     "migrate:produto-sem-servico": "tsx scripts/migrate-produto-sem-servico.ts",
+    "migrate:produto-dobrado-vale": "tsx scripts/migrate-produto-dobrado-vale.ts",
     "migrate:relatorio-diario": "tsx scripts/migrate-relatorio-diario.ts",
     "migrate:relatorio-destinos-casa": "tsx scripts/migrate-relatorio-destinos-casa.ts",
     "migrate:relatorio-status-entrega": "tsx scripts/migrate-relatorio-status-entrega.ts",
