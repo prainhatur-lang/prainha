@@ -11,6 +11,7 @@ import { notFound } from 'next/navigation';
 import { db, schema } from '@concilia/db';
 import { asc, eq, sql } from 'drizzle-orm';
 import { dadosFaturamentoTexto } from '@/lib/dados-faturamento';
+import { condicaoPagamentoTexto } from '@/lib/pedido-encomenda';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,6 +31,9 @@ export default async function PedidoCompraPublicoPage(props: { params: Promise<{
       status: schema.pedidoCompra.status,
       valorTotal: schema.pedidoCompra.valorTotal,
       observacao: schema.pedidoCompra.observacao,
+      valorFrete: schema.pedidoCompra.valorFrete,
+      valorDesconto: schema.pedidoCompra.valorDesconto,
+      referencia: schema.pedidoCompra.referencia,
       criadoEm: schema.pedidoCompra.criadoEm,
       filialId: schema.pedidoCompra.filialId,
       filialNome: schema.filial.nome,
@@ -58,6 +62,9 @@ export default async function PedidoCompraPublicoPage(props: { params: Promise<{
     .orderBy(asc(sql<string>`coalesce(${schema.produto.nome}, ${schema.pedidoCompraItem.descricao}, 'item')`));
 
   const faturamento = await dadosFaturamentoTexto(p.filialId).catch(() => null);
+  const pagamento = await condicaoPagamentoTexto(id).catch(() => null);
+  const frete = Number(p.valorFrete ?? 0);
+  const desconto = Number(p.valorDesconto ?? 0);
   const cancelado = p.status === 'CANCELADO';
   const data = p.criadoEm.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
 
@@ -67,6 +74,7 @@ export default async function PedidoCompraPublicoPage(props: { params: Promise<{
       <h1 className="text-2xl font-bold">Pedido de compra nº {p.numero}</h1>
       <p className="mt-1 text-sm text-slate-600">
         {p.fornecedorNome} · {data}
+        {p.referencia && <> · orçamento nº {p.referencia}</>}
       </p>
       {cancelado && (
         <p className="mt-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm font-semibold text-red-800">
@@ -94,6 +102,23 @@ export default async function PedidoCompraPublicoPage(props: { params: Promise<{
         ))}
       </ul>
 
+      {(frete > 0 || desconto > 0) && (
+        <div className="mt-3 space-y-1 px-3 text-sm text-slate-600">
+          {frete > 0 && (
+            <p className="flex justify-between">
+              <span>Frete</span>
+              <span className="tabular-nums">{brl(frete)}</span>
+            </p>
+          )}
+          {desconto > 0 && (
+            <p className="flex justify-between">
+              <span>Desconto</span>
+              <span className="tabular-nums">−{brl(desconto)}</span>
+            </p>
+          )}
+        </div>
+      )}
+
       <div className="mt-4 flex items-center justify-between rounded-xl bg-slate-100 px-3 py-3">
         <span className="font-semibold">
           Total ({itens.length} {itens.length === 1 ? 'item' : 'itens'})
@@ -102,6 +127,12 @@ export default async function PedidoCompraPublicoPage(props: { params: Promise<{
           {p.valorTotal != null ? brl(Number(p.valorTotal)) : '—'}
         </span>
       </div>
+
+      {pagamento && (
+        <p className="mt-4 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-3 text-sm font-medium text-emerald-900">
+          {pagamento}
+        </p>
+      )}
 
       {p.observacao && (
         <p className="mt-4 whitespace-pre-line rounded-xl border border-slate-200 px-3 py-3 text-sm">{p.observacao}</p>

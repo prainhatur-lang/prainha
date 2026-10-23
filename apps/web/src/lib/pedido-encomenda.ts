@@ -184,3 +184,32 @@ export async function ligarDuplicatasAoPedido(
   }
   return ligadas;
 }
+
+/** Condição de pagamento do pedido sob encomenda em uma linha, pro
+ *  fornecedor (mensagem do WhatsApp e página pública do pedido).
+ *  Ex.: "Pagamento: entrada R$ 1.495,00 no Pix em 23/10/2026; restante
+ *  R$ 1.495,00 no Pix quando ficar pronto". null = pedido sem parcelas. */
+export async function condicaoPagamentoTexto(pedidoId: string): Promise<string | null> {
+  const ps = await db
+    .select({
+      tipo: schema.pedidoCompraParcela.tipo,
+      forma: schema.pedidoCompraParcela.forma,
+      quando: schema.pedidoCompraParcela.quando,
+      prontoEm: schema.pedidoCompraParcela.prontoEm,
+      valor: schema.pedidoCompraParcela.valor,
+      venc: sql<string | null>`${schema.pedidoCompraParcela.dataVencimento}::text`,
+    })
+    .from(schema.pedidoCompraParcela)
+    .where(eq(schema.pedidoCompraParcela.pedidoCompraId, pedidoId))
+    .orderBy(asc(schema.pedidoCompraParcela.ordem));
+  if (ps.length === 0) return null;
+  const brl = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  const br = (ymd: string | null) => (ymd ? ymd.slice(0, 10).split('-').reverse().join('/') : '');
+  const partes = ps.map((p) => {
+    const oque = p.tipo === 'ENTRADA' ? 'entrada' : 'restante';
+    const forma = p.forma === 'PIX' ? 'no Pix' : 'no boleto';
+    const quando = p.quando === 'PRONTO' && !p.prontoEm ? 'quando ficar pronto' : `em ${br(p.venc)}`;
+    return `${oque} ${brl(Number(p.valor))} ${forma} ${quando}`;
+  });
+  return `Pagamento: ${partes.join('; ')}`;
+}

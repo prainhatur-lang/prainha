@@ -19,6 +19,9 @@ import { garantirFornecedorNaFilial } from '@/lib/fornecedor-unico';
 import { hojeBr } from '@/lib/datas';
 import { brDateStart } from '@/lib/datas';
 import { descricaoParcela, somarDias, somarDiasUteis } from '@/lib/pedido-encomenda';
+import { pedidoCompraConfigurado } from '@/lib/whatsapp-otp';
+import { enviarPedidoAuto } from '@/lib/enviar-pedido';
+import { origemDoFone } from '@/lib/vendedor-fone';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -28,6 +31,9 @@ const Ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'data invalida');
 const Body = z.object({
   filialId: z.string().uuid(),
   fornecedorId: z.string().uuid(),
+  /** WhatsApp do fornecedor digitado na tela: grava no cadastro e o pedido
+   *  sai sozinho pra ele. */
+  whatsapp: z.string().max(30).trim().nullable().optional(),
   referencia: z.string().max(60).trim().nullable().optional(),
   observacao: z.string().max(2000).trim().nullable().optional(),
   valorFrete: z.number().min(0).default(0),
@@ -237,5 +243,36 @@ export async function POST(req: Request) {
     return { id: ped!.id, numero };
   });
 
-  return NextResponse.json({ ok: true, ...out });
+  // Tendo WhatsApp (vendedor ou o do cadastro — nunca o fixo do Consumer), o
+  // pedido já sai pro fornecedor. Falha no envio não desfaz o pedido: fica
+  // GERADO e dá pra mandar de novo pela tela do pedido.
+  let enviado = false;
+  let envioErro: string | null = null;
+  try {
+    const zap = (d.whatsapp ?? '').replace(/\D/g, '');
+    if (zap.length >= 10) {
+      await db
+        .update(schema.fornecedor)
+        .set({ foneWhatsapp: d.whatsapp!.trim() })
+        .where(eq(schema.fornecedor.id, fornecedorId));
+    }
+    const [o] = await db
+      .select({ origem: origemDoFone() })
+      .from(schema.fornecedor)
+      .where(eq(schema.fornecedor.id, fornecedorId))
+      .limit(1);
+    if (o?.origem === 'vendedor' || o?.origem === 'cadastro') {
+      if (pedidoCompraConfigurado()) {
+        const r = await enviarPedidoAuto(out.id);
+        enviado = r.ok;
+        if (!r.ok) envioErro = r.error ?? 'falha no envio';
+      } else {
+        envioErro = 'WhatsApp do sistema não configurado';
+      }
+    }
+  } catch (e) {
+    envioErro = e instanceof Error ? e.message : 'falha no envio';
+  }
+
+  return NextResponse.json({ ok: true, ...out, enviado, envioErro });
 }

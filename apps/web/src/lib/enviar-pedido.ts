@@ -7,6 +7,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { pedidoCompraConfigurado, enviarPedidoCompra } from '@/lib/whatsapp-otp';
 import { foneParaWhatsapp } from '@/lib/vendedor-fone';
 import { dadosFaturamentoLinha } from '@/lib/dados-faturamento';
+import { condicaoPagamentoTexto } from '@/lib/pedido-encomenda';
 
 function brl(n: number): string {
   return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -85,6 +86,9 @@ export async function enviarPedidoAuto(pedidoId: string): Promise<EnvioPedidoRes
   // perguntar "qual CNPJ pra tirar o pedido?" (linha única: parâmetro de
   // template da Meta não aceita quebra de linha).
   const faturamento = await dadosFaturamentoLinha(p.filialId).catch(() => null);
+  // Pedido sob encomenda (23/10/2026): entrada + restante vão junto, pro
+  // fornecedor saber quando recebe. Pedido sem parcelas: nada muda.
+  const pagamento = await condicaoPagamentoTexto(pedidoId).catch(() => null);
 
   // Link público com o pedido inteiro (itens, observações, valores e dados de
   // faturamento). A mensagem de modelo da Meta tem teto de 1024 caracteres
@@ -92,7 +96,7 @@ export async function enviarPedidoAuto(pedidoId: string): Promise<EnvioPedidoRes
   // ficou GERADO sem sair por isso. Em vez de cortar item, a lista vai no link.
   // "Preço final com impostos" vai junto do link — regra do dono (09/10).
   const link = `Preços FINAIS, com impostos. Pedido completo: https://app.prainhabar.com/cotacao/preencher/pedido/${pedidoId}`;
-  const lista = itensStr || '(itens no sistema)';
+  const lista = `${itensStr || '(itens no sistema)'}${pagamento ? `; ${pagamento}` : ''}`;
   const fat = faturamento ? `; ${faturamento}` : '';
   const resumo = `${itens.length} ${itens.length === 1 ? 'item' : 'itens'}, lista com quantidades e valores no link`;
 

@@ -13,6 +13,8 @@ import { and, asc, eq, isNotNull, isNull } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { hojeBr } from '@/lib/datas';
 import { NovoPedidoEncomenda } from './novo-pedido-encomenda';
+import { foneDoVendedor } from '@/lib/vendedor-fone';
+import { sql } from 'drizzle-orm';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,6 +37,9 @@ export default async function NovoPedidoEncomendaPage(props: { searchParams: Pro
         nome: schema.fornecedor.nome,
         doc: schema.fornecedor.cnpjOuCpf,
         chavePix: schema.fornecedor.chavePix,
+        // WhatsApp de verdade: vendedor ou o do cadastro. O fone do Consumer
+        // (fixo) fica de fora — mensagem pra fixo some sem aviso.
+        zap: sql<string | null>`COALESCE(${foneDoVendedor(schema.fornecedor.id)}, NULLIF(${schema.fornecedor.foneWhatsapp}, ''))`,
       })
       .from(schema.fornecedor)
       .where(and(eq(schema.fornecedor.filialId, filial.id), isNull(schema.fornecedor.dataDelete)))
@@ -67,6 +72,7 @@ export default async function NovoPedidoEncomendaPage(props: { searchParams: Pro
             nome: f.nome ?? '(sem nome)',
             doc: f.doc,
             temPix: !!f.chavePix,
+            zap: f.zap ?? null,
           }))}
           produtos={produtos.map((p) => ({ id: p.id, nome: p.nome ?? '', unidade: p.unidade }))}
         />

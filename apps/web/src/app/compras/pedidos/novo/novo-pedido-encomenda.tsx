@@ -8,6 +8,7 @@ interface Forn {
   nome: string;
   doc: string | null;
   temPix: boolean;
+  zap: string | null;
 }
 interface Prod {
   id: string;
@@ -51,7 +52,8 @@ export function NovoPedidoEncomenda(props: { filialId: string; hoje: string; for
   const [fornBusca, setFornBusca] = useState('');
   const [fornId, setFornId] = useState<string | null>(null);
   const [novoForn, setNovoForn] = useState(false);
-  const [nf, setNf] = useState({ nome: '', doc: '', chavePix: '', pixFavorecido: '' });
+  const [nf, setNf] = useState({ nome: '', doc: '', chavePix: '', pixFavorecido: '', zap: '' });
+  const [zap, setZap] = useState('');
   const [referencia, setReferencia] = useState('');
   const [producao, setProducao] = useState('');
   const [transporte, setTransporte] = useState('');
@@ -84,6 +86,7 @@ export function NovoPedidoEncomenda(props: { filialId: string; hoje: string; for
     setFornBusca(texto);
     const f = fornecedores.find((x) => rotuloForn(x) === texto || x.nome === texto);
     setFornId(f?.id ?? null);
+    setZap(f?.zap ?? '');
   }
 
   async function cadastrarForn() {
@@ -105,7 +108,8 @@ export function NovoPedidoEncomenda(props: { filialId: string; hoje: string; for
       setErro(j.error ?? 'não deu pra cadastrar o fornecedor');
       return;
     }
-    const novo: Forn = { id: j.id, nome: j.nome, doc: doc || null, temPix: !!nf.chavePix.trim() };
+    const novo: Forn = { id: j.id, nome: j.nome, doc: doc || null, temPix: !!nf.chavePix.trim(), zap: null };
+    setZap(nf.zap.trim());
     setFornecedores((fs) => (fs.some((f) => f.id === novo.id) ? fs : [...fs, novo]));
     setFornId(novo.id);
     setFornBusca(rotuloForn(novo));
@@ -166,6 +170,7 @@ export function NovoPedidoEncomenda(props: { filialId: string; hoje: string; for
         body: JSON.stringify({
           filialId: props.filialId,
           fornecedorId: fornId,
+          whatsapp: zap.trim() || null,
           referencia: referencia.trim() || null,
           observacao: observacao.trim() || null,
           valorFrete: num(frete),
@@ -194,6 +199,8 @@ export function NovoPedidoEncomenda(props: { filialId: string; hoje: string; for
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.error ?? 'erro ao gravar');
+      if (j.enviado) alert(`Pedido #${j.numero} gravado e enviado pro fornecedor no WhatsApp ✅`);
+      else if (j.envioErro) alert(`Pedido #${j.numero} gravado, mas o WhatsApp não saiu: ${j.envioErro}. Dá pra mandar de novo pela tela do pedido.`);
       router.push(`/compras/pedidos/${j.id}`);
     } catch (e) {
       setErro(e instanceof Error ? e.message : 'erro ao gravar');
@@ -242,6 +249,13 @@ export function NovoPedidoEncomenda(props: { filialId: string; hoje: string; for
               value={nf.pixFavorecido}
               onChange={(e) => setNf({ ...nf, pixFavorecido: e.target.value })}
             />
+            <input
+              className={inp}
+              placeholder="WhatsApp do fornecedor (ex.: 11 99999-9999)"
+              inputMode="tel"
+              value={nf.zap}
+              onChange={(e) => setNf({ ...nf, zap: e.target.value })}
+            />
             <div className="flex gap-2 sm:col-span-2">
               <button
                 type="button"
@@ -261,6 +275,23 @@ export function NovoPedidoEncomenda(props: { filialId: string; hoje: string; for
           <p className="mt-2 text-xs text-slate-500">
             {fornSel.temPix ? '✅ tem chave Pix no cadastro' : '⚠ sem chave Pix no cadastro — dá pra pôr depois no fornecedor'}
           </p>
+        )}
+        {fornSel && (
+          <label className="mt-2 block text-xs text-slate-600">
+            WhatsApp do fornecedor
+            <input
+              className={inp}
+              inputMode="tel"
+              value={zap}
+              onChange={(e) => setZap(e.target.value)}
+              placeholder="ex.: 11 99999-9999"
+            />
+            <span className="mt-1 block">
+              {zap.replace(/\D/g, '').length >= 10
+                ? '📱 ao lançar, o pedido vai sozinho pro WhatsApp do fornecedor'
+                : 'sem WhatsApp — o pedido fica gravado e não sai sozinho'}
+            </span>
+          </label>
         )}
         <div className="mt-3 grid gap-2 sm:grid-cols-3">
           <label className="text-xs text-slate-600">
