@@ -270,8 +270,24 @@ export interface ContaCasada {
 }
 
 export type ResultadoCasamento =
-  | { ok: true; contas: ContaCasada[] }
+  // valorCorrigido: o valor lido tinha um 8 apagado (lido como 3 ou 0) e o
+  // casamento só fechou trocando esse dígito — gravar o valor certo.
+  | { ok: true; contas: ContaCasada[]; valorCorrigido?: number }
   | { ok: false; motivo: string };
+
+/**
+ * A impressora da lotérica falha e o 8 sai sem o traço da esquerda (vira 3)
+ * ou sem o do meio (vira 0): 286,80 foi lido 236,80 (23/10/2026, 6 casos).
+ * Devolve os valores possíveis trocando UM dígito 3/0 por 8.
+ */
+function variantes8Apagado(valor: number): number[] {
+  const s = String(centavos(valor));
+  const out: number[] = [];
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '3' || s[i] === '0') out.push(Number(s.slice(0, i) + '8' + s.slice(i + 1)));
+  }
+  return out;
+}
 
 function brl(v: number): string {
   return v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -369,8 +385,21 @@ export async function casarComprovante(
   for (const c of daPessoa) opcoes.push({ contas: [c], parec: c.parec });
   for (const g of grupos.values()) if (g.length > 1) opcoes.push({ contas: g, parec: g[0]!.parec });
 
+  const soma = (o: (typeof opcoes)[number]) => o.contas.reduce((s, c) => s + centavos(c.liquido), 0);
   const alvo = centavos(lido.valor);
-  const batem = opcoes.filter((o) => o.contas.reduce((s, c) => s + centavos(c.liquido), 0) === alvo);
+  let batem = opcoes.filter((o) => soma(o) === alvo);
+  let valorCorrigido: number | undefined;
+  if (batem.length === 0) {
+    // 8 apagado na impressão: só aceita se UM valor alternativo fecha, com a
+    // pessoa bem identificada (nome quase igual ou conta do cadastro).
+    const alternativos = variantes8Apagado(lido.valor)
+      .map((v) => ({ v, ops: opcoes.filter((o) => o.parec >= 0.85 && soma(o) === v) }))
+      .filter((a) => a.ops.length > 0);
+    if (alternativos.length === 1) {
+      batem = alternativos[0]!.ops;
+      valorCorrigido = alternativos[0]!.v / 100;
+    }
+  }
   if (batem.length === 0) {
     const resumo = [...grupos.values()]
       // semana mais recente primeiro (conta velha esquecida vai pro fim)
@@ -399,6 +428,7 @@ export async function casarComprovante(
   }
   return {
     ok: true,
+    valorCorrigido,
     contas: topo[0]!.contas.map((c) => ({
       id: c.id,
       filialId: c.filialId,
@@ -513,14 +543,26 @@ export async function casarEGravar(comprovanteId: string, userId: string): Promi
     .update(schema.comprovanteLoterica)
     .set({
       status: 'CASADO',
-      erro: null,
+      // valor lido com 8 apagado: grava o certo e deixa o aviso visível
+      ...(r.valorCorrigido !== undefined
+        ? {
+            valor: r.valorCorrigido.toFixed(2),
+            erro: `valor lido ${brl(Number(c.valor))} corrigido pra ${brl(r.valorCorrigido)} (8 apagado na impressão)`,
+          }
+        : { erro: null }),
       contaPagarIds: r.contas.map((x) => x.id),
       filialId: primeira.filialId,
       folhaSemanaId: primeira.folhaSemanaId,
       fornecedorId: primeira.fornecedorId,
     })
     .where(eq(schema.comprovanteLoterica.id, c.id));
-  return { status: 'CASADO', erro: null, ...base, contas: r.contas };
+  return {
+    status: 'CASADO',
+    erro: null,
+    ...base,
+    ...(r.valorCorrigido !== undefined ? { valor: r.valorCorrigido } : {}),
+    contas: r.contas,
+  };
 }
 
 /** Baixa o arquivo do bucket, lê e casa. Não lança: o resultado fica gravado. */
