@@ -10,6 +10,7 @@ import { brl, formatDate, maskCnpj } from '@/lib/format';
 import { ItemRow } from './item-row';
 import { BotoesCabecalho, type PagamentoXml } from './botoes-cabecalho';
 import { VincularFornecedorBtn } from './vincular-fornecedor';
+import { CadastrarPeloCnpj } from './cadastrar-pelo-cnpj';
 import { ConferirNota } from './conferir-nota';
 import { lerConferenciaNota } from '@/lib/nota-conferencia';
 import { fornecedoresParaLancar } from '@/lib/fornecedor-unico';
@@ -624,6 +625,7 @@ export default async function NotaDetalhePage(props: {
                 Sem fornecedor, o estoque pode ser lançado, mas não dá pra criar contas a pagar.
                 Vincule um existente ou crie a partir dos dados da NFe.
               </p>
+              <CadastrarPeloCnpj notaId={id} cnpjInicial={nota.emitCnpj} />
             </div>
             <VincularFornecedorBtn
               notaId={id}

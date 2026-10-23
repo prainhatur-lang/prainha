@@ -21,6 +21,56 @@ interface Resultado {
   titulo: string;
   detalhes: string[];
   notaId?: string;
+  /** fornecedor sem cadastro e sem CNPJ legível — mostra o campo do CNPJ */
+  pedeCnpj?: boolean;
+}
+
+/** Campo do CNPJ: cadastra o fornecedor (Receita / outra casa) e liga ao pedido. */
+function PedirCnpj({ notaId, onFeito }: { notaId: string; onFeito: (msg: string) => void }) {
+  const [cnpj, setCnpj] = useState('');
+  const [enviando, setEnviando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  async function enviar() {
+    setEnviando(true);
+    setErro(null);
+    try {
+      const r = await fetch(`/api/nota-compra/${notaId}/fornecedor-cnpj`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ cnpj }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) setErro(d.error ?? `HTTP ${r.status}`);
+      else onFeito(d.mensagem ?? 'fornecedor cadastrado e ligado ao pedido');
+    } catch (e) {
+      setErro((e as Error).message);
+    } finally {
+      setEnviando(false);
+    }
+  }
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2">
+      <input
+        inputMode="numeric"
+        placeholder="CNPJ do fornecedor"
+        value={cnpj}
+        onChange={(e) => setCnpj(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && cnpj.replace(/\D/g, '').length >= 11) enviar();
+        }}
+        className="w-48 rounded border border-amber-300 bg-white px-2 py-1 text-xs text-slate-900"
+      />
+      <button
+        type="button"
+        disabled={enviando || cnpj.replace(/\D/g, '').length < 11}
+        onClick={enviar}
+        className="rounded bg-amber-600 px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
+      >
+        {enviando ? 'Cadastrando…' : 'Cadastrar fornecedor'}
+      </button>
+      {erro && <span className="w-full text-rose-700">{erro}</span>}
+    </div>
+  );
 }
 
 const brl = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -156,6 +206,7 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
         titulo: d.pronto ? `Lido, aguardando você confirmar — ${cab}` : `Lido, precisa conferir — ${cab}`,
         detalhes: [...((d.avisos as string[] | undefined) ?? []), ...(d.pendencias ?? [])],
         notaId: d.id,
+        pedeCnpj: !!d.pedeCnpj,
       };
     }
     // Tudo reconhecido: estoque + contas a pagar pela rota de sempre.
@@ -447,6 +498,24 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
                       <li key={j}>{d}</li>
                     ))}
                   </ul>
+                )}
+                {r.notaId && r.pedeCnpj && (
+                  <PedirCnpj
+                    notaId={r.notaId}
+                    onFeito={(msg) =>
+                      setResultados((rs) =>
+                        rs.map((x, k) =>
+                          k === i
+                            ? {
+                                ...x,
+                                pedeCnpj: false,
+                                detalhes: [msg, ...x.detalhes.filter((t) => !t.includes('informe o CNPJ'))],
+                              }
+                            : x,
+                        ),
+                      )
+                    }
+                  />
                 )}
                 {r.notaId && (
                   <Link href={`/movimento/entrada-notas/${r.notaId}`} className="mt-1 inline-block underline">

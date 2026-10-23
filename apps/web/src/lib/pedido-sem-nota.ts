@@ -521,6 +521,8 @@ export interface ResultadoPedido {
   pendencias: string[];
   /** o que o sistema fez sozinho (ex.: cadastrou o fornecedor que faltava) */
   avisos?: string[];
+  /** fornecedor não achado e sem CNPJ no papel — a tela pede o CNPJ */
+  pedeCnpj?: boolean;
 }
 
 /**
@@ -574,7 +576,7 @@ export async function gravarPedido(opts: {
               ? `fornecedor "${g.nome}" copiado do cadastro de outra casa`
               : g.origem === 'receita'
                 ? `fornecedor "${g.nome}" cadastrado agora com os dados da Receita`
-                : `fornecedor "${g.nome}" cadastrado agora só com o nome do papel — complete CNPJ/endereço depois`;
+                : `fornecedor "${g.nome}" cadastrado agora (CNPJ ${g.cnpj}; a Receita não respondeu — complete o endereço depois)`;
         }
       }
     } catch (e) {
@@ -582,10 +584,11 @@ export async function gravarPedido(opts: {
     }
   }
   const fornecedorId = fornecedor?.id ?? null;
+  const pedeCnpj = !fornecedorId;
   if (!fornecedorId) {
     pendencias.push(
       lido.fornecedorNome
-        ? `fornecedor "${lido.fornecedorNome}" não está no cadastro desta casa`
+        ? `fornecedor "${lido.fornecedorNome}" não está no cadastro desta casa ${lido.fornecedorCnpj ? ` (CNPJ lido: ${lido.fornecedorCnpj}) e não deu pra cadastrar — confira e informe o CNPJ` : ' e o CNPJ não deu pra ler — informe o CNPJ que o sistema cadastra'}`
         : 'não deu pra ler o fornecedor no papel',
     );
   }
@@ -744,6 +747,7 @@ export async function gravarPedido(opts: {
     pronto: pendencias.length === 0,
     pendencias,
     ...(fornecedorCadastrado ? { avisos: [fornecedorCadastrado] } : {}),
+    ...(pedeCnpj ? { pedeCnpj: true } : {}),
   };
 }
 
@@ -840,13 +844,13 @@ async function dadosReceitaCnpj(cnpj: string): Promise<Record<string, unknown> |
  * Pedido escaneado com fornecedor fora do cadastro desta casa: cadastra sozinho
  * (regra do dono 23/10/2026 — "não está cadastrado, já cadastra, não precisa nem
  * perguntar"). Ordem: cópia de outra casa pelo CNPJ; mesmo nome já cadastrado
- * aqui; senão cria novo, com razão social/endereço/telefone da Receita quando o
- * papel traz CNPJ. Fora da lista de compras (ativo_compras false); telefone da
+ * aqui; senão cria novo com razão social/endereço/telefone da Receita. Sem CNPJ
+ * não cria (dono 23/10: "pergunta o CNPJ") — a tela pede o número. Fora da lista de compras (ativo_compras false); telefone da
  * Receita vai no fone_principal, nunca no WhatsApp.
  */
 export async function garantirFornecedorDoPedido(
   filialId: string,
-  lido: PedidoLido,
+  lido: Pick<PedidoLido, 'fornecedorCnpj' | 'fornecedorNome'>,
 ): Promise<{ id: string; nome: string; cnpj: string | null; origem: 'outra_casa' | 'mesmo_nome' | 'receita' | 'papel' } | null> {
   const digitos = lido.fornecedorCnpj?.replace(/\D/g, '') || null;
   const doc = digitos && (digitos.length === 14 || digitos.length === 11) ? digitos : null;
@@ -876,7 +880,8 @@ export async function garantirFornecedorDoPedido(
       return { id: mesmoNome.id, nome: mesmoNome.nome ?? nomePapel, cnpj: mesmoNome.cnpj, origem: 'mesmo_nome' };
     }
   }
-  const rf = doc && doc.length === 14 ? await dadosReceitaCnpj(doc) : null;
+  if (!doc) return null;
+  const rf = doc.length === 14 ? await dadosReceitaCnpj(doc) : null;
   const t = (k: string, max: number) => {
     const v = rf?.[k];
     const s = typeof v === 'string' || typeof v === 'number' ? String(v).trim() : '';
