@@ -34,6 +34,7 @@ import {
   reconhecerPedidoRelatorio,
   responderPedidoRelatorio,
   registrarFalhaRelatorio,
+  registrarStatusRelatorio,
 } from '@/lib/relatorio-diario-envio';
 import { tratarPedidoReservas } from '@/lib/reservas-do-dia-envio';
 import {
@@ -99,6 +100,8 @@ export async function POST(req: Request) {
           // recibo do convite de campanha + "não entregue"/"parou promoções"
           // tiram o número dos próximos envios de divulgação
           await registrarStatusMarketing(st.id, st.status, erro).catch(() => {});
+          // entregue/lida do relatório diário (aceitar ≠ chegar)
+          await registrarStatusRelatorio(st.id, st.status).catch(() => {});
           // Relatório diário: texto que não entrou (janela de 24 h fechada sem
           // a gente saber) é trocado pelo modelo aprovado.
           if (st.status === 'failed') {

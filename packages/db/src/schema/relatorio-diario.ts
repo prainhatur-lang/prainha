@@ -71,6 +71,9 @@ export const relatorioDiarioEnvio = pgTable(
     waMessageId: text('wa_message_id'),
     /** número da casa (phone_number_id da Meta) por onde a mensagem passou */
     phoneNumberId: text('phone_number_id'),
+    /** retorno da Meta pelo webhook: 'enviada' | 'entregue' | 'lida' | 'erro' (NULL = sem retorno ainda) */
+    statusEntrega: varchar('status_entrega', { length: 12 }),
+    statusEm: timestamp('status_em', { withTimezone: true }),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

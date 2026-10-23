@@ -424,11 +424,14 @@ export interface EnvioRegistrado {
   ok: boolean;
   erro: string | null;
   quando: string;
+  /** retorno da Meta: 'enviada' | 'entregue' | 'lida' | 'erro' | null (sem retorno) */
+  statusEntrega?: string | null;
 }
 
 export async function ultimosEnvios(organizacaoId: string, limite = 12): Promise<EnvioRegistrado[]> {
   return (await db.execute(sql`
     SELECT id::text AS id, dia::text AS dia, telefone, canal, origem, ok, erro,
+           status_entrega AS "statusEntrega",
            to_char(criado_em AT TIME ZONE 'America/Sao_Paulo', 'DD/MM HH24:MI') AS quando
       FROM relatorio_diario_envio
      WHERE organizacao_id = ${organizacaoId}::uuid
@@ -890,4 +893,28 @@ export async function registrarFalhaRelatorio(waMessageId: string, erro: string 
     waMessageId: m.waMessageId,
     phoneNumberId: m.phoneNumberId || null,
   });
+}
+
+/**
+ * Status de entrega do relatório (webhook value.statuses). Só sobe
+ * (enviada → entregue → lida); "erro" sempre grava. Aceitar ≠ chegar: sem isso
+ * a tela não tinha como saber se o relatório chegou (caso Lula, 18–19/10).
+ */
+export async function registrarStatusRelatorio(waMessageId: string, status: string): Promise<void> {
+  const mapa: Record<string, string> = { sent: 'enviada', delivered: 'entregue', read: 'lida', failed: 'erro' };
+  const novo = mapa[status];
+  if (!novo) return;
+  const ordem: Record<string, number> = { enviada: 1, entregue: 2, lida: 3 };
+  const [linha] = await db
+    .select({ id: schema.relatorioDiarioEnvio.id, statusEntrega: schema.relatorioDiarioEnvio.statusEntrega })
+    .from(schema.relatorioDiarioEnvio)
+    .where(eq(schema.relatorioDiarioEnvio.waMessageId, waMessageId))
+    .limit(1);
+  if (!linha) return;
+  const atual = linha.statusEntrega ?? '';
+  if (novo !== 'erro' && (ordem[atual] ?? 0) >= (ordem[novo] ?? 0)) return;
+  await db
+    .update(schema.relatorioDiarioEnvio)
+    .set({ statusEntrega: novo, statusEm: new Date() })
+    .where(eq(schema.relatorioDiarioEnvio.id, linha.id));
 }

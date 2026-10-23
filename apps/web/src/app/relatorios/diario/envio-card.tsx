@@ -17,7 +17,11 @@ interface Envio {
   ok: boolean;
   erro: string | null;
   quando: string;
+  statusEntrega?: string | null;
 }
+
+/** O que a Meta contou depois de aceitar (envio antigo, sem retorno gravado, fica "ok"). */
+const ENTREGA: Record<string, string> = { lida: 'lido ✓✓', entregue: 'entregue ✓', enviada: 'aceito, não entregue ainda' };
 
 interface Modelo {
   nome: string;
@@ -497,7 +501,7 @@ export function EnvioCard({
                     ) : null}
                   </span>
                   <span className={e.ok ? 'shrink-0 text-emerald-700' : 'shrink-0 text-rose-700'}>
-                    {e.ok ? 'ok' : 'falhou'}
+                    {e.ok ? (e.statusEntrega ? ENTREGA[e.statusEntrega] ?? 'ok' : 'ok') : 'falhou'}
                   </span>
                 </li>
               ))}
