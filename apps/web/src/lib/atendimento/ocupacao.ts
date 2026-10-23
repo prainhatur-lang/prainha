@@ -95,9 +95,25 @@ export async function medirOcupacaoHoje(
   const hoje = hojeBr();
   const agora = horaAgoraBr();
 
-  // Casa FECHADA agora (fora do 9h–19h): comanda aberta esquecida no PDV não
+  // AINDA NÃO ABRIU (antes das 9h): a casa abre HOJE. Até 23/10/2026 isso caía
+  // no "fechada → convide pra AMANHÃ" abaixo, e às 08:57 de uma sexta a Nina
+  // disse ao Charles (5 pessoas, beira do rio, hoje) que "hoje a casa está
+  // fechada"; depois se desmentiu e o cliente pediu um humano.
+  if (agora < ABRE) {
+    return {
+      comandasAbertas: 0,
+      reservasFuturasHoje: 0,
+      capacidadeMesas,
+      taxa: 0,
+      corteEstendido: null,
+      casaTranquila: false,
+      resumo: `A casa AINDA NÃO ABRIU — abre HOJE às ${ABRE} (funcionamento: ${ABRE} às ${FECHA}). HOJE É DIA ABERTO: é PROIBIDO dizer que hoje está fechado ou empurrar o cliente pra amanhã. Pedido de reserva pra HOJE vale normalmente: chame consultar_disponibilidade_reserva / criar_reserva com a data de hoje e deixe a ferramenta decidir horário e área. Só não diga que dá pra vir "agora" — o convite é a partir das ${ABRE}.`,
+    };
+  }
+
+  // Casa FECHADA agora (depois das 19h): comanda aberta esquecida no PDV não
   // significa casa aberta. Nada de "pode vir agora" — o convite é pra amanhã.
-  if (agora >= FECHA || agora < ABRE) {
+  if (agora >= FECHA) {
     return {
       comandasAbertas: 0,
       reservasFuturasHoje: 0,
