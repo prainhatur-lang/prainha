@@ -8,7 +8,7 @@ import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { exigirPermPage } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
-import { PERM_LOTERICA, sugestoesPorValor } from '@/lib/comprovante-loterica';
+import { PERM_LOTERICA, pessoasUnicas, sugestoesPorValor } from '@/lib/comprovante-loterica';
 import { AcoesComprovante, BaixarCasados, EnviarComprovantes, EscolherCasa, EscolherConta } from './enviar';
 
 export const dynamic = 'force-dynamic';
@@ -51,6 +51,7 @@ export default async function ComprovantesLotericaPage() {
     ? await db
         .select({
           id: schema.contaPagar.id,
+          fornecedorId: schema.contaPagar.fornecedorId,
           pessoa: schema.fornecedor.nome,
           descricao: schema.contaPagar.descricao,
           vencimento: schema.contaPagar.dataVencimento,
@@ -61,6 +62,9 @@ export default async function ComprovantesLotericaPage() {
         .leftJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.contaPagar.fornecedorId))
         .where(inArray(schema.contaPagar.id, contaIds))
     : [];
+  // mesmo CPF em várias casas → um nome só (Paulo tinha um nome por casa)
+  const unicas = await pessoasUnicas(contas.map((c) => c.fornecedorId));
+  for (const c of contas) c.pessoa = (c.fornecedorId ? unicas.get(c.fornecedorId)?.nome : null) ?? c.pessoa;
   const contaPorId = new Map(contas.map((c) => [c.id, c]));
 
   const sugestoes = await sugestoesPorValor(

@@ -256,6 +256,126 @@ export function contaDoCadastroBate(
   return !ac || !af || ac === af;
 }
 
+// ───────────────────────── contas que a lotérica paga ─────────────────────────
+
+/** FOLHA (10%, gratificação, VT gerado em /rh/vale-transporte) e o vale
+ *  transporte lançado na mão em contas a pagar ("DE 16 A 31/10 TRANSPORTE",
+ *  origem MANUAL): os 15 depósitos de 16/10/2026 ficaram "sem conta" porque
+ *  só a FOLHA era procurada. */
+const CONTA_DA_EQUIPE = sql`(${schema.contaPagar.origem} = 'FOLHA' OR (${schema.contaPagar.origem} = 'MANUAL' AND ${schema.contaPagar.descricao} ILIKE '%transporte%'))`;
+
+function contaDaEquipe(origem: string | null, descricao: string | null): boolean {
+  return origem === 'FOLHA' || (origem === 'MANUAL' && /transporte/i.test(descricao ?? ''));
+}
+
+// ───────────────────────── a mesma pessoa nas casas ─────────────────────────
+
+export interface PessoaUnica {
+  /** igual pra todas as linhas da mesma pessoa (grupo econômico ou CPF) */
+  chave: string;
+  /** nome único pra mostrar: o mais completo entre as casas */
+  nome: string | null;
+}
+
+/**
+ * Quem trabalha em mais de uma casa tem um cadastro de fornecedor em cada uma,
+ * com o nome escrito de um jeito (Paulo: "PAULO HENRIQUE MEDEIRO SANTANA" na
+ * Mar, "PAULO HENRIQUE M SANTANA" na Tabuará, "PAULO HENRIQUE DE MEDEIROS
+ * SANTANA" no Bar). O que liga é o CPF / grupo econômico: aqui vira uma pessoa
+ * só, com o nome mais completo. Quem só tem uma linha fica com o próprio nome.
+ */
+export async function pessoasUnicas(fornecedorIds: Array<string | null>): Promise<Map<string, PessoaUnica>> {
+  const out = new Map<string, PessoaUnica>();
+  const ids = [...new Set(fornecedorIds.filter((x): x is string => !!x))];
+  if (ids.length === 0) return out;
+  const base = await db
+    .select({
+      id: schema.fornecedor.id,
+      nome: schema.fornecedor.nome,
+      doc: schema.fornecedor.cnpjOuCpf,
+      grupo: schema.fornecedor.grupoEconomicoId,
+      org: schema.filial.organizacaoId,
+    })
+    .from(schema.fornecedor)
+    .innerJoin(schema.filial, eq(schema.filial.id, schema.fornecedor.filialId))
+    .where(inArray(schema.fornecedor.id, ids));
+  const cpfDe = (doc: string | null) => {
+    const d = (doc ?? '').replace(/\D/g, '');
+    return d.length === 11 ? d : null;
+  };
+  const grupos = [...new Set(base.map((b) => b.grupo).filter((x): x is string => !!x))];
+  const cpfs = [...new Set(base.map((b) => cpfDe(b.doc)).filter((x): x is string => !!x))];
+  const orgs = [...new Set(base.map((b) => b.org))];
+  const irmaos =
+    grupos.length || cpfs.length
+      ? await db
+          .select({
+            id: schema.fornecedor.id,
+            nome: schema.fornecedor.nome,
+            doc: schema.fornecedor.cnpjOuCpf,
+            grupo: schema.fornecedor.grupoEconomicoId,
+            org: schema.filial.organizacaoId,
+          })
+          .from(schema.fornecedor)
+          .innerJoin(schema.filial, eq(schema.filial.id, schema.fornecedor.filialId))
+          .where(
+            and(
+              inArray(schema.filial.organizacaoId, orgs),
+              isNull(schema.fornecedor.dataDelete),
+              sql`(${grupos.length ? inArray(schema.fornecedor.grupoEconomicoId, grupos) : sql`false`} OR ${
+                cpfs.length
+                  ? sql`regexp_replace(coalesce(${schema.fornecedor.cnpjOuCpf}, ''), '\\D', '', 'g') IN (${sql.join(
+                      cpfs.map((c) => sql`${c}`),
+                      sql`, `,
+                    )})`
+                  : sql`false`
+              })`,
+            ),
+          )
+      : [];
+
+  // união: linhas que dividem grupo ou CPF são a mesma pessoa
+  const linhas = new Map<string, (typeof base)[number]>();
+  for (const l of [...base, ...irmaos]) linhas.set(l.id, l);
+  const pai = new Map<string, string>();
+  const raiz = (x: string): string => {
+    let r = x;
+    while (pai.has(r) && pai.get(r) !== r) r = pai.get(r)!;
+    return r;
+  };
+  const unir = (a: string, b: string) => {
+    const ra = raiz(a);
+    const rb = raiz(b);
+    if (ra !== rb) pai.set(ra, rb);
+  };
+  for (const l of linhas.values()) {
+    const no = 'f' + l.id;
+    if (l.grupo) unir(no, `g${l.org}:${l.grupo}`);
+    const cpf = cpfDe(l.doc);
+    if (cpf) unir(no, `p${l.org}:${cpf}`);
+  }
+  const porRaiz = new Map<string, Array<(typeof base)[number]>>();
+  for (const l of linhas.values()) {
+    const r = raiz('f' + l.id);
+    porRaiz.set(r, [...(porRaiz.get(r) ?? []), l]);
+  }
+  const semCargo = (n: string | null) => (n ?? '').replace(/\(.*$/, '').replace(/\s+/g, ' ').trim();
+  for (const b of base) {
+    const r = raiz('f' + b.id);
+    const todos = porRaiz.get(r) ?? [b];
+    if (todos.length < 2) {
+      out.set(b.id, { chave: 'f' + b.id, nome: b.nome });
+      continue;
+    }
+    const maisCompleto = todos
+      .map((t) => semCargo(t.nome))
+      .filter(Boolean)
+      .sort((x, y) => tokens(y).length - tokens(x).length || y.length - x.length)[0];
+    out.set(b.id, { chave: r, nome: maisCompleto || b.nome });
+  }
+  return out;
+}
+
 // ───────────────────────── casamento ─────────────────────────
 
 export interface ContaCasada {
@@ -332,7 +452,7 @@ export async function casarComprovante(
     .where(
       and(
         inArray(schema.contaPagar.filialId, filialIds),
-        eq(schema.contaPagar.origem, 'FOLHA'),
+        CONTA_DA_EQUIPE,
         // em aberto, ou já paga por outro caminho no mesmo dia do depósito
         // (alguém baixou na mão antes de subir o comprovante)
         ref
@@ -358,16 +478,28 @@ export async function casarComprovante(
     );
   const presas = new Set(outros.flatMap((o) => o.ids ?? []));
 
-  const daPessoa = abertas
-    .map((c) => ({
+  // A mesma pessoa em várias casas (mesmo CPF) conta como uma só: o nome que
+  // bate numa casa vale pras outras, e a mensagem mostra um nome só.
+  const unicas = await pessoasUnicas(abertas.map((c) => c.fornecedorId));
+  const comParec = abertas.map((c) => {
+    const u = c.fornecedorId ? unicas.get(c.fornecedorId) : undefined;
+    return {
       ...c,
+      chavePessoa: u?.chave ?? `x${c.fornecedorId ?? c.pessoa}`,
+      pessoa: u?.nome ?? c.pessoa,
+      nomeCadastro: c.pessoa,
       liquido: Number(c.liquido),
       pagaNoDia: c.pagaEm !== null,
       // conta de destino do cadastro = mesma força de nome igual
       parec: contaDoCadastroBate(lido, { agencia: c.bancoAgencia, conta: c.bancoConta })
         ? 1
-        : parecencaNome(lido.nome, c.pessoa),
-    }))
+        : Math.max(parecencaNome(lido.nome, c.pessoa), parecencaNome(lido.nome, u?.nome ?? null)),
+    };
+  });
+  const parecDaPessoa = new Map<string, number>();
+  for (const c of comParec) parecDaPessoa.set(c.chavePessoa, Math.max(parecDaPessoa.get(c.chavePessoa) ?? 0, c.parec));
+  const daPessoa = comParec
+    .map((c) => ({ ...c, parec: parecDaPessoa.get(c.chavePessoa) ?? c.parec }))
     .filter((c) => c.parec >= PARECENCA_MIN && !presas.has(c.id));
   if (daPessoa.length === 0) {
     return { ok: false, motivo: `não achei conta de 10% (ou de VT) em aberto pra "${lido.nome}" (nem pela conta de depósito do cadastro)` };
@@ -401,11 +533,24 @@ export async function casarComprovante(
     }
   }
   if (batem.length === 0) {
-    const resumo = [...grupos.values()]
+    // uma linha por pessoa e vencimento, com as casas juntas (Paulo: "R$ 350
+    // na Prainha Mar, R$ 350 na Tabuara") em vez de um nome por casa
+    const porPessoa = new Map<string, Array<typeof daPessoa>>();
+    for (const g of grupos.values()) {
+      const k = `${g[0]!.chavePessoa}|${g[0]!.vencimento}`;
+      porPessoa.set(k, [...(porPessoa.get(k) ?? []), g]);
+    }
+    const multiCasa = new Set(daPessoa.map((c) => c.filialId)).size > 1;
+    const resumo = [...porPessoa.values()]
       // semana mais recente primeiro (conta velha esquecida vai pro fim)
-      .sort((x, y) => (y[0]!.vencimento > x[0]!.vencimento ? 1 : y[0]!.vencimento < x[0]!.vencimento ? -1 : 0))
+      .sort((x, y) => (y[0]![0]!.vencimento > x[0]![0]!.vencimento ? 1 : y[0]![0]!.vencimento < x[0]![0]!.vencimento ? -1 : 0))
       .slice(0, 4)
-      .map((g) => `${g[0]!.pessoa}: ${g.map((c) => brl(c.liquido)).join(' + ')} (venc. ${g[0]!.vencimento.split('-').reverse().join('/')})`)
+      .map((gs) => {
+        const valores = gs
+          .map((g) => `${g.map((c) => brl(c.liquido)).join(' + ')}${multiCasa ? ` na ${g[0]!.casa ?? '?'}` : ''}`)
+          .join(', ');
+        return `${gs[0]![0]!.pessoa}: ${valores} (venc. ${gs[0]![0]!.vencimento.split('-').reverse().join('/')})`;
+      })
       .join('; ');
     return { ok: false, motivo: `nenhuma conta aberta de ${brl(lido.valor)} — abertas: ${resumo}` };
   }
@@ -803,7 +948,7 @@ export async function sugestoesPorValor(
       .where(
         and(
           inArray(schema.contaPagar.filialId, filialIds),
-          eq(schema.contaPagar.origem, 'FOLHA'),
+          CONTA_DA_EQUIPE,
           // em aberto, ou paga por outro caminho no dia de algum depósito
           datas.length
             ? sql`(${schema.contaPagar.dataPagamento} IS NULL OR ${schema.contaPagar.dataPagamento} IN (${sql.join(
@@ -818,6 +963,9 @@ export async function sugestoesPorValor(
   )
     .filter((a) => !presas.has(a.id))
     .map((a) => ({ ...a, liquido: Number(a.liquido) }));
+  // mesmo CPF em várias casas → um nome só na sugestão
+  const unicas = await pessoasUnicas(abertas.map((a) => a.fornecedorId));
+  for (const a of abertas) a.pessoa = (a.fornecedorId ? unicas.get(a.fornecedorId)?.nome : null) ?? a.pessoa;
 
   const grupos = new Map<string, Array<ContaCasada & { pagaEm: string | null }>>();
   for (const a of abertas) {
@@ -870,13 +1018,14 @@ export async function casarManual(comprovanteId: string, contaIds: string[], fil
       folhaSemanaId: schema.contaPagar.folhaSemanaId,
       fornecedorId: schema.contaPagar.fornecedorId,
       origem: schema.contaPagar.origem,
+      descricao: schema.contaPagar.descricao,
       pago: schema.contaPagar.dataPagamento,
       apagada: schema.contaPagar.dataDelete,
       liquido: sql<string>`(${schema.contaPagar.valor} - COALESCE(${schema.contaPagar.descontos}, 0))::numeric(14,2)`,
     })
     .from(schema.contaPagar)
     .where(inArray(schema.contaPagar.id, ids));
-  if (ks.length !== ids.length || ks.some((k) => k.apagada || k.origem !== 'FOLHA' || !filialIds.includes(k.filialId))) {
+  if (ks.length !== ids.length || ks.some((k) => k.apagada || !contaDaEquipe(k.origem, k.descricao) || !filialIds.includes(k.filialId))) {
     throw new RecusaComprovante('conta não encontrada');
   }
   // paga por outro caminho no mesmo dia do depósito vale (o comprovante só
