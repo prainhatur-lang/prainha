@@ -154,7 +154,7 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
         arquivo: f.name,
         ok: true,
         titulo: d.pronto ? `Lido, aguardando você confirmar — ${cab}` : `Lido, precisa conferir — ${cab}`,
-        detalhes: d.pendencias ?? [],
+        detalhes: [...((d.avisos as string[] | undefined) ?? []), ...(d.pendencias ?? [])],
         notaId: d.id,
       };
     }
@@ -175,6 +175,7 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
       };
     }
     const det = [`${ld.lancados} insumo(s) no estoque`, `${ld.contasPagarCriadas} conta(s) a pagar`];
+    for (const a of (d.avisos as string[] | undefined) ?? []) det.push(a);
     if (ld.contasPagarAproveitadas > 0) {
       det.push(`${ld.contasPagarAproveitadas} conta(s) a pagar já existia(m) com esse valor — não foi criada outra`);
     }

@@ -519,6 +519,8 @@ export interface ResultadoPedido {
   /** true = dá pra lançar sem ninguém olhar; false = `pendencias` diz o que falta */
   pronto: boolean;
   pendencias: string[];
+  /** o que o sistema fez sozinho (ex.: cadastrou o fornecedor que faltava) */
+  avisos?: string[];
 }
 
 /**
@@ -559,6 +561,26 @@ export async function gravarPedido(opts: {
     if (antes?.fornecedorId) fornecedor = cat.fornecedores.find((f) => f.id === antes.fornecedorId);
   }
   if (!fornecedor && lido.fornecedorIdx != null) fornecedor = cat.fornecedores[lido.fornecedorIdx];
+  // Não achou → cadastra sozinho (cópia de outra casa, Receita ou o próprio papel).
+  let fornecedorCadastrado: string | null = null;
+  if (!fornecedor && (lido.fornecedorCnpj || lido.fornecedorNome)) {
+    try {
+      const g = await garantirFornecedorDoPedido(filialId, lido);
+      if (g) {
+        fornecedor = { id: g.id, nome: g.nome, cnpj: g.cnpj };
+        if (g.origem !== 'mesmo_nome') {
+          fornecedorCadastrado =
+            g.origem === 'outra_casa'
+              ? `fornecedor "${g.nome}" copiado do cadastro de outra casa`
+              : g.origem === 'receita'
+                ? `fornecedor "${g.nome}" cadastrado agora com os dados da Receita`
+                : `fornecedor "${g.nome}" cadastrado agora só com o nome do papel — complete CNPJ/endereço depois`;
+        }
+      }
+    } catch (e) {
+      console.error('[pedido-foto] cadastrar fornecedor', e);
+    }
+  }
   const fornecedorId = fornecedor?.id ?? null;
   if (!fornecedorId) {
     pendencias.push(
@@ -721,6 +743,7 @@ export async function gravarPedido(opts: {
     categoriaId,
     pronto: pendencias.length === 0,
     pendencias,
+    ...(fornecedorCadastrado ? { avisos: [fornecedorCadastrado] } : {}),
   };
 }
 
@@ -792,6 +815,101 @@ export async function garantirFornecedorDoServico(
     })
     .returning({ id: schema.fornecedor.id });
   return novo ? { id: novo.id, nome, cnpj: doc, novo: true } : null;
+}
+
+/** Dados públicos da Receita pelo CNPJ (BrasilAPI, reserva Minha Receita). Grátis;
+ *  o SPC que a casa tem é só de CPF. Falhou → null e cadastra só com o papel. */
+async function dadosReceitaCnpj(cnpj: string): Promise<Record<string, unknown> | null> {
+  for (const base of ['https://brasilapi.com.br/api/cnpj/v1/', 'https://minhareceita.org/']) {
+    try {
+      const r = await fetch(`${base}${cnpj}`, {
+        headers: { 'User-Agent': 'concilia-prainha/1.0 (app.prainhabar.com)', Accept: 'application/json' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!r.ok) continue;
+      const c = (await r.json()) as Record<string, unknown>;
+      if (typeof c.razao_social === 'string' && c.razao_social.trim()) return c;
+    } catch {
+      /* tenta a próxima */
+    }
+  }
+  return null;
+}
+
+/**
+ * Pedido escaneado com fornecedor fora do cadastro desta casa: cadastra sozinho
+ * (regra do dono 23/10/2026 — "não está cadastrado, já cadastra, não precisa nem
+ * perguntar"). Ordem: cópia de outra casa pelo CNPJ; mesmo nome já cadastrado
+ * aqui; senão cria novo, com razão social/endereço/telefone da Receita quando o
+ * papel traz CNPJ. Fora da lista de compras (ativo_compras false); telefone da
+ * Receita vai no fone_principal, nunca no WhatsApp.
+ */
+export async function garantirFornecedorDoPedido(
+  filialId: string,
+  lido: PedidoLido,
+): Promise<{ id: string; nome: string; cnpj: string | null; origem: 'outra_casa' | 'mesmo_nome' | 'receita' | 'papel' } | null> {
+  const digitos = lido.fornecedorCnpj?.replace(/\D/g, '') || null;
+  const doc = digitos && (digitos.length === 14 || digitos.length === 11) ? digitos : null;
+  const sel = { id: schema.fornecedor.id, nome: schema.fornecedor.nome, cnpj: schema.fornecedor.cnpjOuCpf };
+  if (doc) {
+    const copiado = await resolverFornecedorParaNota({ filialId, emitCnpj: doc, emitNome: lido.fornecedorNome ?? null });
+    if (copiado) {
+      const [f] = await db.select(sel).from(schema.fornecedor).where(eq(schema.fornecedor.id, copiado)).limit(1);
+      if (f) return { id: f.id, nome: f.nome ?? lido.fornecedorNome ?? '', cnpj: f.cnpj, origem: 'outra_casa' };
+    }
+  }
+  const nomePapel = lido.fornecedorNome?.trim() || null;
+  if (nomePapel) {
+    const [mesmoNome] = await db
+      .select(sel)
+      .from(schema.fornecedor)
+      .where(
+        and(
+          eq(schema.fornecedor.filialId, filialId),
+          isNull(schema.fornecedor.dataDelete),
+          sql`(upper(trim(${schema.fornecedor.nome})) = upper(${nomePapel}) OR upper(trim(${schema.fornecedor.razaoSocial})) = upper(${nomePapel}))`,
+        ),
+      )
+      .limit(1);
+    // Com CNPJ só aceita o de mesmo nome se ele não tiver outro documento.
+    if (mesmoNome && (!doc || !mesmoNome.cnpj || mesmoNome.cnpj.replace(/\D/g, '') === doc)) {
+      return { id: mesmoNome.id, nome: mesmoNome.nome ?? nomePapel, cnpj: mesmoNome.cnpj, origem: 'mesmo_nome' };
+    }
+  }
+  const rf = doc && doc.length === 14 ? await dadosReceitaCnpj(doc) : null;
+  const t = (k: string, max: number) => {
+    const v = rf?.[k];
+    const s = typeof v === 'string' || typeof v === 'number' ? String(v).trim() : '';
+    return s ? s.slice(0, max) : null;
+  };
+  const razao = t('razao_social', 200);
+  const nome = (t('nome_fantasia', 200) || razao || nomePapel)?.slice(0, 200) ?? null;
+  if (!nome) return null;
+  const logradouro = [t('descricao_tipo_de_logradouro', 50), t('logradouro', 200)].filter(Boolean).join(' ') || null;
+  const cep = t('cep', 10)?.replace(/\D/g, '') || null;
+  const fone = t('ddd_telefone_1', 30)?.replace(/\D/g, '') || null;
+  const email = t('email', 200)?.toLowerCase() || null;
+  const [novo] = await db
+    .insert(schema.fornecedor)
+    .values({
+      filialId,
+      codigoExterno: null,
+      cnpjOuCpf: doc,
+      nome,
+      razaoSocial: razao ?? nomePapel?.slice(0, 200) ?? nome,
+      endereco: logradouro,
+      numero: t('numero', 20),
+      complemento: t('complemento', 100),
+      bairro: t('bairro', 100),
+      cidade: t('municipio', 100),
+      uf: t('uf', 2),
+      cep,
+      email,
+      fonePrincipal: fone && fone.length >= 10 ? fone : null,
+      ativoCompras: false,
+    })
+    .returning({ id: schema.fornecedor.id });
+  return novo ? { id: novo.id, nome, cnpj: doc, origem: rf ? 'receita' : 'papel' } : null;
 }
 
 /**
