@@ -27,7 +27,7 @@ import {
   type ContaPix,
   type ResultadoPix,
 } from '@/lib/pix-inter';
-import { BaixarPix, BaixarPixLote, DesfazerPix, type PixBaixa } from './pix-acoes';
+import { BaixarPix, BaixarPixLote, ConfirmarPix, DesfazerPix, type PixBaixa } from './pix-acoes';
 import { BLOQUEIO_ENTRE_CASAS_DESDE, entreCasasBloqueado } from '@/lib/pagamento-entre-casas';
 import { ehAdmin } from '@/lib/usuario-admin';
 
@@ -69,7 +69,10 @@ export default async function PixInterPage(props: { searchParams: Promise<SP> })
     ? (sp.ver as Ver)
     : 'todos';
 
-  const pixes = escolhida ? await pixDoExtrato(escolhida.id, dataIni, dataFim) : [];
+  // Pix de TODAS as casas entram no casamento (mesmo fornecedor e valor nas
+  // duas casas fazia a conta "trocar de casa"); a tela mostra só os desta.
+  const pixesTodas = escolhida ? await pixDoExtrato(filiais.map((f) => f.id), dataIni, dataFim) : [];
+  const pixes = pixesTodas.filter((p) => p.filialId === escolhida?.id);
 
   // até onde vai o extrato importado dessa casa (a Mar só tem de 02/10 pra cá)
   const [faixa] = escolhida
@@ -98,8 +101,10 @@ export default async function PixInterPage(props: { searchParams: Promise<SP> })
   );
   const contaPorId = new Map(todasContas.map((c) => [c.id, c]));
 
-  const feitos = await baixasPorPix(pixes.map((p) => p.id));
-  const resultados = escolhida ? casarPix(pixes, contas, feitos, escolhida.id) : [];
+  const feitos = await baixasPorPix(pixesTodas.map((p) => p.id));
+  const resultados = escolhida
+    ? casarPix(pixesTodas, contas, feitos, escolhida.id).filter((r) => r.pix.filialId === escolhida.id)
+    : [];
   const encontros = escolhida
     ? await encontrosPorPix(
         escolhida.id,
@@ -459,6 +464,15 @@ export default async function PixInterPage(props: { searchParams: Promise<SP> })
                                 {r.conta.dataPagamento && ` em ${formatDate(r.conta.dataPagamento)}`}
                               </ContaLink>
                               <CasaBadge nome={outraCasa(r.conta)} />
+                              {podeBaixar && !outraCasa(r.conta) && (
+                                <ConfirmarPix pixId={r.pix.id} contaId={r.conta.id} rotulo={rotuloConta(r.conta)} />
+                              )}
+                              {outraCasa(r.conta) && (
+                                <span className="mt-1 block text-[10px] font-semibold text-amber-700">
+                                  ⚠ conta de outra casa — esta casa tem a própria nota desse fornecedor? Lance
+                                  a nota dela; o Pix fica nesta casa.
+                                </span>
+                              )}
                             </>
                           )}
                           {r.tipo === 'sem_conta' && (

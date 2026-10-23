@@ -3,7 +3,8 @@
 // Baixa de conta a pagar pelo Pix do extrato do Inter:
 //  - BaixarPix: botão da linha (Pix casado, ou "mesmo valor" escolhido à mão);
 //  - BaixarPixLote: baixa todos os casados de uma vez;
-//  - DesfazerPix: tira a baixa (e o encontro de contas, se era de outra casa).
+//  - DesfazerPix: tira a baixa (e o encontro de contas, se era de outra casa);
+//  - ConfirmarPix: conta já paga à mão → "é este Pix", grava de vez.
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -152,6 +153,44 @@ export function DesfazerPix({ pixId, rotulo }: { pixId: string; rotulo: string }
         className="text-[10px] text-slate-500 underline hover:text-slate-800 disabled:opacity-50"
       >
         {ocupado ? 'desfazendo…' : 'desfazer'}
+      </button>
+      {erro && <span className="text-[10px] text-rose-700">{erro}</span>}
+    </span>
+  );
+}
+
+export function ConfirmarPix({ pixId, contaId, rotulo }: { pixId: string; contaId: string; rotulo: string }) {
+  const router = useRouter();
+  const [ocupado, setOcupado] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+
+  async function clicar() {
+    if (!confirm(`Confirmar que este Pix pagou ${rotulo}? Fica gravado e não troca mais de casa.`)) return;
+    setOcupado(true);
+    setErro(null);
+    try {
+      const r = await fetch('/api/financeiro/pix-inter', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ pixId, contaId }),
+      });
+      if (r.ok) router.refresh();
+      else setErro((await r.json().catch(() => ({}))).error ?? `HTTP ${r.status}`);
+    } catch (e) {
+      setErro((e as Error).message);
+    }
+    setOcupado(false);
+  }
+
+  return (
+    <span className="ml-1.5 inline-flex items-center gap-1.5">
+      <button
+        type="button"
+        onClick={clicar}
+        disabled={ocupado}
+        className="rounded-md bg-emerald-700 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
+      >
+        {ocupado ? 'Gravando…' : '✓ é este Pix'}
       </button>
       {erro && <span className="text-[10px] text-rose-700">{erro}</span>}
     </span>

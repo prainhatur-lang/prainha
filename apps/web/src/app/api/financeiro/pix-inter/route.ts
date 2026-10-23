@@ -2,12 +2,14 @@
 //   POST   { itens: [{ pixId, contaId }] } — baixa (pixId = lancamento_banco);
 //          conta de outra casa entra também no encontro de contas
 //   DELETE { pixId } — desfaz a baixa (e o encontro, enquanto não fechou)
+//   PATCH  { pixId, contaId } — "✓ é este Pix": conta já paga à mão, liga a
+//          baixa ao Pix pra não trocar mais de casa
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { RecusaTransf } from '@/lib/transferencia';
-import { baixarPorPix, desfazerBaixaPix } from '@/lib/pix-inter';
+import { baixarPorPix, confirmarPixDaConta, desfazerBaixaPix } from '@/lib/pix-inter';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -40,6 +42,23 @@ export async function DELETE(req: Request) {
   }
   try {
     return NextResponse.json({ ok: true, ...(await desfazerBaixaPix(user.id, parsed.data.pixId)) });
+  } catch (e) {
+    if (e instanceof RecusaTransf) return NextResponse.json({ error: e.message }, { status: 400 });
+    throw e;
+  }
+}
+
+const Confirmar = z.object({ pixId: z.string().uuid(), contaId: z.string().uuid() });
+
+export async function PATCH(req: Request) {
+  const { user, error } = await exigirPermApi('conta_pagar.marcar_pago');
+  if (error) return error;
+  const parsed = Confirmar.safeParse(await req.json().catch(() => null));
+  if (!parsed.success) {
+    return NextResponse.json({ error: 'body invalido', details: parsed.error.flatten() }, { status: 400 });
+  }
+  try {
+    return NextResponse.json({ ok: true, ...(await confirmarPixDaConta(user.id, parsed.data.pixId, parsed.data.contaId)) });
   } catch (e) {
     if (e instanceof RecusaTransf) return NextResponse.json({ error: e.message }, { status: 400 });
     throw e;

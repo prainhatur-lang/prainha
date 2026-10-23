@@ -84,8 +84,14 @@ export function notaNome(favorecido: string | null, nomesConta: Array<string | n
 
 const dias = (a: string, b: string) => Math.round((Date.parse(`${a}T12:00:00Z`) - Date.parse(`${b}T12:00:00Z`)) / 86_400_000);
 
-/** Pix enviados pela conta do Inter da casa no período. */
-export async function pixDoExtrato(filialId: string, dataIni: string, dataFim: string): Promise<PixExtrato[]> {
+/** Pix enviados pela conta do Inter da casa (ou das casas) no período. */
+export async function pixDoExtrato(
+  filialId: string | string[],
+  dataIni: string,
+  dataFim: string,
+): Promise<PixExtrato[]> {
+  const ids = Array.isArray(filialId) ? filialId : [filialId];
+  if (!ids.length) return [];
   const rows = await db
     .select({
       id: schema.lancamentoBanco.id,
@@ -97,7 +103,7 @@ export async function pixDoExtrato(filialId: string, dataIni: string, dataFim: s
     .from(schema.lancamentoBanco)
     .where(
       and(
-        eq(schema.lancamentoBanco.filialId, filialId),
+        inArray(schema.lancamentoBanco.filialId, ids),
         eq(schema.lancamentoBanco.tipo, 'D'),
         gte(schema.lancamentoBanco.dataMovimento, dataIni),
         lte(schema.lancamentoBanco.dataMovimento, dataFim),
@@ -214,10 +220,16 @@ export type ResultadoPix =
   | { tipo: 'casas'; pix: PixExtrato };
 
 /** Casa cada Pix com UMA conta. Ordem de preferência: conta que já foi baixada
- *  por esse Pix; conta já paga (mesmo valor, mesmo nome, pago até 3 dias do
- *  Pix — o Pix é dela e não paga outra); conta em aberto com o nome batendo
- *  (melhor nota, depois a da própria casa, depois vencimento mais perto).
- *  O resto fica "sem conta", com as contas abertas de mesmo valor pra conferir. */
+ *  por esse Pix; conta DA CASA DO PIX antes de conta de outra casa; dentro
+ *  disso, conta já paga (mesmo valor, mesmo nome, pago até 3 dias do Pix — o
+ *  Pix é dela e não paga outra), depois conta em aberto com o nome batendo
+ *  (melhor nota, vencimento mais perto).
+ *  O resto fica "sem conta", com as contas abertas de mesmo valor pra conferir.
+ *
+ *  Passe os Pix de TODAS as casas juntos: o mesmo fornecedor com o mesmo valor
+ *  nas duas casas (duas caixas de peixe, uma pra cada) fazia o Pix da Mar de
+ *  21/10/2026 pegar a conta da Bar já paga pelo Pix da própria Bar em 20/10 —
+ *  cada tela só via os Pix da sua casa e a conta "trocava de casa". */
 export function casarPix(
   pixes: PixExtrato[],
   contas: ContaPix[],
@@ -257,11 +269,12 @@ export function casarPix(
       }
     }
   }
+  const daCasa = (x: Par) => x.conta.filialId === (x.pix.filialId || filialPagadoraId);
   pares.sort(
     (a, b) =>
+      Number(daCasa(b)) - Number(daCasa(a)) ||
       Number(b.pago) - Number(a.pago) ||
       b.nota - a.nota ||
-      Number(b.conta.filialId === filialPagadoraId) - Number(a.conta.filialId === filialPagadoraId) ||
       Math.abs(a.dd) - Math.abs(b.dd),
   );
   for (const x of pares) {
@@ -279,7 +292,8 @@ export function casarPix(
       .filter((c) => !usadas.has(c.id) && contaCabeNoPix(p, c))
       .sort(
         (a, b) =>
-          Number(b.filialId === filialPagadoraId) - Number(a.filialId === filialPagadoraId) ||
+          Number(b.filialId === (p.filialId || filialPagadoraId)) -
+            Number(a.filialId === (p.filialId || filialPagadoraId)) ||
           Math.abs(dias(p.data, a.dataVencimento)) - Math.abs(dias(p.data, b.dataVencimento)),
       )
       .slice(0, 3);
@@ -392,8 +406,55 @@ export async function baixarPorPix(opts: { userId: string; itens: Array<{ pixId:
   return { baixados, recusados };
 }
 
+/** Marca da baixa que já existia (paga à mão) e só foi ligada ao Pix. */
+export const MARCA_VINCULO_PIX = ' · Pix confirmado pelo extrato';
+
+/** "✓ é este Pix": a conta já foi paga à mão e o dono confirma QUAL Pix pagou.
+ *  Liga a baixa existente ao Pix (lancamento_banco_id) — daí em diante o
+ *  casamento não muda mais de casa nem de Pix. Só conta da mesma casa do Pix
+ *  (conta de outra casa paga por Pix é encontro de contas, outro fluxo). */
+export async function confirmarPixDaConta(userId: string, pixId: string, contaId: string) {
+  const acesso = new Set((await filiaisDoUsuario(userId)).map((f) => f.id));
+  const [pix] = await db
+    .select({
+      id: schema.lancamentoBanco.id,
+      filialId: schema.lancamentoBanco.filialId,
+      valor: schema.lancamentoBanco.valor,
+      descricao: schema.lancamentoBanco.descricao,
+      tipo: schema.lancamentoBanco.tipo,
+    })
+    .from(schema.lancamentoBanco)
+    .where(eq(schema.lancamentoBanco.id, pixId));
+  if (!pix || pix.tipo !== 'D' || !/^Pix enviado/i.test(pix.descricao ?? '')) {
+    throw new RecusaTransf('Pix não encontrado no extrato');
+  }
+  if (!acesso.has(pix.filialId)) throw new RecusaTransf('sem acesso à casa do Pix');
+  if ((await baixasPorPix([pixId])).has(pixId)) throw new RecusaTransf('esse Pix já está ligado a uma conta');
+  const [c] = await db
+    .select({ id: schema.contaPagar.id, filialId: schema.contaPagar.filialId, dataPagamento: schema.contaPagar.dataPagamento })
+    .from(schema.contaPagar)
+    .where(and(eq(schema.contaPagar.id, contaId), isNull(schema.contaPagar.dataDelete)));
+  if (!c) throw new RecusaTransf('conta não encontrada');
+  if (c.filialId !== pix.filialId) {
+    throw new RecusaTransf('a conta é de outra casa: o Pix desta casa não confirma conta de outra');
+  }
+  if (!c.dataPagamento) throw new RecusaTransf('a conta está em aberto: use Baixar');
+  const baixas = await db
+    .select({ id: schema.contaPagarBaixa.id, valor: schema.contaPagarBaixa.valor, observacao: schema.contaPagarBaixa.observacao })
+    .from(schema.contaPagarBaixa)
+    .where(and(eq(schema.contaPagarBaixa.contaPagarId, c.id), isNull(schema.contaPagarBaixa.lancamentoBancoId)));
+  const b = baixas.find((x) => centavos(Number(x.valor)) === centavos(Number(pix.valor)));
+  if (!b) throw new RecusaTransf('a conta não tem pagamento desse valor sem Pix ligado');
+  await db
+    .update(schema.contaPagarBaixa)
+    .set({ lancamentoBancoId: pix.id, observacao: `${b.observacao ?? ''}${MARCA_VINCULO_PIX}` })
+    .where(and(eq(schema.contaPagarBaixa.id, b.id), isNull(schema.contaPagarBaixa.lancamentoBancoId)));
+  return { pixId, contaId: c.id };
+}
+
 /** Desfaz a baixa feita por um Pix (e o encontro, se a conta era de outra
- *  casa) — só enquanto o encontro do mês não fechou. */
+ *  casa) — só enquanto o encontro do mês não fechou. Se a baixa só tinha sido
+ *  LIGADA ao Pix (conta paga à mão, "✓ é este Pix"), desfaz só a ligação. */
 export async function desfazerBaixaPix(userId: string, pixId: string) {
   const [b] = await db
     .select({
@@ -401,11 +462,22 @@ export async function desfazerBaixaPix(userId: string, pixId: string) {
       contaPagarId: schema.contaPagarBaixa.contaPagarId,
       filialId: schema.contaPagarBaixa.filialId,
       valorConta: schema.contaPagar.valor,
+      observacao: schema.contaPagarBaixa.observacao,
     })
     .from(schema.contaPagarBaixa)
     .innerJoin(schema.contaPagar, eq(schema.contaPagar.id, schema.contaPagarBaixa.contaPagarId))
     .where(eq(schema.contaPagarBaixa.lancamentoBancoId, pixId));
   if (!b) throw new RecusaTransf('esse Pix não baixou nenhuma conta');
+  if (b.observacao?.endsWith(MARCA_VINCULO_PIX)) {
+    const acessoV = new Set((await filiaisDoUsuario(userId)).map((f) => f.id));
+    if (!acessoV.has(b.filialId)) throw new RecusaTransf('sem acesso à casa');
+    const obs = b.observacao.slice(0, -MARCA_VINCULO_PIX.length);
+    await db
+      .update(schema.contaPagarBaixa)
+      .set({ lancamentoBancoId: null, observacao: obs || null })
+      .where(eq(schema.contaPagarBaixa.id, b.id));
+    return { pixId, contaId: b.contaPagarId };
+  }
   const [pix] = await db
     .select({ filialId: schema.lancamentoBanco.filialId })
     .from(schema.lancamentoBanco)
