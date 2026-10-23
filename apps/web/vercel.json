@@ -61,6 +61,10 @@
       "schedule": "10 8 * * *"
     },
     {
+      "path": "/api/cron/vale-transporte",
+      "schedule": "30 8 1,16 * *"
+    },
+    {
       "path": "/api/cron/fidelidade-nivel",
       "schedule": "20 3 * * *"
     },
