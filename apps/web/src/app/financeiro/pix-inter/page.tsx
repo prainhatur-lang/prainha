@@ -25,9 +25,10 @@ import {
   encontrosPorPix,
   pixDoExtrato,
   type ContaPix,
+  valorNaSoma,
   type ResultadoPix,
 } from '@/lib/pix-inter';
-import { BaixarPix, BaixarPixLote, ConfirmarPix, DesfazerPix, type PixBaixa } from './pix-acoes';
+import { BaixarPix, BaixarPixLote, ConfirmarPix, DesfazerPix, PixVariasContas, type PixBaixa } from './pix-acoes';
 import { BLOQUEIO_ENTRE_CASAS_DESDE, entreCasasBloqueado } from '@/lib/pagamento-entre-casas';
 import { ehAdmin } from '@/lib/usuario-admin';
 
@@ -441,6 +442,11 @@ export default async function PixInterPage(props: { searchParams: Promise<SP> })
                                   ` · ${contaPorId.get(r.contaId)!.fornecedorNome ?? contaPorId.get(r.contaId)!.descricao ?? 'conta'}`}
                               </ContaLink>
                               <CasaBadge nome={outraCasa(contaPorId.get(r.contaId))} />
+                              {(r.outras ?? []).map((id) => (
+                                <ContaLink key={id} conta={contaPorId.get(id) ?? { id }} classe="ml-1 bg-emerald-100 text-emerald-800">
+                                  + {contaPorId.get(id) ? rotuloConta(contaPorId.get(id)!) : 'conta'}
+                                </ContaLink>
+                              ))}
                               {encontros.get(r.pix.id) && (
                                 <span className="ml-1.5 whitespace-nowrap rounded bg-violet-700 px-1.5 py-0.5 text-[10px] font-semibold text-white">
                                   ⚖️{' '}
@@ -504,6 +510,39 @@ export default async function PixInterPage(props: { searchParams: Promise<SP> })
                                     </li>
                                   ))}
                                 </ul>
+                              )}
+                              {r.varias && (
+                                <div className="mt-1.5 rounded-md border border-emerald-200 bg-emerald-50 p-2 text-[11px] text-slate-700">
+                                  <div className="font-semibold text-emerald-900">
+                                    Pagou {r.varias.contas.length} contas juntas? Somam {brl(r.varias.soma)}
+                                    {Math.abs(r.varias.diferenca) >= 0.005 &&
+                                      ` (diferença de ${brl(Math.abs(r.varias.diferenca))})`}
+                                  </div>
+                                  <ul className="mt-1 space-y-0.5">
+                                    {r.varias.contas.map((c) => (
+                                      <li key={c.id}>
+                                        <Link href={`/financeiro/conta/${c.id}`} className="text-slate-800 hover:underline">
+                                          {rotuloConta(c)}
+                                        </Link>{' '}
+                                        · {brl(valorNaSoma(c))}
+                                        {c.dataPagamento ? (
+                                          <span className="text-emerald-700"> · já paga em {formatDate(c.dataPagamento)}</span>
+                                        ) : (
+                                          <span className="text-amber-700"> · em aberto</span>
+                                        )}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                  {podeBaixar && (
+                                    <div className="mt-1.5">
+                                      <PixVariasContas
+                                        pixId={r.pix.id}
+                                        contaIds={r.varias.contas.map((c) => c.id)}
+                                        rotulo={r.varias.contas.map((c) => `${rotuloConta(c)} (${brl(valorNaSoma(c))})`).join(' + ')}
+                                      />
+                                    </div>
+                                  )}
+                                </div>
                               )}
                             </>
                           )}

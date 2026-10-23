@@ -196,3 +196,43 @@ export function ConfirmarPix({ pixId, contaId, rotulo }: { pixId: string; contaI
     </span>
   );
 }
+
+/** "✓ este Pix pagou estas contas": um Pix só pra várias contas do mesmo
+ *  fornecedor na casa do Pix (abertas viram baixa; pagas à mão só ligam). */
+export function PixVariasContas({ pixId, contaIds, rotulo }: { pixId: string; contaIds: string[]; rotulo: string }) {
+  const router = useRouter();
+  const [ocupado, setOcupado] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+
+  async function clicar() {
+    if (!confirm(`Confirmar que este Pix pagou ${rotulo}? As contas em aberto ficam pagas na data do Pix e tudo fica ligado a ele.`)) return;
+    setOcupado(true);
+    setErro(null);
+    try {
+      const r = await fetch('/api/financeiro/pix-inter', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ pixId, contaIds }),
+      });
+      if (r.ok) router.refresh();
+      else setErro((await r.json().catch(() => ({}))).error ?? `HTTP ${r.status}`);
+    } catch (e) {
+      setErro((e as Error).message);
+    }
+    setOcupado(false);
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <button
+        type="button"
+        onClick={clicar}
+        disabled={ocupado}
+        className="rounded-md bg-emerald-700 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
+      >
+        {ocupado ? 'Gravando…' : `✓ este Pix pagou estas ${contaIds.length} contas`}
+      </button>
+      {erro && <span className="text-[10px] text-rose-700">{erro}</span>}
+    </span>
+  );
+}

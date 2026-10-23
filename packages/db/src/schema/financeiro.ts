@@ -394,6 +394,32 @@ export const contaPagarBaixa = pgTable(
   }),
 );
 
+/** Um Pix do extrato que pagou VÁRIAS contas de uma vez (mesmo fornecedor,
+ *  mesma casa) — /financeiro/pix-inter, "✓ este Pix pagou estas contas".
+ *  Uma linha por baixa. A baixa fica com lancamento_banco_id NULL (o índice
+ *  único de lá é "um Pix, uma baixa"); o elo do Pix com cada conta é aqui.
+ *  criou_baixa = a baixa nasceu deste vínculo (desfazer apaga); false = a
+ *  conta já estava paga à mão e só foi ligada (desfazer só desliga). */
+export const pixContaVinculo = pgTable(
+  'pix_conta_vinculo',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    lancamentoBancoId: uuid('lancamento_banco_id').notNull(),
+    contaPagarBaixaId: uuid('conta_pagar_baixa_id')
+      .notNull()
+      .references(() => contaPagarBaixa.id, { onDelete: 'cascade' }),
+    contaPagarId: uuid('conta_pagar_id').notNull(),
+    criouBaixa: boolean('criou_baixa').notNull().default(false),
+    criadoPor: uuid('criado_por'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    lancIdx: index('idx_pix_conta_vinculo_lanc').on(t.lancamentoBancoId),
+    baixaUq: uniqueIndex('uq_pix_conta_vinculo_baixa').on(t.contaPagarBaixaId),
+  }),
+);
+
 /** Cache das consultas do SPC (paga por CPF — nunca consultar o mesmo duas
  *  vezes). Chave = sha256 do CPF só com dígitos, o MESMO hash que o
  *  vendas-local usa na spc_cache da loja. `nome` NULL = já consultamos e o SPC

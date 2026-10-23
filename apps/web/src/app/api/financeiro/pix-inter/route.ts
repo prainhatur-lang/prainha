@@ -4,12 +4,14 @@
 //   DELETE { pixId } — desfaz a baixa (e o encontro, enquanto não fechou)
 //   PATCH  { pixId, contaId } — "✓ é este Pix": conta já paga à mão, liga a
 //          baixa ao Pix pra não trocar mais de casa
+//   PATCH  { pixId, contaIds: [...] } — "✓ este Pix pagou estas contas": um
+//          Pix pra 2+ contas do mesmo fornecedor na casa do Pix
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { RecusaTransf } from '@/lib/transferencia';
-import { baixarPorPix, confirmarPixDaConta, desfazerBaixaPix } from '@/lib/pix-inter';
+import { baixarPorPix, confirmarPixDaConta, desfazerBaixaPix, pagarVariasPorPix } from '@/lib/pix-inter';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -48,7 +50,10 @@ export async function DELETE(req: Request) {
   }
 }
 
-const Confirmar = z.object({ pixId: z.string().uuid(), contaId: z.string().uuid() });
+const Confirmar = z.union([
+  z.object({ pixId: z.string().uuid(), contaId: z.string().uuid() }),
+  z.object({ pixId: z.string().uuid(), contaIds: z.array(z.string().uuid()).min(2).max(4) }),
+]);
 
 export async function PATCH(req: Request) {
   const { user, error } = await exigirPermApi('conta_pagar.marcar_pago');
@@ -58,7 +63,9 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ error: 'body invalido', details: parsed.error.flatten() }, { status: 400 });
   }
   try {
-    return NextResponse.json({ ok: true, ...(await confirmarPixDaConta(user.id, parsed.data.pixId, parsed.data.contaId)) });
+    const d = parsed.data;
+    if ('contaIds' in d) return NextResponse.json({ ok: true, ...(await pagarVariasPorPix(user.id, d.pixId, d.contaIds)) });
+    return NextResponse.json({ ok: true, ...(await confirmarPixDaConta(user.id, d.pixId, d.contaId)) });
   } catch (e) {
     if (e instanceof RecusaTransf) return NextResponse.json({ error: e.message }, { status: 400 });
     throw e;

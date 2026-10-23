@@ -182,6 +182,7 @@
     "migrate:nfe-transferencia": "tsx scripts/migrate-nfe-transferencia.ts",
     "migrate:pagamento-entre-casas": "tsx scripts/migrate-pagamento-entre-casas.ts",
     "migrate:baixa-pix": "tsx scripts/migrate-baixa-pix.ts",
+    "migrate:pix-varias-contas": "tsx scripts/migrate-pix-varias-contas.ts",
     "migrate:reserva-prainha-mar": "tsx scripts/migrate-reserva-prainha-mar.ts",
     "migrate:produto-sem-servico": "tsx scripts/migrate-produto-sem-servico.ts",
     "migrate:relatorio-diario": "tsx scripts/migrate-relatorio-diario.ts",

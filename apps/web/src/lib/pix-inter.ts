@@ -164,9 +164,28 @@ export async function contasParaPix(filialIds: string[], dataIni: string, dataFi
 
 export type ContaPix = Awaited<ReturnType<typeof contasParaPix>>[number];
 
-/** Baixas já feitas pelo Pix do extrato (Pix → conta). */
+export type FeitoPix = { contaPagarId: string; baixaId: string; outras?: string[] };
+
+/** Baixas já feitas pelo Pix do extrato (Pix → conta). Pix que pagou várias
+ *  contas (pix_conta_vinculo) vem com a primeira em contaPagarId e as demais
+ *  em `outras`. */
 export async function baixasPorPix(pixIds: string[]) {
-  if (!pixIds.length) return new Map<string, { contaPagarId: string; baixaId: string }>();
+  if (!pixIds.length) return new Map<string, FeitoPix>();
+  const multi = await db
+    .select({
+      lancamentoBancoId: schema.pixContaVinculo.lancamentoBancoId,
+      contaPagarId: schema.pixContaVinculo.contaPagarId,
+      baixaId: schema.pixContaVinculo.contaPagarBaixaId,
+    })
+    .from(schema.pixContaVinculo)
+    .where(inArray(schema.pixContaVinculo.lancamentoBancoId, pixIds))
+    .orderBy(schema.pixContaVinculo.criadoEm);
+  const out = new Map<string, FeitoPix>();
+  for (const r of multi) {
+    const f = out.get(r.lancamentoBancoId);
+    if (!f) out.set(r.lancamentoBancoId, { contaPagarId: r.contaPagarId, baixaId: r.baixaId, outras: [] });
+    else if (r.contaPagarId !== f.contaPagarId && !f.outras!.includes(r.contaPagarId)) f.outras!.push(r.contaPagarId);
+  }
   const rows = await db
     .select({
       lancamentoBancoId: schema.contaPagarBaixa.lancamentoBancoId,
@@ -180,7 +199,8 @@ export async function baixasPorPix(pixIds: string[]) {
         inArray(schema.contaPagarBaixa.lancamentoBancoId, pixIds),
       ),
     );
-  return new Map(rows.map((r) => [r.lancamentoBancoId!, { contaPagarId: r.contaPagarId, baixaId: r.baixaId }]));
+  for (const r of rows) if (!out.has(r.lancamentoBancoId!)) out.set(r.lancamentoBancoId!, { contaPagarId: r.contaPagarId, baixaId: r.baixaId });
+  return out;
 }
 
 /** Lançamentos no encontro de contas feitos a partir do Pix (não cancelados). */
@@ -212,11 +232,68 @@ export function contaCabeNoPix(pix: PixExtrato, c: ContaPix) {
   return dd >= -45 && dd <= 30;
 }
 
+/** Várias contas do mesmo fornecedor, na casa do Pix, que somadas dão o Pix. */
+export type ComboPix = { contas: ContaPix[]; soma: number; diferenca: number };
+
+/** Diferença aceita entre a soma das contas e o Pix (centavos arredondados). */
+export const TOLERANCIA_VARIAS = 1;
+
+/** Quanto a conta entra na soma: em aberto = saldo; paga = o que foi pago. */
+export const valorNaSoma = (c: ContaPix) => (c.dataPagamento ? Number(c.valorPago ?? c.valor) : c.saldo);
+
+/** A conta pode fazer parte de um Pix que pagou várias: mesmo nome, mesma
+ *  casa do Pix; em aberto com vencimento perto, ou paga até 3 dias do Pix. */
+function cabeNaSoma(pix: PixExtrato, c: ContaPix) {
+  if (c.filialId !== pix.filialId) return false;
+  if (notaNome(pix.favorecido, c.nomes) < 1) return false;
+  if (c.dataPagamento) return Math.abs(dias(pix.data, c.dataPagamento)) <= 3;
+  if (c.saldo <= 0.005) return false;
+  const dd = dias(pix.data, c.dataVencimento);
+  return dd >= -45 && dd <= 30;
+}
+
+/** Procura 2 a 4 contas que somam o Pix (± TOLERANCIA_VARIAS). Menor
+ *  diferença ganha; empate, menos contas. */
+export function acharVarias(pix: PixExtrato, contas: ContaPix[], usadas: Set<string>): ComboPix | undefined {
+  const cand = contas
+    .filter((c) => !usadas.has(c.id) && cabeNaSoma(pix, c) && valorNaSoma(c) > 0 && valorNaSoma(c) < pix.valor + TOLERANCIA_VARIAS)
+    .sort(
+      (a, b) =>
+        Math.abs(dias(pix.data, a.dataPagamento ?? a.dataVencimento)) -
+        Math.abs(dias(pix.data, b.dataPagamento ?? b.dataVencimento)),
+    )
+    .slice(0, 16);
+  const alvo = centavos(pix.valor);
+  const tol = Math.round(TOLERANCIA_VARIAS * 100);
+  let melhor: { idx: number[]; dif: number } | undefined;
+  const v = cand.map((c) => centavos(valorNaSoma(c)));
+  const busca = (ini: number, idx: number[], soma: number) => {
+    if (idx.length >= 2) {
+      const dif = Math.abs(soma - alvo);
+      if (dif <= tol && (!melhor || dif < melhor.dif || (dif === melhor.dif && idx.length < melhor.idx.length))) {
+        melhor = { idx: [...idx], dif };
+      }
+    }
+    if (idx.length === 4) return;
+    for (let i = ini; i < cand.length; i++) {
+      if (soma + v[i]! > alvo + tol) continue;
+      idx.push(i);
+      busca(i + 1, idx, soma + v[i]!);
+      idx.pop();
+    }
+  };
+  busca(0, [], 0);
+  if (!melhor) return undefined;
+  const escolhidas = melhor.idx.map((i) => cand[i]!);
+  const soma = escolhidas.reduce((s, c) => s + valorNaSoma(c), 0);
+  return { contas: escolhidas, soma: Math.round(soma * 100) / 100, diferenca: Math.round((pix.valor - soma) * 100) / 100 };
+}
+
 export type ResultadoPix =
-  | { tipo: 'baixado'; pix: PixExtrato; contaId: string; baixaId: string }
+  | { tipo: 'baixado'; pix: PixExtrato; contaId: string; baixaId: string; outras?: string[] }
   | { tipo: 'casado'; pix: PixExtrato; conta: ContaPix; nota: number }
   | { tipo: 'ja_pago'; pix: PixExtrato; conta: ContaPix }
-  | { tipo: 'sem_conta'; pix: PixExtrato; mesmoValor: ContaPix[] }
+  | { tipo: 'sem_conta'; pix: PixExtrato; mesmoValor: ContaPix[]; varias?: ComboPix }
   | { tipo: 'casas'; pix: PixExtrato };
 
 /** Casa cada Pix com UMA conta. Ordem de preferência: conta que já foi baixada
@@ -233,17 +310,20 @@ export type ResultadoPix =
 export function casarPix(
   pixes: PixExtrato[],
   contas: ContaPix[],
-  feitos: Map<string, { contaPagarId: string; baixaId: string }>,
+  feitos: Map<string, FeitoPix>,
   filialPagadoraId: string,
 ): ResultadoPix[] {
   const res = new Map<string, ResultadoPix>();
   const usadas = new Set<string>();
-  for (const f of feitos.values()) usadas.add(f.contaPagarId);
+  for (const f of feitos.values()) {
+    usadas.add(f.contaPagarId);
+    for (const o of f.outras ?? []) usadas.add(o);
+  }
 
   const livres = pixes.filter((p) => {
     const f = feitos.get(p.id);
     if (f) {
-      res.set(p.id, { tipo: 'baixado', pix: p, contaId: f.contaPagarId, baixaId: f.baixaId });
+      res.set(p.id, { tipo: 'baixado', pix: p, contaId: f.contaPagarId, baixaId: f.baixaId, outras: f.outras });
       return false;
     }
     if (p.favorecido && PIX_CASAS.test(p.favorecido)) {
@@ -297,7 +377,10 @@ export function casarPix(
           Math.abs(dias(p.data, a.dataVencimento)) - Math.abs(dias(p.data, b.dataVencimento)),
       )
       .slice(0, 3);
-    res.set(p.id, { tipo: 'sem_conta', pix: p, mesmoValor });
+    // nada de uma conta só: tenta várias contas do mesmo fornecedor que somam o Pix
+    const varias = mesmoValor.length ? undefined : acharVarias(p, contas, usadas);
+    if (varias) for (const c of varias.contas) usadas.add(c.id);
+    res.set(p.id, { tipo: 'sem_conta', pix: p, mesmoValor, varias });
   }
   return pixes.map((p) => res.get(p.id)!);
 }
@@ -452,10 +535,146 @@ export async function confirmarPixDaConta(userId: string, pixId: string, contaId
   return { pixId, contaId: c.id };
 }
 
+/** "✓ este Pix pagou estas contas": um Pix só para 2+ contas do mesmo
+ *  fornecedor, todas da casa do Pix. Conta em aberto ganha baixa do saldo com
+ *  a data do Pix; conta já paga à mão tem as baixas dela ligadas ao Pix. Tudo
+ *  fica em pix_conta_vinculo — o Pix não casa mais com outra coisa. */
+export async function pagarVariasPorPix(userId: string, pixId: string, contaIds: string[]) {
+  const ids = [...new Set(contaIds)];
+  if (ids.length < 2) throw new RecusaTransf('escolha pelo menos duas contas');
+  const acesso = new Map((await filiaisDoUsuario(userId)).map((f) => [f.id, f.nome]));
+  const [r] = await db
+    .select({
+      id: schema.lancamentoBanco.id,
+      filialId: schema.lancamentoBanco.filialId,
+      data: schema.lancamentoBanco.dataMovimento,
+      valor: schema.lancamentoBanco.valor,
+      descricao: schema.lancamentoBanco.descricao,
+      tipo: schema.lancamentoBanco.tipo,
+    })
+    .from(schema.lancamentoBanco)
+    .where(eq(schema.lancamentoBanco.id, pixId));
+  if (!r || r.tipo !== 'D' || !/^Pix enviado/i.test(r.descricao ?? '')) throw new RecusaTransf('Pix não encontrado no extrato');
+  if (!acesso.has(r.filialId)) throw new RecusaTransf('sem acesso à casa do Pix');
+  if ((await baixasPorPix([pixId])).has(pixId)) throw new RecusaTransf('esse Pix já está ligado a conta');
+  const pix: PixExtrato = { ...r, valor: Number(r.valor), descricao: r.descricao ?? '', favorecido: favorecidoDoPix(r.descricao) };
+
+  const contas = await selecionarContas(inArray(schema.contaPagar.id, ids));
+  if (contas.length !== ids.length) throw new RecusaTransf('conta não encontrada (apagada ou no borderô)');
+  for (const c of contas) {
+    if (c.filialId !== pix.filialId) throw new RecusaTransf('todas as contas têm que ser da casa do Pix');
+    if (!c.dataPagamento && c.origem === 'CONSUMER' && !(await consumerParado(c.filialId))) {
+      throw new RecusaTransf(`conta do Consumer (${c.fornecedorNome ?? c.descricao}): a baixa é feita no PDV`);
+    }
+  }
+  // baixas sem Pix das contas já pagas
+  const pagas = contas.filter((c) => c.dataPagamento).map((c) => c.id);
+  const baixasLivres = pagas.length
+    ? await db
+        .select({ id: schema.contaPagarBaixa.id, contaPagarId: schema.contaPagarBaixa.contaPagarId, valor: schema.contaPagarBaixa.valor })
+        .from(schema.contaPagarBaixa)
+        .leftJoin(schema.pixContaVinculo, eq(schema.pixContaVinculo.contaPagarBaixaId, schema.contaPagarBaixa.id))
+        .where(
+          and(
+            inArray(schema.contaPagarBaixa.contaPagarId, pagas),
+            isNull(schema.contaPagarBaixa.lancamentoBancoId),
+            isNull(schema.pixContaVinculo.id),
+          ),
+        )
+    : [];
+  let soma = 0;
+  for (const c of contas) {
+    if (c.dataPagamento) {
+      const bs = baixasLivres.filter((b) => b.contaPagarId === c.id);
+      if (!bs.length) throw new RecusaTransf(`a conta de ${dataBr(c.dataVencimento)} já está paga e ligada a outro pagamento`);
+      soma += bs.reduce((x, b) => x + Number(b.valor), 0);
+    } else {
+      if (c.saldo <= 0.005) throw new RecusaTransf('conta sem saldo');
+      soma += c.saldo;
+    }
+  }
+  if (Math.abs(centavos(soma) - centavos(pix.valor)) > Math.round(TOLERANCIA_VARIAS * 100)) {
+    throw new RecusaTransf(`as contas somam ${soma.toFixed(2)} e o Pix foi ${pix.valor.toFixed(2)}`);
+  }
+
+  const observacao = `Pix do Inter da ${acesso.get(pix.filialId)} em ${dataBr(pix.data)} (1 Pix pra ${contas.length} contas)${pix.favorecido ? ` — ${pix.favorecido}` : ''}`;
+  await db.transaction(async (tx) => {
+    for (const c of contas) {
+      if (c.dataPagamento) {
+        for (const b of baixasLivres.filter((x) => x.contaPagarId === c.id)) {
+          await tx.insert(schema.pixContaVinculo).values({
+            filialId: c.filialId,
+            lancamentoBancoId: pix.id,
+            contaPagarBaixaId: b.id,
+            contaPagarId: c.id,
+            criouBaixa: false,
+            criadoPor: userId,
+          });
+        }
+      } else {
+        const [b] = await tx
+          .insert(schema.contaPagarBaixa)
+          .values({
+            filialId: c.filialId,
+            contaPagarId: c.id,
+            data: pix.data,
+            valor: c.saldo.toFixed(2),
+            observacao,
+            criadoPor: userId,
+          })
+          .returning({ id: schema.contaPagarBaixa.id });
+        await recalcularAgregado(c.id, Number(c.valor), tx);
+        await tx.insert(schema.pixContaVinculo).values({
+          filialId: c.filialId,
+          lancamentoBancoId: pix.id,
+          contaPagarBaixaId: b!.id,
+          contaPagarId: c.id,
+          criouBaixa: true,
+          criadoPor: userId,
+        });
+      }
+    }
+  });
+  return { pixId, contas: contas.map((c) => c.id) };
+}
+
+/** Desfaz o "1 Pix pra várias contas": apaga as baixas que ele criou e só
+ *  desliga as que já existiam. */
+async function desfazerVarias(userId: string, pixId: string) {
+  const vs = await db
+    .select({
+      id: schema.pixContaVinculo.id,
+      filialId: schema.pixContaVinculo.filialId,
+      baixaId: schema.pixContaVinculo.contaPagarBaixaId,
+      contaPagarId: schema.pixContaVinculo.contaPagarId,
+      criouBaixa: schema.pixContaVinculo.criouBaixa,
+      valorConta: schema.contaPagar.valor,
+    })
+    .from(schema.pixContaVinculo)
+    .innerJoin(schema.contaPagar, eq(schema.contaPagar.id, schema.pixContaVinculo.contaPagarId))
+    .where(eq(schema.pixContaVinculo.lancamentoBancoId, pixId));
+  if (!vs.length) return null;
+  const acesso = new Set((await filiaisDoUsuario(userId)).map((f) => f.id));
+  if (vs.some((v) => !acesso.has(v.filialId))) throw new RecusaTransf('sem acesso à casa');
+  await db.transaction(async (tx) => {
+    for (const v of vs) {
+      if (v.criouBaixa) {
+        await tx.delete(schema.contaPagarBaixa).where(eq(schema.contaPagarBaixa.id, v.baixaId)); // vínculo vai junto (cascade)
+        await recalcularAgregado(v.contaPagarId, Number(v.valorConta), tx);
+      } else {
+        await tx.delete(schema.pixContaVinculo).where(eq(schema.pixContaVinculo.id, v.id));
+      }
+    }
+  });
+  return { pixId, contaId: vs[0]!.contaPagarId };
+}
+
 /** Desfaz a baixa feita por um Pix (e o encontro, se a conta era de outra
  *  casa) — só enquanto o encontro do mês não fechou. Se a baixa só tinha sido
  *  LIGADA ao Pix (conta paga à mão, "✓ é este Pix"), desfaz só a ligação. */
 export async function desfazerBaixaPix(userId: string, pixId: string) {
+  const varias = await desfazerVarias(userId, pixId);
+  if (varias) return varias;
   const [b] = await db
     .select({
       id: schema.contaPagarBaixa.id,
