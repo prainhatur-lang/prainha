@@ -11,6 +11,9 @@
 // M. D. ANJOS") + VALOR exato no centavo, que é de uma conta só ou da soma
 // de todas as abertas da pessoa na mesma folha (comissão + gratificação num
 // depósito). Só casa quando há UMA saída; o resto fica "sem conta" com o motivo.
+// Quem recebe na conta de OUTRO (André Gustavo deposita na conta do João
+// Vitor) casa pela AGÊNCIA + CONTA do cadastro (fornecedor.banco_conta), já
+// que o nome impresso é o do titular.
 
 import { db, schema } from '@concilia/db';
 import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
@@ -226,6 +229,33 @@ function quaseIgual(a: string, b: string): boolean {
 
 const PARECENCA_MIN = 0.6;
 
+// ───────────────────────── conta de destino ─────────────────────────
+
+/** Só os dígitos do último pedaço, sem zero na frente. A lotérica imprime a
+ *  operação antes ("1288 000732844792-4"); o cadastro guarda "732844792-4". */
+function digitosConta(s: unknown): string {
+  if (typeof s !== 'string') return '';
+  const pedacos = s.trim().split(/\s+/);
+  return (pedacos[pedacos.length - 1] ?? '').replace(/\D/g, '').replace(/^0+/, '');
+}
+
+/** A conta do comprovante é a do cadastro da pessoa? Quem recebe na conta de
+ *  outro (André Gustavo na conta do João Vitor) tem essa conta no cadastro,
+ *  então o nome da foto não bate mas a conta sim. Agência, quando as duas
+ *  existem, tem que ser igual. */
+export function contaDoCadastroBate(
+  lido: { agencia?: unknown; conta?: unknown } | null | undefined,
+  cadastro: { agencia: string | null; conta: string | null },
+): boolean {
+  const dc = digitosConta(lido?.conta);
+  const df = digitosConta(cadastro.conta);
+  if (dc.length < 6 || df.length < 6) return false;
+  if (!(dc === df || dc.endsWith(df) || df.endsWith(dc))) return false;
+  const ac = String(lido?.agencia ?? '').replace(/\D/g, '').replace(/^0+/, '');
+  const af = String(cadastro.agencia ?? '').replace(/\D/g, '').replace(/^0+/, '');
+  return !ac || !af || ac === af;
+}
+
 // ───────────────────────── casamento ─────────────────────────
 
 export interface ContaCasada {
@@ -252,7 +282,14 @@ function brl(v: number): string {
  * usuário enxerga. Não grava nada.
  */
 export async function casarComprovante(
-  lido: { nome: string; valor: number; data: string | null; autenticacao?: string | null },
+  lido: {
+    nome: string;
+    valor: number;
+    data: string | null;
+    autenticacao?: string | null;
+    agencia?: unknown;
+    conta?: unknown;
+  },
   filialIds: string[],
   ignorarComprovanteId: string | null,
 ): Promise<ResultadoCasamento> {
@@ -265,6 +302,8 @@ export async function casarComprovante(
       folhaSemanaId: schema.contaPagar.folhaSemanaId,
       fornecedorId: schema.contaPagar.fornecedorId,
       pessoa: schema.fornecedor.nome,
+      bancoAgencia: schema.fornecedor.bancoAgencia,
+      bancoConta: schema.fornecedor.bancoConta,
       casa: schema.filial.nome,
       descricao: schema.contaPagar.descricao,
       liquido: sql<string>`(${schema.contaPagar.valor} - COALESCE(${schema.contaPagar.descontos}, 0))::numeric(14,2)`,
@@ -304,10 +343,18 @@ export async function casarComprovante(
   const presas = new Set(outros.flatMap((o) => o.ids ?? []));
 
   const daPessoa = abertas
-    .map((c) => ({ ...c, liquido: Number(c.liquido), pagaNoDia: c.pagaEm !== null, parec: parecencaNome(lido.nome, c.pessoa) }))
+    .map((c) => ({
+      ...c,
+      liquido: Number(c.liquido),
+      pagaNoDia: c.pagaEm !== null,
+      // conta de destino do cadastro = mesma força de nome igual
+      parec: contaDoCadastroBate(lido, { agencia: c.bancoAgencia, conta: c.bancoConta })
+        ? 1
+        : parecencaNome(lido.nome, c.pessoa),
+    }))
     .filter((c) => c.parec >= PARECENCA_MIN && !presas.has(c.id));
   if (daPessoa.length === 0) {
-    return { ok: false, motivo: `não achei conta de 10% (ou de VT) em aberto pra "${lido.nome}"` };
+    return { ok: false, motivo: `não achei conta de 10% (ou de VT) em aberto pra "${lido.nome}" (nem pela conta de depósito do cadastro)` };
   }
 
   // Opções: cada conta sozinha + a soma das abertas da pessoa na mesma folha.
@@ -326,6 +373,8 @@ export async function casarComprovante(
   const batem = opcoes.filter((o) => o.contas.reduce((s, c) => s + centavos(c.liquido), 0) === alvo);
   if (batem.length === 0) {
     const resumo = [...grupos.values()]
+      // semana mais recente primeiro (conta velha esquecida vai pro fim)
+      .sort((x, y) => (y[0]!.vencimento > x[0]!.vencimento ? 1 : y[0]!.vencimento < x[0]!.vencimento ? -1 : 0))
       .slice(0, 4)
       .map((g) => `${g[0]!.pessoa}: ${g.map((c) => brl(c.liquido)).join(' + ')} (venc. ${g[0]!.vencimento.split('-').reverse().join('/')})`)
       .join('; ');
@@ -441,7 +490,14 @@ export async function casarEGravar(comprovanteId: string, userId: string): Promi
   const todas = await filialIdsDoUsuario(userId);
   const filiais = c.casaEscolhida ? todas.filter((f) => f === c.casaEscolhida) : todas;
   const r = await casarComprovante(
-    { nome: c.nomeLido, valor: Number(c.valor), data: c.dataPagamento, autenticacao: c.autenticacao },
+    {
+      nome: c.nomeLido,
+      valor: Number(c.valor),
+      data: c.dataPagamento,
+      autenticacao: c.autenticacao,
+      agencia: (c.lido as Record<string, unknown> | null)?.agencia,
+      conta: (c.lido as Record<string, unknown> | null)?.conta,
+    },
     filiais,
     c.id,
   );
