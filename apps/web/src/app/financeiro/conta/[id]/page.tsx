@@ -6,7 +6,7 @@ import Link from 'next/link';
 import { exigirPerm } from '@/lib/exigir-perm';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDate } from '@/lib/format';
 import { hojeBr } from '@/lib/datas';
@@ -162,6 +162,27 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
   const lancamento = conta.dataCadastro
     ? new Date(conta.dataCadastro).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })
     : '—';
+
+  // Comprovantes da lotérica (folha do 10%, VT) ligados a esta conta.
+  const comprovantesLoterica = await db
+    .select({
+      id: schema.comprovanteLoterica.id,
+      nome: schema.comprovanteLoterica.nomeLido,
+      valor: schema.comprovanteLoterica.valor,
+      data: schema.comprovanteLoterica.dataPagamento,
+      hora: schema.comprovanteLoterica.hora,
+      autenticacao: schema.comprovanteLoterica.autenticacao,
+      status: schema.comprovanteLoterica.status,
+    })
+    .from(schema.comprovanteLoterica)
+    .where(
+      and(
+        isNull(schema.comprovanteLoterica.excluidoEm),
+        inArray(schema.comprovanteLoterica.status, ['CASADO', 'BAIXADO']),
+        sql`${schema.comprovanteLoterica.contaPagarIds} @> ${JSON.stringify([conta.id])}::jsonb`,
+      ),
+    )
+    .orderBy(desc(schema.comprovanteLoterica.dataPagamento));
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -335,6 +356,40 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
             </p>
           )}
         </div>
+
+        {comprovantesLoterica.length > 0 && (
+          <div className="mt-5 rounded-xl border border-slate-200 bg-white p-4">
+            <h2 className="text-sm font-semibold text-slate-900">
+              🧾 Comprovante da lotérica {comprovantesLoterica.length > 1 && `(${comprovantesLoterica.length})`}
+            </h2>
+            <ul className="mt-2 space-y-1.5 text-xs">
+              {comprovantesLoterica.map((c) => (
+                <li key={c.id} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="font-medium text-slate-800">{c.nome ?? '—'}</span>
+                  <span className="text-slate-500">
+                    {c.valor !== null ? brl(Number(c.valor)) : '—'}
+                    {c.data ? ` · ${formatDate(c.data)}` : ''}
+                    {c.hora ? ` ${c.hora}` : ''}
+                    {c.autenticacao ? ` · aut. ${c.autenticacao}` : ''}
+                  </span>
+                  {c.status === 'CASADO' && (
+                    <span className="rounded bg-sky-50 px-1.5 py-0.5 text-[10px] text-sky-700">
+                      sem baixa ainda
+                    </span>
+                  )}
+                  <a
+                    href={`/api/financeiro/contas/${conta.id}/comprovante-loterica/${c.id}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-sky-700 underline"
+                  >
+                    ver foto
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         <PagaOutraCasa
           contaId={conta.id}
