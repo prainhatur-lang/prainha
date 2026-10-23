@@ -12,6 +12,7 @@ import { carregarCombo, produtosParaEscolha } from '@/lib/combos';
 import { EditorCombo } from './editor';
 import { HorarioCombo } from './horario';
 import { carregarRegra } from '@/lib/combo-horario';
+import { PromoDobradaCombo } from './promo-dobrada';
 
 export const dynamic = 'force-dynamic';
 
@@ -50,6 +51,14 @@ export default async function ComboPage(props: {
       .orderBy(asc(schema.areaProducao.nome)),
     varianteCodigo ? carregarRegra(filial.id, varianteCodigo) : Promise.resolve(null),
   ]);
+  // marca da promoção dobrada mora no produto (a mesma da aba PDV)
+  const [dob] = combo
+    ? await db
+        .select({ v: schema.produto.dobradoVale })
+        .from(schema.produto)
+        .where(eq(schema.produto.id, combo.produtoId))
+        .limit(1)
+    : [];
 
   return (
     <>
@@ -90,6 +99,12 @@ export default async function ComboPage(props: {
         {varianteCodigo && (
           <div className="mt-5">
             <HorarioCombo filialId={filial.id} varianteCodigo={varianteCodigo} regra={regra} />
+          </div>
+        )}
+
+        {combo && (
+          <div className="mt-5">
+            <PromoDobradaCombo produtoId={combo.produtoId} dobradoVale={dob?.v === true} />
           </div>
         )}
 

@@ -5303,13 +5303,17 @@ async function valesDaConta(ped) {
   try {
     const rs = await sql`SELECT o.item_codigo, o.nome, o.quantidade, o.codigo_pdv, o.produto_codigo,
         COALESCE((SELECT SUM(v.quantidade) FROM comanda_item v
-          WHERE v.vale_de = o.item_codigo AND v.cancelado_em IS NULL), 0) AS soltos
+          WHERE v.vale_de = o.item_codigo AND v.cancelado_em IS NULL), 0) AS soltos,
+        (SELECT string_agg(f.nome, ' + ' ORDER BY f.item_codigo) FROM comanda_item f
+          WHERE f.codigo_pai = o.item_codigo AND f.tipo = 2 AND f.cancelado_em IS NULL
+            AND f.codigo_pdv IS NOT NULL) AS dentro
       FROM comanda_item o
       WHERE o.comanda_codigo=${Number(ped)} AND o.dobrado_vale IS TRUE AND o.cancelado_em IS NULL
       ORDER BY o.item_codigo`;
     return rs.map((r) => {
       const qtd = Number(r.quantidade) || 0, soltos = Number(r.soltos) || 0;
-      return { item: Number(r.item_codigo), nome: r.nome, quantidade: qtd, soltos,
+      // combo (Chope Dobrado): mostra o que foi escolhido dentro dele
+      return { item: Number(r.item_codigo), nome: r.dentro ? r.nome + ' · ' + r.dentro : r.nome, quantidade: qtd, soltos,
         pendente: Math.max(0, qtd - soltos) };
     });
   } catch (e) { console.error('[vale] leitura: ' + e.message); return []; }
@@ -5336,15 +5340,28 @@ async function apiValeSoltar(body) {
     if (!v) return { ok: false, erro: 'esse vale não é desta conta' };
     if (v.pendente < qtd) return { ok: false, erro: v.pendente ? 'só falta soltar ' + v.pendente : 'esse vale já foi usado' };
     const [o] = await sql`SELECT codigo_pdv, produto_codigo, nome FROM comanda_item WHERE item_codigo=${item}`;
-    const it = { codigo_pdv: o.codigo_pdv, produto_codigo: o.produto_codigo, nome: o.nome, tamanho: null,
-      preco: 0, qtd, tipo: 1, obs: '2º DO DOBRADO (VALE)', vale_de: item,
-      login: body._garcom ? String(body._garcom) : null,
+    const quem = { login: body._garcom ? String(body._garcom) : null,
       nome_usuario: body._garcom_nome || (body._garcom ? String(body._garcom) : null) };
+    // COMBO dobrado: o que vai pro bar é o que foi ESCOLHIDO dentro dele (o
+    // chope), não o combo. O 1º escolhido sai como item com o vale_de (é ele
+    // que conta o vale como usado); se o combo tiver mais coisa dentro, vai
+    // pendurada nele como filho, igual ao combo original.
+    const filhos = await sql`SELECT codigo_pdv, produto_codigo, nome FROM comanda_item
+      WHERE codigo_pai=${item} AND tipo=2 AND cancelado_em IS NULL AND codigo_pdv IS NOT NULL
+      ORDER BY item_codigo`;
+    const base = filhos.length ? filhos[0] : o;
+    const it = { codigo_pdv: base.codigo_pdv, produto_codigo: base.produto_codigo, nome: base.nome, tamanho: null,
+      preco: 0, qtd, tipo: 1, obs: '2º DO DOBRADO (VALE)', vale_de: item, ...quem };
     const cod = await fbInserirItem(ped, it);
+    for (const f of filhos.slice(1)) {
+      await pgInserirItem(ped, { codigo_pdv: f.codigo_pdv, produto_codigo: f.produto_codigo, nome: f.nome,
+        qtd, preco: 0, tipo: 2, codigo_pai: cod, login: quem.login })
+        .catch((e) => console.error('[vale] filho ' + f.nome + ': ' + e.message));
+    }
     await fbAtualizarTotal(ped);
     await fbJobCozinha(ped);
     espelho().catch(() => {});
-    console.log('[vale] conta ' + numero + ': soltou ' + qtd + 'x ' + o.nome + ' (vale do item ' + item + ')');
+    console.log('[vale] conta ' + numero + ': soltou ' + qtd + 'x ' + base.nome + ' (vale do item ' + item + ' ' + o.nome + ')');
     return { ok: true, item_codigo: cod, vales: await valesDaConta(ped) };
   });
 }
