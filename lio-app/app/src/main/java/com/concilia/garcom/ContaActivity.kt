@@ -46,6 +46,7 @@ class ContaActivity : AppCompatActivity() {
     private lateinit var contaPedidaBtn: Button
     private lateinit var receberBtn: Button
     private lateinit var lioStatus: TextView
+    private lateinit var valesBox: LinearLayout   // 🍺 2º do dobrado — a retirar
 
     private val adapter = LinhaAdapter()
 
@@ -73,6 +74,18 @@ class ContaActivity : AppCompatActivity() {
         conferenciaBtn.setOnClickListener { imprimirConferencia() }
         contaPedidaBtn.setOnClickListener { alternarContaPedida() }
         receberBtn.setOnClickListener { receber() }
+
+        // Quadro do chope dobrado, logo acima da lista (só aparece com vale).
+        valesBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+            setBackgroundColor(0xFFFEF3C7.toInt())
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+        }
+        (lista.parent as? ViewGroup)?.let { pai ->
+            pai.addView(valesBox, pai.indexOfChild(lista),
+                LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
 
         lista.adapter = adapter
         bindLio()
@@ -271,7 +284,76 @@ class ContaActivity : AppCompatActivity() {
             if (c.itens.isEmpty()) vazio.text = "Conta aberta, sem itens"
             badge.visibility = if (c.contaPedida) View.VISIBLE else View.GONE
         }
+        mostrarVales(c?.vales ?: emptyList())
         atualizarBotoes()
+    }
+
+    /** Chope dobrado: o 2º já está lançado na conta (não pago) e fica a
+     *  retirar — "Soltar o 2º" manda pro bar a R$ 0 (mesma rota do garçom). */
+    private fun mostrarVales(vales: List<Api.Vale>) {
+        valesBox.removeAllViews()
+        valesBox.visibility = if (vales.isEmpty()) View.GONE else View.VISIBLE
+        if (vales.isEmpty()) return
+        val tit = TextView(this)
+        tit.text = "🍺 2º do dobrado — a retirar"
+        tit.textSize = 15f
+        tit.setTypeface(null, android.graphics.Typeface.BOLD)
+        tit.setTextColor(0xFF92400E.toInt())
+        valesBox.addView(tit)
+        vales.forEach { v ->
+            val linha = LinearLayout(this)
+            linha.orientation = LinearLayout.HORIZONTAL
+            linha.gravity = android.view.Gravity.CENTER_VERTICAL
+            linha.setPadding(0, dp(6), 0, 0)
+            val txt = TextView(this)
+            val sb = android.text.SpannableStringBuilder("${v.pendente}x ${v.nome}\n")
+            val ini = sb.length
+            sb.append("já lançado na conta, a retirar")
+            sb.setSpan(android.text.style.RelativeSizeSpan(0.8f), ini, sb.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            sb.setSpan(android.text.style.ForegroundColorSpan(0xFF6B7280.toInt()), ini, sb.length, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            txt.text = sb
+            txt.textSize = 15f
+            txt.setTextColor(0xFF111827.toInt())
+            linha.addView(txt, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            val b = Button(this)
+            b.text = "Soltar o 2º"
+            b.isAllCaps = false
+            b.textSize = 15f
+            b.setTypeface(null, android.graphics.Typeface.BOLD)
+            b.setTextColor(0xFFFFFFFF.toInt())
+            b.backgroundTintList = android.content.res.ColorStateList.valueOf(0xFFB45309.toInt())
+            b.setPadding(dp(16), 0, dp(16), 0)
+            b.setOnClickListener { soltarVale(b, v) }
+            linha.addView(b, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(52)))
+            valesBox.addView(linha)
+        }
+    }
+
+    private fun soltarVale(b: Button, v: Api.Vale) {
+        val tk = Session.token(this) ?: return logout()
+        b.isEnabled = false
+        b.text = "Soltando…"
+        Thread {
+            try {
+                val r = Api.valeSoltar(Session.servidor(this), tk, numero, v.item)
+                runOnUiThread {
+                    if (r.optBoolean("ok")) {
+                        Toast.makeText(this, "2º solto — foi pro bar", Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(this, r.optString("erro", "não deu pra soltar"), Toast.LENGTH_LONG).show()
+                    }
+                    carregar()
+                }
+            } catch (e: Api.SemSessao) {
+                runOnUiThread { logout() }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    b.isEnabled = true
+                    b.text = "Soltar o 2º"
+                    Toast.makeText(this, e.message ?: "sem conexão", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
     }
 
     private fun mostrarComandas(info: Api.MesaInfo?) {

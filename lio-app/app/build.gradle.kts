@@ -161,8 +161,8 @@ android {
         // próprio). Só pra mesa SEM conta; comanda, mesa já aberta, servidor
         // antigo ou rede lenta (2,5 s) abrem direto como antes. No ⋯ da conta
         // entrou "👥 Quantas pessoas na mesa" pra corrigir. Nada saiu.
-        versionCode = 59
-        versionName = "1.10.35"
+        versionCode = 60
+        versionName = "1.10.36"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CONCILIA_BASE", "\"$conciliaBase\"")
     }

@@ -108,7 +108,13 @@ object Api {
         val pago: Double,
         val saldo: Double,
         val pagamentos: List<PagFeito>,
+        // Chope dobrado: o 2º que ficou de vale na conta, a retirar (servidor
+        // antigo não manda o campo → lista vazia, quadro escondido).
+        val vales: List<Vale> = emptyList(),
     )
+
+    /** Vale do dobrado pendente (item = código do item na conta). */
+    data class Vale(val item: Int, val nome: String, val pendente: Int)
 
     data class MesaInfo(val comandas: List<Int>, val nomes: Map<String, String>, val contaPedida: Boolean)
 
@@ -404,6 +410,13 @@ object Api {
                 PagFeito(o.optString("forma"), o.optDouble("valor", 0.0), o.optStringOrNull("nsu"),
                     o.optString("status"), o.optStringOrNull("criado_em"))
             },
+            vales = (j.optJSONArray("vales") ?: JSONArray()).let { arr ->
+                (0 until arr.length()).mapNotNull { i ->
+                    val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                    val pend = o.optInt("pendente", 0)
+                    if (pend <= 0) null else Vale(o.optInt("item"), o.optString("nome"), pend)
+                }
+            },
         )
     }
 
@@ -432,6 +445,12 @@ object Api {
         if (!j.optBoolean("ok")) throw IOException(j.optString("erro", "Erro ao montar a conta"))
         return j
     }
+
+    /** Solta 1 unidade do 2º do chope dobrado (POST /api/venda/vale-soltar —
+     *  exige garçom). Resposta {ok, erro?}. */
+    @Throws(IOException::class)
+    fun valeSoltar(base: String, token: String, numero: Int, item: Int): JSONObject =
+        postJson("$base/api/venda/vale-soltar", token, JSONObject().put("numero", numero).put("item", item).put("qtd", 1))
 
     /** imprimir | fechar | reabrir (POST /api/venda/conta — exige garçom). */
     @Throws(IOException::class)
