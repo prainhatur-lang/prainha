@@ -14,6 +14,7 @@ import { brl, formatDateTime } from '@/lib/format';
 import { ConferirEntrega } from './conferir-entrega';
 import { CondicaoPagamento } from './condicao-pagamento';
 import { lerCondicaoPagamento } from '@/lib/fornecedor-condicao';
+import { FicouPronto } from './ficou-pronto';
 
 export const dynamic = 'force-dynamic';
 
@@ -47,6 +48,9 @@ export default async function PedidoCompraDetalhePage(props: {
       enviadoEm: schema.pedidoCompra.enviadoEm,
       criadoEm: schema.pedidoCompra.criadoEm,
       observacao: schema.pedidoCompra.observacao,
+      valorFrete: schema.pedidoCompra.valorFrete,
+      valorDesconto: schema.pedidoCompra.valorDesconto,
+      referencia: schema.pedidoCompra.referencia,
       cotacaoId: schema.pedidoCompra.cotacaoId,
       notaCompraId: schema.pedidoCompra.notaCompraId,
       filialId: schema.pedidoCompra.filialId,
@@ -78,15 +82,37 @@ export default async function PedidoCompraDetalhePage(props: {
       valorTotal: schema.pedidoCompraItem.valorTotal,
       quantidadeRecebida: schema.pedidoCompraItem.quantidadeRecebida,
       observacao: schema.pedidoCompraItem.observacao,
-      produtoNome: schema.produto.nome,
+      produtoNome: sql<string>`coalesce(${schema.produto.nome}, ${schema.pedidoCompraItem.descricao}, 'item')`,
       categoria: schema.produto.categoriaCompras,
       marcaNome: schema.marca.nome,
     })
     .from(schema.pedidoCompraItem)
-    .innerJoin(schema.produto, eq(schema.produto.id, schema.pedidoCompraItem.produtoId))
+    .leftJoin(schema.produto, eq(schema.produto.id, schema.pedidoCompraItem.produtoId))
     .leftJoin(schema.marca, eq(schema.marca.id, schema.pedidoCompraItem.marcaId))
     .where(eq(schema.pedidoCompraItem.pedidoCompraId, id))
-    .orderBy(asc(schema.produto.nome));
+    .orderBy(asc(sql<string>`coalesce(${schema.produto.nome}, ${schema.pedidoCompraItem.descricao}, 'item')`));
+
+  // Pedido sob encomenda: parcelas (entrada + restante), cada uma uma conta a pagar.
+  const parcelas = await db
+    .select({
+      id: schema.pedidoCompraParcela.id,
+      ordem: schema.pedidoCompraParcela.ordem,
+      tipo: schema.pedidoCompraParcela.tipo,
+      forma: schema.pedidoCompraParcela.forma,
+      quando: schema.pedidoCompraParcela.quando,
+      valor: schema.pedidoCompraParcela.valor,
+      prontoEm: schema.pedidoCompraParcela.prontoEm,
+      contaPagarId: schema.pedidoCompraParcela.contaPagarId,
+      vencimento: sql<string | null>`coalesce(${schema.contaPagar.dataVencimento}, ${schema.pedidoCompraParcela.dataVencimento})::text`,
+      dataPagamento: sql<string | null>`${schema.contaPagar.dataPagamento}::text`,
+      contaExcluida: sql<boolean>`${schema.contaPagar.dataDelete} is not null`,
+    })
+    .from(schema.pedidoCompraParcela)
+    .leftJoin(schema.contaPagar, eq(schema.contaPagar.id, schema.pedidoCompraParcela.contaPagarId))
+    .where(eq(schema.pedidoCompraParcela.pedidoCompraId, id))
+    .orderBy(asc(schema.pedidoCompraParcela.ordem));
+  const esperandoPronto = parcelas.some((p) => p.quando === 'PRONTO' && !p.prontoEm && !p.dataPagamento);
+  const dataBr = (ymd: string | null) => (ymd ? ymd.slice(0, 10).split('-').reverse().join('/') : '—');
 
   const badge = BADGE_STATUS[ped.status] ?? BADGE_STATUS.GERADO;
   const condicaoPagamento = await lerCondicaoPagamento(ped.fornecedorId);
@@ -130,6 +156,70 @@ export default async function PedidoCompraDetalhePage(props: {
           <p className="mb-4 rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-700">
             {ped.observacao}
           </p>
+        )}
+
+        {(ped.referencia || ped.valorFrete || ped.valorDesconto) && (
+          <p className="mb-4 flex flex-wrap gap-3 text-xs text-slate-600">
+            {ped.referencia && <span>Orçamento nº {ped.referencia}</span>}
+            {ped.valorFrete && Number(ped.valorFrete) > 0 && <span>Frete {brl(Number(ped.valorFrete))}</span>}
+            {ped.valorDesconto && Number(ped.valorDesconto) > 0 && (
+              <span>Desconto −{brl(Number(ped.valorDesconto))}</span>
+            )}
+          </p>
+        )}
+
+        {parcelas.length > 0 && (
+          <section className="mb-4 rounded-xl border border-slate-200 bg-white p-5">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold text-slate-900">Pagamento ({parcelas.length})</h2>
+              {esperandoPronto && <FicouPronto pedidoId={ped.id} />}
+            </div>
+            <table className="w-full text-xs">
+              <thead className="text-left text-[10px] uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="py-1">Parcela</th>
+                  <th className="py-1">Forma</th>
+                  <th className="py-1">Vencimento</th>
+                  <th className="py-1 text-right">Valor</th>
+                  <th className="py-1 text-right">Situação</th>
+                </tr>
+              </thead>
+              <tbody>
+                {parcelas.map((p) => (
+                  <tr key={p.id} className="border-t border-slate-100">
+                    <td className="py-1.5">
+                      {p.tipo === 'ENTRADA' ? 'Entrada' : 'Restante'}
+                      {p.quando === 'PRONTO' && (
+                        <span className="ml-1 text-slate-500">
+                          {p.prontoEm ? '· ficou pronto' : '· quando ficar pronto'}
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-1.5">{p.forma === 'PIX' ? 'Pix' : 'Boleto'}</td>
+                    <td className="py-1.5">
+                      {dataBr(p.vencimento)}
+                      {p.quando === 'PRONTO' && !p.prontoEm && <span className="text-slate-400"> (estimado)</span>}
+                    </td>
+                    <td className="py-1.5 text-right">{brl(Number(p.valor))}</td>
+                    <td className="py-1.5 text-right">
+                      {p.contaExcluida ? (
+                        <span className="text-slate-400">conta excluída</span>
+                      ) : p.dataPagamento ? (
+                        <span className="text-emerald-700">✅ Pago {dataBr(p.dataPagamento)}</span>
+                      ) : (
+                        <span className="text-amber-700">Em aberto</span>
+                      )}
+                      {p.contaPagarId && !p.contaExcluida && (
+                        <Link href={`/financeiro/conta/${p.contaPagarId}`} className="ml-2 text-blue-600 hover:underline">
+                          conta
+                        </Link>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
         )}
 
         {/* Cobrado e não entregue: a conferência registrou falta — dinheiro na

@@ -64,14 +64,14 @@ export async function enviarPedidoAuto(pedidoId: string): Promise<EnvioPedidoRes
     .select({
       quantidade: schema.pedidoCompraItem.quantidade,
       valorTotal: schema.pedidoCompraItem.valorTotal,
-      produtoNome: schema.produto.nome,
+      produtoNome: sql<string>`coalesce(${schema.produto.nome}, ${schema.pedidoCompraItem.descricao}, 'item')`,
       // Unidade DO ITEM do pedido, não a de estoque do produto — fornecedor
       // pode vender em cx/pct enquanto o estoque controla em kg.
       unidade: schema.pedidoCompraItem.unidade,
       observacao: schema.pedidoCompraItem.observacao,
     })
     .from(schema.pedidoCompraItem)
-    .innerJoin(schema.produto, eq(schema.produto.id, schema.pedidoCompraItem.produtoId))
+    .leftJoin(schema.produto, eq(schema.produto.id, schema.pedidoCompraItem.produtoId))
     .where(eq(schema.pedidoCompraItem.pedidoCompraId, pedidoId));
 
   const itensStr = itens

@@ -30,6 +30,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
+import { contasDoPedidoPraNota, ligarDuplicatasAoPedido } from '@/lib/pedido-encomenda';
 import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 import { aplicarMpmEntrada, fatorRateioNfe } from '@/lib/custo-medio';
 import { lerConferenciaNota } from '@/lib/nota-conferencia';
@@ -260,6 +261,14 @@ export async function POST(
           isNull(schema.notaCompraDuplicata.contaPagarId),
         ),
       );
+
+    // Pedido sob encomenda: as parcelas já viraram conta no pedido (entrada +
+    // restante). A nota só aponta as duplicatas pra essas contas — não cria outra.
+    const doPedido = duplicatas.length ? await contasDoPedidoPraNota(id) : null;
+    if (doPedido && doPedido.parcelas.length) {
+      contasAproveitadas += await ligarDuplicatasAoPedido(duplicatas, doPedido.parcelas);
+      duplicatas.length = 0;
+    }
 
     const total = duplicatas.length;
     for (let i = 0; i < duplicatas.length; i++) {

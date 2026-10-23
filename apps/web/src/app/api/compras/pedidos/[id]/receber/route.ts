@@ -67,10 +67,10 @@ export async function POST(
       quantidadeRecebida: schema.pedidoCompraItem.quantidadeRecebida,
       precoUnitario: schema.pedidoCompraItem.precoUnitario,
       unidade: schema.pedidoCompraItem.unidade,
-      produtoNome: schema.produto.nome,
+      produtoNome: sql<string>`coalesce(${schema.produto.nome}, ${schema.pedidoCompraItem.descricao}, 'item')`,
     })
     .from(schema.pedidoCompraItem)
-    .innerJoin(schema.produto, eq(schema.produto.id, schema.pedidoCompraItem.produtoId))
+    .leftJoin(schema.produto, eq(schema.produto.id, schema.pedidoCompraItem.produtoId))
     .where(eq(schema.pedidoCompraItem.pedidoCompraId, pedidoId));
 
   const conferidos = itens.filter((i) => i.quantidadeRecebida != null);

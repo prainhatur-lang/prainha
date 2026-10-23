@@ -18,6 +18,7 @@ import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
+import { contasDoPedidoPraNota } from '@/lib/pedido-encomenda';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -104,6 +105,17 @@ export async function POST(
     return NextResponse.json(
       {
         error: `nota ja tem ${existentes.length} conta(s) a pagar criada(s) — apague-as antes de criar novas`,
+      },
+      { status: 409 },
+    );
+  }
+
+  // Pedido sob encomenda: entrada + restante já são contas do pedido.
+  const doPedido = await contasDoPedidoPraNota(id);
+  if (doPedido && doPedido.parcelas.length) {
+    return NextResponse.json(
+      {
+        error: `as parcelas desta nota já estão no pedido #${doPedido.numero} (entrada + restante) — não precisa criar conta de novo`,
       },
       { status: 409 },
     );

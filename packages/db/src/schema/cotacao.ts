@@ -27,6 +27,7 @@ import {
   integer,
   index,
   unique,
+  date,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { filial } from './tenant';
@@ -234,6 +235,10 @@ export const pedidoCompra = pgTable(
     canceladoEm: timestamp('cancelado_em', { withTimezone: true }),
     motivoCancelamento: text('motivo_cancelamento'),
     observacao: text('observacao'),
+    /** Pedido sob encomenda (23/10/2026): frete, desconto e nº do orçamento do fornecedor */
+    valorFrete: numeric('valor_frete', { precision: 14, scale: 2 }),
+    valorDesconto: numeric('valor_desconto', { precision: 14, scale: 2 }),
+    referencia: varchar('referencia', { length: 60 }),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
     atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -253,9 +258,10 @@ export const pedidoCompraItem = pgTable(
     pedidoCompraId: uuid('pedido_compra_id')
       .notNull()
       .references(() => pedidoCompra.id, { onDelete: 'cascade' }),
-    produtoId: uuid('produto_id')
-      .notNull()
-      .references(() => produto.id, { onDelete: 'restrict' }),
+    /** Nulo no item em texto livre do pedido sob encomenda (ver `descricao`). */
+    produtoId: uuid('produto_id').references(() => produto.id, { onDelete: 'restrict' }),
+    /** Item sem produto cadastrado (pedido sob encomenda): o que foi pedido. */
+    descricao: text('descricao'),
     /** Resposta vencedora da cotacao que gerou esse item */
     respostaVencedoraId: uuid('resposta_vencedora_id').references(
       () => cotacaoRespostaItem.id,
@@ -277,6 +283,36 @@ export const pedidoCompraItem = pgTable(
   (t) => ({
     pedidoIdx: index('idx_pedido_compra_item_pedido').on(t.pedidoCompraId),
     produtoIdx: index('idx_pedido_compra_item_produto').on(t.produtoId),
+  }),
+);
+
+/** Parcelas do pedido (pedido sob encomenda, 23/10/2026): entrada + restante.
+ *  Cada parcela vira uma conta_pagar (origem MANUAL) ligada aqui.
+ *  tipo: ENTRADA | RESTANTE · forma: PIX | BOLETO
+ *  quando: DATA (data escolhida) | PRAZO (N dias) | PRONTO (quando ficar pronto —
+ *  vencimento estimado até o botão "Ficou pronto" trazer pra hoje). */
+export const pedidoCompraParcela = pgTable(
+  'pedido_compra_parcela',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    pedidoCompraId: uuid('pedido_compra_id')
+      .notNull()
+      .references(() => pedidoCompra.id, { onDelete: 'cascade' }),
+    contaPagarId: uuid('conta_pagar_id'),
+    ordem: integer('ordem').notNull(),
+    tipo: varchar('tipo', { length: 10 }).notNull(),
+    forma: varchar('forma', { length: 10 }).notNull(),
+    quando: varchar('quando', { length: 10 }).notNull(),
+    prazoDias: integer('prazo_dias'),
+    valor: numeric('valor', { precision: 14, scale: 2 }).notNull(),
+    dataVencimento: date('data_vencimento').notNull(),
+    prontoEm: timestamp('pronto_em', { withTimezone: true }),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pedidoIdx: index('idx_pedido_compra_parcela_pedido').on(t.pedidoCompraId),
+    contaIdx: index('idx_pedido_compra_parcela_conta').on(t.contaPagarId),
   }),
 );
 

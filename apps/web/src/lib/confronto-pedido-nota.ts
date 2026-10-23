@@ -224,7 +224,9 @@ export async function confrontoDaNota(notaId: string): Promise<ConfrontoNota | n
     })
     .from(schema.pedidoCompraItem)
     .innerJoin(schema.produto, eq(schema.produto.id, schema.pedidoCompraItem.produtoId))
-    .where(inArray(schema.pedidoCompraItem.pedidoCompraId, pedidos.map((p) => p.id)));
+    .where(inArray(schema.pedidoCompraItem.pedidoCompraId, pedidos.map((p) => p.id)))
+    // innerJoin em produto: item em texto livre (pedido sob encomenda) não entra.
+    .then((rs) => rs.flatMap((r) => (r.produtoId ? [{ ...r, produtoId: r.produtoId }] : [])));
 
   // Todas as notas do fornecedor que podem ter faturado esses pedidos — pra
   // saber o que veio em OUTRA nota e o que não veio em nenhuma.

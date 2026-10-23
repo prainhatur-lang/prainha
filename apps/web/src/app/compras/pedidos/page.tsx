@@ -85,11 +85,11 @@ export default async function PedidosCompraPage(props: { searchParams: Promise<S
           quantidade: schema.pedidoCompraItem.quantidade,
           precoUnitario: schema.pedidoCompraItem.precoUnitario,
           valorTotal: schema.pedidoCompraItem.valorTotal,
-          produtoNome: schema.produto.nome,
-          unidade: schema.produto.unidadeEstoque,
+          produtoNome: sql<string>`coalesce(${schema.produto.nome}, ${schema.pedidoCompraItem.descricao}, 'item')`,
+          unidade: sql<string>`coalesce(${schema.produto.unidadeEstoque}, ${schema.pedidoCompraItem.unidade})`,
         })
         .from(schema.pedidoCompraItem)
-        .innerJoin(schema.produto, eq(schema.produto.id, schema.pedidoCompraItem.produtoId))
+        .leftJoin(schema.produto, eq(schema.produto.id, schema.pedidoCompraItem.produtoId))
         .where(inArray(schema.pedidoCompraItem.pedidoCompraId, pedidoIds))
     : [];
   const itensPorPedido = new Map<string, typeof itensRows>();
@@ -126,7 +126,15 @@ export default async function PedidosCompraPage(props: { searchParams: Promise<S
       <AppHeader userEmail={user.email} />
       <div className="mx-auto max-w-7xl px-6 py-6">
         <div className="mb-4">
-          <h1 className="text-xl font-semibold text-slate-900">Pedidos de compra</h1>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h1 className="text-xl font-semibold text-slate-900">Pedidos de compra</h1>
+            <Link
+              href={`/compras/pedidos/novo?filialId=${filial.id}`}
+              className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700"
+            >
+              + Pedido sob encomenda
+            </Link>
+          </div>
           <p className="mt-0.5 text-xs text-slate-500">
             {filial.nome} · {pedidos.length} pedidos · gerados a partir de cotações aprovadas
           </p>

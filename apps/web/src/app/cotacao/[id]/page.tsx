@@ -240,7 +240,7 @@ export default async function CotacaoDetalhePage(props: { params: Promise<{ id: 
   const donoDoProduto = new Map<string, string>();
   for (const it of itensJaPedidos) {
     const p = pedidoPorId.get(it.pedidoId);
-    if (!p) continue;
+    if (!p || !it.produtoId) continue;
     donoDoProduto.set(it.produtoId, `${nomePorFornecedorId.get(p.fornecedorId) ?? 'outro'} (#${p.numero})`);
   }
 

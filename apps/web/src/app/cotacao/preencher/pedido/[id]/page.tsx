@@ -9,7 +9,7 @@
 
 import { notFound } from 'next/navigation';
 import { db, schema } from '@concilia/db';
-import { asc, eq } from 'drizzle-orm';
+import { asc, eq, sql } from 'drizzle-orm';
 import { dadosFaturamentoTexto } from '@/lib/dados-faturamento';
 
 export const dynamic = 'force-dynamic';
@@ -50,12 +50,12 @@ export default async function PedidoCompraPublicoPage(props: { params: Promise<{
       precoUnitario: schema.pedidoCompraItem.precoUnitario,
       valorTotal: schema.pedidoCompraItem.valorTotal,
       observacao: schema.pedidoCompraItem.observacao,
-      produtoNome: schema.produto.nome,
+      produtoNome: sql<string>`coalesce(${schema.produto.nome}, ${schema.pedidoCompraItem.descricao}, 'item')`,
     })
     .from(schema.pedidoCompraItem)
-    .innerJoin(schema.produto, eq(schema.produto.id, schema.pedidoCompraItem.produtoId))
+    .leftJoin(schema.produto, eq(schema.produto.id, schema.pedidoCompraItem.produtoId))
     .where(eq(schema.pedidoCompraItem.pedidoCompraId, id))
-    .orderBy(asc(schema.produto.nome));
+    .orderBy(asc(sql<string>`coalesce(${schema.produto.nome}, ${schema.pedidoCompraItem.descricao}, 'item')`));
 
   const faturamento = await dadosFaturamentoTexto(p.filialId).catch(() => null);
   const cancelado = p.status === 'CANCELADO';
