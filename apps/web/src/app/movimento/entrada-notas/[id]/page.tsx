@@ -23,6 +23,7 @@ import { JuntarGemea } from './juntar-gemea';
 import { FaixaTipoNota } from './faixa-tipo';
 import { acharGemea } from '@/lib/juntar-pedido-foto';
 import { EditPix } from '@/app/cadastros/fornecedores/edit-pix';
+import { ReciboPeloCelular } from './recibo-pelo-celular';
 
 export const dynamic = 'force-dynamic';
 
@@ -754,6 +755,16 @@ export default async function NotaDetalhePage(props: {
                         </span>
                       )}
                       {!c.boleto && <span className="text-[10px] text-slate-400">sem boleto anexado</span>}
+                      {c.boleto && (
+                        <a
+                          href={`${process.env.NEXT_PUBLIC_SUPABASE_URL}/storage/v1/object/public/producao-fotos/${c.boleto}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-[10px] text-emerald-700 underline"
+                        >
+                          📎 ver boleto/recibo
+                        </a>
+                      )}
                       {c.valorNota != null && (
                         <span className="text-[10px] text-amber-700">
                           boleto = nota {brl(Number(c.valorNota))} + acréscimo financeiro{' '}
@@ -770,6 +781,7 @@ export default async function NotaDetalhePage(props: {
                     </div>
                   ))}
                 </div>
+                {contasPagar.some((c) => !c.boleto) && <ReciboPeloCelular notaId={nota.id} />}
               </div>
               <Link
                 href={`/financeiro?filialId=${nota.filialId}&origem=NFE&tipoData=vencimento&dataIni=${contasPagar[0].dataVencimento}&dataFim=${contasPagar[contasPagar.length - 1].dataVencimento}`}
