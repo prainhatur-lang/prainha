@@ -48,6 +48,40 @@ export async function enviarTexto(
   }
 }
 
+/** Envia IMAGEM por link público (https). Só dentro da janela de 24h, como o texto. */
+export async function enviarImagem(
+  phoneNumberId: string,
+  para: string,
+  link: string,
+  legenda?: string,
+): Promise<{ waMessageId: string | null; erro?: string }> {
+  if (!token()) return { waMessageId: null, erro: 'WHATSAPP_TOKEN/META ausente' };
+  try {
+    const resp = await fetch(
+      `https://graph.facebook.com/${versao()}/${phoneNumberId}/messages`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token()}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messaging_product: 'whatsapp',
+          to: para,
+          type: 'image',
+          image: legenda ? { link, caption: legenda } : { link },
+        }),
+      },
+    );
+    const json = (await resp.json().catch(() => null)) as
+      | { messages?: Array<{ id?: string }>; error?: { message?: string } }
+      | null;
+    if (!resp.ok) {
+      return { waMessageId: null, erro: `${resp.status}: ${json?.error?.message ?? 'erro desconhecido'}` };
+    }
+    return { waMessageId: json?.messages?.[0]?.id ?? null };
+  } catch (e) {
+    return { waMessageId: null, erro: e instanceof Error ? e.message : String(e) };
+  }
+}
+
 /** Envia mensagem de TEMPLATE (inicia conversa fora da janela de 24h — obrigatório
  *  pra falar com quem nunca escreveu pro número, ou reabrir depois de 24h). */
 export async function enviarTemplate(
