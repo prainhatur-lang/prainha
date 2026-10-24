@@ -1,0 +1,360 @@
+// Ponto pelo celular com GPS + selfie (24/10/2026). O dono viu batidas que
+// parecem ajustadas à mão (Claudio, manobrista do Bar, sempre 08:00–20:00) e
+// quer prova de ONDE e de QUEM bateu.
+//
+// Como a pessoa é identificada:
+//  - link pessoal /op/ponto/<token> (funcionario.ponto_celular_token), gerado
+//    pelo gerente em /rh/ponto. Gerar de novo invalida o anterior;
+//  - e a cada batida uma selfie: o celular calcula o descritor do rosto
+//    (face-api, o mesmo motor do tablet) e o SERVIDOR compara com o rosto
+//    cadastrado no tablet (limiar 0.45, o mesmo PF_LIMIAR da loja). Sem rosto
+//    cadastrado, não bate pelo celular — o cadastro do rosto é presencial.
+//  Link sozinho (ou CPF+PIN) se passa pro colega; selfie + GPS juntos, não.
+//
+// Fora do raio = RECUSA (não fica "pendente pro gerente aprovar"): a suspeita
+// do dono é justamente de ajuste à mão, e o caminho manual já existe com
+// justificativa obrigatória (/rh/ponto → corrigir). Toda tentativa, aceita ou
+// não, fica em ponto_celular_tentativa — o gerente vê "tentou a 3,2 km".
+//
+// Regras iguais às do tablet (vendas-local/server.mjs): tipo pela última
+// batida do dia operacional na casa, 5 min entre batidas, trava de dias por
+// semana (pontoTravaSemana) e trava antes da hora (pontoTravaCedo), só na
+// primeira entrada do dia.
+
+import crypto from 'node:crypto';
+import { db, schema } from '@concilia/db';
+import { and, asc, desc, eq, gte, inArray, isNull, lt } from 'drizzle-orm';
+import { dateToBrYmd } from '@/lib/datas';
+import { PONTO_VIRADA_HORA, horaMinutoBr, somarDias } from '@/lib/rh/dia-operacional';
+import { projetarPontoEmFolhaHoras } from '@/lib/rh/projetar-horas';
+import { avisarLojaRosterPonto } from '@/lib/ponto-loja';
+
+/** Mesmo limiar do reconhecimento do tablet (PF_LIMIAR). */
+export const FACE_LIMIAR = 0.45;
+/** GPS com precisão pior que isso não prova nada (sinal de dentro de casa, wi-fi). */
+export const GPS_PRECISAO_MAX_M = 200;
+/** Mesmo intervalo do tablet (PONTO_COOLDOWN_MS). */
+export const COOLDOWN_MS = 5 * 60 * 1000;
+/** Mesma tolerância do tablet (PONTO_TOLERANCIA_CEDO_MIN). */
+export const TOLERANCIA_CEDO_MIN = 10;
+
+export type ResultadoTentativa =
+  | 'aceita'
+  | 'fora_do_raio'
+  | 'gps_fraco'
+  | 'rosto'
+  | 'trava_semana'
+  | 'antes_da_hora'
+  | 'intervalo'
+  | 'sem_casa';
+
+export const RESULTADO_ROTULO: Record<ResultadoTentativa, string> = {
+  aceita: 'aceita',
+  fora_do_raio: 'fora do raio',
+  gps_fraco: 'GPS fraco',
+  rosto: 'rosto não confere',
+  trava_semana: 'limite de dias',
+  antes_da_hora: 'antes da hora',
+  intervalo: 'menos de 5 min',
+  sem_casa: 'casa sem local',
+};
+
+export function novoTokenPontoCelular(): string {
+  return crypto.randomBytes(18).toString('base64url');
+}
+
+/** Distância em metros entre dois pontos (haversine). */
+export function distanciaM(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371000;
+  const rad = (x: number) => (x * Math.PI) / 180;
+  const dLat = rad(lat2 - lat1);
+  const dLng = rad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+export function distanciaFacial(a: number[], b: number[]): number {
+  if (a.length !== b.length || !a.length) return Infinity;
+  let s = 0;
+  for (let i = 0; i < a.length; i++) s += (a[i] - b[i]) ** 2;
+  return Math.sqrt(s);
+}
+
+/** Dia operacional (virada às 05:00 BRT) de um instante. */
+export function diaOperacionalDe(quando: Date): string {
+  return dateToBrYmd(new Date(quando.getTime() - PONTO_VIRADA_HORA * 3600 * 1000));
+}
+
+function segundaDa(dia: string): string {
+  const [a, m, d] = dia.split('-').map(Number);
+  const dow = new Date(Date.UTC(a, m - 1, d)).getUTCDay();
+  return somarDias(dia, -((dow + 6) % 7));
+}
+
+function descritorValido(x: unknown): number[] | null {
+  if (!Array.isArray(x) || x.length !== 128) return null;
+  const v = x.map(Number);
+  return v.every((n) => Number.isFinite(n)) ? v : null;
+}
+
+/** Fmt "1,2 km" / "85 m". */
+export function fmtDistancia(m: number | null | undefined): string {
+  if (m == null) return '—';
+  if (m >= 1000) return `${(m / 1000).toFixed(1).replace('.', ',')} km`;
+  return `${Math.round(m)} m`;
+}
+
+export interface CasaPonto {
+  id: string;
+  nome: string;
+  lat: number;
+  lng: number;
+  raioM: number;
+}
+
+/** Pessoa do link + casas dela (principal + extras) que têm local marcado. */
+export async function pessoaDoToken(token: string) {
+  if (!token || token.length < 16 || token.length > 64) return null;
+  const [p] = await db
+    .select({
+      id: schema.funcionario.id,
+      nome: schema.funcionario.nome,
+      filialId: schema.funcionario.filialId,
+      ativo: schema.funcionario.ativo,
+      faceDescriptor: schema.funcionario.faceDescriptor,
+      limiteDiasSemana: schema.funcionario.limiteDiasSemana,
+      limiteLiberadoDia: schema.funcionario.limiteLiberadoDia,
+      pontoHoraEntrada: schema.funcionario.pontoHoraEntrada,
+      pontoCedoLiberadoDia: schema.funcionario.pontoCedoLiberadoDia,
+    })
+    .from(schema.funcionario)
+    .where(eq(schema.funcionario.pontoCelularToken, token))
+    .limit(1);
+  if (!p || !p.ativo) return null;
+  const extras = await db
+    .select({ filialId: schema.funcionarioFilialExtra.filialId })
+    .from(schema.funcionarioFilialExtra)
+    .where(eq(schema.funcionarioFilialExtra.funcionarioId, p.id));
+  const ids = [...new Set([p.filialId, ...extras.map((e) => e.filialId)])];
+  const filiais = await db
+    .select({
+      id: schema.filial.id,
+      nome: schema.filial.nome,
+      lat: schema.filial.pontoLat,
+      lng: schema.filial.pontoLng,
+      raioM: schema.filial.pontoRaioM,
+    })
+    .from(schema.filial)
+    .where(inArray(schema.filial.id, ids));
+  const casas: CasaPonto[] = filiais
+    .filter((f) => f.lat != null && f.lng != null)
+    .map((f) => ({ id: f.id, nome: f.nome, lat: Number(f.lat), lng: Number(f.lng), raioM: f.raioM }));
+  return { ...p, casas, temRosto: !!descritorValido(p.faceDescriptor) };
+}
+
+export type PessoaToken = NonNullable<Awaited<ReturnType<typeof pessoaDoToken>>>;
+
+/** Batidas válidas da pessoa no dia operacional (todas as casas). */
+export async function batidasDoDia(funcionarioId: string, dia: string) {
+  return db
+    .select({
+      id: schema.pontoBatida.id,
+      filialId: schema.pontoBatida.filialId,
+      quando: schema.pontoBatida.quando,
+      tipo: schema.pontoBatida.tipo,
+      origem: schema.pontoBatida.origem,
+    })
+    .from(schema.pontoBatida)
+    .where(
+      and(
+        eq(schema.pontoBatida.funcionarioId, funcionarioId),
+        eq(schema.pontoBatida.diaOperacional, dia),
+        isNull(schema.pontoBatida.excluidaEm),
+      ),
+    )
+    .orderBy(asc(schema.pontoBatida.quando));
+}
+
+export interface PedidoBatida {
+  lat: number;
+  lng: number;
+  precisao: number;
+  descriptor: unknown;
+  userAgent?: string | null;
+}
+
+export type RespostaBatida =
+  | { ok: true; tipo: 'entrada' | 'saida'; casa: string; quando: string; distanciaM: number }
+  | { ok: false; resultado: ResultadoTentativa; erro: string; distanciaM?: number; casa?: string };
+
+/** Bate o ponto (ou recusa). Toda chamada grava uma linha em ponto_celular_tentativa. */
+export async function baterPontoCelular(p: PessoaToken, req: PedidoBatida): Promise<RespostaBatida> {
+  const agora = new Date();
+  const dia = diaOperacionalDe(agora);
+  const lat = Number(req.lat);
+  const lng = Number(req.lng);
+  const precisao = Math.round(Number(req.precisao) || 0);
+
+  // Casa mais perto entre as da pessoa.
+  let casa: CasaPonto | null = null;
+  let dist = Infinity;
+  for (const c of p.casas) {
+    const d = distanciaM(lat, lng, c.lat, c.lng);
+    if (d < dist) {
+      dist = d;
+      casa = c;
+    }
+  }
+  const distM = Number.isFinite(dist) ? Math.round(dist) : null;
+
+  const descr = descritorValido(req.descriptor);
+  const cadastrado = descritorValido(p.faceDescriptor);
+  const fd = descr && cadastrado ? distanciaFacial(descr, cadastrado) : null;
+  const faceDist = fd != null && Number.isFinite(fd) ? Math.round(fd * 1000) : null;
+
+  const registrar = async (
+    resultado: ResultadoTentativa,
+    motivo: string | null,
+    tipo: string | null,
+    batidaId: string | null = null,
+  ) => {
+    try {
+      await db.insert(schema.pontoCelularTentativa).values({
+        funcionarioId: p.id,
+        filialId: casa?.id ?? null,
+        quando: agora,
+        diaOperacional: dia,
+        tipo,
+        resultado,
+        motivo,
+        lat: Number.isFinite(lat) ? lat.toFixed(7) : null,
+        lng: Number.isFinite(lng) ? lng.toFixed(7) : null,
+        precisaoM: Number.isFinite(precisao) ? Math.min(precisao, 2_000_000_000) : null,
+        distanciaM: distM,
+        faceDist,
+        batidaId,
+        userAgent: req.userAgent ? req.userAgent.slice(0, 300) : null,
+      });
+    } catch (err) {
+      console.error('[ponto-celular] registrar tentativa:', err instanceof Error ? err.message : err);
+    }
+  };
+  const recusa = async (resultado: ResultadoTentativa, erro: string, tipo: string | null = null): Promise<RespostaBatida> => {
+    await registrar(resultado, erro, tipo);
+    return { ok: false, resultado, erro, distanciaM: distM ?? undefined, casa: casa?.nome };
+  };
+
+  if (!casa) {
+    return recusa('sem_casa', 'Sua casa ainda não tem o local marcado pro ponto pelo celular. Bata no tablet.');
+  }
+  if (!cadastrado) {
+    return recusa('rosto', 'Seu rosto ainda não está cadastrado. Bata uma vez no tablet da casa pra cadastrar.');
+  }
+  if (!descr || fd == null || fd >= FACE_LIMIAR) {
+    return recusa('rosto', 'O rosto da selfie não confere com o seu cadastro. Tente de novo, de frente e com luz.');
+  }
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || precisao <= 0 || precisao > GPS_PRECISAO_MAX_M) {
+    return recusa(
+      'gps_fraco',
+      `O GPS do celular está impreciso (${precisao > 0 ? fmtDistancia(precisao) : 'sem sinal'}). Ligue a localização precisa e tente ao ar livre.`,
+    );
+  }
+  if (dist > casa.raioM) {
+    return recusa(
+      'fora_do_raio',
+      `Você está a ${fmtDistancia(dist)} da ${casa.nome} — o ponto pelo celular só vale até ${casa.raioM} m. Bata quando chegar, ou no tablet.`,
+    );
+  }
+
+  const doDia = await batidasDoDia(p.id, dia);
+  // Intervalo de 5 min conta da última batida da pessoa (qualquer casa/dia).
+  const [ultima] = await db
+    .select({ quando: schema.pontoBatida.quando })
+    .from(schema.pontoBatida)
+    .where(and(eq(schema.pontoBatida.funcionarioId, p.id), isNull(schema.pontoBatida.excluidaEm)))
+    .orderBy(desc(schema.pontoBatida.quando))
+    .limit(1);
+  if (ultima && Math.abs(agora.getTime() - ultima.quando.getTime()) < COOLDOWN_MS) {
+    return recusa('intervalo', 'Você bateu o ponto há menos de 5 minutos.');
+  }
+
+  const naCasa = doDia.filter((b) => b.filialId === casa!.id);
+  const ultimaNaCasa = naCasa[naCasa.length - 1];
+  const tipo: 'entrada' | 'saida' = ultimaNaCasa?.tipo === 'entrada' ? 'saida' : 'entrada';
+
+  if (tipo === 'entrada' && doDia.length === 0) {
+    // Trava de dias por semana (pontoTravaSemana).
+    const lim = Number(p.limiteDiasSemana) || 0;
+    if (lim > 0 && String(p.limiteLiberadoDia ?? '') !== dia) {
+      const segunda = segundaDa(dia);
+      const dias = await db
+        .selectDistinct({ dia: schema.pontoBatida.diaOperacional })
+        .from(schema.pontoBatida)
+        .where(
+          and(
+            eq(schema.pontoBatida.funcionarioId, p.id),
+            gte(schema.pontoBatida.diaOperacional, segunda),
+            lt(schema.pontoBatida.diaOperacional, dia),
+            isNull(schema.pontoBatida.excluidaEm),
+          ),
+        );
+      if (dias.length >= lim) {
+        return recusa(
+          'trava_semana',
+          `${p.nome}, você já trabalhou ${dias.length} ${dias.length === 1 ? 'dia' : 'dias'} nesta semana (segunda a domingo) — o limite é ${lim}. Fale com o gerente.`,
+          tipo,
+        );
+      }
+    }
+    // Trava antes da hora (pontoTravaCedo).
+    const h = /^(\d{2}):(\d{2})$/.exec(String(p.pontoHoraEntrada ?? ''));
+    if (h && String(p.pontoCedoLiberadoDia ?? '') !== dia) {
+      const [hh, mm] = horaMinutoBr(agora).split(':').map(Number);
+      if (hh >= PONTO_VIRADA_HORA) {
+        const abreMin = Number(h[1]) * 60 + Number(h[2]) - TOLERANCIA_CEDO_MIN;
+        if (hh * 60 + mm < abreMin) {
+          const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+          return recusa(
+            'antes_da_hora',
+            `${p.nome}, sua entrada é às ${p.pontoHoraEntrada} — o ponto abre às ${hhmm(abreMin)}. Antes disso, só com autorização do gerente.`,
+            tipo,
+          );
+        }
+      }
+    }
+  }
+
+  const [nova] = await db
+    .insert(schema.pontoBatida)
+    .values({
+      filialId: casa.id,
+      funcionarioId: p.id,
+      quando: agora,
+      diaOperacional: dia,
+      tipo,
+      origem: 'celular',
+      dispositivo: 'celular',
+      geoLat: lat.toFixed(7),
+      geoLng: lng.toFixed(7),
+      geoPrecisaoM: precisao,
+      geoDistanciaM: Math.round(dist),
+      faceDist,
+    })
+    .returning({ id: schema.pontoBatida.id });
+  await registrar('aceita', null, tipo, nova.id);
+
+  // Daqui pra baixo nada derruba a batida: já foi gravada.
+  try {
+    await projetarPontoEmFolhaHoras(casa.id, dia, dia);
+  } catch (err) {
+    console.error('[ponto-celular] projetar folha:', err instanceof Error ? err.message : err);
+  }
+  try {
+    const r = await avisarLojaRosterPonto(casa.id);
+    if (!r.ok) console.warn(`[ponto-celular] aviso não chegou na loja ${casa.id.slice(0, 8)}: ${r.erro}`);
+  } catch (err) {
+    console.warn('[ponto-celular] aviso à loja:', err instanceof Error ? err.message : err);
+  }
+
+  return { ok: true, tipo, casa: casa.nome, quando: agora.toISOString(), distanciaM: Math.round(dist) };
+}

@@ -15,6 +15,10 @@ interface BatidaCrua {
   id: string;
   quando: string;
   tipo: string;
+  /** Ponto pelo celular (24/10/2026): origem 'celular' + distância da casa. */
+  origem?: string;
+  geoDistanciaM?: number | null;
+  geoPrecisaoM?: number | null;
 }
 interface Celula {
   chave: string;
@@ -282,7 +286,9 @@ export function PontoManager({ filialId, dias, funcionarios, grade, gemeos = [],
                         ) : (
                           <div>
                             <div className="font-mono text-slate-700">
-                              {cel.batidas.map((b) => fmtHora(b.quando)).join(' → ')}
+                              {cel.batidas
+                                .map((b) => fmtHora(b.quando) + (b.origem === 'celular' ? '📱' : ''))
+                                .join(' → ')}
                             </div>
                             <div className={incompleto ? 'font-semibold text-amber-700' : 'text-slate-500'}>
                               {incompleto ? '⚠ incompleto' : fmtHM(cel.totalMin)}
@@ -525,6 +531,12 @@ function ModalCorrecao({
                       {b.tipo === 'entrada' ? 'Entrada' : 'Saída'} — <span className="font-mono">{fmtHora(b.quando)}</span>
                       {madrugadaDoDia(dia, new Date(b.quando)) && (
                         <span className="ml-1.5 text-xs text-slate-400">🌙 madrugada de {diaMes(somarDias(dia, 1))}</span>
+                      )}
+                      {b.origem === 'celular' && (
+                        <span className="ml-1.5 text-xs text-sky-700" title="Batida pelo celular: selfie conferida + GPS dentro do raio da casa">
+                          📱 celular a {b.geoDistanciaM ?? '?'} m da casa
+                          {b.geoPrecisaoM != null ? ` (GPS ±${b.geoPrecisaoM} m)` : ''}
+                        </span>
                       )}
                     </span>
                     <span className="flex gap-2">

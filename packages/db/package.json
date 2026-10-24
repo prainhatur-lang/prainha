@@ -222,7 +222,8 @@
     "migrate:nota-chave-leitura": "tsx scripts/migrate-nota-chave-leitura.ts",
     "migrate:conta-valor-nota": "tsx scripts/migrate-conta-valor-nota.ts",
     "migrate:loja-certificado": "tsx scripts/migrate-loja-certificado.ts",
-    "migrate:pedido-encomenda": "tsx scripts/migrate-pedido-encomenda.ts"
+    "migrate:pedido-encomenda": "tsx scripts/migrate-pedido-encomenda.ts",
+    "migrate:ponto-celular": "tsx scripts/migrate-ponto-celular.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",

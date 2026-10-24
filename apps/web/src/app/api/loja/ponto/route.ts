@@ -101,7 +101,14 @@ export async function GET(request: Request) {
       and(
         eq(schema.pontoBatida.filialId, f),
         gte(schema.pontoBatida.diaOperacional, diasAtrasBr(3)),
-        or(isNotNull(schema.pontoBatida.excluidaEm), eq(schema.pontoBatida.origem, 'correcao')),
+        or(
+          isNotNull(schema.pontoBatida.excluidaEm),
+          eq(schema.pontoBatida.origem, 'correcao'),
+          // Ponto pelo celular (24/10/2026) desce igual à inclusão do RH: a
+          // loja grava com nuvem_id e a próxima batida no tablet sai com o
+          // tipo certo (saída depois da entrada pelo celular).
+          eq(schema.pontoBatida.origem, 'celular'),
+        ),
       ),
     );
   const excluidas = recentes.filter((x) => x.excluidaEm);

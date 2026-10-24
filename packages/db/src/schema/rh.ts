@@ -91,6 +91,10 @@ export const funcionario = pgTable(
     pontoHoraEntrada: varchar('ponto_hora_entrada', { length: 5 }),
     /** Dia que o gerente autorizou bater antes da hora (só aquele dia). */
     pontoCedoLiberadoDia: date('ponto_cedo_liberado_dia'),
+    /** Ponto pelo celular (24/10/2026): token do link pessoal
+     *  /op/ponto/<token>, gerado pelo gerente em /rh/ponto. Nulo = a pessoa não
+     *  bate pelo celular. Gerar de novo invalida o link antigo. */
+    pontoCelularToken: varchar('ponto_celular_token', { length: 64 }).unique(),
     /** 'H' | 'M' — só pra regra de domingo da escala mensal (CCT cl.16:
      *  homem folga 1 domingo a cada 5 trabalhados; mulher a cada 2 semanas,
      *  CLT 386). Marcado na grade de /rh/escala-mensal (19/10/2026). */
@@ -233,12 +237,51 @@ export const pontoBatida = pgTable(
     excluidaEm: timestamp('excluida_em', { withTimezone: true }),
     excluidaPor: uuid('excluida_por'),
     recebidoEm: timestamp('recebido_em', { withTimezone: true }).notNull().defaultNow(),
+    /** Só na batida pelo celular (origem 'celular', 24/10/2026): onde o GPS
+     *  do aparelho disse que a pessoa estava, a precisão que ele informou e a
+     *  distância até o ponto da casa (filial.ponto_lat/lng). */
+    geoLat: numeric('geo_lat', { precision: 10, scale: 7 }),
+    geoLng: numeric('geo_lng', { precision: 10, scale: 7 }),
+    geoPrecisaoM: integer('geo_precisao_m'),
+    geoDistanciaM: integer('geo_distancia_m'),
+    /** Distância facial (face-api, x1000) da selfie pro rosto cadastrado. */
+    faceDist: integer('face_dist'),
   },
   (t) => ({
     /** Reenvio do lote da loja não duplica (mesma régua de cancelamento_item). */
     uniqLoja: unique('uq_ponto_batida_filial_local').on(t.filialId, t.idLocal),
     porDia: index('idx_ponto_batida_dia').on(t.filialId, t.diaOperacional),
     porPessoa: index('idx_ponto_batida_pessoa').on(t.funcionarioId, t.diaOperacional),
+  }),
+);
+
+/** Ponto pelo celular (24/10/2026): TODA tentativa, aceita ou recusada —
+ *  quem tentou de casa aparece pro gerente no /rh/ponto com a distância.
+ *  resultado: aceita | fora_do_raio | gps_fraco | rosto | trava_semana |
+ *  antes_da_hora | intervalo | sem_casa. */
+export const pontoCelularTentativa = pgTable(
+  'ponto_celular_tentativa',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    funcionarioId: uuid('funcionario_id').notNull().references(() => funcionario.id, { onDelete: 'cascade' }),
+    /** Casa mais perto entre as da pessoa (NULL se nenhuma tem local marcado). */
+    filialId: uuid('filial_id').references(() => filial.id, { onDelete: 'cascade' }),
+    quando: timestamp('quando', { withTimezone: true }).notNull().defaultNow(),
+    diaOperacional: date('dia_operacional').notNull(),
+    tipo: varchar('tipo', { length: 10 }),
+    resultado: varchar('resultado', { length: 20 }).notNull(),
+    motivo: text('motivo'),
+    lat: numeric('lat', { precision: 10, scale: 7 }),
+    lng: numeric('lng', { precision: 10, scale: 7 }),
+    precisaoM: integer('precisao_m'),
+    distanciaM: integer('distancia_m'),
+    faceDist: integer('face_dist'),
+    batidaId: uuid('batida_id').references(() => pontoBatida.id, { onDelete: 'set null' }),
+    userAgent: varchar('user_agent', { length: 300 }),
+  },
+  (t) => ({
+    porDia: index('idx_ponto_celular_tent_dia').on(t.filialId, t.diaOperacional),
+    porPessoa: index('idx_ponto_celular_tent_pessoa').on(t.funcionarioId, t.quando),
   }),
 );
 

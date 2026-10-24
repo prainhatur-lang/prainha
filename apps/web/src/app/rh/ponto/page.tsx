@@ -14,6 +14,8 @@ import { semanaAtual, semanaContemDia, diasDaSemana, labelSemana, nomeDia, toIso
 import { calcularDia } from '@/lib/rh/calcular-ponto';
 import { PontoManager } from './manager';
 import { atestadosNoPeriodo, diasDeAtestado } from '@/lib/rh/atestado';
+import { PontoCelularPainel } from './ponto-celular-painel';
+import { RESULTADO_ROTULO, type ResultadoTentativa } from '@/lib/rh/ponto-celular';
 
 export const dynamic = 'force-dynamic';
 
@@ -100,6 +102,9 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
       id: schema.pontoBatida.id,
       quando: schema.pontoBatida.quando,
       tipo: schema.pontoBatida.tipo,
+      origem: schema.pontoBatida.origem,
+      geoDistanciaM: schema.pontoBatida.geoDistanciaM,
+      geoPrecisaoM: schema.pontoBatida.geoPrecisaoM,
     })
     .from(schema.pontoBatida)
     .where(
@@ -114,7 +119,18 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
   // agrupa por funcionario|dia -> { batidas cruas (pra edição) + calculo }
   const grade = new Map<
     string,
-    { batidas: { id: string; quando: string; tipo: string }[]; totalMin: number; status: string }
+    {
+      batidas: {
+        id: string;
+        quando: string;
+        tipo: string;
+        origem: string;
+        geoDistanciaM: number | null;
+        geoPrecisaoM: number | null;
+      }[];
+      totalMin: number;
+      status: string;
+    }
   >();
   for (const f of funcionarios) {
     for (const dia of dias) {
@@ -124,7 +140,14 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
       grade.set(chave, {
         batidas: doDia
           .sort((a, b) => a.quando.getTime() - b.quando.getTime())
-          .map((b) => ({ id: b.id, quando: b.quando.toISOString(), tipo: b.tipo })),
+          .map((b) => ({
+            id: b.id,
+            quando: b.quando.toISOString(),
+            tipo: b.tipo,
+            origem: b.origem,
+            geoDistanciaM: b.geoDistanciaM,
+            geoPrecisaoM: b.geoPrecisaoM,
+          })),
         totalMin: calc.totalMin,
         status: calc.status,
       });
@@ -137,6 +160,49 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
     semana.inicio,
     semana.fim,
   );
+
+  // Ponto pelo celular (24/10/2026): local da casa, links pessoais e as
+  // tentativas da semana (as recusadas mostram quem tentou de longe).
+  const [casaPonto] = await db
+    .select({
+      pontoLat: schema.filial.pontoLat,
+      pontoLng: schema.filial.pontoLng,
+      pontoRaioM: schema.filial.pontoRaioM,
+    })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, filialSelecionada.id));
+  const tokens = new Map(
+    funcionarios.length
+      ? (
+          await db
+            .select({ id: schema.funcionario.id, token: schema.funcionario.pontoCelularToken })
+            .from(schema.funcionario)
+            .where(inArray(schema.funcionario.id, funcionarios.map((f) => f.id)))
+        )
+          .filter((x) => !!x.token)
+          .map((x) => [x.id, x.token as string] as const)
+      : [],
+  );
+  const tentativas = await db
+    .select({
+      id: schema.pontoCelularTentativa.id,
+      funcionarioId: schema.pontoCelularTentativa.funcionarioId,
+      quando: schema.pontoCelularTentativa.quando,
+      resultado: schema.pontoCelularTentativa.resultado,
+      motivo: schema.pontoCelularTentativa.motivo,
+      distanciaM: schema.pontoCelularTentativa.distanciaM,
+      precisaoM: schema.pontoCelularTentativa.precisaoM,
+    })
+    .from(schema.pontoCelularTentativa)
+    .where(
+      and(
+        eq(schema.pontoCelularTentativa.filialId, filialSelecionada.id),
+        gte(schema.pontoCelularTentativa.diaOperacional, semana.inicio),
+        lte(schema.pontoCelularTentativa.diaOperacional, semana.fim),
+      ),
+    )
+    .orderBy(sql`${schema.pontoCelularTentativa.quando} DESC`)
+    .limit(200);
 
   const semanaAnteriorInicio = toIsoDate(new Date(new Date(semana.inicio + 'T12:00:00').getTime() - 7 * 86400000));
   const semanaSeguinteInicio = toIsoDate(new Date(new Date(semana.inicio + 'T12:00:00').getTime() + 7 * 86400000));
@@ -204,6 +270,32 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
           gemeos={gemeos}
           grade={[...grade.entries()].map(([chave, v]) => ({ chave, ...v }))}
           atestados={[...diaAtestado.entries()].map(([chave, a]) => ({ chave, descricao: a.descricao }))}
+        />
+
+        <PontoCelularPainel
+          filialId={filialSelecionada.id}
+          casa={{
+            nome: filialSelecionada.nome,
+            lat: casaPonto?.pontoLat != null ? Number(casaPonto.pontoLat) : null,
+            lng: casaPonto?.pontoLng != null ? Number(casaPonto.pontoLng) : null,
+            raioM: casaPonto?.pontoRaioM ?? 150,
+          }}
+          pessoas={funcionarios.map((f) => ({
+            id: f.id,
+            nome: f.nome,
+            temRosto: f.temRosto,
+            token: tokens.get(f.id) ?? null,
+          }))}
+          tentativas={tentativas.map((t) => ({
+            id: t.id,
+            nome: funcionarios.find((f) => f.id === t.funcionarioId)?.nome ?? '—',
+            quando: t.quando.toISOString(),
+            resultado: RESULTADO_ROTULO[t.resultado as ResultadoTentativa] ?? t.resultado,
+            aceita: t.resultado === 'aceita',
+            motivo: t.motivo,
+            distanciaM: t.distanciaM,
+            precisaoM: t.precisaoM,
+          }))}
         />
       </section>
     </main>

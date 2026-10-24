@@ -481,6 +481,12 @@ export const filial = pgTable(
     fiscalConfig: jsonb('fiscal_config').$type<FiscalConfig>(),
     /** Config do delivery/pedidos online (site público /delivery). */
     deliveryConfig: jsonb('delivery_config').$type<DeliveryConfig>(),
+    /** Ponto pelo celular (24/10/2026): ponto da casa no mapa e o raio em
+     *  metros dentro do qual a batida do celular vale. Sem lat/lng = a casa
+     *  não aceita ponto pelo celular (só o tablet). Marcado em /rh/ponto. */
+    pontoLat: numeric('ponto_lat', { precision: 10, scale: 7 }),
+    pontoLng: numeric('ponto_lng', { precision: 10, scale: 7 }),
+    pontoRaioM: integer('ponto_raio_m').notNull().default(150),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
