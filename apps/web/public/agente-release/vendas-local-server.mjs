@@ -10039,27 +10039,50 @@ async function fbClienteFiado(cod) {
     limite, saldo, bloqueia: T(x.BLOQ).toUpperCase() === 'S',
     habilitado: limite > 0, disponivel: +(limite - saldo).toFixed(2) };
 }
+// Busca do fiado (24/10/2026): com LIMIT 12 em ordem alfabética, "marco" e
+// "pinheiro" devolviam 12 nomes e cortavam quem tem conta (o Marco Pinheiro
+// está como "Pinheiro Vigilancia", lá pelo 40º Pinheiro). Agora:
+//  · cada palavra casa sozinha ("marco pinheiro", "pinheiro vigil") e sem acento;
+//  · quem tem LIMITE vem primeiro, depois quem deve/tem saldo, depois quem
+//    começa com o termo — e só então a ordem alfabética;
+//  · até 30 nomes (era 12).
+// Quem aparecia antes continua aparecendo (o termo inteiro ainda casa).
+const FIADO_LIM_BUSCA = 30;
+const ACENTO_DE = 'áàâãäéèêëíìîïóòôõöúùûüçñÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇÑ';
+const ACENTO_PARA = 'aaaaaeeeeiiiiooooouuuucnAAAAAEEEEIIIIOOOOOUUUUCN';
 async function apiCaixaFiadoBusca(termo) {
   const t = String(termo || '').trim().toUpperCase();
   if (t.length < 3) return { ok: true, clientes: [] };
   const so = t.replace(/\D/g, '');
+  const palavras = semAcento(t).toUpperCase().split(/\s+/).filter(Boolean).slice(0, 5);
+  const primeira = palavras[0] || '';
   if (nativo()) {
+    const nomeN = sql`upper(translate(COALESCE(nome,''), ${ACENTO_DE}, ${ACENTO_PARA}))`;
+    const porNome = palavras.reduce((acc, w, i) =>
+      i === 0 ? sql`${nomeN} LIKE ${'%' + w + '%'}` : sql`${acc} AND ${nomeN} LIKE ${'%' + w + '%'}`, sql``);
     const rows = await sql`SELECT codigo, nome, cpf doc, COALESCE(limite_credito,0) lim, COALESCE(saldo_atual,0) saldo
-      FROM cliente_local WHERE ativo AND (upper(nome) LIKE ${'%' + t + '%'}
+      FROM cliente_local WHERE ativo AND ((${porNome}) OR upper(nome) LIKE ${'%' + t + '%'}
         ${so.length >= 3 ? sql`OR regexp_replace(COALESCE(cpf,''),'\\D','','g') LIKE ${'%' + so + '%'}` : sql``})
-      ORDER BY nome LIMIT 12`;
+      ORDER BY (COALESCE(limite_credito,0) > 0) DESC, (COALESCE(saldo_atual,0) <> 0) DESC,
+        (${nomeN} LIKE ${primeira + '%'}) DESC, (${nomeN} LIKE ${'% ' + primeira + '%'}) DESC, nome
+      LIMIT ${FIADO_LIM_BUSCA}`;
     return { ok: true, clientes: rows.map((x) => ({
       codigo: Number(x.codigo), nome: T(x.nome), doc: T(x.doc),
       limite: Number(x.lim) || 0, saldo: Number(x.saldo) || 0,
       habilitado: (Number(x.lim) || 0) > 0,
       disponivel: +(((Number(x.lim) || 0) - (Number(x.saldo) || 0))).toFixed(2) })) };
   }
+  const porNomeFb = palavras.map((w) => `UPPER(NOME) LIKE '%${fbEsc(w)}%'`).join(' AND ');
+  const nomeCond = `(UPPER(NOME) LIKE '%${fbEsc(t)}%'${porNomeFb ? ` OR (${porNomeFb})` : ''})`;
   const cond = so.length >= 3
-    ? `(UPPER(NOME) LIKE '%${fbEsc(t)}%' OR REPLACE(REPLACE(REPLACE(CNPJOUCPF,'.',''),'-',''),'/','') LIKE '%${fbEsc(so)}%')`
-    : `UPPER(NOME) LIKE '%${fbEsc(t)}%'`;
-  const r = await qi(`SELECT FIRST 12 CODIGO, TRIM(COALESCE(NOME,'')) NOME, TRIM(COALESCE(CNPJOUCPF,'')) DOC,
+    ? `(${nomeCond} OR REPLACE(REPLACE(REPLACE(CNPJOUCPF,'.',''),'-',''),'/','') LIKE '%${fbEsc(so)}%')`
+    : nomeCond;
+  const r = await qi(`SELECT FIRST ${FIADO_LIM_BUSCA} CODIGO, TRIM(COALESCE(NOME,'')) NOME, TRIM(COALESCE(CNPJOUCPF,'')) DOC,
       COALESCE(LIMITECREDITOCONTACORRENTE,0) LIM, COALESCE(SALDOATUALCONTACORRENTE,0) SALDO
-    FROM CONTATOS WHERE DATADELETE IS NULL AND ${cond} ORDER BY NOME`);
+    FROM CONTATOS WHERE DATADELETE IS NULL AND ${cond}
+    ORDER BY CASE WHEN COALESCE(LIMITECREDITOCONTACORRENTE,0) > 0 THEN 0 ELSE 1 END,
+      CASE WHEN COALESCE(SALDOATUALCONTACORRENTE,0) <> 0 THEN 0 ELSE 1 END,
+      CASE WHEN UPPER(NOME) LIKE '${fbEsc(primeira)}%' THEN 0 ELSE 1 END, NOME`);
   if (!r.ok) return { ok: false, erro: r.err };
   return { ok: true, clientes: (r.rows || []).map((x) => ({
     codigo: Number(x.CODIGO), nome: T(x.NOME), doc: T(x.DOC),
