@@ -9,6 +9,7 @@ import { and, count, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { normalizaBusca } from '@/lib/texto';
 import { AppHeader } from '@/components/app-header';
 import { brl, int } from '@/lib/format';
+import { fiadoSaldoTexto } from '@/lib/fiado-saldo';
 
 export const dynamic = 'force-dynamic';
 
@@ -366,7 +367,7 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
                       (c.saldo ?? 0) > 0 ? 'font-medium text-rose-600' : 'text-slate-400'
                     }`}
                   >
-                    {c.saldo != null && c.saldo !== 0 ? brl(c.saldo) : '—'}
+                    {c.saldo != null && c.saldo !== 0 ? fiadoSaldoTexto(c.saldo) : '—'}
                   </td>
                   <td className="px-4 py-2">
                     <div className="flex flex-wrap gap-1">
@@ -374,7 +375,7 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
                       {[...c.casas.values()].map((k) => (
                         <span
                           key={k.clienteId}
-                          title={`cadastro no PDV da ${k.nome} · código ${k.codigo}${k.saldo ? ` · fiado ${brl(k.saldo)}` : ''}`}
+                          title={`cadastro no PDV da ${k.nome} · código ${k.codigo}${k.saldo ? ` · fiado: ${fiadoSaldoTexto(k.saldo)}` : ''}`}
                           className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-700"
                         >
                           PDV {k.nome}

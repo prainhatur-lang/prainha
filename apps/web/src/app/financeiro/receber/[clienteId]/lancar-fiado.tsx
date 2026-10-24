@@ -98,6 +98,7 @@ export function LancarFiado({ clienteId, saldo }: { clienteId: string; saldo: nu
       <p className="mt-1 text-xs text-slate-500">
         Crédito faz o cliente dever mais; pagamento abate.{' '}
         {saldo > 0.01 && <>Hoje ele deve <b>{saldo.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</b>.</>}
+        {saldo < -0.01 && <>Hoje ele tem <b>crédito de {(-saldo).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}</b> (não deve nada).</>}
       </p>
 
       <div className="mt-4 flex flex-wrap gap-2">

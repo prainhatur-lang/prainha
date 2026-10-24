@@ -27973,6 +27973,12 @@ function telaFiado(el){
   var e=document.getElementById('fq');
   if(e){ e.focus(); if(CONTA.nome){ e.value=CONTA.nome; buscaFiado(); } }
 }
+/* Saldo do fiado sempre escrito por extenso: positivo = o cliente DEVE à casa;
+   negativo = CRÉDITO do cliente (ex.: permuta). "deve R$ -7.181" confundia. */
+function fiadoSaldoTxt(v){var n=Number(v)||0;
+  if(n>0.009)return 'cliente deve '+brl(n);
+  if(n<-0.009)return 'crédito do cliente '+brl(-n);
+  return 'sem saldo (não deve nada)'}
 var _fT2=null;
 function buscaFiado(){
   clearTimeout(_fT2);
@@ -27984,8 +27990,8 @@ function buscaFiado(){
     if(!r.ok){l.innerHTML='<div class="err">'+esc(r.erro||'busca falhou')+'</div>';return}
     l.innerHTML=r.clientes.length
       ? '<div class="lst" style="grid-template-columns:1fr;margin-top:6px">'+r.clientes.map(function(c){
-          var st=c.habilitado?('limite '+brl(c.limite)+' · deve '+brl(c.saldo)+' · disponível '+brl(c.disponivel))
-                             :'⚠ sem limite cadastrado';
+          var st=c.habilitado?('limite '+brl(c.limite)+' · '+fiadoSaldoTxt(c.saldo)+' · disponível '+brl(c.disponivel))
+                             :'⚠ sem limite cadastrado'+(Math.abs(Number(c.saldo)||0)>0.009?' · '+fiadoSaldoTxt(c.saldo):'');
           return '<button class="mchip" style="text-align:left" onclick="escolheFiado('+c.codigo+',\\''+esc(c.nome).replace(/\\'/g,'')+'\\','+(c.habilitado?1:0)+')">'+
             '<b>'+esc(c.nome)+'</b><small>'+(c.doc?esc(c.doc)+' · ':'')+st+'</small></button>';
         }).join('')+'</div>'
@@ -28007,7 +28013,7 @@ async function lancaFiado(btn){
   var r=await jpost('/api/caixa/fiado',alvo({numero:MESA,cliente:FIADOCLI.codigo}));
   btn.disabled=false;
   if(!r.ok){er.textContent=r.erro||'não lançou';return}
-  FLASH='✓ '+brl(r.valor)+' no fiado de '+r.cliente+' — conta fechada. Ele deve '+brl(r.saldo_novo)+'.';
+  FLASH='✓ '+brl(r.valor)+' no fiado de '+r.cliente+' — conta fechada. Agora: '+fiadoSaldoTxt(r.saldo_novo)+'.';
   FIADOCLI=null;voltarMesas();listar();
 }
 /* Cartão Prainha no dinheiro: o código digitado aqui reserva o desconto; ele

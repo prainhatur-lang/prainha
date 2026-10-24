@@ -9,6 +9,7 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 import { normalizaBusca } from '@/lib/texto';
 import { AppHeader } from '@/components/app-header';
 import { brl, int } from '@/lib/format';
+import { fiadoSaldoTexto } from '@/lib/fiado-saldo';
 import { hojeBr, diasAtrasBr, brDateStart, brDateEnd } from '@/lib/datas';
 
 export const dynamic = 'force-dynamic';
@@ -441,6 +442,7 @@ export default async function ContasReceberPage(props: { searchParams: Promise<S
                         }`}
                       >
                         {brl(l.saldo)}
+                        <div className="font-sans text-[10px] font-normal">{fiadoSaldoTexto(l.saldo)}</div>
                       </td>
                       <td className="px-4 py-2 text-right text-xs text-slate-500">{int(l.qtd)}</td>
                       <td className="px-4 py-2 text-xs text-slate-600">

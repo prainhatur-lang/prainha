@@ -10,6 +10,7 @@ import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
 import { eq, inArray, and, desc, sql, isNull, ne } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
+import { fiadoSaldoTexto } from '@/lib/fiado-saldo';
 import { ClienteForm, type ValoresCliente } from '../../cliente-form';
 
 export const dynamic = 'force-dynamic';
@@ -97,7 +98,7 @@ export default async function EditarClientePage(props: {
       : [];
   const fmtSaldo = (v: string | null) =>
     v != null && Number(v) !== 0
-      ? `, fiado ${Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })}`
+      ? `, fiado: ${fiadoSaldoTexto(v)}`
       : '';
   const irmaos = parecidos
     .filter((p) => p.filialId !== cliente.filialId)

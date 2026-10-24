@@ -12,6 +12,7 @@ import { db, schema } from '@concilia/db';
 import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDateTime, int } from '@/lib/format';
+import { fiadoSaldoTexto } from '@/lib/fiado-saldo';
 import { LancarFiado } from './lancar-fiado';
 import { ClienteFiltros } from './filtros';
 
@@ -365,7 +366,7 @@ export default async function ClienteFiadoPage(props: {
               {brl(saldo)}
             </p>
             <p className="text-xs text-slate-500">
-              {saldo > 0.01 ? 'cliente deve' : saldo < -0.01 ? 'cliente é credor' : 'zerado'}
+              {fiadoSaldoTexto(saldo)}
             </p>
           </div>
           <div className="rounded-xl border border-slate-200 bg-white p-4">

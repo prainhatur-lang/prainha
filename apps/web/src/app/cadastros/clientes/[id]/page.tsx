@@ -8,6 +8,7 @@ import { db, schema } from '@concilia/db';
 import { and, desc, eq, inArray, sql, or, isNull } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl } from '@/lib/format';
+import { fiadoSaldoTexto } from '@/lib/fiado-saldo';
 
 export const dynamic = 'force-dynamic';
 
@@ -296,7 +297,7 @@ export default async function ClienteDetalhe(props: {
                     href={`/financeiro/receber/${cadastro.id}`}
                     className={saldo > 0 ? 'font-medium text-rose-600 hover:underline' : 'hover:underline'}
                   >
-                    {brl(saldo)} ▸
+                    {fiadoSaldoTexto(saldo)} ▸
                   </Link>
                 ) : (
                   'Sem saldo'
@@ -331,7 +332,7 @@ export default async function ClienteDetalhe(props: {
                   {i > 0 && ' · '}
                   <Link href={`/cadastros/clientes/editar/${k.id}`} className="text-sky-700 hover:underline">
                     {nomeFilial.get(k.filialId) ?? '?'} (cód. {k.codigo}
-                    {k.saldo != null && Number(k.saldo) !== 0 ? `, fiado ${brl(Number(k.saldo))}` : ''})
+                    {k.saldo != null && Number(k.saldo) !== 0 ? `, fiado: ${fiadoSaldoTexto(k.saldo)}` : ''})
                   </Link>
                 </span>
               ))}
