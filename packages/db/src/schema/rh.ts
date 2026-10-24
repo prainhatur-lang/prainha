@@ -85,6 +85,12 @@ export const funcionario = pgTable(
     limiteDiasSemana: smallint('limite_dias_semana'),
     /** Dia que o gerente liberou por fora da trava acima (só aquele dia). */
     limiteLiberadoDia: date('limite_liberado_dia'),
+    /** Hora de entrada ("HH:MM") pra trava de ponto antes da hora (24/10/2026):
+     *  o tablet recusa a primeira entrada do dia antes dela − 10 min. Nulo =
+     *  sem trava. Marcada em /rh/escala-mensal; a loja recebe no roster. */
+    pontoHoraEntrada: varchar('ponto_hora_entrada', { length: 5 }),
+    /** Dia que o gerente autorizou bater antes da hora (só aquele dia). */
+    pontoCedoLiberadoDia: date('ponto_cedo_liberado_dia'),
     /** 'H' | 'M' — só pra regra de domingo da escala mensal (CCT cl.16:
      *  homem folga 1 domingo a cada 5 trabalhados; mulher a cada 2 semanas,
      *  CLT 386). Marcado na grade de /rh/escala-mensal (19/10/2026). */

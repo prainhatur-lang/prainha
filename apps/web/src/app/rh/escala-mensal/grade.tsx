@@ -26,6 +26,44 @@ export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar, at
   const [fixa, setFixa] = useState<Record<string, number | null>>(() =>
     Object.fromEntries(pessoas.map((p) => [p.funcionarioId, p.folgaFixa])),
   );
+  // Trava de ponto antes da hora (24/10/2026): salva na hora, fora do "Salvar escala".
+  const [horaEnt, setHoraEnt] = useState<Record<string, string>>(() =>
+    Object.fromEntries(pessoas.map((p) => [p.funcionarioId, p.horaEntrada ?? ''])),
+  );
+  const [cedoLib, setCedoLib] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(pessoas.map((p) => [p.funcionarioId, p.cedoLiberadoHoje])),
+  );
+  async function postHora(body: unknown) {
+    const r = await fetch('/api/rh/ponto/hora-entrada', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error ?? `erro ${r.status}`);
+    return j;
+  }
+  async function salvarHora(fid: string, nome: string, hora: string) {
+    const antes = horaEnt[fid] ?? '';
+    if (hora === antes) return;
+    setHoraEnt((x) => ({ ...x, [fid]: hora }));
+    try {
+      await postHora({ funcionarioIds: [fid], hora: hora || null });
+      setMsg({ tipo: 'ok', texto: hora ? `${nome}: ponto abre às ${hora} − 10 min.` : `${nome}: sem trava de hora.` });
+    } catch (e) {
+      setHoraEnt((x) => ({ ...x, [fid]: antes }));
+      setMsg({ tipo: 'erro', texto: `${nome}: ${(e as Error).message}` });
+    }
+  }
+  async function liberarCedo(fid: string, nome: string, liberar: boolean) {
+    try {
+      await postHora({ funcionarioId: fid, liberarHoje: liberar });
+      setCedoLib((x) => ({ ...x, [fid]: liberar }));
+      setMsg({ tipo: 'ok', texto: liberar ? `${nome} pode bater mais cedo hoje.` : `${nome}: autorização de hoje desfeita.` });
+    } catch (e) {
+      setMsg({ tipo: 'erro', texto: `${nome}: ${(e as Error).message}` });
+    }
+  }
   const [editado, setEditado] = useState<Record<string, Record<string, boolean>>>({});
   const [salvoEm, setSalvoEm] = useState<Record<string, Record<string, boolean>>>(() =>
     Object.fromEntries(pessoas.map((p) => [p.funcionarioId, p.salvo])),
@@ -173,6 +211,7 @@ export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar, at
         )}
         <span className="text-xs text-slate-500">
           Clique no dia pra trocar trabalho ⇄ folga. Clarinho = sugestão (ainda não salvo). • = bateu ponto.
+          Entrada: o ponto só abre 10 min antes (salva ao sair do campo); &quot;Liberar hoje&quot; autoriza chegar antes.
         </span>
       </div>
       {msg && (
@@ -188,6 +227,12 @@ export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar, at
               <th className="sticky left-0 z-10 min-w-[180px] bg-slate-50 px-2 py-1 text-left font-medium">Pessoa</th>
               <th className="px-1 py-1 font-medium print:hidden">Sexo</th>
               <th className="px-1 py-1 font-medium print:hidden">Folga fixa</th>
+              <th
+                className="px-1 py-1 font-medium print:hidden"
+                title="Hora da entrada: o ponto só abre 10 min antes. Vale só pra primeira entrada do dia (intervalo e saída passam). Vazio = sem trava."
+              >
+                Entrada
+              </th>
               {dias.map((d) => {
                 const w = diaDaSemana(d);
                 return (
@@ -253,6 +298,26 @@ export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar, at
                       ))}
                     </select>
                   </td>
+                  <td className="px-1 py-1 text-center print:hidden">
+                    <input
+                      type="time"
+                      key={horaEnt[fid] ?? ''}
+                      defaultValue={horaEnt[fid] ?? ''}
+                      disabled={!podeEditar}
+                      onBlur={(e) => salvarHora(fid, l.p.nome, e.target.value)}
+                      className="w-[76px] rounded border border-slate-200 bg-white px-1 py-0.5 text-xs"
+                      title="Ponto abre 10 min antes dessa hora (só a 1ª entrada do dia). Vazio = sem trava."
+                    />
+                    {podeEditar && horaEnt[fid] && (
+                      <button
+                        onClick={() => liberarCedo(fid, l.p.nome, !cedoLib[fid])}
+                        className={`mt-0.5 block w-full rounded px-1 py-0.5 text-[10px] ${cedoLib[fid] ? 'bg-emerald-100 text-emerald-700' : 'border border-slate-200 text-slate-500 hover:bg-slate-50'}`}
+                        title="Autoriza bater o ponto antes da hora hoje"
+                      >
+                        {cedoLib[fid] ? '✓ liberado hoje' : 'Liberar hoje'}
+                      </button>
+                    )}
+                  </td>
                   {dias.map((d) => {
                     const f = l.folga[d];
                     const o = l.origem[d];
@@ -305,7 +370,7 @@ export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar, at
           <tfoot>
             <tr className="border-t-2 border-slate-200 bg-slate-50 font-medium text-slate-700">
               <td className="sticky left-0 bg-slate-50 px-2 py-1">Total VT</td>
-              <td colSpan={dias.length + 4} />
+              <td colSpan={dias.length + 5} />
               <td className="whitespace-nowrap px-1 py-1 text-right">
                 {moeda(totalVt.q1)} / {moeda(totalVt.q2)}
               </td>

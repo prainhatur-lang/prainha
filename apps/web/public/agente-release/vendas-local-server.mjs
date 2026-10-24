@@ -952,6 +952,10 @@ async function initSchema() {
   await addCol('ponto_funcionario', 'limite_dias_semana int');
   await addCol('ponto_funcionario', 'limite_liberado_dia text');
   await addCol('ponto_funcionario', 'dias_semana_nuvem jsonb');
+  // Trava de ponto antes da hora (24/10/2026): hora de entrada "HH:MM" e o
+  // dia que o gerente autorizou bater mais cedo, vindos do roster da nuvem.
+  await addCol('ponto_funcionario', 'hora_entrada text');
+  await addCol('ponto_funcionario', 'cedo_liberado_dia text');
   // Batida anulada ("Não sou eu" no tablet, ou excluída pelo RH na nuvem) não
   // conta pra nada local (entrada/saída, cooldown, horas). A linha fica — a fila
   // da nuvem é por cursor de id — e anulada_sync_pendente leva a anulação pra lá.
@@ -10122,6 +10126,32 @@ async function pontoTravaSemana(pessoa, dia) {
     return null;
   }
 }
+// Trava de ponto antes da hora (pedido do dono 24/10/2026: "não permitir bater
+// o ponto antes da hora sem autorização"). Só barra a PRIMEIRA entrada do dia
+// (volta do intervalo e saída passam sempre) de quem tem hora_entrada marcada
+// em /rh/escala-mensal, antes da hora − tolerância. Gerente autoriza o dia no
+// Concilia (cedo_liberado_dia). Retorna a recusa (cooldown) ou null.
+const PONTO_TOLERANCIA_CEDO_MIN = 10;
+function pontoTravaCedo(pessoa, dia, agora) {
+  try {
+    const h = /^(\d{2}):(\d{2})$/.exec(String(pessoa.hora_entrada || ''));
+    if (!h) return null;
+    if (String(pessoa.cedo_liberado_dia || '') === dia) return null;
+    // madrugada antes da virada (00h–05h) é o fim do dia anterior: não trava
+    if (agora.getHours() < PONTO_VIRADA_HORA) return null;
+    const horaMin = Number(h[1]) * 60 + Number(h[2]);
+    const abreMin = horaMin - PONTO_TOLERANCIA_CEDO_MIN;
+    const agoraMin = agora.getHours() * 60 + agora.getMinutes();
+    if (agoraMin >= abreMin) return null;
+    const hhmm = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+    console.log(`[ponto] antes da hora: ${pessoa.nome} às ${hhmm(agoraMin)} (entrada ${pessoa.hora_entrada}) — recusada`);
+    return { ok: false, cooldown: true, bloqueio: 'antes_da_hora',
+      erro: `${pessoa.nome}, sua entrada é às ${pessoa.hora_entrada} — o ponto abre às ${hhmm(abreMin)}. Antes disso, só com autorização do gerente.` };
+  } catch (err) {
+    console.error('[ponto] trava antes da hora:', err.message);
+    return null;
+  }
+}
 // GET /api/ponto/pessoas — roster ativo + estado do dia (fora/trabalhando desde)
 // + face_descriptor de quem já tem, pro reconhecimento comparar no navegador.
 // `marca` = impressão digital de quem está no roster e de quem tem rosto. A
@@ -10323,6 +10353,8 @@ async function apiPontoBaterFacial(body) {
   if (!ultimaHoje) {
     const trava = await pontoTravaSemana(pessoa, dia);
     if (trava) return trava;
+    const cedo = pontoTravaCedo(pessoa, dia, agora);
+    if (cedo) return cedo;
   }
   const [nova] = await sql`INSERT INTO ponto_batida (funcionario_id, quando, dia_operacional, tipo, dispositivo, login_local)
     VALUES (${funcionarioId}, ${agora}, ${dia}, ${tipo}, 'reconhecimento_facial', ${pessoa.login_local}) RETURNING id`;
@@ -10451,6 +10483,8 @@ async function apiPontoBater(body) {
   if (!ultima && tipo === 'entrada') {
     const trava = await pontoTravaSemana(pessoa, dia);
     if (trava) return trava;
+    const cedo = pontoTravaCedo(pessoa, dia, agora);
+    if (cedo) return cedo;
   }
 
   const dispositivo = String(body.dispositivo || '').slice(0, 120) || null;
@@ -10582,6 +10616,16 @@ async function loopPontoRoster() {
         await sql`UPDATE ponto_funcionario SET limite_dias_semana=${lim}, limite_liberado_dia=${lib},
           dias_semana_nuvem=${sql.json(dias)} WHERE funcionario_id=${p.funcionario_id}`;
       } catch (err) { console.error('[ponto] trava da semana (gravação):', err.message); }
+    }
+    // Trava antes da hora: mesma ideia; nuvem antiga (sem o campo) não mexe.
+    for (const p of j.pessoas) {
+      if (!('hora_entrada' in p)) continue;
+      try {
+        const hora = /^([01]\d|2[0-3]):[0-5]\d$/.test(String(p.hora_entrada || '')) ? String(p.hora_entrada) : null;
+        const lib = /^\d{4}-\d{2}-\d{2}$/.test(String(p.cedo_liberado_dia || '')) ? String(p.cedo_liberado_dia) : null;
+        await sql`UPDATE ponto_funcionario SET hora_entrada=${hora}, cedo_liberado_dia=${lib}
+          WHERE funcionario_id=${p.funcionario_id}`;
+      } catch (err) { console.error('[ponto] trava antes da hora (gravação):', err.message); }
     }
     const ids = j.pessoas.map((p) => p.funcionario_id);
     if (ids.length) await sql`UPDATE ponto_funcionario SET ativo=false WHERE NOT (funcionario_id = ANY(${ids})) AND ativo`;

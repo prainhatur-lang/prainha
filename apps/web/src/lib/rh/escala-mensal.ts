@@ -15,7 +15,8 @@
 import { db, schema } from '@concilia/db';
 import { and, asc, eq, gte, inArray, isNull, lt, lte, sql } from 'drizzle-orm';
 import { diaDaSemana, jornadaNoDia, minutosPrevistos } from '@/lib/rh/banco-horas';
-import { somarDias } from '@/lib/rh/dia-operacional';
+import { PONTO_VIRADA_HORA, somarDias } from '@/lib/rh/dia-operacional';
+import { dateToBrYmd } from '@/lib/datas';
 import { diasDoMes, sugerirMes, type Sexo } from '@/lib/rh/escala-mensal-regras';
 
 export * from '@/lib/rh/escala-mensal-regras';
@@ -39,6 +40,10 @@ export interface PessoaEscala {
   ponto: string[];
   /** Dias fora da casa (antes da admissão / depois do desligamento). */
   foraDaCasa: string[];
+  /** Trava de ponto antes da hora (24/10/2026): "HH:MM" ou null = sem trava. */
+  horaEntrada: string | null;
+  /** Gerente autorizou bater mais cedo hoje (dia operacional). */
+  cedoLiberadoHoje: boolean;
 }
 
 export interface EscalaMes {
@@ -65,6 +70,8 @@ export async function montarEscalaMes(filialId: string, mes: string, hoje: strin
       sexo: schema.funcionario.sexo,
       dataAdmissao: schema.funcionario.dataAdmissao,
       dataDesligamento: schema.funcionario.dataDesligamento,
+      pontoHoraEntrada: schema.funcionario.pontoHoraEntrada,
+      pontoCedoLiberadoDia: schema.funcionario.pontoCedoLiberadoDia,
     })
     .from(schema.funcionario)
     .where(and(eq(schema.funcionario.filialId, filialId), eq(schema.funcionario.ativo, true)))
@@ -72,6 +79,7 @@ export async function montarEscalaMes(filialId: string, mes: string, hoje: strin
   const ids = funcionarios.map((f) => f.id);
   if (!ids.length) return { mes, dias, pessoas: [] };
 
+  const diaOpHoje = dateToBrYmd(new Date(Date.now() - PONTO_VIRADA_HORA * 3600 * 1000));
   const janelaPontoIni = janelaDomIni < janelaIni ? janelaDomIni : janelaIni;
   const [salvos, domingosSalvos, vts, vigRows, pontoDias, stelantoDias] = await Promise.all([
     db
@@ -214,6 +222,8 @@ export async function montarEscalaMes(filialId: string, mes: string, hoje: strin
       sugestao,
       ponto: dias.filter((d) => ponto.has(d)),
       foraDaCasa: dias.filter((d) => !naCasa(d)),
+      horaEntrada: f.pontoHoraEntrada ?? null,
+      cedoLiberadoHoje: f.pontoCedoLiberadoDia != null && String(f.pontoCedoLiberadoDia) === diaOpHoje,
     };
   });
 

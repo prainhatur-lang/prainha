@@ -54,6 +54,9 @@ export async function GET(request: Request) {
       gemeoDeId: schema.funcionario.gemeoDeId,
       limiteDiasSemana: schema.funcionario.limiteDiasSemana,
       limiteLiberadoDia: schema.funcionario.limiteLiberadoDia,
+      // trava de ponto antes da hora (24/10/2026; loja antiga ignora)
+      pontoHoraEntrada: schema.funcionario.pontoHoraEntrada,
+      pontoCedoLiberadoDia: schema.funcionario.pontoCedoLiberadoDia,
     })
     .from(schema.funcionario)
     .where(
@@ -155,6 +158,8 @@ export async function GET(request: Request) {
       limite_dias_semana: p.limiteDiasSemana ?? null,
       limite_liberado_dia: p.limiteLiberadoDia ?? null,
       dias_semana: diasPorPessoa.get(p.funcionarioId) ?? [],
+      hora_entrada: p.pontoHoraEntrada ?? null,
+      cedo_liberado_dia: p.pontoCedoLiberadoDia ?? null,
     })),
   });
 }
