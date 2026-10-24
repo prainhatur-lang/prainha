@@ -226,6 +226,14 @@ export default async function PlanoContasPage(props: { searchParams: Promise<SP>
         <p className="mt-1 text-sm text-slate-600">
           {categorias.length} categoria(s) ativa(s) na {filialSelecionada.nome}.
         </p>
+        <p className="mt-2 text-sm">
+          <Link
+            href={`/cadastros/plano-contas/contabil?filialId=${filialSelecionada.id}`}
+            className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
+            📒 Conta do contador · ajustar e exportar
+          </Link>
+        </p>
 
         {filiais.length > 1 && (
           <div className="mt-4 flex flex-wrap items-center gap-2 text-sm">

@@ -18,9 +18,37 @@ export const categoriaConta = pgTable(
     excluidaEm: timestamp('excluida_em', { withTimezone: true }),
     versaoReg: integer('versao_reg'),
     sincronizadoEm: timestamp('sincronizado_em', { withTimezone: true }).notNull().defaultNow(),
+    /** Conta do plano do CONTADOR (classificação, ex. 4.2.1.01.00004) — de-para
+     *  de 24/10/2026. Só o Concilia escreve; o sync do Consumer não toca. */
+    contaContabil: varchar('conta_contabil', { length: 30 }),
+    /** ok | conferir | decidir — como ficou o de-para dessa categoria. */
+    contaContabilSituacao: varchar('conta_contabil_situacao', { length: 12 }),
+    contaContabilObs: text('conta_contabil_obs'),
+    contaContabilEm: timestamp('conta_contabil_em', { withTimezone: true }),
+    contaContabilPor: uuid('conta_contabil_por'),
   },
   (t) => ({
     uniqCodigo: unique('uq_cat_conta_filial_codigo').on(t.filialId, t.codigoExterno),
+  }),
+);
+
+/** Plano de contas do CONTADOR (PDF "PLANO DE CONTAS PRAINHA", sistema do
+ *  escritório). Por organização; as categorias do Consumer apontam pra cá pela
+ *  classificação (`categoria_conta.conta_contabil`). */
+export const planoContabil = pgTable(
+  'plano_contabil',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    organizacaoId: uuid('organizacao_id').notNull().references(() => organizacao.id, { onDelete: 'cascade' }),
+    classificacao: varchar('classificacao', { length: 30 }).notNull(),
+    codigoReduzido: integer('codigo_reduzido'),
+    nome: varchar('nome', { length: 200 }).notNull(),
+    /** Sintética = grupo (não recebe lançamento no sistema do contador). */
+    sintetica: boolean('sintetica').notNull().default(false),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uniqClass: unique('uq_plano_contabil_org_class').on(t.organizacaoId, t.classificacao),
   }),
 );
 
