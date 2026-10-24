@@ -18,6 +18,7 @@ export function RestricoesClient(props: { filialId: string; restricoes: Restrica
   const [busca, setBusca] = useState('');
   const [soFalta, setSoFalta] = useState(false);
   const [soMenu, setSoMenu] = useState(true);
+  const [categoria, setCategoria] = useState('');
   const [ocupado, setOcupado] = useState<string | null>(null);
 
   useEffect(() => {
@@ -55,10 +56,23 @@ export function RestricoesClient(props: { filialId: string; restricoes: Restrica
     return casa.pratos.filter((p) => {
       if (soMenu && !p.noMenu) return false;
       if (soFalta && p.revisado) return false;
+      if (categoria && p.categoria !== categoria) return false;
       if (termo && !dobrar(p.nome + ' ' + p.insumos.join(' ')).includes(termo)) return false;
       return true;
     });
-  }, [casa, soMenu, soFalta, termo]);
+  }, [casa, soMenu, soFalta, termo, categoria]);
+  // Categorias do Consumer com quantos pratos faltam revisar em cada uma.
+  const categorias = useMemo(() => {
+    const m = new Map<string, { total: number; falta: number }>();
+    for (const p of casa?.pratos ?? []) {
+      if (soMenu && !p.noMenu) continue;
+      const c = m.get(p.categoria) ?? { total: 0, falta: 0 };
+      c.total++;
+      if (!p.revisado) c.falta++;
+      m.set(p.categoria, c);
+    }
+    return [...m.entries()].sort((a, b) => b[1].total - a[1].total);
+  }, [casa, soMenu]);
   const insumos = useMemo(() => {
     if (!casa) return [];
     return casa.insumos.filter((i) => !termo || dobrar(i.nome).includes(termo));
@@ -100,11 +114,11 @@ export function RestricoesClient(props: { filialId: string; restricoes: Restrica
                   ? herdado && !manual
                     ? 'cursor-default border-amber-300 bg-amber-100 text-amber-900'
                     : 'border-red-300 bg-red-100 text-red-800'
-                  : 'border-slate-200 bg-white text-slate-300 grayscale hover:grayscale-0'
+                  : 'border-slate-200 bg-white text-slate-400 hover:border-slate-400 hover:text-slate-700'
               }`}
             >
-              {r.emoji}
-              {tem && <span className="ml-0.5">{r.rotulo}</span>}
+              <span className={tem ? '' : 'opacity-40 grayscale'}>{r.emoji}</span>
+              <span className="ml-0.5">{r.rotulo}</span>
             </button>
           );
         })}
@@ -182,6 +196,36 @@ export function RestricoesClient(props: { filialId: string; restricoes: Restrica
         </span>
       </div>
 
+      {aba === 'pratos' && categorias.length > 1 && (
+        <div className="mb-3 flex flex-wrap gap-1.5">
+          <button
+            onClick={() => setCategoria('')}
+            className={`rounded-full border px-2.5 py-1 text-xs ${
+              categoria === '' ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700'
+            }`}
+          >
+            Todas
+          </button>
+          {categorias.map(([nome, c]) => (
+            <button
+              key={nome}
+              onClick={() => setCategoria(categoria === nome ? '' : nome)}
+              title={`${c.falta} de ${c.total} ainda a revisar`}
+              className={`rounded-full border px-2.5 py-1 text-xs ${
+                categoria === nome
+                  ? 'border-slate-900 bg-slate-900 text-white'
+                  : c.falta === 0
+                    ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                    : 'border-slate-300 bg-white text-slate-700'
+              }`}
+            >
+              {nome}{' '}
+              <span className="opacity-70">{c.falta === 0 ? '✔' : `${c.falta}/${c.total}`}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="mb-2 flex flex-wrap gap-3 text-[11px] text-slate-500">
         <span>
           <span className="rounded-full border border-amber-300 bg-amber-100 px-1.5">🟨</span> herdado da ficha (passe
@@ -190,7 +234,7 @@ export function RestricoesClient(props: { filialId: string; restricoes: Restrica
         <span>
           <span className="rounded-full border border-red-300 bg-red-100 px-1.5">🟥</span> marcado direto no prato
         </span>
-        <span>apagado = não contém</span>
+        <span>clarinho = não contém (toque pra marcar)</span>
       </div>
 
       {aba === 'pratos' ? (
@@ -273,11 +317,11 @@ export function RestricoesClient(props: { filialId: string; restricoes: Restrica
                       className={`rounded-full border px-1.5 py-0.5 text-[11px] ${
                         tem
                           ? 'border-amber-300 bg-amber-100 text-amber-900'
-                          : 'border-slate-200 bg-white text-slate-300 grayscale hover:grayscale-0'
+                          : 'border-slate-200 bg-white text-slate-400 hover:border-slate-400 hover:text-slate-700'
                       }`}
                     >
-                      {r.emoji}
-                      {tem && <span className="ml-0.5">{r.rotulo}</span>}
+                      <span className={tem ? '' : 'opacity-40 grayscale'}>{r.emoji}</span>
+                      <span className="ml-0.5">{r.rotulo}</span>
                     </button>
                   );
                 })}

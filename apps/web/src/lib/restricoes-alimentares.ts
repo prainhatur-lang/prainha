@@ -66,6 +66,8 @@ export interface PratoCalculado {
   nome: string;
   nomeNorm: string;
   noMenu: boolean;
+  /** categoria do cardápio (etiqueta do Consumer: Pratos, Petiscos, Vinho…) */
+  categoria: string;
   /** de onde veio a ficha: 'casa', nome da outra casa, ou null (sem ficha) */
   fichaFonte: string | null;
   insumos: string[];
@@ -114,6 +116,9 @@ export async function calcularCasa(filialId: string): Promise<CalculoCasa | null
     >,
     db.execute(sql`
       SELECT p.id, p.nome, p.codigo_externo,
+             (SELECT e.nome FROM produto_etiqueta e
+               WHERE e.filial_id = p.filial_id AND e.codigo_externo::text = p.codigo_etiqueta
+               LIMIT 1) AS categoria,
              EXISTS (SELECT 1 FROM produto_variante pv
                      WHERE pv.produto_id = p.id AND pv.menu_dino AND pv.data_delete IS NULL
                        AND pv.preco_venda > 0) AS no_menu
@@ -123,7 +128,7 @@ export async function calcularCasa(filialId: string): Promise<CalculoCasa | null
         AND p.tipo <> 'INSUMO'
         AND (p.codigo_externo IS NOT NULL
              OR EXISTS (SELECT 1 FROM produto_variante pv WHERE pv.produto_id = p.id AND pv.menu_dino))
-    `) as unknown as Promise<Array<{ id: string; nome: string | null; codigo_externo: number | null; no_menu: boolean }>>,
+    `) as unknown as Promise<Array<{ id: string; nome: string | null; codigo_externo: number | null; categoria: string | null; no_menu: boolean }>>,
     db.execute(sql`
       SELECT ft.filial_id, p.nome AS prato, i.nome AS insumo
       FROM ficha_tecnica ft
@@ -207,6 +212,7 @@ export async function calcularCasa(filialId: string): Promise<CalculoCasa | null
       nome,
       nomeNorm: pn,
       noMenu: !!p.no_menu,
+      categoria: (p.categoria ?? '').trim() || 'Sem categoria',
       fichaFonte: ficha.fonte,
       insumos: [...ficha.insumos.values()],
       contem,

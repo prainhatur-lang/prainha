@@ -43,6 +43,12 @@ export default async function RestricoesPage(props: { searchParams: Promise<{ fi
           <strong>revisado</strong> — só prato revisado aparece pro cliente que filtrou. As marcas valem pelo nome
           nas 3 casas.
         </p>
+        {filiais.length === 1 && (
+          <p className="mt-3 text-sm text-slate-600">
+            Casa: <strong>{filiais[0].nome}</strong>{' '}
+            <span className="text-xs text-slate-400">(este login só tem acesso a esta casa)</span>
+          </p>
+        )}
         {filiais.length > 1 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {filiais.map((f) => (
