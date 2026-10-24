@@ -599,6 +599,11 @@ async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS observacao_sugerida (categoria text, texto text)`;
   // cardápio da mesa em outros idiomas: o texto em português e a tradução (en/fr/es/it)
   await sql`CREATE TABLE IF NOT EXISTS traducao (pt text NOT NULL, idioma text NOT NULL, texto text NOT NULL, PRIMARY KEY (pt, idioma))`;
+  // cardápio inclusivo: selos 🌾 sem glúten / 🥛 sem lactose que a cozinha marca no
+  // Concilia (/cardapio). Cópia local pra o filtro do QR valer sem internet.
+  await sql`CREATE TABLE IF NOT EXISTS produto_restricao_local (produto_codigo integer PRIMARY KEY,
+    sem_gluten boolean NOT NULL DEFAULT false, sem_lactose boolean NOT NULL DEFAULT false,
+    obs text, atualizado_em timestamptz DEFAULT now())`;
   // AVALIE E GANHE UM DRINK: a trava "um por CPF por mês" mora aqui (UNIQUE,
   // atômico). A nuvem recebe a cópia depois (nuvem_em) — sem internet a regra vale igual.
   await sql`CREATE TABLE IF NOT EXISTS avaliacao_brinde (id bigserial PRIMARY KEY,
@@ -4543,6 +4548,76 @@ async function apiVendaCategoria(nome, cliente) {
     FROM produto_local WHERE categoria=${String(nome || '')} ${soCliente(cliente)}
     ORDER BY sem_estoque, nome`;
   return { categoria: String(nome || ''), produtos: agruparVariantes(rows) };
+}
+// ---- CARDÁPIO INCLUSIVO (filtro de restrição no QR da mesa) ----
+// O cliente marca "não posso glúten / lactose" e só aparece o que a COZINHA
+// confirmou que ele pode comer (selo marcado no Concilia, tela /cardapio). Prato
+// sem selo SOME — "não conferido" não é "seguro". Sem restrição escolhida, as
+// rotas de sempre respondem igual (o filtro só entra com ?restr=).
+/** "g,l" → { g, l }; null quando não pediu filtro nenhum. */
+function restrPedida(v) {
+  const t = String(v || '').toLowerCase().split(',').map((x) => x.trim());
+  const r = { g: t.includes('g'), l: t.includes('l') };
+  return r.g || r.l ? r : null;
+}
+/** produto_codigo dos pratos que atendem TODAS as restrições pedidas. */
+async function restrPermitidos(r) {
+  const rows = await sql`SELECT produto_codigo FROM produto_restricao_local
+    WHERE (sem_gluten OR NOT ${r.g}::boolean) AND (sem_lactose OR NOT ${r.l}::boolean)`;
+  return new Set(rows.map((x) => Number(x.produto_codigo)));
+}
+async function restrFiltrar(resp, r) {
+  const ok = await restrPermitidos(r);
+  return { ...resp, produtos: (resp.produtos || []).filter((x) => ok.has(Number(x.produto_codigo))) };
+}
+async function apiVendaCategoriasRestr(r) {
+  const ok = [...(await restrPermitidos(r))];
+  if (!ok.length) return { categorias: [] };
+  const rows = await sql`SELECT categoria, min(categoria_ordem) AS ordem, count(*)::int AS n,
+      (count(*) FILTER (WHERE NOT sem_estoque))::int AS disp
+    FROM produto_local WHERE produto_codigo = ANY(${ok}::int[]) ${soCliente(true)} GROUP BY categoria
+    HAVING count(*) FILTER (WHERE NOT sem_estoque) > 0
+    ORDER BY ordem, categoria`;
+  return { categorias: rows };
+}
+/** O que a tela do cliente precisa: quantos pratos têm cada selo (sem selo
+ *  nenhum na casa, o botão nem aparece) e a observação da cozinha por prato. */
+async function apiMesaRestricoes() {
+  try {
+    const rows = await sql`SELECT r.produto_codigo, r.sem_gluten, r.sem_lactose, r.obs
+      FROM produto_restricao_local r
+      WHERE EXISTS (SELECT 1 FROM produto_local WHERE produto_local.produto_codigo = r.produto_codigo ${soCliente(true)})`;
+    const selos = {};
+    let g = 0, l = 0;
+    for (const x of rows) {
+      if (x.sem_gluten) g++;
+      if (x.sem_lactose) l++;
+      selos[x.produto_codigo] = { g: !!x.sem_gluten, l: !!x.sem_lactose, obs: x.obs || null };
+    }
+    return { ok: true, sem_gluten: g, sem_lactose: l, selos };
+  } catch (e) {
+    return { ok: false, erro: e.message, sem_gluten: 0, sem_lactose: 0, selos: {} };
+  }
+}
+/** Puxa os selos da nuvem e troca a cópia local inteira (lista pequena). */
+async function loopRestricoesNuvem() {
+  if (!FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  try {
+    const d = await chamarNuvem('/api/loja/restricoes');
+    if (!d?.ok || !Array.isArray(d.itens)) return;
+    const linhas = d.itens
+      .filter((x) => Number(x.produto_codigo) > 0)
+      .map((x) => ({ produto_codigo: Number(x.produto_codigo), sem_gluten: !!x.sem_gluten,
+        sem_lactose: !!x.sem_lactose, obs: x.obs ? String(x.obs).slice(0, 300) : null }));
+    await sql.begin(async (t) => {
+      await t`DELETE FROM produto_restricao_local`;
+      if (linhas.length) await t`INSERT INTO produto_restricao_local ${t(linhas, 'produto_codigo', 'sem_gluten', 'sem_lactose', 'obs')}
+        ON CONFLICT (produto_codigo) DO UPDATE SET sem_gluten=EXCLUDED.sem_gluten,
+          sem_lactose=EXCLUDED.sem_lactose, obs=EXCLUDED.obs, atualizado_em=now()`;
+    });
+  } catch (e) {
+    console.error('[restricoes]', e.message);
+  }
 }
 /** Grupos que a casa escondeu do cardápio do cliente. */
 async function apiGruposOcultos() {
@@ -23503,6 +23578,14 @@ const I18N_UI = {
   'Toque no número': ['Tap the number', 'Touchez le nombre', 'Toca el número', 'Tocca il numero'],
   'Mais de # pessoas': ['More than # people', 'Plus de # personnes', 'Más de # personas', 'Più di # persone'],
   '◂ Menos pessoas': ['◂ Fewer people', '◂ Moins de personnes', '◂ Menos personas', '◂ Meno persone'],
+  // cardápio inclusivo (filtro de restrição)
+  'Tenho restrição alimentar': ['I have a dietary restriction', 'J’ai une restriction alimentaire', 'Tengo una restricción alimentaria', 'Ho una restrizione alimentare'],
+  'Sem glúten': ['Gluten-free', 'Sans gluten', 'Sin gluten', 'Senza glutine'],
+  'Sem lactose': ['Lactose-free', 'Sans lactose', 'Sin lactosa', 'Senza lattosio'],
+  '🌾 sem glúten': ['🌾 gluten-free', '🌾 sans gluten', '🌾 sin gluten', '🌾 senza glutine'],
+  '🥛 sem lactose': ['🥛 lactose-free', '🥛 sans lactose', '🥛 sin lactosa', '🥛 senza lattosio'],
+  'Mostrando só o que a cozinha conferiu. Na dúvida, fale com o garçom.': ['Showing only what the kitchen has checked. If in doubt, ask the waiter.', 'Seuls les plats vérifiés par la cuisine sont affichés. En cas de doute, demandez au serveur.', 'Mostrando solo lo que la cocina verificó. Ante la duda, consulta al camarero.', 'Mostriamo solo ciò che la cucina ha verificato. Nel dubbio, chiedi al cameriere.'],
+  'Ainda não temos pratos conferidos pela cozinha pra essa restrição. Fale com o garçom.': ['We don’t have dishes checked by the kitchen for this restriction yet. Please ask the waiter.', 'Nous n’avons pas encore de plats vérifiés par la cuisine pour cette restriction. Demandez au serveur.', 'Todavía no tenemos platos verificados por la cocina para esta restricción. Consulta al camarero.', 'Non abbiamo ancora piatti verificati dalla cucina per questa restrizione. Chiedi al cameriere.'],
 };
 // Frases com NOME no meio (produto, cliente). Regex sobre o texto em português;
 // na saída, $n repete o trecho como veio e %n passa o trecho pelo dicionário.
@@ -24082,6 +24165,16 @@ body{padding-bottom:120px}
 .bped{background:var(--gold2);color:#fff;border:0;border-radius:9px;padding:9px 16px;font:inherit;font-size:14px;font-weight:700;cursor:pointer}
 .bmais{background:#fff;color:var(--ink);border:1px solid var(--line);border-radius:9px;padding:6px 10px;font:inherit;font-size:12px;cursor:pointer}
 #lightbox .lbp{margin-top:16px;padding:12px 40px;font-size:16px}
+.rbox{margin:10px 0 4px;border:1.5px solid var(--line);border-radius:12px;background:#fff;overflow:hidden}
+.rbox.on{border-color:#16a34a;background:#f0fdf4}
+.rtit{display:flex;gap:8px;align-items:center;width:100%;background:none;border:0;padding:11px 12px;font:inherit;font-size:14px;font-weight:600;cursor:pointer;text-align:left;color:var(--ink)}
+.rtit .rset{margin-left:auto;color:var(--mut)}
+.rops{display:flex;flex-wrap:wrap;gap:8px;padding:0 12px 10px}
+.rop{display:flex;gap:6px;align-items:center;border:1.5px solid var(--line);background:#fff;border-radius:999px;padding:8px 14px;font:inherit;font-size:14px;cursor:pointer;color:var(--ink)}
+.rop.on{border-color:#16a34a;background:#16a34a;color:#fff;font-weight:700}
+.rav{padding:0 12px 11px;font-size:12px;color:#166534}
+.pr .pn small.rselo{display:flex;flex-wrap:wrap;gap:4px 8px;color:#15803d;font-size:11.5px;margin-top:3px}
+.pr .pn small.rselo .robs{color:var(--mut)}
 .pr .pn small.pdesc{display:block;color:var(--mut);font-size:11.5px;line-height:1.35;margin-top:2px;
   overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
 #lightbox{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.88);display:none;
@@ -24770,7 +24863,10 @@ async function telaPedir(){
   // conferir ANTES de deixar montar o carrinho: descobrir que a sessao caiu
   // depois de escolher tudo e' a pior hora possivel.
   if(!(await sessaoOk()))return;
+  await carregaRestr();
+  if(CATS&&CATSRQ!==restrQs())CATS=null;
   app('<h1>Cardápio</h1><input type="search" id="bq" placeholder="buscar…" oninput="buscarProd(this.value)">'+
+    restrHtml()+
     '<div id="grid" class="cats"><span class="mut">carregando…</span></div><div id="lst"></div>'+
     '<button class="b g" onclick="inicio()">Voltar</button>');
   // Sem try/catch, um soluço de rede deixava a tela em "carregando…" PRA
@@ -24778,9 +24874,10 @@ async function telaPedir(){
   // Agora a falha aparece e dá pra tentar de novo.
   if(!CATS){
     try{
-      var rc=await fetch('/api/venda/categorias?cliente=1',{cache:'no-store'});
+      var rq=restrQs();
+      var rc=await fetch('/api/venda/categorias?cliente=1'+rq,{cache:'no-store'});
       if(!rc.ok)throw new Error('servidor respondeu '+rc.status);
-      CATS=(await rc.json()).categorias||[];
+      CATS=(await rc.json()).categorias||[];CATSRQ=rq;
     }catch(e){
       CATS=null;
       var ge=document.getElementById('grid');
@@ -24792,7 +24889,8 @@ async function telaPedir(){
   }
   var g=document.getElementById('grid');if(!g)return;
   if(!CATS.length){
-    g.innerHTML='<div class="aviso" style="grid-column:1/-1">Nenhum grupo disponível agora.</div>';
+    g.innerHTML=restrQs()?'<div class="aviso" style="grid-column:1/-1">Ainda não temos pratos conferidos pela cozinha pra essa restrição. Fale com o garçom.</div>'
+      :'<div class="aviso" style="grid-column:1/-1">Nenhum grupo disponível agora.</div>';
     renderCarrinho();return;
   }
   // O cliente não percebia que tinha mais grupos abaixo (a grade rolava
@@ -24803,6 +24901,51 @@ async function telaPedir(){
       '<i>'+iconeGrupo(c.categoria)+'</i>'+esc(c.categoria)+'<span>'+c.disp+' itens</span></button>';
   }).join('');
   renderCarrinho();
+}
+// ---- CARDÁPIO INCLUSIVO ----
+// "Tenho restrição alimentar": o cliente marca sem glúten / sem lactose e o
+// cardápio mostra SÓ o que a cozinha confirmou no Concilia. Prato sem selo
+// some (não conferido não é seguro). A escolha fica guardada no celular.
+// Casa sem nenhum prato marcado: o botão nem aparece e nada muda.
+var RESTR=(function(){try{var v=JSON.parse(localStorage.getItem('restricoes')||'{}');return {g:!!v.g,l:!!v.l}}catch(e){return {g:false,l:false}}})();
+var RINFO=null,CATSRQ='',RABERTO=false;
+async function carregaRestr(){
+  if(RINFO)return;
+  try{RINFO=await (await fetch('/api/mesa/restricoes',{cache:'no-store'})).json()}catch(e){RINFO=null}
+}
+// só vale a restrição que a casa tem marcada — "sem glúten" guardado de outra
+// visita não esvazia o cardápio de uma casa que ainda não conferiu nada
+function restrQs(){
+  if(!RINFO)return '';
+  var t=[];
+  if(RESTR.g&&RINFO.sem_gluten>0)t.push('g');
+  if(RESTR.l&&RINFO.sem_lactose>0)t.push('l');
+  return t.length?'&restr='+t.join(','):'';
+}
+function restrHtml(){
+  if(!RINFO||!(RINFO.sem_gluten>0||RINFO.sem_lactose>0))return '';
+  var on=!!restrQs();
+  var h='<div class="rbox'+(on?' on':'')+'"><button class="rtit" onclick="abreRestr()">'+
+    '<span>🌾</span><span>Tenho restrição alimentar</span><span class="rset">'+(RABERTO||on?'▴':'▾')+'</span></button>';
+  if(RABERTO||on){
+    h+='<div class="rops">';
+    if(RINFO.sem_gluten>0)h+='<button class="rop'+(RESTR.g?' on':'')+'" onclick="togRestr(\\'g\\')"><span>'+(RESTR.g?'✓':'')+'</span><span>Sem glúten</span></button>';
+    if(RINFO.sem_lactose>0)h+='<button class="rop'+(RESTR.l?' on':'')+'" onclick="togRestr(\\'l\\')"><span>'+(RESTR.l?'✓':'')+'</span><span>Sem lactose</span></button>';
+    h+='</div>';
+    if(on)h+='<div class="rav">Mostrando só o que a cozinha conferiu. Na dúvida, fale com o garçom.</div>';
+  }
+  return h+'</div>';
+}
+function abreRestr(){RABERTO=!RABERTO;telaPedir()}
+function togRestr(k){
+  RESTR[k]=!RESTR[k];RABERTO=true;
+  try{localStorage.setItem('restricoes',JSON.stringify(RESTR))}catch(e){}
+  CATS=null;telaPedir();
+}
+function seloRestr(cod){
+  var x=RINFO&&RINFO.selos&&RINFO.selos[cod];if(!x)return '';
+  return '<small class="rselo">'+(x.g?'<span>🌾 sem glúten</span> ':'')+(x.l?'<span>🥛 sem lactose</span>':'')+
+    (x.obs?'<span class="robs">'+esc(x.obs)+'</span>':'')+'</small>';
 }
 // Figura do grupo pelo nome (o Consumer não tem ícone). Primeira regra que
 // casar ganha — "não alcoólica" antes de qualquer destilado.
@@ -24827,7 +24970,7 @@ function iconeGrupo(nome){
   return '🍽️';
 }
 async function abrirCat(nome){
-  var d=await (await fetch('/api/venda/categoria?cliente=1&c='+encodeURIComponent(nome),{cache:'no-store'})).json();
+  var d=await (await fetch('/api/venda/categoria?cliente=1&c='+encodeURIComponent(nome)+restrQs(),{cache:'no-store'})).json();
   document.getElementById('grid').style.display='none';
   listar(d.produtos,nome);
 }
@@ -24839,7 +24982,7 @@ function buscarProd(v){
   if(g)g.style.display='none';
   if(v.length<2)return;
   bdeb=setTimeout(async function(){
-    var d=await (await fetch('/api/venda/busca?q='+encodeURIComponent(v)+'&cliente=1',{cache:'no-store'})).json();
+    var d=await (await fetch('/api/venda/busca?q='+encodeURIComponent(v)+'&cliente=1'+restrQs(),{cache:'no-store'})).json();
     listar(d.produtos,null);
   },300);
 }
@@ -24862,6 +25005,7 @@ function listar(ps,titulo){
     var preco=p.grupo?((p.preco===p.preco_max)?brl(p.preco):(brl(p.preco)+' a '+brl(p.preco_max))):brl(p.preco);
     var sub=p.sem_estoque?'<small>indisponível</small>'
       :(p.grupo?'<small>'+p.disponiveis+' opções</small>':'')+(p.descricao?'<small class="pdesc">'+esc(p.descricao)+'</small>':'');
+    sub+=seloRestr(p.produto_codigo);
     return '<div class="pr cp'+(p.sem_estoque?' off':'')+'">'+mini+
       '<span class="pn">'+esc(p.nome)+(p.tamanho?' <small>['+esc(p.tamanho)+']</small>':'')+sub+
       '<span class="pv">'+preco+'</span></span>'+
@@ -31445,6 +31589,17 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/mesa/i18n.js') { res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'public, max-age=86400' }); return res.end(I18N_JS); }
     if (p === '/api/mesa/traducoes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(await apiMesaTraducoes(u.searchParams.get('lang'))); }
+    // cardápio inclusivo: com ?restr=g,l a busca/grupo do cliente só devolve o que a cozinha marcou
+    if (p === '/api/mesa/restricoes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaRestricoes())); }
+    if (restrPedida(u.searchParams.get('restr')) && u.searchParams.get('cliente') === '1' && (p === '/api/venda/busca' || p === '/api/venda/categoria' || p === '/api/venda/categorias')) {
+      const r = restrPedida(u.searchParams.get('restr'));
+      let out;
+      if (p === '/api/venda/categorias') out = await apiVendaCategoriasRestr(r);
+      else if (p === '/api/venda/categoria') out = await restrFiltrar(await apiVendaCategoria(u.searchParams.get('c') || '', true), r);
+      else if (u.searchParams.get('lang')) out = await restrFiltrar(await apiVendaBuscaIdioma(u.searchParams.get('q') || '', true, u.searchParams.get('lang')), r);
+      else out = await restrFiltrar(await apiVendaBusca(u.searchParams.get('q') || '', true), r);
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(out));
+    }
     // busca do cliente em outro idioma (só quando a tela manda lang=); sem lang, segue a de sempre logo abaixo
     if (p === '/api/venda/busca' && u.searchParams.get('lang')) { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaBuscaIdioma(u.searchParams.get('q') || '', u.searchParams.get('cliente') === '1', u.searchParams.get('lang')))); }
     if (p === '/api/venda/busca') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaBusca(u.searchParams.get('q') || '', u.searchParams.get('cliente') === '1'))); }
@@ -31995,6 +32150,8 @@ async function main() {
   setInterval(() => loopCatalogoNuvem().catch(() => {}), 5 * 60 * 1000);
   setTimeout(() => loopTraducao().catch(() => {}), 2 * 60 * 1000);
   setInterval(() => loopTraducao().catch(() => {}), 10 * 60 * 1000);
+  setTimeout(() => loopRestricoesNuvem().catch(() => {}), 40 * 1000);
+  setInterval(() => loopRestricoesNuvem().catch(() => {}), 10 * 60 * 1000);
   setTimeout(() => loopEspelhoWizard().catch(() => {}), 90 * 1000);
   setInterval(() => loopEspelhoWizard().catch(() => {}), 30 * 60 * 1000);
   setTimeout(() => loopNfceFila().catch(() => {}), 30 * 1000);
