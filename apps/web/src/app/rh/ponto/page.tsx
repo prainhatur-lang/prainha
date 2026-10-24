@@ -183,9 +183,21 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
           .map((x) => [x.id, x.token as string] as const)
       : [],
   );
+  const cercas = await db
+    .select({
+      id: schema.pontoCerca.id,
+      nome: schema.pontoCerca.nome,
+      pontos: schema.pontoCerca.pontos,
+      folgaM: schema.pontoCerca.folgaM,
+      funcionarioIds: schema.pontoCerca.funcionarioIds,
+    })
+    .from(schema.pontoCerca)
+    .where(and(eq(schema.pontoCerca.filialId, filialSelecionada.id), eq(schema.pontoCerca.ativa, true)))
+    .orderBy(schema.pontoCerca.criadoEm);
   const tentativas = await db
     .select({
       id: schema.pontoCelularTentativa.id,
+      cercaId: schema.pontoCelularTentativa.cercaId,
       funcionarioId: schema.pontoCelularTentativa.funcionarioId,
       quando: schema.pontoCelularTentativa.quando,
       resultado: schema.pontoCelularTentativa.resultado,
@@ -280,6 +292,13 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
             lng: casaPonto?.pontoLng != null ? Number(casaPonto.pontoLng) : null,
             raioM: casaPonto?.pontoRaioM ?? 150,
           }}
+          cercas={cercas.map((c) => ({
+            id: c.id,
+            nome: c.nome,
+            pontos: c.pontos,
+            folgaM: c.folgaM,
+            funcionarioIds: c.funcionarioIds ?? [],
+          }))}
           pessoas={funcionarios.map((f) => ({
             id: f.id,
             nome: f.nome,
@@ -295,6 +314,7 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
             motivo: t.motivo,
             distanciaM: t.distanciaM,
             precisaoM: t.precisaoM,
+            cerca: t.cercaId ? (cercas.find((c) => c.id === t.cercaId)?.nome ?? 'área desligada') : null,
           }))}
         />
       </section>

@@ -6,6 +6,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { CercaMapa, type CercaPainel } from './cerca-mapa';
 
 interface Pessoa {
   id: string;
@@ -22,12 +23,15 @@ interface Tentativa {
   motivo: string | null;
   distanciaM: number | null;
   precisaoM: number | null;
+  /** Nome da cerca onde caiu (aceita) ou a mais perto (recusada). */
+  cerca?: string | null;
 }
 interface Props {
   filialId: string;
   casa: { nome: string; lat: number | null; lng: number | null; raioM: number };
   pessoas: Pessoa[];
   tentativas: Tentativa[];
+  cercas?: CercaPainel[];
 }
 
 function fmtDist(m: number | null) {
@@ -44,7 +48,7 @@ function fmtQuando(iso: string) {
   });
 }
 
-export function PontoCelularPainel({ filialId, casa, pessoas, tentativas }: Props) {
+export function PontoCelularPainel({ filialId, casa, pessoas, tentativas, cercas = [] }: Props) {
   const router = useRouter();
   const [aberto, setAberto] = useState(false);
   const [lat, setLat] = useState(casa.lat != null ? String(casa.lat) : '');
@@ -55,6 +59,7 @@ export function PontoCelularPainel({ filialId, casa, pessoas, tentativas }: Prop
   const [busca, setBusca] = useState('');
 
   const ligado = casa.lat != null && casa.lng != null;
+  const comCerca = cercas.length > 0;
   const recusadas = tentativas.filter((t) => !t.aceita).length;
   const origem = typeof window !== 'undefined' ? window.location.origin : 'https://app.prainhabar.com';
   const linkDe = (t: string) => `${origem}/op/ponto/${t}`;
@@ -126,7 +131,8 @@ export function PontoCelularPainel({ filialId, casa, pessoas, tentativas }: Prop
         <span className="text-sm font-semibold text-slate-800">
           📱 Ponto pelo celular{' '}
           <span className="font-normal text-slate-500">
-            — {ligado ? `ligado (raio ${casa.raioM} m)` : 'desligado nesta casa'}
+            — {ligado ? `ligado (raio ${casa.raioM} m)` : comCerca ? 'ligado (só cerca)' : 'desligado nesta casa'}
+            {comCerca && ` · ${cercas.length} área(s) no mapa`}
             {tentativas.length > 0 && ` · ${tentativas.length} tentativa(s) na semana`}
             {recusadas > 0 && <span className="text-red-600">{` · ${recusadas} recusada(s)`}</span>}
           </span>
@@ -178,6 +184,16 @@ export function PontoCelularPainel({ filialId, casa, pessoas, tentativas }: Prop
               )}
             </div>
           </div>
+
+          <CercaMapa
+            filialId={filialId}
+            casa={casa}
+            cercas={cercas}
+            pessoas={pessoas.map((p) => ({ id: p.id, nome: p.nome }))}
+            ocupado={ocupado}
+            post={post}
+            aviso={setMsg}
+          />
 
           <div>
             <div className="mb-2 flex items-center justify-between gap-2">
@@ -258,7 +274,10 @@ export function PontoCelularPainel({ filialId, casa, pessoas, tentativas }: Prop
                     <tr key={t.id} title={t.motivo ?? ''}>
                       <td className="py-1 font-mono">{fmtQuando(t.quando)}</td>
                       <td>{t.nome}</td>
-                      <td className={t.aceita ? 'text-emerald-700' : 'font-medium text-red-700'}>{t.resultado}</td>
+                      <td className={t.aceita ? 'text-emerald-700' : 'font-medium text-red-700'}>
+                        {t.resultado}
+                        {t.cerca && <span className="ml-1 font-normal text-slate-500">· {t.cerca}</span>}
+                      </td>
                       <td className="text-right font-mono">{fmtDist(t.distanciaM)}</td>
                       <td className="text-right font-mono">{t.precisaoM != null ? `${t.precisaoM} m` : '—'}</td>
                     </tr>

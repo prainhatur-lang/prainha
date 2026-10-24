@@ -246,6 +246,9 @@ export const pontoBatida = pgTable(
     geoDistanciaM: integer('geo_distancia_m'),
     /** Distância facial (face-api, x1000) da selfie pro rosto cadastrado. */
     faceDist: integer('face_dist'),
+    /** Cerca geográfica (ponto_cerca) onde a batida do celular caiu; NULL =
+     *  valeu pelo raio da casa. */
+    geoCercaId: uuid('geo_cerca_id'),
   },
   (t) => ({
     /** Reenvio do lote da loja não duplica (mesma régua de cancelamento_item). */
@@ -278,10 +281,38 @@ export const pontoCelularTentativa = pgTable(
     faceDist: integer('face_dist'),
     batidaId: uuid('batida_id').references(() => pontoBatida.id, { onDelete: 'set null' }),
     userAgent: varchar('user_agent', { length: 300 }),
+    /** Cerca onde caiu (aceita) ou a área mais perto (recusada). */
+    cercaId: uuid('cerca_id'),
   },
   (t) => ({
     porDia: index('idx_ponto_celular_tent_dia').on(t.filialId, t.diaOperacional),
     porPessoa: index('idx_ponto_celular_tent_pessoa').on(t.funcionarioId, t.quando),
+  }),
+);
+
+/** Cerca geográfica do ponto pelo celular (24/10/2026): polígono desenhado
+ *  no mapa em /rh/ponto. A batida vale se o GPS cai dentro do raio da casa OU
+ *  dentro de uma cerca da casa que vale pra pessoa. funcionario_ids vazio/NULL
+ *  = vale pra todos da casa; com ids = só pra eles (ex.: motoristas no
+ *  estacionamento). folga_m = tolerância do GPS pra fora da linha.
+ *  ativa=false em vez de apagar (as batidas guardam o geo_cerca_id). */
+export const pontoCerca = pgTable(
+  'ponto_cerca',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    nome: varchar('nome', { length: 80 }).notNull(),
+    /** [[lat, lng], ...] — 3 vértices ou mais, na ordem do desenho. */
+    pontos: jsonb('pontos').$type<[number, number][]>().notNull(),
+    folgaM: integer('folga_m').notNull().default(20),
+    funcionarioIds: uuid('funcionario_ids').array(),
+    ativa: boolean('ativa').notNull().default(true),
+    criadoPor: uuid('criado_por'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    porFilial: index('idx_ponto_cerca_filial').on(t.filialId),
   }),
 );
 

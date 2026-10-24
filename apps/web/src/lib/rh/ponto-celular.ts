@@ -20,6 +20,12 @@
 // batida do dia operacional na casa, 5 min entre batidas, trava de dias por
 // semana (pontoTravaSemana) e trava antes da hora (pontoTravaCedo), só na
 // primeira entrada do dia.
+//
+// Cerca geográfica (24/10/2026, ponto_cerca): além do círculo da casa, o
+// gerente desenha áreas no mapa (/rh/ponto). Vale dentro do círculo OU dentro
+// de uma cerca da casa que vale pra pessoa (vazia = todos; com nomes = só
+// eles, ex.: motoristas no estacionamento). A casa pode ter só cerca, sem
+// círculo. Recusa mostra a distância até a área mais perto.
 
 import crypto from 'node:crypto';
 import { db, schema } from '@concilia/db';
@@ -28,6 +34,7 @@ import { dateToBrYmd } from '@/lib/datas';
 import { PONTO_VIRADA_HORA, horaMinutoBr, somarDias } from '@/lib/rh/dia-operacional';
 import { projetarPontoEmFolhaHoras } from '@/lib/rh/projetar-horas';
 import { avisarLojaRosterPonto } from '@/lib/ponto-loja';
+import { distanciaAoPoligonoM, verticesValidos, type Vertice } from '@/lib/rh/geo-cerca';
 
 /** Mesmo limiar do reconhecimento do tablet (PF_LIMIAR). */
 export const FACE_LIMIAR = 0.45;
@@ -104,12 +111,22 @@ export function fmtDistancia(m: number | null | undefined): string {
   return `${Math.round(m)} m`;
 }
 
+export interface CercaPonto {
+  id: string;
+  nome: string;
+  pontos: Vertice[];
+  folgaM: number;
+}
+
 export interface CasaPonto {
   id: string;
   nome: string;
-  lat: number;
-  lng: number;
+  /** Círculo da casa; null = a casa só tem cerca(s). */
+  lat: number | null;
+  lng: number | null;
   raioM: number;
+  /** Cercas ativas da casa que valem pra esta pessoa. */
+  cercas: CercaPonto[];
 }
 
 /** Pessoa do link + casas dela (principal + extras) que têm local marcado. */
@@ -146,9 +163,32 @@ export async function pessoaDoToken(token: string) {
     })
     .from(schema.filial)
     .where(inArray(schema.filial.id, ids));
+  const cercas = await db
+    .select({
+      id: schema.pontoCerca.id,
+      filialId: schema.pontoCerca.filialId,
+      nome: schema.pontoCerca.nome,
+      pontos: schema.pontoCerca.pontos,
+      folgaM: schema.pontoCerca.folgaM,
+      funcionarioIds: schema.pontoCerca.funcionarioIds,
+    })
+    .from(schema.pontoCerca)
+    .where(and(inArray(schema.pontoCerca.filialId, ids), eq(schema.pontoCerca.ativa, true)));
   const casas: CasaPonto[] = filiais
-    .filter((f) => f.lat != null && f.lng != null)
-    .map((f) => ({ id: f.id, nome: f.nome, lat: Number(f.lat), lng: Number(f.lng), raioM: f.raioM }));
+    .map((f) => ({
+      id: f.id,
+      nome: f.nome,
+      lat: f.lat != null && f.lng != null ? Number(f.lat) : null,
+      lng: f.lat != null && f.lng != null ? Number(f.lng) : null,
+      raioM: f.raioM,
+      cercas: cercas
+        .filter((c) => c.filialId === f.id && (!c.funcionarioIds?.length || c.funcionarioIds.includes(p.id)))
+        .flatMap((c) => {
+          const v = verticesValidos(c.pontos);
+          return v ? [{ id: c.id, nome: c.nome, pontos: v, folgaM: c.folgaM }] : [];
+        }),
+    }))
+    .filter((c) => c.lat != null || c.cercas.length > 0);
   return { ...p, casas, temRosto: !!descritorValido(p.faceDescriptor) };
 }
 
@@ -195,17 +235,33 @@ export async function baterPontoCelular(p: PessoaToken, req: PedidoBatida): Prom
   const lng = Number(req.lng);
   const precisao = Math.round(Number(req.precisao) || 0);
 
-  // Casa mais perto entre as da pessoa.
-  let casa: CasaPonto | null = null;
-  let dist = Infinity;
-  for (const c of p.casas) {
-    const d = distanciaM(lat, lng, c.lat, c.lng);
-    if (d < dist) {
-      dist = d;
-      casa = c;
+  // Áreas da pessoa: o círculo de cada casa e as cercas que valem pra ela.
+  // "falta" = quanto falta pra entrar (<= 0 = dentro). Dentro de alguma, vale;
+  // a cerca tem preferência (fica gravado em qual área bateu). Fora de todas,
+  // a mais perto explica a recusa.
+  type Area = { casa: CasaPonto; cerca: CercaPonto | null; falta: number; dist: number };
+  const areas: Area[] = [];
+  if (Number.isFinite(lat) && Number.isFinite(lng)) {
+    for (const c of p.casas) {
+      if (c.lat != null && c.lng != null) {
+        const d = distanciaM(lat, lng, c.lat, c.lng);
+        areas.push({ casa: c, cerca: null, falta: d - c.raioM, dist: d });
+      }
+      for (const k of c.cercas) {
+        const d = distanciaAoPoligonoM(lat, lng, k.pontos);
+        areas.push({ casa: c, cerca: k, falta: d - k.folgaM, dist: d });
+      }
     }
   }
+  const dentro = areas.filter((a) => a.falta <= 0);
+  const area: Area | null =
+    dentro.find((a) => a.cerca) ?? dentro[0] ?? [...areas].sort((a, b) => a.falta - b.falta)[0] ?? null;
+  const casa: CasaPonto | null = area?.casa ?? p.casas[0] ?? null;
+  // Distância gravada: até o ponto da casa quando ela tem círculo; senão até a cerca.
+  const dist =
+    area && casa?.lat != null && casa.lng != null ? distanciaM(lat, lng, casa.lat, casa.lng) : (area?.dist ?? Infinity);
   const distM = Number.isFinite(dist) ? Math.round(dist) : null;
+  const cercaId = area?.cerca?.id ?? null;
 
   const descr = descritorValido(req.descriptor);
   const cadastrado = descritorValido(p.faceDescriptor);
@@ -234,6 +290,7 @@ export async function baterPontoCelular(p: PessoaToken, req: PedidoBatida): Prom
         faceDist,
         batidaId,
         userAgent: req.userAgent ? req.userAgent.slice(0, 300) : null,
+        cercaId,
       });
     } catch (err) {
       console.error('[ponto-celular] registrar tentativa:', err instanceof Error ? err.message : err);
@@ -244,7 +301,7 @@ export async function baterPontoCelular(p: PessoaToken, req: PedidoBatida): Prom
     return { ok: false, resultado, erro, distanciaM: distM ?? undefined, casa: casa?.nome };
   };
 
-  if (!casa) {
+  if (!casa || (casa.lat == null && casa.cercas.length === 0)) {
     return recusa('sem_casa', 'Sua casa ainda não tem o local marcado pro ponto pelo celular. Bata no tablet.');
   }
   if (!cadastrado) {
@@ -259,7 +316,13 @@ export async function baterPontoCelular(p: PessoaToken, req: PedidoBatida): Prom
       `O GPS do celular está impreciso (${precisao > 0 ? fmtDistancia(precisao) : 'sem sinal'}). Ligue a localização precisa e tente ao ar livre.`,
     );
   }
-  if (dist > casa.raioM) {
+  if (!area || area.falta > 0) {
+    if (area?.cerca) {
+      return recusa(
+        'fora_do_raio',
+        `Você está a ${fmtDistancia(area.dist)} fora da área “${area.cerca.nome}” da ${casa.nome}. Bata quando estiver dentro, ou no tablet.`,
+      );
+    }
     return recusa(
       'fora_do_raio',
       `Você está a ${fmtDistancia(dist)} da ${casa.nome} — o ponto pelo celular só vale até ${casa.raioM} m. Bata quando chegar, ou no tablet.`,
@@ -339,6 +402,7 @@ export async function baterPontoCelular(p: PessoaToken, req: PedidoBatida): Prom
       geoPrecisaoM: precisao,
       geoDistanciaM: Math.round(dist),
       faceDist,
+      geoCercaId: cercaId,
     })
     .returning({ id: schema.pontoBatida.id });
   await registrar('aceita', null, tipo, nova.id);
@@ -356,5 +420,11 @@ export async function baterPontoCelular(p: PessoaToken, req: PedidoBatida): Prom
     console.warn('[ponto-celular] aviso à loja:', err instanceof Error ? err.message : err);
   }
 
-  return { ok: true, tipo, casa: casa.nome, quando: agora.toISOString(), distanciaM: Math.round(dist) };
+  return {
+    ok: true,
+    tipo,
+    casa: area.cerca ? `${casa.nome} (${area.cerca.nome})` : casa.nome,
+    quando: agora.toISOString(),
+    distanciaM: Math.round(dist),
+  };
 }
