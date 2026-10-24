@@ -604,6 +604,12 @@ async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS produto_restricao_local (produto_codigo integer PRIMARY KEY,
     sem_gluten boolean NOT NULL DEFAULT false, sem_lactose boolean NOT NULL DEFAULT false,
     obs text, atualizado_em timestamptz DEFAULT now())`;
+  // cardápio inclusivo COMPLETO (desenho de 15/10/2026): o que cada prato CONTÉM
+  // (códigos da lista de restrições) e se a cozinha revisou. Só vale com a chave
+  // da casa ligada (app_config restricoes_completo=1).
+  await sql`CREATE TABLE IF NOT EXISTS produto_contem_local (produto_codigo integer PRIMARY KEY,
+    contem text NOT NULL DEFAULT '', revisado boolean NOT NULL DEFAULT false,
+    atualizado_em timestamptz DEFAULT now())`;
   // AVALIE E GANHE UM DRINK: a trava "um por CPF por mês" mora aqui (UNIQUE,
   // atômico). A nuvem recebe a cópia depois (nuvem_em) — sem internet a regra vale igual.
   await sql`CREATE TABLE IF NOT EXISTS avaliacao_brinde (id bigserial PRIMARY KEY,
@@ -4558,17 +4564,47 @@ async function apiVendaCategoria(nome, cliente) {
 // confirmou que ele pode comer (selo marcado no Concilia, tela /cardapio). Prato
 // sem selo SOME — "não conferido" não é "seguro". Sem restrição escolhida, as
 // rotas de sempre respondem igual (o filtro só entra com ?restr=).
-/** "g,l" → { g, l }; null quando não pediu filtro nenhum. */
+// Lista completa (15/10/2026): o cliente manda os códigos do que NÃO pode
+// ("gluten,ovo,vegano"). "g"/"l" continuam valendo (glúten/lactose de antes).
+const RESTR_CODIGOS = ['crustaceos', 'moluscos', 'peixe', 'amendoim', 'castanhas', 'ovo', 'soja', 'gergelim',
+  'gluten', 'lactose', 'carne', 'porco', 'frango', 'alcool', 'acucar'];
+const RESTR_VEGETARIANO = ['carne', 'porco', 'frango', 'peixe', 'crustaceos', 'moluscos'];
+const RESTR_VEGANO = [...RESTR_VEGETARIANO, 'ovo', 'lactose'];
+/** "g,l" / "gluten,ovo,vegano" → { g, l, cods }; null quando não pediu filtro nenhum. */
 function restrPedida(v) {
   const t = String(v || '').toLowerCase().split(',').map((x) => x.trim());
-  const r = { g: t.includes('g'), l: t.includes('l') };
-  return r.g || r.l ? r : null;
+  const cods = new Set();
+  for (const x of t) {
+    if (x === 'g') cods.add('gluten');
+    else if (x === 'l') cods.add('lactose');
+    else if (x === 'vegetariano') RESTR_VEGETARIANO.forEach((c) => cods.add(c));
+    else if (x === 'vegano') RESTR_VEGANO.forEach((c) => cods.add(c));
+    else if (RESTR_CODIGOS.includes(x)) cods.add(x);
+  }
+  if (!cods.size) return null;
+  return { g: cods.has('gluten'), l: cods.has('lactose'), cods: [...cods] };
 }
-/** produto_codigo dos pratos que atendem TODAS as restrições pedidas. */
+async function restrCompleto() {
+  try { return (await cfgGet('restricoes_completo', '0')) === '1'; } catch { return false; }
+}
+/** produto_codigo dos pratos que atendem TODAS as restrições pedidas.
+ *  Glúten/lactose: selo antigo (sem_gluten/sem_lactose) OU, com a lista
+ *  completa ligada, prato REVISADO que não contém aquilo. Demais códigos: só
+ *  prato revisado que não contém. Chave desligada = exatamente como antes. */
 async function restrPermitidos(r) {
-  const rows = await sql`SELECT produto_codigo FROM produto_restricao_local
-    WHERE (sem_gluten OR NOT ${r.g}::boolean) AND (sem_lactose OR NOT ${r.l}::boolean)`;
-  return new Set(rows.map((x) => Number(x.produto_codigo)));
+  const completo = await restrCompleto();
+  const leg = await sql`SELECT produto_codigo, sem_gluten, sem_lactose FROM produto_restricao_local`;
+  const novo = completo ? await sql`SELECT produto_codigo, contem, revisado FROM produto_contem_local WHERE revisado` : [];
+  const L = new Map(leg.map((x) => [Number(x.produto_codigo), x]));
+  const N = new Map(novo.map((x) => [Number(x.produto_codigo), new Set(String(x.contem || '').split(',').filter(Boolean))]));
+  const ok = new Set();
+  for (const cod of new Set([...L.keys(), ...N.keys()])) {
+    const a = L.get(cod), cont = N.get(cod);
+    const passa = r.cods.every((c) =>
+      (c === 'gluten' && a?.sem_gluten) || (c === 'lactose' && a?.sem_lactose) || (cont && !cont.has(c)));
+    if (passa) ok.add(cod);
+  }
+  return ok;
 }
 async function restrFiltrar(resp, r) {
   const ok = await restrPermitidos(r);
@@ -4598,9 +4634,16 @@ async function apiMesaRestricoes() {
       if (x.sem_lactose) l++;
       selos[x.produto_codigo] = { g: !!x.sem_gluten, l: !!x.sem_lactose, obs: x.obs || null };
     }
-    return { ok: true, sem_gluten: g, sem_lactose: l, selos };
+    const completo = await restrCompleto();
+    let revisados = 0;
+    if (completo) {
+      const rv = await sql`SELECT count(*)::int AS n FROM produto_contem_local c WHERE c.revisado
+        AND EXISTS (SELECT 1 FROM produto_local WHERE produto_local.produto_codigo = c.produto_codigo ${soCliente(true)})`;
+      revisados = rv[0]?.n || 0;
+    }
+    return { ok: true, sem_gluten: g, sem_lactose: l, selos, completo, revisados };
   } catch (e) {
-    return { ok: false, erro: e.message, sem_gluten: 0, sem_lactose: 0, selos: {} };
+    return { ok: false, erro: e.message, sem_gluten: 0, sem_lactose: 0, selos: {}, completo: false, revisados: 0 };
   }
 }
 /** Puxa os selos da nuvem e troca a cópia local inteira (lista pequena). */
@@ -4619,6 +4662,24 @@ async function loopRestricoesNuvem() {
         ON CONFLICT (produto_codigo) DO UPDATE SET sem_gluten=EXCLUDED.sem_gluten,
           sem_lactose=EXCLUDED.sem_lactose, obs=EXCLUDED.obs, atualizado_em=now()`;
     });
+    // lista completa (nuvem nova): só mexe quando o campo vem
+    if (Array.isArray(d.pratos)) {
+      const vistos = new Set();
+      const ps = [];
+      for (const x of d.pratos) {
+        const c = Number(x.produto_codigo);
+        if (!(c > 0) || vistos.has(c)) continue;
+        vistos.add(c);
+        ps.push({ produto_codigo: c, contem: String(x.contem || '').slice(0, 300), revisado: !!x.revisado });
+      }
+      await sql.begin(async (t) => {
+        await t`DELETE FROM produto_contem_local`;
+        for (let i = 0; i < ps.length; i += 500) {
+          await t`INSERT INTO produto_contem_local ${t(ps.slice(i, i + 500), 'produto_codigo', 'contem', 'revisado')}`;
+        }
+      });
+      await cfgSet('restricoes_completo', d.completo ? '1' : '0');
+    }
   } catch (e) {
     console.error('[restricoes]', e.message);
   }
@@ -23626,6 +23687,29 @@ const I18N_UI = {
   'Tenho restrição alimentar': ['I have a dietary restriction', 'J’ai une restriction alimentaire', 'Tengo una restricción alimentaria', 'Ho una restrizione alimentare'],
   'Sem glúten': ['Gluten-free', 'Sans gluten', 'Sin gluten', 'Senza glutine'],
   'Sem lactose': ['Lactose-free', 'Sans lactose', 'Sin lactosa', 'Senza lattosio'],
+  // lista completa de restrições (15/10/2026)
+  'Alergia a': ['Allergic to', 'Allergie à', 'Alergia a', 'Allergia a'],
+  'Intolerância': ['Intolerance', 'Intolérance', 'Intolerancia', 'Intolleranza'],
+  'Alimentação': ['Diet', 'Régime', 'Alimentación', 'Alimentazione'],
+  'Bebidas': ['Drinks', 'Boissons', 'Bebidas', 'Bevande'],
+  'Crustáceos': ['Shellfish', 'Crustacés', 'Crustáceos', 'Crostacei'],
+  'Moluscos': ['Molluscs', 'Mollusques', 'Moluscos', 'Molluschi'],
+  'Peixe': ['Fish', 'Poisson', 'Pescado', 'Pesce'],
+  'Amendoim': ['Peanuts', 'Arachides', 'Cacahuete', 'Arachidi'],
+  'Castanhas': ['Tree nuts', 'Fruits à coque', 'Frutos secos', 'Frutta a guscio'],
+  'Ovo': ['Egg', 'Œuf', 'Huevo', 'Uova'],
+  'Soja': ['Soy', 'Soja', 'Soja', 'Soia'],
+  'Gergelim': ['Sesame', 'Sésame', 'Sésamo', 'Sesamo'],
+  'Vegetariano': ['Vegetarian', 'Végétarien', 'Vegetariano', 'Vegetariano'],
+  'Vegano': ['Vegan', 'Végan', 'Vegano', 'Vegano'],
+  'Sem carne vermelha': ['No red meat', 'Sans viande rouge', 'Sin carne roja', 'Senza carne rossa'],
+  'Sem porco': ['No pork', 'Sans porc', 'Sin cerdo', 'Senza maiale'],
+  'Sem frango': ['No chicken', 'Sans poulet', 'Sin pollo', 'Senza pollo'],
+  'Sem álcool': ['Alcohol-free', 'Sans alcool', 'Sin alcohol', 'Analcolico'],
+  'Sem açúcar': ['Sugar-free', 'Sans sucre', 'Sin azúcar', 'Senza zucchero'],
+  'Limpar': ['Clear', 'Effacer', 'Borrar', 'Cancella'],
+  'Mostrando só o que a cozinha conferiu.': ['Showing only what the kitchen has checked.', 'Seuls les plats vérifiés par la cuisine sont affichés.', 'Mostrando solo lo que la cocina verificó.', 'Mostriamo solo ciò che la cucina ha verificato.'],
+  'Informe o garçom sobre alergias graves.': ['Tell the waiter about any severe allergy.', 'Signalez toute allergie grave au serveur.', 'Informa al camarero sobre alergias graves.', 'Informa il cameriere di allergie gravi.'],
   '🌾 sem glúten': ['🌾 gluten-free', '🌾 sans gluten', '🌾 sin gluten', '🌾 senza glutine'],
   '🥛 sem lactose': ['🥛 lactose-free', '🥛 sans lactose', '🥛 sin lactosa', '🥛 senza lattosio'],
   'Mostrando só o que a cozinha conferiu. Na dúvida, fale com o garçom.': ['Showing only what the kitchen has checked. If in doubt, ask the waiter.', 'Seuls les plats vérifiés par la cuisine sont affichés. En cas de doute, demandez au serveur.', 'Mostrando solo lo que la cocina verificó. Ante la duda, consulta al camarero.', 'Mostriamo solo ciò che la cucina ha verificato. Nel dubbio, chiedi al cameriere.'],
@@ -24217,6 +24301,7 @@ body{padding-bottom:120px}
 .rop{display:flex;gap:6px;align-items:center;border:1.5px solid var(--line);background:#fff;border-radius:999px;padding:8px 14px;font:inherit;font-size:14px;cursor:pointer;color:var(--ink)}
 .rop.on{border-color:#16a34a;background:#16a34a;color:#fff;font-weight:700}
 .rav{padding:0 12px 11px;font-size:12px;color:#166534}
+.rgt{padding:2px 12px 6px;font-size:11.5px;font-weight:700;color:var(--mut);text-transform:uppercase;letter-spacing:.04em}
 .pr .pn small.rselo{display:flex;flex-wrap:wrap;gap:4px 8px;color:#15803d;font-size:11.5px;margin-top:3px}
 .pr .pn small.rselo .robs{color:var(--mut)}
 .pr .pn small.pdesc{display:block;color:var(--mut);font-size:11.5px;line-height:1.35;margin-top:2px;
@@ -24961,12 +25046,17 @@ async function carregaRestr(){
 // visita não esvazia o cardápio de uma casa que ainda não conferiu nada
 function restrQs(){
   if(!RINFO)return '';
+  if(RINFO.completo){
+    var c=RESTR2.filter(function(x){return RCOD[x]});
+    return c.length?'&restr='+c.join(','):'';
+  }
   var t=[];
   if(RESTR.g&&RINFO.sem_gluten>0)t.push('g');
   if(RESTR.l&&RINFO.sem_lactose>0)t.push('l');
   return t.length?'&restr='+t.join(','):'';
 }
 function restrHtml(){
+  if(RINFO&&RINFO.completo)return restrHtml2();
   if(!RINFO||!(RINFO.sem_gluten>0||RINFO.sem_lactose>0))return '';
   var on=!!restrQs();
   var h='<div class="rbox'+(on?' on':'')+'"><button class="rtit" onclick="abreRestr()">'+
@@ -24986,6 +25076,45 @@ function togRestr(k){
   try{localStorage.setItem('restricoes',JSON.stringify(RESTR))}catch(e){}
   CATS=null;telaPedir();
 }
+// ---- lista completa (15/10/2026): liga pela chave da casa no Concilia ----
+// Código = o que o cliente NÃO pode. Vegetariano/vegano o servidor expande.
+var RGRUPOS=[
+  ['Alergia a',[['crustaceos','🦐','Crustáceos'],['moluscos','🦪','Moluscos'],['peixe','🐟','Peixe'],['amendoim','🥜','Amendoim'],
+    ['castanhas','🌰','Castanhas'],['ovo','🥚','Ovo'],['soja','🫘','Soja'],['gergelim','⚪','Gergelim']]],
+  ['Intolerância',[['gluten','🌾','Sem glúten'],['lactose','🥛','Sem lactose']]],
+  ['Alimentação',[['vegetariano','🥗','Vegetariano'],['vegano','🌱','Vegano'],['carne','🥩','Sem carne vermelha'],
+    ['porco','🐷','Sem porco'],['frango','🐔','Sem frango']]],
+  ['Bebidas',[['alcool','🚫','Sem álcool'],['acucar','🍬','Sem açúcar']]]
+];
+var RCOD={};RGRUPOS.forEach(function(g){g[1].forEach(function(o){RCOD[o[0]]=1})});
+var RESTR2=(function(){
+  try{var v=JSON.parse(localStorage.getItem('restricoes2')||'null');if(Array.isArray(v))return v.filter(function(x){return typeof x==='string'})}catch(e){}
+  var a=[];if(RESTR.g)a.push('gluten');if(RESTR.l)a.push('lactose');return a;
+})();
+function restrHtml2(){
+  var n=RESTR2.filter(function(x){return RCOD[x]}).length,on=n>0;
+  var h='<div class="rbox'+(on?' on':'')+'"><button class="rtit" onclick="abreRestr()">'+
+    '<span>🌾</span><span>Tenho restrição alimentar</span><span class="rset">'+(on?'<span>'+n+'</span> ':'')+(RABERTO?'▴':'▾')+'</span></button>';
+  if(RABERTO){
+    RGRUPOS.forEach(function(g){
+      h+='<div class="rgt"><span>'+g[0]+'</span></div><div class="rops">';
+      g[1].forEach(function(o){
+        var m=RESTR2.indexOf(o[0])>=0;
+        h+='<button class="rop'+(m?' on':'')+'" data-c="'+o[0]+'" onclick="togRestr2(this.dataset.c)"><span>'+(m?'✓':o[1])+'</span><span>'+o[2]+'</span></button>';
+      });
+      h+='</div>';
+    });
+    if(on)h+='<div class="rops"><button class="rop" onclick="limpaRestr2()"><span>✕</span><span>Limpar</span></button></div>';
+  }
+  if(on)h+='<div class="rav"><span>Mostrando só o que a cozinha conferiu.</span> <b>Informe o garçom sobre alergias graves.</b></div>';
+  return h+'</div>';
+}
+function togRestr2(c){
+  var i=RESTR2.indexOf(c);if(i>=0)RESTR2.splice(i,1);else RESTR2.push(c);
+  RABERTO=true;try{localStorage.setItem('restricoes2',JSON.stringify(RESTR2))}catch(e){}
+  CATS=null;telaPedir();
+}
+function limpaRestr2(){RESTR2=[];try{localStorage.setItem('restricoes2','[]')}catch(e){}CATS=null;telaPedir()}
 function seloRestr(cod){
   var x=RINFO&&RINFO.selos&&RINFO.selos[cod];if(!x)return '';
   return '<small class="rselo">'+(x.g?'<span>🌾 sem glúten</span> ':'')+(x.l?'<span>🥛 sem lactose</span>':'')+

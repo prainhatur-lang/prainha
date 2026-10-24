@@ -65,6 +65,12 @@ export default async function CardapioPage(props: {
           levam espessante; a <strong>farofa tem lactose</strong> (manteiga), mas a cozinha faz no
           azeite a pedido.
         </p>
+        <a
+          href={`/cardapio/restricoes?filialId=${filialId}`}
+          className="mt-2 inline-block rounded-md border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-800 hover:bg-emerald-100"
+        >
+          🧾 Lista completa de restrições (alergias, dietas, bebidas) →
+        </a>
         {filiais.length > 1 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {filiais.map((f) => (

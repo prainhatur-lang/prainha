@@ -1,7 +1,12 @@
 // Selos de restrição alimentar da casa, pra loja filtrar o cardápio do QR.
 //
 //   GET ?f=<filial>&e=<expira>&s=<assinatura> → { ok, itens: [{ produto_codigo,
-//        sem_gluten, sem_lactose, obs }] }
+//        sem_gluten, sem_lactose, obs }],
+//        completo, pratos: [{ produto_codigo, contem: 'gluten,ovo', revisado }] }
+//
+// `completo`/`pratos` (desenho de 15/10/2026): lista completa de restrições
+// da tela /cardapio/restricoes. Loja antiga ignora; com `completo` falso a
+// loja nova segue só com os selos sem glúten / sem lactose.
 //
 // Quem marca é a cozinha, na tela /cardapio (tabela produto_restricao, por
 // produto da nuvem). A loja conhece o prato pelo código do Consumer
@@ -12,6 +17,7 @@ import { NextResponse } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { db } from '@concilia/db';
 import { sql } from 'drizzle-orm';
+import { calcularCasa } from '@/lib/restricoes-alimentares';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -50,8 +56,28 @@ export async function GET(request: Request) {
   } catch {
     // tabela ainda não existe (nenhuma casa marcou nada): lista vazia
   }
+  let completo = false;
+  let pratos: Array<{ produto_codigo: number; contem: string; revisado: boolean }> = [];
+  try {
+    const c = await calcularCasa(f);
+    if (c) {
+      completo = c.ligado;
+      const vistos = new Set<number>();
+      for (const p of c.pratos) {
+        if (p.codigoExterno == null || vistos.has(p.codigoExterno)) continue;
+        vistos.add(p.codigoExterno);
+        pratos.push({ produto_codigo: p.codigoExterno, contem: p.assinatura, revisado: p.revisado });
+      }
+    }
+  } catch {
+    // tabelas novas ausentes: segue só com os selos antigos
+    completo = false;
+    pratos = [];
+  }
   return NextResponse.json({
     ok: true,
     itens: itens.map((i) => ({ ...i, produto_codigo: Number(i.produto_codigo) })),
+    completo,
+    pratos,
   });
 }
