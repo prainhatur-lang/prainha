@@ -9,6 +9,9 @@ import { db } from '@concilia/db';
 import { sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { lerRestricoes } from '@/lib/cardapio-restricoes';
+import { filiaisDoUsuario } from '@/lib/filiais';
+import { COOKIE_FILIAL } from '@/lib/filial-ativa';
+import { cookies } from 'next/headers';
 import { CardapioClient } from './cardapio-client';
 
 export const dynamic = 'force-dynamic';
@@ -23,7 +26,14 @@ export default async function CardapioPage(props: {
   if (!user) redirect('/login');
 
   const sp = await props.searchParams;
-  const filialId = sp.filialId ?? FILIAL_PRAINHA;
+  // Casa: ?filialId da URL (como sempre foi) → casa escolhida no menu, se o
+  // usuário tem acesso → Prainha Bar (padrão antigo, continua igual pra quem
+  // não escolheu nada).
+  const filiais = await filiaisDoUsuario(user.id);
+  const doCookie = (await cookies()).get(COOKIE_FILIAL)?.value;
+  const filialId =
+    sp.filialId ??
+    (doCookie && filiais.some((f) => f.id === doCookie) ? doCookie : FILIAL_PRAINHA);
 
   // Inclui pausados (marcados): "peixe inteiro" some do Menudino quando está
   // pausado no PDV, mas o selo de restrição fica pronto pra quando voltar.
@@ -55,6 +65,23 @@ export default async function CardapioPage(props: {
           levam espessante; a <strong>farofa tem lactose</strong> (manteiga), mas a cozinha faz no
           azeite a pedido.
         </p>
+        {filiais.length > 1 && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {filiais.map((f) => (
+              <a
+                key={f.id}
+                href={`?filialId=${f.id}`}
+                className={`rounded-md border px-3 py-1.5 text-sm ${
+                  f.id === filialId
+                    ? 'border-blue-500 bg-blue-50 font-medium text-blue-700'
+                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                {f.nome}
+              </a>
+            ))}
+          </div>
+        )}
         <CardapioClient
           itens={linhas.map((l) => ({
             id: l.id,
