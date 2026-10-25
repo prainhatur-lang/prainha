@@ -277,6 +277,12 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
             >
               semana seguinte →
             </a>
+            <a
+              href={`/rh/ponto/relatorio?filialId=${filialSelecionada.id}&mes=${semana.inicio.slice(0, 7)}`}
+              className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm font-medium text-blue-700 hover:bg-blue-100"
+            >
+              📊 Relatório do mês
+            </a>
           </div>
         </div>
 
