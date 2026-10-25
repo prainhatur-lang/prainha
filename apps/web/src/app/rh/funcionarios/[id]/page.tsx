@@ -34,6 +34,8 @@ import {
   minutosSemana,
   type VigenciaJornada,
 } from '@/lib/rh/banco-horas';
+import { temCarteira } from '@/lib/rh/documento-vinculo';
+import { DocumentosVinculo } from './documentos-vinculo';
 
 export const dynamic = 'force-dynamic';
 
@@ -253,10 +255,25 @@ export default async function FichaFuncionarioPage(props: { params: Promise<{ id
   // Casa pra onde os links apontam: a da lotação se o usuário a enxerga.
   const filialLink = idsFiliais.includes(f.filialId) ? f.filialId : casasDaPessoa.find((c) => idsFiliais.includes(c))!;
 
-  const [veFolha, vePonto] = await Promise.all([
+  const [veFolha, vePonto, podeAdmissaoDoc, podeDesligarDoc] = await Promise.all([
     podeUsuario(user.id, 'folha_equipe.read'),
     podeUsuario(user.id, 'ponto.read'),
+    podeUsuario(user.id, 'funcionario.update'),
+    podeUsuario(user.id, 'funcionario.desligar'),
   ]);
+  // Documentos de entrada e saída (funcionario_documento, 25/10/2026).
+  const docsVinculo = await db
+    .select({
+      id: schema.funcionarioDocumento.id,
+      momento: schema.funcionarioDocumento.momento,
+      tipo: schema.funcionarioDocumento.tipo,
+      descricao: schema.funcionarioDocumento.descricao,
+      arquivoNome: schema.funcionarioDocumento.arquivoNome,
+      criadoEm: schema.funcionarioDocumento.criadoEm,
+    })
+    .from(schema.funcionarioDocumento)
+    .where(and(eq(schema.funcionarioDocumento.funcionarioId, f.id), isNull(schema.funcionarioDocumento.canceladoEm)))
+    .orderBy(asc(schema.funcionarioDocumento.criadoEm));
 
   const hoje = hojeBr();
 
@@ -641,6 +658,21 @@ export default async function FichaFuncionarioPage(props: { params: Promise<{ id
               ))}
             </div>
           )}
+        </Bloco>
+
+        <Bloco
+          titulo="Entrada e saída — documentos"
+          sub="Contrato e exame assinados na entrada; rescisão e exame na saída. Daqui também se dá baixa."
+        >
+          <DocumentosVinculo
+            funcionarioId={f.id}
+            ativo={f.ativo}
+            carteira={temCarteira(f)}
+            dataDesligamento={f.dataDesligamento}
+            docs={docsVinculo.map((d) => ({ ...d, criadoEm: d.criadoEm.toISOString() }))}
+            podeAdmissao={podeAdmissaoDoc}
+            podeDesligar={podeDesligarDoc}
+          />
         </Bloco>
 
         {veFolha && (

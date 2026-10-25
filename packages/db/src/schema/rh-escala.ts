@@ -241,3 +241,33 @@ export const atestadoLeitura = pgTable(
     porCasa: index('idx_atestado_leitura_filial').on(t.filialId, t.criadoEm),
   }),
 );
+
+/** Documentos de entrada e saída do funcionário (pedido do dono 25/10/2026:
+ *  "formalizar quando o pessoal entrar, e quando sair subir os contratos
+ *  assinados e dar baixa"). Um arquivo por linha: contrato, ASO, TRCT...
+ *  `momento` separa admissão de desligamento; `tipo` é a chave de
+ *  lib/rh/documento-vinculo.ts. Arquivo no bucket privado, pasta
+ *  rh-documentos/<filial>/. Cancelar só marca. */
+export const funcionarioDocumento = pgTable(
+  'funcionario_documento',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    funcionarioId: uuid('funcionario_id').notNull().references(() => funcionario.id, { onDelete: 'cascade' }),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    /** admissao | desligamento */
+    momento: varchar('momento', { length: 20 }).notNull(),
+    tipo: varchar('tipo', { length: 40 }).notNull(),
+    descricao: text('descricao'),
+    arquivoPath: text('arquivo_path').notNull(),
+    arquivoNome: varchar('arquivo_nome', { length: 200 }),
+    usuarioId: uuid('usuario_id'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    canceladoEm: timestamp('cancelado_em', { withTimezone: true }),
+    canceladoPor: uuid('cancelado_por'),
+    canceladoMotivo: text('cancelado_motivo'),
+  },
+  (t) => ({
+    porPessoa: index('idx_funcionario_documento_pessoa').on(t.funcionarioId, t.momento),
+    porCasa: index('idx_funcionario_documento_filial').on(t.filialId, t.criadoEm),
+  }),
+);

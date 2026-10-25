@@ -166,6 +166,7 @@
     "migrate:vale-transporte": "tsx scripts/migrate-vale-transporte.ts",
     "migrate:escala-mensal": "tsx scripts/migrate-escala-mensal.ts",
     "migrate:atestado": "tsx scripts/migrate-atestado.ts",
+    "migrate:funcionario-documento": "tsx scripts/migrate-funcionario-documento.ts",
     "migrate:atestado-celular": "tsx scripts/migrate-atestado-celular.ts",
     "migrate:imposto-guia": "tsx scripts/migrate-imposto-guia.ts",
     "migrate:bordero": "tsx scripts/migrate-bordero.ts",
