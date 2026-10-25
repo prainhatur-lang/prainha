@@ -6,7 +6,7 @@
 // mexe no que quiser e aprova ou recusa. Aprovado sai sozinho na hora marcada
 // pelo mesmo motor do bloco Publicar (cron de 5 em 5 min).
 
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { chamar, prepararFoto, quadroDoVideo, quandoBr } from './publicar';
@@ -38,7 +38,141 @@ const paraCampo = (iso: string | null) =>
   iso ? new Date(new Date(iso).getTime() - 3 * 3600_000).toISOString().slice(0, 16) : '';
 const doCampo = (v: string) => (v ? new Date(`${v}:00-03:00`).toISOString() : null);
 
-function Card({ filialId, p }: { filialId: string; p: PostFila }) {
+
+interface ItemIg {
+  id: string;
+  tipo: string;
+  legenda: string;
+  capa: string | null;
+  link: string;
+  quando: string;
+  arquivos: number;
+}
+
+/** Galeria do Instagram de uma casa (pedido do dono 25/10: "pega fotos no Instagram do Prainha Bar"). */
+function DoInstagram({
+  filialId,
+  postId,
+  casas,
+  onPronto,
+  onFechar,
+}: {
+  filialId: string;
+  postId: string;
+  casas: Array<{ id: string; nome: string }>;
+  onPronto: (m: MidiaFila[]) => void;
+  onFechar: () => void;
+}) {
+  const padrao = casas.find((c) => /prainha bar/i.test(c.nome))?.id ?? filialId;
+  const [deCasa, setDeCasa] = useState(padrao);
+  const [itens, setItens] = useState<ItemIg[]>([]);
+  const [proximo, setProximo] = useState<string | null>(null);
+  const [carregando, setCarregando] = useState(false);
+  const [copiando, setCopiando] = useState('');
+  const [erro, setErro] = useState('');
+
+  async function carregar(casa: string, depois: string | null) {
+    setCarregando(true);
+    setErro('');
+    try {
+      const q = new URLSearchParams({ filialId, deCasa: casa });
+      if (depois) q.set('depois', depois);
+      const r = await fetch(`/api/marketing/fila/instagram?${q}`, { cache: 'no-store' });
+      const j = (await r.json().catch(() => null)) as Record<string, unknown> | null;
+      if (!r.ok || !j || j.error) throw new Error(String(j?.error ?? `Falhou (HTTP ${r.status}).`));
+      const novos = (j.itens as ItemIg[]) ?? [];
+      setItens((l) => (depois ? [...l, ...novos] : novos));
+      setProximo((j.proximo as string | null) ?? null);
+    } catch (e) {
+      setErro((e as Error).message);
+    } finally {
+      setCarregando(false);
+    }
+  }
+  useEffect(() => {
+    setItens([]);
+    setProximo(null);
+    void carregar(deCasa, null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deCasa]);
+
+  async function pegar(it: ItemIg) {
+    setCopiando(it.id);
+    setErro('');
+    try {
+      const j = await chamar('/api/marketing/fila/instagram', 'POST', { filialId, id: postId, deCasa, igId: it.id });
+      onPronto(j.midias as MidiaFila[]);
+    } catch (e) {
+      setErro((e as Error).message);
+    } finally {
+      setCopiando('');
+    }
+  }
+
+  return (
+    <div className="mt-2 rounded-md border border-pink-200 bg-pink-50/40 p-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <label className="text-xs text-slate-700">
+          📷 Instagram da{' '}
+          <select
+            value={deCasa}
+            onChange={(e) => setDeCasa(e.target.value)}
+            className="rounded border border-slate-300 px-1 py-0.5 text-xs text-slate-900"
+          >
+            {casas.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.nome}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button type="button" onClick={onFechar} className="text-xs text-slate-500 hover:text-slate-800">
+          fechar
+        </button>
+      </div>
+      <p className="mt-1 text-[11px] text-slate-500">
+        Toque num post pra pôr no card. Carrossel entra com todas as fotos; vídeo entra sozinho (troca o que tiver).
+      </p>
+      {erro && <p className="mt-1 text-xs text-rose-700">{erro}</p>}
+      <div className="mt-2 grid max-h-96 grid-cols-3 gap-1.5 overflow-y-auto sm:grid-cols-4">
+        {itens.map((it) => (
+          <button
+            key={it.id}
+            type="button"
+            disabled={!!copiando}
+            onClick={() => void pegar(it)}
+            title={it.legenda}
+            className="relative aspect-[4/5] overflow-hidden rounded bg-slate-100 text-left disabled:opacity-60"
+          >
+            {it.capa ? (
+              <img src={it.capa} alt="" loading="lazy" className="h-full w-full object-cover" />
+            ) : (
+              <span className="flex h-full items-center justify-center text-xl">🖼</span>
+            )}
+            <span className="absolute left-0.5 top-0.5 rounded bg-black/60 px-1 text-[10px] text-white">
+              {it.tipo === 'VIDEO' ? 'vídeo' : it.tipo === 'CAROUSEL_ALBUM' ? `${it.arquivos || ''} fotos` : 'foto'}
+            </span>
+            <span className="absolute inset-x-0 bottom-0 line-clamp-2 bg-black/50 px-1 text-[10px] leading-tight text-white">
+              {copiando === it.id ? 'copiando…' : it.legenda || ' '}
+            </span>
+          </button>
+        ))}
+      </div>
+      {carregando && <p className="mt-1 text-xs text-slate-500">carregando…</p>}
+      {!carregando && proximo && (
+        <button
+          type="button"
+          onClick={() => void carregar(deCasa, proximo)}
+          className="mt-2 text-xs text-violet-700 hover:underline"
+        >
+          carregar mais
+        </button>
+      )}
+    </div>
+  );
+}
+
+function Card({ filialId, p, casas }: { filialId: string; p: PostFila; casas: Array<{ id: string; nome: string }> }) {
   const router = useRouter();
   const entrada = useRef<HTMLInputElement>(null);
   const [legenda, setLegenda] = useState(p.legenda);
@@ -50,6 +184,7 @@ function Card({ filialId, p }: { filialId: string; p: PostFila }) {
   const [ocupado, setOcupado] = useState('');
   const [msg, setMsg] = useState<{ ok: boolean; txt: string } | null>(null);
   const [aberto, setAberto] = useState(false);
+  const [doIg, setDoIg] = useState(false);
 
   const mudouTexto =
     legenda !== p.legenda || legendaTt !== (p.legendaTiktok ?? '') || quando !== paraCampo(p.agendadoPara) ||
@@ -225,6 +360,13 @@ function Card({ filialId, p }: { filialId: string; p: PostFila }) {
         >
           {subindo > 0 ? 'subindo…' : <>＋<br />foto/vídeo</>}
         </button>
+        <button
+          type="button"
+          onClick={() => setDoIg((x) => !x)}
+          className="flex h-20 w-16 flex-col items-center justify-center rounded border border-dashed border-pink-300 text-[11px] text-pink-700 hover:bg-pink-50"
+        >
+          📷<br />do Instagram
+        </button>
         <input
           ref={entrada}
           type="file"
@@ -237,6 +379,18 @@ function Card({ filialId, p }: { filialId: string; p: PostFila }) {
           }}
         />
       </div>
+      {doIg && (
+        <DoInstagram
+          filialId={filialId}
+          postId={p.id}
+          casas={casas}
+          onPronto={(m) => {
+            setMidias(m);
+            setMsg({ ok: true, txt: 'Mídia do Instagram posta no card.' });
+          }}
+          onFechar={() => setDoIg(false)}
+        />
+      )}
 
       {p.musica && (
         <p className="mt-2 text-xs text-slate-700">
@@ -332,7 +486,18 @@ function Card({ filialId, p }: { filialId: string; p: PostFila }) {
   );
 }
 
-export function FilaAprovacao({ filialId, casa, posts }: { filialId: string; casa: string; posts: PostFila[] }) {
+export function FilaAprovacao({
+  filialId,
+  casa,
+  posts,
+  casas = [],
+}: {
+  filialId: string;
+  casa: string;
+  posts: PostFila[];
+  casas?: Array<{ id: string; nome: string }>;
+}) {
+  const lista = casas.length ? casas : [{ id: filialId, nome: casa }];
   const faltam = posts.filter((p) => !p.midias.length).length;
   return (
     <div className="mt-6 rounded-xl border border-violet-300 bg-violet-50/40 p-4">
@@ -346,7 +511,7 @@ export function FilaAprovacao({ filialId, casa, posts }: { filialId: string; cas
       </p>
       <div className="mt-3 grid gap-3 lg:grid-cols-2">
         {posts.map((p) => (
-          <Card key={p.id} filialId={filialId} p={p} />
+          <Card key={p.id} filialId={filialId} p={p} casas={lista} />
         ))}
       </div>
     </div>

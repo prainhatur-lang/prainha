@@ -413,3 +413,55 @@ export async function postsRecentesInstagram(
     quando: String(m.timestamp ?? ''),
   }));
 }
+
+// ── Galeria do perfil (fila de aprovação → "📷 Do Instagram") ─────────────
+// Pedido do dono 25/10/2026: pegar foto/vídeo que a casa já postou pra montar
+// post novo. Lista com paginação; a cópia pega o link fresco pelo id.
+
+export interface ItemGaleriaInstagram {
+  id: string;
+  tipo: string; // IMAGE | VIDEO | CAROUSEL_ALBUM
+  legenda: string;
+  capa: string | null;
+  link: string;
+  quando: string;
+  /** quantos arquivos (carrossel > 1) */
+  arquivos: number;
+}
+
+export async function galeriaInstagram(
+  token: string,
+  depois?: string | null,
+): Promise<{ itens: ItemGaleriaInstagram[]; proximo: string | null }> {
+  const params: Record<string, string> = {
+    fields: 'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,children{id}',
+    limit: '30',
+  };
+  if (depois) params.after = depois;
+  const j = await chamar('me/media', token, params);
+  const lista = (Array.isArray(j.data) ? j.data : []) as Array<Record<string, unknown>>;
+  const itens = lista.map((m) => ({
+    id: String(m.id),
+    tipo: String(m.media_type ?? ''),
+    legenda: String(m.caption ?? '').slice(0, 200),
+    capa: ((m.media_type === 'VIDEO' ? m.thumbnail_url : m.media_url) as string) || (m.thumbnail_url as string) || null,
+    link: String(m.permalink ?? ''),
+    quando: String(m.timestamp ?? ''),
+    arquivos: (((m.children as { data?: unknown[] } | undefined)?.data ?? []) as unknown[]).length || 1,
+  }));
+  const pag = j.paging as { cursors?: { after?: string }; next?: string } | undefined;
+  return { itens, proximo: pag?.next && pag.cursors?.after ? pag.cursors.after : null };
+}
+
+/** Arquivos de um post na ordem (carrossel: cada item), com link fresco. */
+export async function arquivosPostInstagram(
+  token: string,
+  id: string,
+): Promise<Array<{ tipo: 'foto' | 'video'; url: string }>> {
+  const j = await chamar(id, token, { fields: 'id,media_type,media_url,children{media_type,media_url}' });
+  const filhos = ((j.children as { data?: unknown } | undefined)?.data ?? []) as Array<Record<string, unknown>>;
+  const itens = filhos.length ? filhos : [j];
+  return itens
+    .filter((it) => it.media_url)
+    .map((it) => ({ tipo: it.media_type === 'VIDEO' ? ('video' as const) : ('foto' as const), url: String(it.media_url) }));
+}

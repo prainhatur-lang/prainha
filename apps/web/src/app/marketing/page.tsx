@@ -280,7 +280,7 @@ export default async function MarketingPage(props: {
           </p>
         )}
 
-        {podeConectar && fila.length > 0 && <FilaAprovacao filialId={filial.id} casa={filial.nome} posts={fila} />}
+        {podeConectar && fila.length > 0 && <FilaAprovacao filialId={filial.id} casa={filial.nome} posts={fila} casas={filiais.map((f) => ({ id: f.id, nome: f.nome }))} />}
 
         {podeConectar && (ig.estado === 'ok' || tt.estado === 'ok' || postsFeitos.length > 0) && (
           <Publicar
