@@ -663,6 +663,7 @@ export default async function FichaFuncionarioPage(props: { params: Promise<{ id
         <Bloco
           titulo="Entrada e saída — documentos"
           sub="Contrato e exame assinados na entrada; rescisão e exame na saída. Daqui também se dá baixa."
+          link={{ href: `/rh/entradas-saidas?filialId=${filialLink}`, texto: 'Pendências da casa' }}
         >
           <DocumentosVinculo
             funcionarioId={f.id}
