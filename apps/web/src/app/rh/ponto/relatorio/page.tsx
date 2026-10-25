@@ -69,6 +69,13 @@ interface Resumo {
   previstoMin: number;
   abonadoMin: number;
   saldoMin: number;
+  /** Banco de horas antes do mês: Stelanto + acertos + ponto próprio até o dia 1. */
+  saldoAnteriorMin: number;
+  /** Acertos lançados à mão no /rh/banco-horas com data dentro do mês. */
+  acertosMesMin: number;
+  /** Saldo geral no fim do mês = anterior + acertos do mês + saldo do mês. */
+  saldoGeralMin: number;
+  temLancamento: boolean;
   extraMin: number;
   faltaMin: number;
   faltas: number;
@@ -239,6 +246,59 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
   const ajustesPorPessoa = new Map<string, number>();
   for (const a of ajustes) ajustesPorPessoa.set(a.funcionarioId, (ajustesPorPessoa.get(a.funcionarioId) ?? 0) + 1);
 
+  // Saldo geral (25/10/2026): o mês sozinho esconde a dívida que veio de antes
+  // (ex.: −365 h do Stelanto). Mesma conta do /rh/banco-horas: saldo inicial +
+  // acertos + (trabalhado + abonado − previsto) do ponto próprio até o dia 1.
+  const antesIni = somarDias(ini, -1);
+  const [lancRows, batAntes, atestAntes] = ids.length
+    ? await Promise.all([
+        db
+          .select({
+            funcionarioId: schema.bancoHorasLancamento.funcionarioId,
+            dia: schema.bancoHorasLancamento.dia,
+            minutos: schema.bancoHorasLancamento.minutos,
+          })
+          .from(schema.bancoHorasLancamento)
+          .where(and(inArray(schema.bancoHorasLancamento.funcionarioId, ids), lte(schema.bancoHorasLancamento.dia, fim))),
+        ini > virada
+          ? db
+              .select({
+                funcionarioId: schema.pontoBatida.funcionarioId,
+                filialId: schema.pontoBatida.filialId,
+                dia: schema.pontoBatida.diaOperacional,
+                quando: schema.pontoBatida.quando,
+                tipo: schema.pontoBatida.tipo,
+              })
+              .from(schema.pontoBatida)
+              .where(
+                and(
+                  inArray(schema.pontoBatida.funcionarioId, ids),
+                  gte(schema.pontoBatida.diaOperacional, virada),
+                  lte(schema.pontoBatida.diaOperacional, antesIni),
+                  isNull(schema.pontoBatida.excluidaEm),
+                ),
+              )
+          : Promise.resolve([]),
+        ini > virada ? atestadosNoPeriodo(ids, virada, antesIni) : Promise.resolve([]),
+      ])
+    : [[], [], []];
+  const diaAtestadoAntes = diasDeAtestado(atestAntes, virada, antesIni);
+  // funcionario|dia -> minutos trabalhados antes do mês (por casa, depois soma)
+  const trabAntes = new Map<string, number>();
+  {
+    const porCasa = new Map<string, { quando: Date; tipo: 'entrada' | 'saida' }[]>();
+    for (const b of batAntes) {
+      const k = `${b.funcionarioId}|${b.dia}|${b.filialId}`;
+      const l = porCasa.get(k) ?? [];
+      l.push({ quando: b.quando, tipo: b.tipo as 'entrada' | 'saida' });
+      porCasa.set(k, l);
+    }
+    for (const [k, l] of porCasa) {
+      const [fid, dia] = k.split('|');
+      trabAntes.set(`${fid}|${dia}`, (trabAntes.get(`${fid}|${dia}`) ?? 0) + calcularDia(l).totalMin);
+    }
+  }
+
   const diasMes: string[] = [];
   for (let d = ini; d <= fim; d = somarDias(d, 1)) diasMes.push(d);
 
@@ -266,6 +326,10 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
       previstoMin: 0,
       abonadoMin: 0,
       saldoMin: 0,
+      saldoAnteriorMin: 0,
+      acertosMesMin: 0,
+      saldoGeralMin: 0,
+      temLancamento: false,
       extraMin: 0,
       faltaMin: 0,
       faltas: 0,
@@ -382,6 +446,28 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
         atestado: atest ? atest.descricao || (atest.abona === false ? 'atestado (sem abonar)' : 'atestado') : null,
       });
     }
+    // Saldo anterior e geral (mesma regra do /rh/banco-horas).
+    const lancs = lancRows.filter((l) => l.funcionarioId === f.id);
+    r.temLancamento = lancs.length > 0;
+    for (const l of lancs) {
+      if (l.dia < ini) r.saldoAnteriorMin += l.minutos;
+      else r.acertosMesMin += l.minutos;
+    }
+    if (r.temBanco && ini > virada) {
+      const primeiraVigencia = vigencias.map((v) => v.vigenteDesde).sort()[0] ?? null;
+      let conta = virada;
+      if (primeiraVigencia && primeiraVigencia > conta) conta = primeiraVigencia;
+      if (f.dataAdmissao && f.dataAdmissao > conta) conta = f.dataAdmissao;
+      for (let dia = conta; dia <= antesIni; dia = somarDias(dia, 1)) {
+        const t = trabAntes.get(`${f.id}|${dia}`) ?? 0;
+        const j = jornadaNoDia(vigencias, dia);
+        const prev = j ? minutosPrevistos(j, dia) : 0;
+        const atest = diaAtestadoAntes.get(`${f.id}|${dia}`);
+        const abonado = atest && atest.abona !== false && prev > 0 ? Math.max(prev - t, 0) : 0;
+        r.saldoAnteriorMin += t + abonado - prev;
+      }
+    }
+    r.saldoGeralMin = r.saldoAnteriorMin + r.acertosMesMin + (r.temBanco ? r.saldoMin : 0);
     return r;
   });
 
@@ -413,7 +499,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
   };
 
   const csvSintetico = csvHref([
-    ['Pessoa', 'Cargo', 'Jornada', 'Dias trabalhados', 'Horas trabalhadas', 'Horas previstas', 'Saldo do mês', 'Hora extra', 'Faltas', 'Horas de falta', 'Incompletos', 'Atrasos', 'Min de atraso', 'Dias de atestado', 'Batidas pelo celular', 'Ajustes à mão (inclusão, alteração, exclusão)'],
+    ['Pessoa', 'Cargo', 'Jornada', 'Dias trabalhados', 'Horas trabalhadas', 'Horas previstas', 'Saldo do mês', 'Saldo anterior', 'Acertos do mês', 'Saldo geral', 'Hora extra', 'Faltas', 'Horas de falta', 'Incompletos', 'Atrasos', 'Min de atraso', 'Dias de atestado', 'Batidas pelo celular', 'Ajustes à mão (inclusão, alteração, exclusão)'],
     ...resumos.map((r) => [
       r.nome,
       r.cargo ?? '',
@@ -422,6 +508,9 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
       fmtHoras(r.trabalhadoMin),
       r.temBanco ? fmtHoras(r.previstoMin) : '',
       r.temBanco ? fmtSaldo(r.saldoMin) : '',
+      r.temBanco || r.temLancamento ? fmtSaldo(r.saldoAnteriorMin) : '',
+      r.temBanco || r.temLancamento ? fmtSaldo(r.acertosMesMin) : '',
+      r.temBanco || r.temLancamento ? fmtSaldo(r.saldoGeralMin) : '',
       r.temBanco ? fmtHoras(r.extraMin) : '',
       r.faltas,
       r.temBanco ? fmtHoras(r.faltaMin) : '',
@@ -537,6 +626,8 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
                   <th className="px-2 py-2 text-right">Trabalhado</th>
                   <th className="px-2 py-2 text-right">Previsto</th>
                   <th className="px-2 py-2 text-right">Saldo</th>
+                  <th className="px-2 py-2 text-right" title="Banco de horas antes deste mês: Stelanto + acertos + ponto próprio">Saldo anterior</th>
+                  <th className="px-2 py-2 text-right" title="Saldo anterior + acertos do mês + saldo do mês">Saldo geral</th>
                   <th className="px-2 py-2 text-right">Hora extra</th>
                   <th className="px-2 py-2 text-right">Faltas</th>
                   <th className="px-2 py-2 text-right">Incompl.</th>
@@ -562,6 +653,15 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
                     <td className="px-2 py-2 text-right text-slate-500">{r.temBanco ? fmtHoras(r.previstoMin) : '—'}</td>
                     <td className={`px-2 py-2 text-right font-medium ${!r.temBanco ? 'text-slate-300' : r.saldoMin < 0 ? 'text-red-600' : r.saldoMin > 0 ? 'text-blue-700' : ''}`}>
                       {r.temBanco ? fmtSaldo(r.saldoMin) : '—'}
+                    </td>
+                    <td className={`px-2 py-2 text-right ${!(r.temBanco || r.temLancamento) ? 'text-slate-300' : r.saldoAnteriorMin < 0 ? 'text-red-600' : r.saldoAnteriorMin > 0 ? 'text-blue-700' : 'text-slate-400'}`}>
+                      {r.temBanco || r.temLancamento ? fmtSaldo(r.saldoAnteriorMin) : '—'}
+                    </td>
+                    <td
+                      className={`px-2 py-2 text-right font-semibold ${!(r.temBanco || r.temLancamento) ? 'text-slate-300' : r.saldoGeralMin < 0 ? 'text-red-600' : r.saldoGeralMin > 0 ? 'text-blue-700' : ''}`}
+                      title={r.acertosMesMin ? `inclui ${fmtSaldo(r.acertosMesMin)} de acertos do mês` : undefined}
+                    >
+                      {r.temBanco || r.temLancamento ? fmtSaldo(r.saldoGeralMin) : '—'}
                     </td>
                     <td className="px-2 py-2 text-right text-blue-700">{r.temBanco && r.extraMin ? fmtHoras(r.extraMin) : ''}</td>
                     <td className={`px-2 py-2 text-right ${r.faltas ? 'font-semibold text-red-600' : 'text-slate-300'}`}>{r.faltas || '0'}</td>
@@ -592,6 +692,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
                 <div className="text-xs text-slate-600">
                   {r.diasTrabalhados} dias · {fmtHoras(r.trabalhadoMin)}
                   {r.temBanco ? ` · previsto ${fmtHoras(r.previstoMin)} · saldo ${fmtSaldo(r.saldoMin)}` : ''}
+                  {r.temBanco || r.temLancamento ? ` · saldo anterior ${fmtSaldo(r.saldoAnteriorMin)} · saldo geral ${fmtSaldo(r.saldoGeralMin)}` : ''}
                   {r.faltas ? ` · ${r.faltas} falta(s)` : ''}
                   {r.incompletos ? ` · ${r.incompletos} incompleto(s)` : ''}
                   {r.atrasos ? ` · ${r.atrasos} atraso(s)` : ''}
