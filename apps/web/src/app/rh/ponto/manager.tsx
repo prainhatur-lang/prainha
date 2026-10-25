@@ -41,6 +41,8 @@ interface Props {
   gemeos?: { id: string; gemeoDeId: string; gemeoNome: string }[];
   /** Atestado (21/10/2026): chave `funcionarioId|dia` → observação do atestado. */
   atestados?: { chave: string; descricao: string | null }[];
+  /** Link do relatório (dia incompleto): já abre a correção desse dia. */
+  abrir?: { funcionarioId: string; dia: string };
 }
 
 // O horário digitado é o da loja (BRT, sem horário de verão). Vai com o fuso
@@ -59,10 +61,13 @@ function nomeCurto(nome: string): string {
   return nome.trim().split(/\s+/).slice(0, 2).join(' ');
 }
 
-export function PontoManager({ filialId, dias, funcionarios, grade, gemeos = [], atestados = [] }: Props) {
+export function PontoManager({ filialId, dias, funcionarios, grade, gemeos = [], atestados = [], abrir }: Props) {
   const atestadoDe = new Map(atestados.map((a) => [a.chave, a]));
   const router = useRouter();
-  const [modal, setModal] = useState<{ funcionarioId: string; funcionarioNome: string; dia: string } | null>(null);
+  const [modal, setModal] = useState<{ funcionarioId: string; funcionarioNome: string; dia: string } | null>(() => {
+    const f = abrir ? funcionarios.find((x) => x.id === abrir.funcionarioId) : null;
+    return abrir && f && dias.some((d) => d.iso === abrir.dia) ? { funcionarioId: f.id, funcionarioNome: f.nome, dia: abrir.dia } : null;
+  });
   const byChave = new Map(grade.map((c) => [c.chave, c]));
   const [apagando, setApagando] = useState<string | null>(null);
   // Depois de apagar um rosto: o que cada loja respondeu ao aviso da nuvem

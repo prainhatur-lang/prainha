@@ -22,6 +22,8 @@ export const dynamic = 'force-dynamic';
 interface SP {
   filialId?: string;
   inicio?: string;
+  /** Vem do relatório (dia incompleto): abre a correção desse funcionário nesse dia. */
+  abrir?: string;
 }
 
 export default async function PontoPage(props: { searchParams: Promise<SP> }) {
@@ -317,6 +319,11 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
           gemeos={gemeos}
           grade={[...grade.entries()].map(([chave, v]) => ({ chave, ...v }))}
           atestados={[...diaAtestado.entries()].map(([chave, a]) => ({ chave, descricao: a.descricao }))}
+          abrir={
+            sp.abrir && sp.inicio && /^[0-9a-f-]{36}$/.test(sp.abrir) && /^\d{4}-\d{2}-\d{2}$/.test(sp.inicio)
+              ? { funcionarioId: sp.abrir, dia: sp.inicio }
+              : undefined
+          }
         />
 
         <PontoCelularPainel

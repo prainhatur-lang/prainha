@@ -541,6 +541,10 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
     ),
   ]);
 
+  // Dia incompleto/falta → abre /rh/ponto na semana do dia com a correção aberta.
+  const ajustarHref = (funcionarioId: string, dia: string) =>
+    `/rh/ponto?${new URLSearchParams({ filialId: filial.id, inicio: dia, abrir: funcionarioId }).toString()}`;
+
   const btn = 'rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50';
 
   return (
@@ -665,7 +669,15 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
                     </td>
                     <td className="px-2 py-2 text-right text-blue-700">{r.temBanco && r.extraMin ? fmtHoras(r.extraMin) : ''}</td>
                     <td className={`px-2 py-2 text-right ${r.faltas ? 'font-semibold text-red-600' : 'text-slate-300'}`}>{r.faltas || '0'}</td>
-                    <td className={`px-2 py-2 text-right ${r.incompletos ? 'font-semibold text-amber-700' : 'text-slate-300'}`}>{r.incompletos || '0'}</td>
+                    <td className={`px-2 py-2 text-right ${r.incompletos ? 'font-semibold text-amber-700' : 'text-slate-300'}`}>
+                      {r.incompletos ? (
+                        <a href={url({ view: 'analitico', pessoa: r.id })} title="Ver os dias incompletos e ajustar" className="underline decoration-dotted hover:text-amber-900">
+                          {r.incompletos}
+                        </a>
+                      ) : (
+                        '0'
+                      )}
+                    </td>
                     <td className={`px-2 py-2 text-right ${r.atrasos ? 'text-amber-700' : 'text-slate-300'}`}>
                       {r.atrasos ? `${r.atrasos} (${fmtHoras(r.atrasoMin)})` : r.horaEntrada ? '0' : '—'}
                     </td>
@@ -743,9 +755,20 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
                           </td>
                           <td className="px-4 py-1.5">
                             <div className="flex flex-wrap gap-1">
-                              {d.situacoes.map((s) => (
-                                <span key={s} className={`rounded px-1.5 py-0.5 text-xs ${ROTULO[s].cls}`}>{ROTULO[s].txt}</span>
-                              ))}
+                              {d.situacoes.map((s) =>
+                                s === 'incompleto' || s === 'falta' ? (
+                                  <a
+                                    key={s}
+                                    href={ajustarHref(r.id, d.dia)}
+                                    title="Abrir o dia no ponto pra incluir ou corrigir a batida"
+                                    className={`rounded px-1.5 py-0.5 text-xs underline decoration-dotted hover:opacity-80 print:no-underline ${ROTULO[s].cls}`}
+                                  >
+                                    {ROTULO[s].txt} ✏️
+                                  </a>
+                                ) : (
+                                  <span key={s} className={`rounded px-1.5 py-0.5 text-xs ${ROTULO[s].cls}`}>{ROTULO[s].txt}</span>
+                                ),
+                              )}
                               {d.atrasoMin > 0 && (
                                 <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800">atraso {d.atrasoMin} min</span>
                               )}
