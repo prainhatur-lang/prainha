@@ -307,7 +307,7 @@ function Card({ filialId, p, casas }: { filialId: string; p: PostFila; casas: Ar
   const semMidia = !midias.length;
 
   return (
-    <div className="rounded-lg border border-violet-200 bg-white p-3">
+    <div id={`fila-${p.id}`} className="scroll-mt-4 rounded-lg border border-violet-200 bg-white p-3 target:ring-2 target:ring-emerald-400">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
           <p className="font-medium text-slate-900">{p.titulo || 'Post'}</p>

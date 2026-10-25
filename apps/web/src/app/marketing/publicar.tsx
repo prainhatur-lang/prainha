@@ -553,6 +553,14 @@ export function Publicar({
                       })}
                     </div>
                     <div className="mt-1.5 flex flex-wrap gap-2">
+                      {p.status === 'AGUARDANDO' && (
+                        <a
+                          href={`#fila-${p.id}`}
+                          className="rounded border border-emerald-300 bg-emerald-50 px-2 py-0.5 font-medium text-emerald-800 hover:bg-emerald-100"
+                        >
+                          ✅ Aprovar / publicar ↑
+                        </a>
+                      )}
                       {(p.status === 'ERRO' || p.status === 'PARCIAL') && (
                         <button
                           type="button"
