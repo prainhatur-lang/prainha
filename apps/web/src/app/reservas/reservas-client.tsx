@@ -410,6 +410,12 @@ export function ReservasClient({
               ⏳ Lista de espera
             </Link>
           )}
+          <Link
+            href="/reservas/vales-presente"
+            className="rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-700 active:bg-slate-100 hover:bg-slate-50"
+          >
+            🎁 Vales-presente
+          </Link>
           <button
             onClick={() => setMapaAberto((v) => !v)}
             className="rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-700 active:bg-slate-100 hover:bg-slate-50"
