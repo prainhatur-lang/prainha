@@ -208,6 +208,7 @@
     "migrate:registro-exclusao": "tsx scripts/migrate-registro-exclusao.ts",
     "migrate:pix-pagamento": "tsx scripts/migrate-pix-pagamento.ts",
     "migrate:marketing-post": "tsx scripts/migrate-marketing-post.ts",
+    "migrate:marketing-espelho": "tsx scripts/migrate-marketing-espelho.ts",
     "setup:bucket-marketing": "tsx scripts/setup-bucket-marketing.ts",
     "migrate:peso-relativo-produto": "tsx scripts/migrate-peso-relativo-produto.ts",
     "migrate:nota-conferida-por": "tsx scripts/migrate-nota-conferida-por.ts",

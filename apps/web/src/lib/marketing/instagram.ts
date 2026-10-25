@@ -393,3 +393,23 @@ export async function bioInstagram(token: string): Promise<string> {
     return '';
   }
 }
+
+/** Últimos posts só com id/tipo/data/link (sem números) — usado pelo espelho
+ *  Instagram → TikTok (lib/marketing/espelho.ts), que roda de 10 em 10 min. */
+export async function postsRecentesInstagram(
+  token: string,
+  limite = 8,
+): Promise<Array<{ id: string; tipo: string; produto: string; link: string; quando: string }>> {
+  const j = await chamar('me/media', token, {
+    fields: 'id,media_type,media_product_type,permalink,timestamp',
+    limit: String(limite),
+  });
+  const lista = (Array.isArray(j.data) ? j.data : []) as Array<Record<string, unknown>>;
+  return lista.map((m) => ({
+    id: String(m.id),
+    tipo: String(m.media_type ?? ''),
+    produto: String(m.media_product_type ?? ''),
+    link: String(m.permalink ?? ''),
+    quando: String(m.timestamp ?? ''),
+  }));
+}

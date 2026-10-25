@@ -32,6 +32,7 @@ import { MandarTiktok } from './mandar-tiktok';
 import { BaixarTiktok } from './baixar-tiktok';
 import { Publicar, type PostVisto } from './publicar';
 import { KitPerfil } from './kit-perfil';
+import { Espelho, type EnvioEspelho } from './espelho';
 import { db, schema } from '@concilia/db';
 import { desc, eq } from 'drizzle-orm';
 import { createAdminClient } from '@/lib/supabase/server';
@@ -98,6 +99,23 @@ async function lerTiktok(filialId: string): Promise<Leitura<PerfilTiktok, VideoT
   } catch (e) {
     return { estado: 'erro', usuario: l0.usuario, erro: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/** Interruptor Instagram → TikTok automático da casa + últimos envios. */
+async function lerEspelho(filialId: string) {
+  const [c] = await db.select().from(schema.marketingEspelho).where(eq(schema.marketingEspelho.filialId, filialId)).limit(1);
+  const V = schema.marketingEspelhoEnvio;
+  const envios = await db
+    .select({ igPostId: V.igPostId, igLink: V.igLink, igQuando: V.igQuando, status: V.status, tipo: V.tipo, erro: V.erro })
+    .from(V)
+    .where(eq(V.filialId, filialId))
+    .orderBy(desc(V.criadoEm))
+    .limit(8);
+  return {
+    ativo: !!c?.ativo,
+    desde: c?.desde ? c.desde.toISOString() : null,
+    envios: envios.map((e): EnvioEspelho => ({ ...e, igQuando: e.igQuando ? e.igQuando.toISOString() : null })),
+  };
 }
 
 /** Últimos posts feitos pela tela Publicar, com a 1ª foto assinada pra miniatura. */
@@ -176,12 +194,13 @@ export default async function MarketingPage(props: {
   }
   const filial = escolhida;
 
-  const [ig, tt, ligIg, ligTt, postsFeitos] = await Promise.all([
+  const [ig, tt, ligIg, ligTt, postsFeitos, espelho] = await Promise.all([
     lerInstagram(filial.id),
     lerTiktok(filial.id),
     podeConectar ? ligacaoRede(filial.id, 'instagram').catch(() => null) : null,
     podeConectar ? ligacaoRede(filial.id, 'tiktok').catch(() => null) : null,
     podeConectar ? lerPostsPublicar(filial.id).catch(() => [] as PostVisto[]) : ([] as PostVisto[]),
+    podeConectar ? lerEspelho(filial.id).catch(() => null) : null,
   ]);
   const aviso = sp.aviso ? AVISOS[sp.aviso] : null;
   const nomeRede = sp.rede === 'tiktok' ? 'TikTok' : 'Instagram';
@@ -232,6 +251,22 @@ export default async function MarketingPage(props: {
               ttRascunho: !!ligTt && temRascunhoTiktok(ligTt.escopos),
             }}
             posts={postsFeitos}
+          />
+        )}
+
+        {podeConectar && espelho && (ig.estado === 'ok' || tt.estado === 'ok' || espelho.ativo) && (
+          <Espelho
+            filialId={filial.id}
+            ativo={espelho.ativo}
+            desde={espelho.desde}
+            pronto={
+              ig.estado !== 'ok' || tt.estado !== 'ok'
+                ? 'Conecte o Instagram e o TikTok desta casa (mais abaixo) pra ligar.'
+                : !ligTt || !temRascunhoTiktok(ligTt.escopos)
+                  ? 'A ligação do TikTok não tem a permissão de rascunho (video.upload): clique em Conectar TikTok de novo.'
+                  : null
+            }
+            envios={espelho.envios}
           />
         )}
 
