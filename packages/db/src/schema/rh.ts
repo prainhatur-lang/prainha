@@ -41,8 +41,16 @@ import {
   index,
   jsonb,
   numeric,
+  customType,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+
+/** bytea — o drizzle não traz esse tipo pro Postgres. */
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() {
+    return 'bytea';
+  },
+});
 
 import { filial, usuarioOperacao } from './tenant';
 import { fornecedor } from './financeiro';
@@ -283,6 +291,11 @@ export const pontoCelularTentativa = pgTable(
     userAgent: varchar('user_agent', { length: 300 }),
     /** Cerca onde caiu (aceita) ou a área mais perto (recusada). */
     cercaId: uuid('cerca_id'),
+    /** Selfie da tentativa (25/10/2026): JPEG pequeno (~320px) tirado do
+     *  vídeo na hora de bater — o gerente vê no /rh/ponto quem estava na
+     *  câmera. NULL nas batidas de antes disso. */
+    selfie: bytea('selfie'),
+    selfieMime: varchar('selfie_mime', { length: 40 }),
   },
   (t) => ({
     porDia: index('idx_ponto_celular_tent_dia').on(t.filialId, t.diaOperacional),

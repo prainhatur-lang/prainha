@@ -105,6 +105,8 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
       origem: schema.pontoBatida.origem,
       geoDistanciaM: schema.pontoBatida.geoDistanciaM,
       geoPrecisaoM: schema.pontoBatida.geoPrecisaoM,
+      geoLat: schema.pontoBatida.geoLat,
+      geoLng: schema.pontoBatida.geoLng,
     })
     .from(schema.pontoBatida)
     .where(
@@ -115,6 +117,24 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
         isNull(schema.pontoBatida.excluidaEm),
       ),
     );
+
+  // Batidas do celular que têm selfie guardada (desde 25/10/2026).
+  const idsCelular = batidas.filter((b) => b.origem === 'celular').map((b) => b.id);
+  const comSelfie = new Set(
+    idsCelular.length
+      ? (
+          await db
+            .select({ batidaId: schema.pontoCelularTentativa.batidaId })
+            .from(schema.pontoCelularTentativa)
+            .where(
+              and(
+                inArray(schema.pontoCelularTentativa.batidaId, idsCelular),
+                sql`${schema.pontoCelularTentativa.selfie} IS NOT NULL`,
+              ),
+            )
+        ).map((x) => x.batidaId)
+      : [],
+  );
 
   // agrupa por funcionario|dia -> { batidas cruas (pra edição) + calculo }
   const grade = new Map<
@@ -127,6 +147,9 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
         origem: string;
         geoDistanciaM: number | null;
         geoPrecisaoM: number | null;
+        geoLat: number | null;
+        geoLng: number | null;
+        temSelfie: boolean;
       }[];
       totalMin: number;
       status: string;
@@ -147,6 +170,9 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
             origem: b.origem,
             geoDistanciaM: b.geoDistanciaM,
             geoPrecisaoM: b.geoPrecisaoM,
+            geoLat: b.geoLat != null ? Number(b.geoLat) : null,
+            geoLng: b.geoLng != null ? Number(b.geoLng) : null,
+            temSelfie: comSelfie.has(b.id),
           })),
         totalMin: calc.totalMin,
         status: calc.status,
@@ -204,6 +230,9 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
       motivo: schema.pontoCelularTentativa.motivo,
       distanciaM: schema.pontoCelularTentativa.distanciaM,
       precisaoM: schema.pontoCelularTentativa.precisaoM,
+      lat: schema.pontoCelularTentativa.lat,
+      lng: schema.pontoCelularTentativa.lng,
+      temSelfie: sql<boolean>`(${schema.pontoCelularTentativa.selfie} IS NOT NULL)`,
     })
     .from(schema.pontoCelularTentativa)
     .where(
@@ -314,6 +343,9 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
             motivo: t.motivo,
             distanciaM: t.distanciaM,
             precisaoM: t.precisaoM,
+            lat: t.lat != null ? Number(t.lat) : null,
+            lng: t.lng != null ? Number(t.lng) : null,
+            temSelfie: !!t.temSelfie,
             cerca: t.cercaId ? (cercas.find((c) => c.id === t.cercaId)?.nome ?? 'área desligada') : null,
           }))}
         />

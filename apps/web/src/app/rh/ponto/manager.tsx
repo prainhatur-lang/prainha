@@ -19,6 +19,10 @@ interface BatidaCrua {
   origem?: string;
   geoDistanciaM?: number | null;
   geoPrecisaoM?: number | null;
+  /** Onde o GPS disse que a pessoa estava + se a selfie foi guardada (25/10/2026). */
+  geoLat?: number | null;
+  geoLng?: number | null;
+  temSelfie?: boolean;
 }
 interface Celula {
   chave: string;
@@ -536,6 +540,30 @@ function ModalCorrecao({
                         <span className="ml-1.5 text-xs text-sky-700" title="Batida pelo celular: selfie conferida + GPS dentro do raio da casa">
                           📱 celular a {b.geoDistanciaM ?? '?'} m da casa
                           {b.geoPrecisaoM != null ? ` (GPS ±${b.geoPrecisaoM} m)` : ''}
+                        </span>
+                      )}
+                      {b.origem === 'celular' && (b.temSelfie || (b.geoLat != null && b.geoLng != null)) && (
+                        <span className="mt-1 flex items-center gap-3">
+                          {b.temSelfie && (
+                            <a href={`/api/rh/ponto/selfie?b=${b.id}`} target="_blank" rel="noreferrer" title="Selfie tirada na hora de bater">
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={`/api/rh/ponto/selfie?b=${b.id}`}
+                                alt="Selfie da batida"
+                                className="h-16 w-12 rounded border border-slate-200 object-cover"
+                              />
+                            </a>
+                          )}
+                          {b.geoLat != null && b.geoLng != null && (
+                            <a
+                              href={`https://www.google.com/maps?q=${b.geoLat},${b.geoLng}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-xs text-blue-600 underline"
+                            >
+                              📍 ver no mapa onde bateu
+                            </a>
+                          )}
                         </span>
                       )}
                     </span>

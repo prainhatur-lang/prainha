@@ -33,6 +33,8 @@ const Body = z.object({
   lng: z.number().min(-180).max(180),
   precisao: z.number().min(0).max(1_000_000),
   descriptor: z.array(z.number()).length(128),
+  /** Selfie JPEG em data URL (25/10/2026). Opcional: versão velha da página não manda. */
+  selfie: z.string().max(450_000).optional(),
 });
 
 export async function POST(req: Request) {

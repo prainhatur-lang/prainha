@@ -221,6 +221,22 @@ export interface PedidoBatida {
   precisao: number;
   descriptor: unknown;
   userAgent?: string | null;
+  /** Selfie em JPEG (data URL ou base64), opcional — celular antigo sem ela ainda bate. */
+  selfie?: string | null;
+}
+
+/** Selfie do pedido → JPEG/PNG/WebP de até 300 KB; qualquer coisa estranha vira null. */
+function selfieDoPedido(raw: string | null | undefined): { buf: Buffer; mime: string } | null {
+  if (!raw || typeof raw !== 'string') return null;
+  const m = raw.match(/^data:(image\/(?:jpeg|png|webp));base64,(.+)$/);
+  const mime = m ? m[1]! : 'image/jpeg';
+  try {
+    const buf = Buffer.from(m ? m[2]! : raw, 'base64');
+    if (buf.length < 500 || buf.length > 300_000) return null;
+    return { buf, mime };
+  } catch {
+    return null;
+  }
 }
 
 export type RespostaBatida =
@@ -267,6 +283,7 @@ export async function baterPontoCelular(p: PessoaToken, req: PedidoBatida): Prom
   const cadastrado = descritorValido(p.faceDescriptor);
   const fd = descr && cadastrado ? distanciaFacial(descr, cadastrado) : null;
   const faceDist = fd != null && Number.isFinite(fd) ? Math.round(fd * 1000) : null;
+  const selfie = selfieDoPedido(req.selfie);
 
   const registrar = async (
     resultado: ResultadoTentativa,
@@ -291,6 +308,8 @@ export async function baterPontoCelular(p: PessoaToken, req: PedidoBatida): Prom
         batidaId,
         userAgent: req.userAgent ? req.userAgent.slice(0, 300) : null,
         cercaId,
+        selfie: selfie?.buf ?? null,
+        selfieMime: selfie?.mime ?? null,
       });
     } catch (err) {
       console.error('[ponto-celular] registrar tentativa:', err instanceof Error ? err.message : err);

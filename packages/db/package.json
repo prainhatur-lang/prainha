@@ -228,6 +228,7 @@
     "migrate:vale-presente-valor": "tsx scripts/migrate-vale-presente-valor.ts",
     "migrate:ponto-celular": "tsx scripts/migrate-ponto-celular.ts",
     "migrate:ponto-cerca": "tsx scripts/migrate-ponto-cerca.ts",
+    "migrate:ponto-selfie": "tsx scripts/migrate-ponto-selfie.ts",
     "migrate:plano-contabil": "tsx scripts/migrate-plano-contabil.ts"
   },
   "dependencies": {

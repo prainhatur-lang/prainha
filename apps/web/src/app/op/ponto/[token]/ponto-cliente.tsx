@@ -166,13 +166,35 @@ export function PontoCelularCliente({ token }: { token: string }) {
         setAviso({ ok: false, texto: 'Não achei seu rosto. Fique de frente, com luz no rosto, e tente de novo.' });
         return;
       }
+      // Selfie pequena pro gerente conferir quem bateu (não decide nada aqui).
+      let selfie: string | undefined;
+      try {
+        const v = video.current;
+        if (v && v.videoWidth) {
+          const w = 320;
+          const h = Math.round((v.videoHeight / v.videoWidth) * w);
+          const cv = document.createElement('canvas');
+          cv.width = w;
+          cv.height = h;
+          const ctx = cv.getContext('2d');
+          if (ctx) {
+            // espelhada, igual a pessoa vê na tela
+            ctx.translate(w, 0);
+            ctx.scale(-1, 1);
+            ctx.drawImage(v, 0, 0, w, h);
+            selfie = cv.toDataURL('image/jpeg', 0.7);
+          }
+        }
+      } catch {
+        selfie = undefined;
+      }
       setStatus('Conferindo a localização…');
       const g = await gps.current!;
       setStatus('Enviando…');
       const r = await fetch('/api/ponto-celular', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ token, lat: g.lat, lng: g.lng, precisao: g.precisao, descriptor: Array.from(det.descriptor as Float32Array) }),
+        body: JSON.stringify({ token, lat: g.lat, lng: g.lng, precisao: g.precisao, descriptor: Array.from(det.descriptor as Float32Array), selfie }),
       });
       const j = await r.json().catch(() => ({}));
       pararCamera();

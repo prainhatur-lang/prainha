@@ -23,6 +23,10 @@ interface Tentativa {
   motivo: string | null;
   distanciaM: number | null;
   precisaoM: number | null;
+  /** GPS da tentativa + se a selfie foi guardada (25/10/2026). */
+  lat?: number | null;
+  lng?: number | null;
+  temSelfie?: boolean;
   /** Nome da cerca onde caiu (aceita) ou a mais perto (recusada). */
   cerca?: string | null;
 }
@@ -267,6 +271,7 @@ export function PontoCelularPainel({ filialId, casa, pessoas, tentativas, cercas
                     <th>Resultado</th>
                     <th className="text-right">Distância</th>
                     <th className="text-right">GPS ±</th>
+                    <th className="text-right">Foto · mapa</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -280,6 +285,24 @@ export function PontoCelularPainel({ filialId, casa, pessoas, tentativas, cercas
                       </td>
                       <td className="text-right font-mono">{fmtDist(t.distanciaM)}</td>
                       <td className="text-right font-mono">{t.precisaoM != null ? `${t.precisaoM} m` : '—'}</td>
+                      <td className="text-right whitespace-nowrap">
+                        {t.temSelfie && (
+                          <a href={`/api/rh/ponto/selfie?t=${t.id}`} target="_blank" rel="noreferrer" className="text-blue-600 underline">
+                            📷 foto
+                          </a>
+                        )}
+                        {t.lat != null && t.lng != null && (
+                          <a
+                            href={`https://www.google.com/maps?q=${t.lat},${t.lng}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="ml-2 text-blue-600 underline"
+                          >
+                            📍 mapa
+                          </a>
+                        )}
+                        {!t.temSelfie && (t.lat == null || t.lng == null) && '—'}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
