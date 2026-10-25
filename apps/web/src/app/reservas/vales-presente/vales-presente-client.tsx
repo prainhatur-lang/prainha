@@ -9,6 +9,7 @@ export interface ValeLinha {
   codigo: string;
   token: string;
   status: string;
+  tipo?: string;
   compradorNome: string;
   compradorTelefone: string | null;
   presenteados: string | null;
@@ -109,7 +110,7 @@ export function ValesPresenteClient(p: {
           </Link>
           <h1 className="text-xl font-semibold text-slate-900">🎁 Vales-presente · {p.filialNome}</h1>
           <p className="text-xs text-slate-500">
-            Jantar de presente vendido pela Nina no WhatsApp. Na chegada, procure o código e dê baixa.
+            Jantar de presente vendido pela Nina no WhatsApp e crédito comprado no site. Na chegada, procure o código e dê baixa.
           </p>
         </div>
         {p.filiais.length > 1 && (
@@ -177,8 +178,14 @@ export function ValesPresenteClient(p: {
                       {v.compradorTelefone ? <span className="text-slate-500"> ({v.compradorTelefone})</span> : null}
                     </div>
                     <div className="text-xs text-slate-500">
-                      {v.pessoas} pessoa{v.pessoas === 1 ? '' : 's'}
-                      {v.dataUso ? ` · dia ${v.dataUso}` : ' · dia em aberto'} · {brl(v.total)} com 10%
+                      {v.tipo === 'valor' ? (
+                        <>💳 Crédito {brl(v.total)} (comprado no site)</>
+                      ) : (
+                        <>
+                          {v.pessoas} pessoa{v.pessoas === 1 ? '' : 's'}
+                          {v.dataUso ? ` · dia ${v.dataUso}` : ' · dia em aberto'} · {brl(v.total)} com 10%
+                        </>
+                      )}
                       {v.criadoEm ? ` · criado ${v.criadoEm}` : ''}
                       {v.pagoEm ? ` · pago ${v.pagoEm}` : ''}
                     </div>
@@ -228,6 +235,7 @@ export function ValesPresenteClient(p: {
                   </div>
                 </div>
 
+                {v.itens.length > 0 && (
                 <ul className="mt-3 border-t border-slate-100 pt-2 text-sm text-slate-700">
                   {v.itens.map((i, k) => (
                     <li key={k}>
@@ -236,6 +244,7 @@ export function ValesPresenteClient(p: {
                     </li>
                   ))}
                 </ul>
+                )}
                 {v.mensagem && (
                   <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm italic text-slate-700 whitespace-pre-line">
                     🖨 Cartão: {v.mensagem}

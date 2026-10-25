@@ -13,6 +13,8 @@ const brl = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', curren
 
 export function PresenteClient(p: {
   token: string;
+  /** 'menu' = itens do cardápio (Nina); 'valor' = crédito livre (site). */
+  tipo?: string;
   casa: string;
   codigo: string;
   compradorNome: string;
@@ -64,6 +66,7 @@ export function PresenteClient(p: {
 
   const pago = status === 'pago';
   const usado = status === 'usado';
+  const credito = p.tipo === 'valor';
 
   return (
     <div className="mx-auto max-w-md">
@@ -74,7 +77,7 @@ export function PresenteClient(p: {
       >
         <div className={`px-5 py-4 text-center text-white ${pago ? 'bg-emerald-600' : usado ? 'bg-slate-500' : 'bg-amber-600'}`}>
           <div className="text-xs uppercase tracking-widest opacity-90">Vale-presente · {p.casa}</div>
-          <div className="mt-1 text-2xl font-bold">🎁 Jantar de presente</div>
+          <div className="mt-1 text-2xl font-bold">{credito ? `🎁 ${brl(p.total)} de presente` : '🎁 Jantar de presente'}</div>
           {pago && <div className="mt-2 inline-block rounded-full bg-white px-3 py-1 text-sm font-bold text-emerald-700">✓ QUITADO</div>}
           {usado && <div className="mt-2 text-sm font-semibold">Já utilizado{p.usadoEm ? ` em ${p.usadoEm}` : ''}</div>}
           {status === 'aguardando' && <div className="mt-2 text-sm">Aguardando pagamento</div>}
@@ -101,6 +104,7 @@ export function PresenteClient(p: {
             <p>
               <span className="text-slate-500">De:</span> <b>{p.compradorNome}</b>
             </p>
+            {!credito && (
             <p>
               <span className="text-slate-500">Pessoas:</span> {p.pessoas}
               {p.dataUso && (
@@ -110,6 +114,7 @@ export function PresenteClient(p: {
                 </>
               )}
             </p>
+            )}
           </div>
 
           {p.mensagem && (
@@ -118,6 +123,13 @@ export function PresenteClient(p: {
             </blockquote>
           )}
 
+          {credito ? (
+            <div className="rounded-xl border border-slate-200 px-4 py-3 text-center">
+              <div className="text-xs font-semibold uppercase text-slate-500">Crédito para usar na casa</div>
+              <div className="mt-1 text-3xl font-bold text-slate-900">{brl(p.total)}</div>
+              <p className="mt-1 text-xs text-slate-500">Vale em comida, bebida e serviço. Usado de uma vez, numa visita.</p>
+            </div>
+          ) : (
           <div>
             <div className="mb-1 text-xs font-semibold uppercase text-slate-500">Menu incluso</div>
             <ul className="divide-y divide-slate-100 text-sm">
@@ -150,6 +162,7 @@ export function PresenteClient(p: {
               <p className="mt-2 text-xs text-emerald-700">Tudo pago, inclusive os 10% de serviço.</p>
             )}
           </div>
+          )}
 
           {status === 'aguardando' && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-center">

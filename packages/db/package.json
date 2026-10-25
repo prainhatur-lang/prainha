@@ -225,6 +225,7 @@
     "migrate:loja-certificado": "tsx scripts/migrate-loja-certificado.ts",
     "migrate:pedido-encomenda": "tsx scripts/migrate-pedido-encomenda.ts",
     "migrate:vale-presente": "tsx scripts/migrate-vale-presente.ts",
+    "migrate:vale-presente-valor": "tsx scripts/migrate-vale-presente-valor.ts",
     "migrate:ponto-celular": "tsx scripts/migrate-ponto-celular.ts",
     "migrate:ponto-cerca": "tsx scripts/migrate-ponto-cerca.ts",
     "migrate:plano-contabil": "tsx scripts/migrate-plano-contabil.ts"

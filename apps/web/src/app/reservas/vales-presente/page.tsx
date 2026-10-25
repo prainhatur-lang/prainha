@@ -59,6 +59,7 @@ export default async function ValesPresentePage(props: { searchParams: Promise<{
     codigo: v.codigo,
     token: v.token,
     status: v.status,
+    tipo: v.tipo,
     compradorNome: v.compradorNome,
     compradorTelefone: v.compradorTelefone,
     presenteados: v.presenteados,

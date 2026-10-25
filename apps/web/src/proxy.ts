@@ -26,6 +26,8 @@ const TABUARA_REWRITES: Record<string, string> = {
   '/delivery': '/delivery/tabuara',
   // benefício da 81ª SOEA na Tabuará (até 18/10/2026) — destino do QR do card
   '/soea': '/tabuara/soea',
+  // vale-presente comprado no site (só o caminho exato; /presente/<token> segue igual)
+  '/presente': '/presentear/tabuara',
 };
 // Domínio próprio da Prainha Mar e Grill (filial 03): landing + reserva, no
 // mesmo esquema da Tabuará.
@@ -36,6 +38,7 @@ const PRAINHAMAR_RESERVA_TOKEN =
 const PRAINHAMAR_REWRITES: Record<string, string> = {
   '/': '/prainhamar',
   '/reserva': `/reservar/${PRAINHAMAR_RESERVA_TOKEN}`,
+  '/presente': '/presentear/mar',
 };
 
 // Subdomínio da 81ª SOEA (13 a 18/10/2026): soea.prainhabar.com (root) abre o
@@ -177,7 +180,8 @@ export async function proxy(request: NextRequest) {
   const isCartaoPublico = path.startsWith('/cartao/') || path === '/cartao-prainha';
   // /presente/[token] é o vale-presente (jantar de presente) — Pix e, pago,
   // o voucher QUITADO que o casal mostra na casa. Token na URL; sem login.
-  const isPresentePublico = path.startsWith('/presente/');
+  // /presentear/[casa] é a vitrine do site (escolhe o valor e gera o vale).
+  const isPresentePublico = path.startsWith('/presente/') || path.startsWith('/presentear/');
   const isPublicRoute =
     path === '/' ||
     isPresentePublico ||

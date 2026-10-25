@@ -37,6 +37,8 @@ export const valePresente = pgTable(
     /** Dia previsto do jantar (YYYY-MM-DD). Null = em aberto. */
     dataUso: date('data_uso'),
     pessoas: integer('pessoas').notNull().default(2),
+    /** 'menu' = itens do cardápio (Nina); 'valor' = crédito livre (site). */
+    tipo: varchar('tipo', { length: 10 }).notNull().default('menu'),
     itens: jsonb('itens').$type<ItemValePresente[]>().notNull().default(sql`'[]'::jsonb`),
     subtotal: numeric('subtotal', { precision: 10, scale: 2 }).notNull(),
     servico: numeric('servico', { precision: 10, scale: 2 }).notNull(),

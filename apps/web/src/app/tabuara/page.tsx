@@ -281,6 +281,30 @@ export default async function TabuaraPage() {
       </section>
 
       {/* ---------- VISITE ---------- */}
+      {/* Vale-presente: escolhe o valor, paga no Pix e recebe o vale (/presentear/tabuara). */}
+      <section id="presente" className="scroll-mt-20 bg-[#12100d]">
+        <div className="mx-auto grid max-w-6xl items-center gap-10 px-5 py-20 sm:px-8 md:grid-cols-2">
+          <div>
+            <p className="text-xs uppercase tracking-[0.35em] text-[#c9a24b]">Vale-presente</p>
+            <h2 className="mt-5 text-4xl leading-tight text-[#f3ede1] sm:text-5xl" style={serif}>
+              Dê um presente para <span className="italic text-[#d9bd82]">quem você ama</span>
+            </h2>
+            <p className="mt-5 max-w-md leading-relaxed text-[#b8ad99]">
+              Uma noite de gastronomia sensorial de presente. Escolha o valor, escreva o cartão e pague no Pix — o vale chega na hora, pronto pra encaminhar.
+            </p>
+            <a href="/presentear/tabuara" className="mt-8 inline-flex items-center gap-2 rounded-full bg-[#c9a24b] px-8 py-4 text-sm font-medium text-[#0d0b09] transition-all hover:bg-[#d9bd82]">
+              🎁 Presentear <ArrowRight className="h-4 w-4" />
+            </a>
+          </div>
+          <a href="/presentear/tabuara" className="relative block aspect-[1.6/1] overflow-hidden rounded-2xl border border-[#c9a24b]/30 bg-gradient-to-br from-[#2a2218] via-[#14110d] to-[#3a2c17] p-7 shadow-2xl transition-transform hover:-translate-y-1">
+            <span className="text-[11px] uppercase tracking-[0.3em] text-[#d9bd82]">Vale-presente</span>
+            <p className="mt-3 text-3xl tracking-[0.2em] text-[#e9d6a6]" style={serif}>Tabuará</p>
+            <p className="absolute bottom-6 left-7 text-sm text-[#b8ad99]">Para quem você ama · de você</p>
+            <span className="absolute right-7 top-6 text-2xl" aria-hidden>🎁</span>
+          </a>
+        </div>
+      </section>
+
       <section id="visite" className="scroll-mt-20 bg-[#0d0b09]">
         <div className="mx-auto grid max-w-6xl gap-12 px-5 py-24 sm:px-8 md:grid-cols-2 md:gap-16">
           <div>

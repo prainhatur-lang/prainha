@@ -34,6 +34,7 @@ export default async function PresentePage(props: { params: Promise<{ token: str
     <main className="min-h-screen bg-amber-50 px-4 py-8">
       <PresenteClient
         token={token}
+        tipo={v.tipo}
         casa={filialNome}
         codigo={v.codigo}
         compradorNome={v.compradorNome}

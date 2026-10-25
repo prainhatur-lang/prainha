@@ -7,7 +7,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { db, schema } from '@concilia/db';
-import { eq } from 'drizzle-orm';
+import { and, eq, gte, sql } from 'drizzle-orm';
 import { createPixPayment, queryPayment } from '@/lib/pagamento-online';
 import { buscarItensCardapio } from '@/lib/atendimento/cardapio';
 
@@ -206,4 +206,91 @@ export async function criarValePresente(p: PedidoValePresente): Promise<string> 
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+// ── Vale por VALOR (comprado no site) ──────────────────────────────────────
+
+/** Casas que vendem vale no site: slug da URL → filial. */
+export const CASAS_PRESENTE: Record<string, { filialId: string; nome: string; site: string }> = {
+  bar: { filialId: '7c5c66ce-cceb-4e89-9c6d-d0785255c4f9', nome: 'Prainha Bar', site: 'https://prainhabar.com' },
+  tabuara: { filialId: 'fde37b95-7c7e-4b41-a618-2aba1fbc0de7', nome: 'Tabuará', site: 'https://tabuara.com.br' },
+  mar: { filialId: 'e899dae2-38bf-4f3f-9149-7effd059fab8', nome: 'Prainha Mar e Grill', site: 'https://prainhamar.com.br' },
+};
+
+export const VALOR_PRESENTE_MIN = 50;
+export const VALOR_PRESENTE_MAX = 3000;
+
+export interface PedidoValePorValor {
+  casa: string;
+  valor: number;
+  compradorNome: string;
+  compradorTelefone: string;
+  presenteados: string;
+  mensagem?: string;
+}
+
+/** Cria o vale de crédito livre + Pix. Devolve o token do link ou um erro. */
+export async function criarValePorValor(p: PedidoValePorValor): Promise<{ token: string } | { erro: string }> {
+  const casa = CASAS_PRESENTE[p.casa];
+  if (!casa) return { erro: 'casa inválida' };
+  const valor = Math.round(Number(p.valor) * 100) / 100;
+  if (!Number.isFinite(valor) || valor < VALOR_PRESENTE_MIN || valor > VALOR_PRESENTE_MAX) {
+    return { erro: `escolha um valor entre R$ ${VALOR_PRESENTE_MIN} e R$ ${VALOR_PRESENTE_MAX}` };
+  }
+  const nome = (p.compradorNome ?? '').trim();
+  const presenteados = (p.presenteados ?? '').trim();
+  const fone = (p.compradorTelefone ?? '').replace(/\D/g, '');
+  if (nome.length < 2) return { erro: 'diga seu nome' };
+  if (presenteados.length < 2) return { erro: 'diga pra quem é o presente' };
+  if (fone.length < 10 || fone.length > 13) return { erro: 'WhatsApp inválido (com DDD)' };
+
+  // Freio contra abuso: no máximo 5 vales sem pagar por telefone na última hora.
+  const [{ n } = { n: 0 }] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(schema.valePresente)
+    .where(
+      and(
+        eq(schema.valePresente.compradorTelefone, fone),
+        eq(schema.valePresente.status, 'aguardando'),
+        gte(schema.valePresente.criadoEm, new Date(Date.now() - 60 * 60 * 1000)),
+      ),
+    );
+  if (n >= 5) return { erro: 'muitos vales em aberto pra este número — pague um dos que já gerou ou tente mais tarde' };
+
+  const token = randomBytes(18).toString('base64url');
+  let vale: Vale | null = null;
+  for (let tentativa = 0; tentativa < 4 && !vale; tentativa++) {
+    try {
+      const [v] = await db
+        .insert(schema.valePresente)
+        .values({
+          filialId: casa.filialId,
+          codigo: gerarCodigo(),
+          token,
+          tipo: 'valor',
+          compradorNome: nome.slice(0, 200),
+          compradorTelefone: fone,
+          presenteados: presenteados.slice(0, 200),
+          mensagem: p.mensagem?.trim().slice(0, 600) || null,
+          pessoas: 2,
+          itens: [],
+          subtotal: valor.toFixed(2),
+          servico: '0.00',
+          total: valor.toFixed(2),
+          criadoPor: 'Site',
+        })
+        .returning();
+      vale = v ?? null;
+    } catch (e) {
+      if (tentativa === 3) throw e;
+    }
+  }
+  if (!vale) return { erro: 'não consegui gerar o vale agora — tente de novo' };
+  try {
+    await gerarPix(vale);
+  } catch (e) {
+    // A página do vale tenta de novo ao abrir.
+    console.error('[vale-presente] Pix do site falhou:', e instanceof Error ? e.message : e);
+  }
+  return { token: vale.token };
 }

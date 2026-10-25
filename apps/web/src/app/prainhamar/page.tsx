@@ -239,6 +239,30 @@ export default async function PrainhaMarPage() {
       </section>
 
       {/* Visite */}
+      {/* Vale-presente: escolhe o valor, paga no Pix e recebe o vale (/presentear/mar). */}
+      <section id="presente" className="scroll-mt-16 bg-[#F5EFE3]">
+        <div className="mx-auto grid max-w-6xl items-center gap-10 px-4 py-16 sm:px-6 md:grid-cols-2 md:py-20">
+          <div>
+            <p className="text-sm font-medium uppercase tracking-[0.25em] text-[#DD6A10]">Vale-presente</p>
+            <h2 className="mt-2 text-4xl font-semibold leading-tight text-[#1E3A5F] sm:text-5xl" style={display}>
+              Dê um presente para <span className="italic text-[#DD6A10]">quem você ama</span>
+            </h2>
+            <p className="mt-4 max-w-md text-lg leading-relaxed">
+              Frutos do mar, brasa e drinks de presente. Escolha o valor, escreva o cartão e pague no Pix — o vale chega na hora.
+            </p>
+            <a href="/presentear/mar" className="mt-7 inline-flex items-center gap-2 rounded-full bg-[#DD6A10] px-7 py-3.5 text-lg font-medium text-white transition hover:bg-[#c55d0c]">
+              🎁 Presentear
+            </a>
+          </div>
+          <a href="/presentear/mar" className="relative block aspect-[1.6/1] overflow-hidden rounded-2xl bg-gradient-to-br from-[#1E3A5F] via-[#284d7a] to-[#DD6A10] p-7 text-[#FBF7EE] shadow-2xl transition-transform hover:-translate-y-1">
+            <span className="text-[11px] uppercase tracking-[0.3em] opacity-90">Vale-presente</span>
+            <p className="mt-3 text-3xl font-semibold" style={display}>Prainha Mar e Grill</p>
+            <p className="absolute bottom-6 left-7 text-sm opacity-85">Para quem você ama · de você</p>
+            <span className="absolute right-7 top-6 text-2xl" aria-hidden>🎁</span>
+          </a>
+        </div>
+      </section>
+
       <section id="visite" className="scroll-mt-16 mx-auto max-w-6xl px-4 py-16 sm:px-6 md:py-20">
         <div className="grid gap-10 md:grid-cols-2">
           <div>
