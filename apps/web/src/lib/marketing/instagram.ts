@@ -322,7 +322,11 @@ export async function criarContainerInstagram(
   midias: MidiaParaPublicar[],
   legenda: string,
 ): Promise<string> {
-  const conta = contaId || 'me';
+  // Sempre 'me': o user_id da troca do token (login do Instagram) é um id do app,
+  // não o da conta profissional — postar nele dá "Object with ID ... does not exist"
+  // (25/10/2026, primeiro carrossel da Mar). O token já é da conta certa.
+  void contaId;
+  const conta = 'me';
   if (!midias.length) throw new ErroInstagram('Post sem foto nem vídeo.');
   if (midias.length === 1) {
     const m = midias[0]!;
@@ -373,7 +377,8 @@ export async function publicarContainerInstagram(
   contaId: string,
   containerId: string,
 ): Promise<{ id: string; link: string }> {
-  const j = await postar(`${contaId || 'me'}/media_publish`, token, { creation_id: containerId });
+  void contaId; // ver criarContainerInstagram: postar sempre em 'me'
+  const j = await postar(`me/media_publish`, token, { creation_id: containerId });
   const id = String(j.id ?? '');
   let link = '';
   try {
