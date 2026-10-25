@@ -115,7 +115,8 @@ async function noTiktok(p: PostMarketing, base: string): Promise<ResultadoRede> 
     obs = 'Vídeo na caixa de entrada do TikTok. A legenda não vai junto: copie daqui e cole no app ao publicar.';
   } else {
     const fotos = p.midias.filter((m) => m.tipo === 'foto').map((m) => linkArquivo(base, m.path));
-    publishId = await rascunhoFotosTiktok(tt.accessToken, fotos, p.legenda);
+    // post da fila de aprovação pode ter legenda própria (mais curta) pro TikTok
+    publishId = await rascunhoFotosTiktok(tt.accessToken, fotos, p.legendaTiktok?.trim() || p.legenda);
     obs = 'Fotos com a legenda na caixa de entrada do TikTok. Abra o app, escolha a música e publique.';
   }
   try {

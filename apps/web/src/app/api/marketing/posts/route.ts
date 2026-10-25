@@ -90,12 +90,12 @@ export async function PATCH(req: Request) {
   if (!p) return erro('post não encontrado', 404);
 
   if (b.acao === 'excluir') {
-    if (!['RASCUNHO', 'AGENDADO', 'ERRO'].includes(p.status)) {
+    if (!['RASCUNHO', 'AGENDADO', 'ERRO', 'RECUSADO'].includes(p.status)) {
       return erro('Post que já saiu (ou está saindo) não se apaga daqui — apague na rede.', 409);
     }
     const [apagado] = await db
       .delete(T)
-      .where(and(eq(T.id, p.id), inArray(T.status, ['RASCUNHO', 'AGENDADO', 'ERRO'])))
+      .where(and(eq(T.id, p.id), inArray(T.status, ['RASCUNHO', 'AGENDADO', 'ERRO', 'RECUSADO'])))
       .returning({ id: T.id });
     if (!apagado) return erro('O post mudou de situação; recarregue a página.', 409);
     try {

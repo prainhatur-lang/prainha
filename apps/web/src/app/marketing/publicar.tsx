@@ -49,9 +49,11 @@ const STATUS: Record<string, { txt: string; cor: string }> = {
   PUBLICADO: { txt: 'Publicado', cor: 'bg-emerald-100 text-emerald-800' },
   PARCIAL: { txt: 'Saiu em parte', cor: 'bg-amber-100 text-amber-800' },
   ERRO: { txt: 'Não saiu', cor: 'bg-rose-100 text-rose-800' },
+  AGUARDANDO: { txt: 'Esperando aprovação', cor: 'bg-violet-100 text-violet-800' },
+  RECUSADO: { txt: 'Recusado', cor: 'bg-slate-200 text-slate-600' },
 };
 
-const quandoBr = (iso: string | null) =>
+export const quandoBr = (iso: string | null) =>
   iso
     ? new Date(iso).toLocaleString('pt-BR', {
         timeZone: 'America/Sao_Paulo',
@@ -65,7 +67,7 @@ const quandoBr = (iso: string | null) =>
 /** Foto → JPEG (o Instagram só aceita JPEG), cortada no meio pra caber entre
  *  4:5 e 1,91:1 (foto de celular em pé, 3:4, seria recusada) e com no máximo
  *  1440 px de largura. Devolve o arquivo e uma prévia pequena. */
-async function prepararFoto(f: File): Promise<{ blob: Blob; previa: string }> {
+export async function prepararFoto(f: File): Promise<{ blob: Blob; previa: string }> {
   const bmp = await createImageBitmap(f);
   let sx = 0;
   let sy = 0;
@@ -102,7 +104,7 @@ function miniatura(origem: HTMLCanvasElement | HTMLVideoElement): string {
 }
 
 /** Um quadro do vídeo (1 s) pra mostrar e pra IA ver. */
-function quadroDoVideo(f: File): Promise<string> {
+export function quadroDoVideo(f: File): Promise<string> {
   return new Promise((ok) => {
     const v = document.createElement('video');
     const url = URL.createObjectURL(f);
@@ -129,7 +131,7 @@ function quadroDoVideo(f: File): Promise<string> {
   });
 }
 
-async function chamar(url: string, metodo: string, corpo: unknown) {
+export async function chamar(url: string, metodo: string, corpo: unknown) {
   const r = await fetch(url, { method: metodo, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(corpo) });
   const j = (await r.json().catch(() => null)) as Record<string, unknown> | null;
   if (!r.ok || !j || j.error) throw new Error(String(j?.error ?? `Falhou (HTTP ${r.status}).`));
@@ -580,7 +582,7 @@ export function Publicar({
                           📋 Copiar legenda
                         </button>
                       )}
-                      {(p.status === 'AGENDADO' || p.status === 'RASCUNHO' || p.status === 'ERRO') && (
+                      {(p.status === 'AGENDADO' || p.status === 'RASCUNHO' || p.status === 'ERRO' || p.status === 'RECUSADO') && (
                         <button
                           type="button"
                           disabled={mexendo === p.id}

@@ -34,7 +34,8 @@ import { Publicar, type PostVisto } from './publicar';
 import { KitPerfil } from './kit-perfil';
 import { Espelho, type EnvioEspelho } from './espelho';
 import { db, schema } from '@concilia/db';
-import { desc, eq } from 'drizzle-orm';
+import { and, asc, desc, eq, ne } from 'drizzle-orm';
+import { FilaAprovacao, type PostFila } from './fila-aprovacao';
 import { createAdminClient } from '@/lib/supabase/server';
 import { temPublicarInstagram } from '@/lib/marketing/instagram';
 import { temRascunhoTiktok } from '@/lib/marketing/tiktok';
@@ -121,7 +122,12 @@ async function lerEspelho(filialId: string) {
 /** Últimos posts feitos pela tela Publicar, com a 1ª foto assinada pra miniatura. */
 async function lerPostsPublicar(filialId: string): Promise<PostVisto[]> {
   const T = schema.marketingPost;
-  const linhas = await db.select().from(T).where(eq(T.filialId, filialId)).orderBy(desc(T.criadoEm)).limit(20);
+  const linhas = await db
+    .select()
+    .from(T)
+    .where(and(eq(T.filialId, filialId), ne(T.status, 'AGUARDANDO')))
+    .orderBy(desc(T.criadoEm))
+    .limit(20);
   const capas = new Map<string, string>();
   const fotos = linhas.map((l) => l.midias.find((m) => m.tipo === 'foto')?.path).filter((x): x is string => !!x);
   if (fotos.length) {
@@ -149,6 +155,39 @@ async function lerPostsPublicar(filialId: string): Promise<PostVisto[]> {
       resultado: (l.resultado ?? {}) as PostVisto['resultado'],
     };
   });
+}
+
+/** Posts montados pelo Claude esperando o dono aprovar, com as mídias assinadas. */
+async function lerFila(filialId: string): Promise<PostFila[]> {
+  const T = schema.marketingPost;
+  const linhas = await db
+    .select()
+    .from(T)
+    .where(and(eq(T.filialId, filialId), eq(T.status, 'AGUARDANDO')))
+    .orderBy(asc(T.agendadoPara), asc(T.criadoEm))
+    .limit(60);
+  const links = new Map<string, string>();
+  const fotos = linhas.flatMap((l) => l.midias.filter((m) => m.tipo === 'foto').map((m) => m.path));
+  if (fotos.length) {
+    try {
+      const admin = await createAdminClient();
+      const { data } = await admin.storage.from(BUCKET_MARKETING).createSignedUrls(fotos, 3600);
+      for (const d of data ?? []) if (d.path && d.signedUrl) links.set(d.path, d.signedUrl);
+    } catch {
+      // sem miniatura: o card mostra o ícone
+    }
+  }
+  return linhas.map((l) => ({
+    id: l.id,
+    titulo: l.titulo,
+    roteiro: l.roteiro,
+    legenda: l.legenda,
+    legendaTiktok: l.legendaTiktok,
+    musica: l.musica,
+    redes: l.redes,
+    midias: l.midias.map((m) => ({ path: m.path, tipo: m.tipo, nome: m.nome, url: links.get(m.path) ?? null })),
+    agendadoPara: l.agendadoPara ? l.agendadoPara.toISOString() : null,
+  }));
 }
 
 function Numero({ rotulo, valor }: { rotulo: string; valor: number | null | undefined }) {
@@ -194,13 +233,14 @@ export default async function MarketingPage(props: {
   }
   const filial = escolhida;
 
-  const [ig, tt, ligIg, ligTt, postsFeitos, espelho] = await Promise.all([
+  const [ig, tt, ligIg, ligTt, postsFeitos, espelho, fila] = await Promise.all([
     lerInstagram(filial.id),
     lerTiktok(filial.id),
     podeConectar ? ligacaoRede(filial.id, 'instagram').catch(() => null) : null,
     podeConectar ? ligacaoRede(filial.id, 'tiktok').catch(() => null) : null,
     podeConectar ? lerPostsPublicar(filial.id).catch(() => [] as PostVisto[]) : ([] as PostVisto[]),
     podeConectar ? lerEspelho(filial.id).catch(() => null) : null,
+    podeConectar ? lerFila(filial.id).catch(() => [] as PostFila[]) : ([] as PostFila[]),
   ]);
   const aviso = sp.aviso ? AVISOS[sp.aviso] : null;
   const nomeRede = sp.rede === 'tiktok' ? 'TikTok' : 'Instagram';
@@ -239,6 +279,8 @@ export default async function MarketingPage(props: {
             {nomeRede}: {aviso.texto}
           </p>
         )}
+
+        {podeConectar && fila.length > 0 && <FilaAprovacao filialId={filial.id} casa={filial.nome} posts={fila} />}
 
         {podeConectar && (ig.estado === 'ok' || tt.estado === 'ok' || postsFeitos.length > 0) && (
           <Publicar
