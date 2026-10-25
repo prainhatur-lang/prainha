@@ -175,8 +175,12 @@ export async function proxy(request: NextRequest) {
   // /cartao/[token] é o cartão fidelidade do cliente (link mandado no zap;
   // o token é a senha do cartão, sem login). O painel é /fidelidade.
   const isCartaoPublico = path.startsWith('/cartao/') || path === '/cartao-prainha';
+  // /presente/[token] é o vale-presente (jantar de presente) — Pix e, pago,
+  // o voucher QUITADO que o casal mostra na casa. Token na URL; sem login.
+  const isPresentePublico = path.startsWith('/presente/');
   const isPublicRoute =
     path === '/' ||
+    isPresentePublico ||
     isAuthRoute ||
     isApiRoute ||
     isOpPublica ||

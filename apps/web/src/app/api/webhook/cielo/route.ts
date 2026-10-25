@@ -11,6 +11,7 @@ import { eq } from 'drizzle-orm';
 import { queryCieloPayment, refundCieloPayment } from '@/lib/cielo';
 import { marcarReservaPaga } from '@/lib/reservas/pagamento';
 import { marcarOrcamentoEntradaPaga } from '@/lib/orcamentos-server';
+import { processarWebhookVale } from '@/lib/vale-presente';
 import { marcarDeliveryPedidoPago } from '@/lib/delivery/pedido';
 
 /** Entrada de orçamento de evento paga/estornada via webhook. Best-effort.
@@ -52,7 +53,11 @@ async function processarDelivery(paymentId: string, origin: string): Promise<voi
     .from(schema.deliveryPedido)
     .where(eq(schema.deliveryPedido.pagamentoId, paymentId))
     .limit(1);
-  if (!ped) return;
+  if (!ped) {
+    // Vale-presente (jantar de presente) — marca pago pelo pagamentoId.
+    await processarWebhookVale(paymentId);
+    return;
+  }
   const cielo = await queryCieloPayment(paymentId, ped.filialId);
   if (cielo.status === 'pago' && ped.status === 'pendente_pagamento') {
     await marcarDeliveryPedidoPago(ped.id, origin);

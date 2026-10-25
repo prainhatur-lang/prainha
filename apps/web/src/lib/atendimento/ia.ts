@@ -129,8 +129,20 @@ export interface ExecutoresFerramentas {
   gerarOrcamento: (dados: DadosOrcamentoEvento) => Promise<string>;
   /** Espaço fechado + consumo por comanda, com preço do cadastro de espaços. */
   gerarOrcamentoEspaco?: (dados: DadosOrcamentoEspaco) => Promise<string>;
+  /** Vale-presente pré-pago (jantar de presente): itens do cardápio + 10%, Pix e voucher. */
+  montarValePresente?: (dados: DadosValePresente) => Promise<string>;
   /** Pedido de delivery (iFood/site) lido ao vivo na loja: situação, hora que saiu e o que fazer. */
   consultarPedidoDelivery?: (dados: { numero: string | null; nome: string | null }) => Promise<string>;
+}
+
+export interface DadosValePresente {
+  itens: Array<{ nome: string; qtd: number }>;
+  pessoas: number;
+  data: string | null;
+  nomeComprador: string;
+  presenteados: string | null;
+  mensagemCartao: string | null;
+  observacoes: string | null;
 }
 
 /** Ferramentas que só leem — não gravam nem enviam nada. Resposta que só usou
@@ -366,7 +378,8 @@ FLUXO DE EVENTOS — você é a VENDEDORA dos eventos, não recepcionista de rec
   - **EVENTO catering**: oferece ORÇAMENTO (Terraço ± varandinha, Tablado, Gramado, Tabuará). Caso padrão (Terraço + almoço/jantar + 3-60 pessoas + data definida) → monte ORÇAMENTO NA HORA (listar_opcoes_orcamento_evento → escolhas: entradas/principais/massa/sobremesa/bebidas → gerar_orcamento_evento → resumo + link). Fora do padrão (gramado, 200p, corporativo, exclusividade da CASA, Tabuará) → VISITA. "Fechar o Terraço" de DIA pra um grupo com consumo por comanda NÃO é exclusividade da casa: é o aluguel do Terraço → gerar_orcamento_espaco: convide vir conhecer ("que tal vir tomar um drink e ver o espaço?") e registre período.
 - O QUE DECIDE É O FORMATO, NUNCA O NOME DA FESTA. "Casamento" não é motivo pra fugir do orçamento: casamento de 50 pessoas no Terraço, com almoço ou jantar, é EXATAMENTE o caso padrão — faça o orçamento na hora, igual faria pra um aniversário. Só sai do automático se o cliente pedir DECORAÇÃO contratada da casa, open bar/uísque/vinho, cerimônia no gramado, exclusividade da casa INTEIRA, outro espaço ou mais de 60 pessoas (ter o Terraço só pro grupo NÃO é exclusividade da casa). Na dúvida entre orçar e transferir: ORCE (o cliente sempre pode ajustar depois com a equipe).
 - **TERRAÇO FECHADO + CONSUMO POR COMANDA** (aniversário, chá revelação, chá de bebê, encontro de turma — o grupo quer o Terraço só pra ele, de DIA, cada um consumindo do cardápio na própria comanda, e traz a própria decoração/bolo/doces): isso é VENDA DIRETA, não lead. Não é "reserva de mesa" (o Terraço NUNCA entra em criar_reserva e não existe "reservar o Terraço até 11h30") e não precisa de menu. Com DATA, nº de pessoas (estimativa serve) e NOME → chame gerar_orcamento_espaco e mande o resumo + link (o preço do aluguel e a entrada vêm do cadastro acima). Decoração TRAZIDA pelo cliente não é "decoração contratada" — não transfira por isso. À noite (19h em diante) continua sendo evento fechado com orçamento da equipe. O ALUGUEL NÃO VIRA CONSUMO (regra do dono 20/10): o valor do aluguel abre o Terraço exclusivo pro grupo, com GARÇOM e BARMAN EXCLUSIVOS só pra eles. O consumo é à parte e o cliente escolhe: comanda individual, consumação livre (conta única) ou pacote fechado de comidas e bebidas (aí monte o orçamento de menu). Se perguntarem "esse valor é só o aluguel? não converte em consumo?", responda isso você mesma — não transfira.
-- **AGÊNCIA OU EMPRESA PAGANDO ANTES (Tabuará)** — premiação, incentivo, voucher, "quero reservar e pré-pagar o jantar de um casal/cliente" (caso Flytour, 20/10): a Tabuará ACEITA pagamento antecipado de agência/empresa (regra do dono 20/10). Diga isso com segurança logo na primeira resposta — nunca "não trabalhamos com pré-pagamento". NÃO é orçamento de evento: nada de listar_opcoes_orcamento_evento nem menu de "3 entradas/3 principais". Anote data, nº de pessoas, o que querem incluir (entrada, principal, sobremesa, bebida), valor disponível, nome e empresa; se quiser ajudar, cite 2 ou 3 pratos do cardápio com preço (consultar_cardapio). Com a data e o nº de pessoas na mão, chame transferir_para_humano nessa mesma resposta com o resumo — a equipe fecha o valor e manda o pagamento. Diga que a equipe da casa continua nesta mesma conversa.
+- **PRESENTE / VOUCHER DE PESSOA FÍSICA** — "quero presentear um casal com um jantar", "vocês trabalham com voucher?", "dar um jantar de presente" (caso Thai, Tabuará 24/10): SIM, a casa vende VALE-PRESENTE pré-pago. Não é agência nem orçamento de evento — você mesma resolve. (1) Sugira um menu com consultar_cardapio, preço do sistema: 1 ou 2 entradas, 2 pratos principais (ou 1 pra dividir, se for o caso), 1 sobremesa e uma sugestão de bebida (vinho ou drinks), e diga que entram os 10% de serviço. (2) Pergunte quem vai jantar, o dia e o nome de quem compra; ajuste o menu até o cliente confirmar. (3) Chame montar_vale_presente e mande o resumo, o total e o link: paga no Pix pelo link, e o MESMO link vira o voucher QUITADO com código pra encaminhar ao casal — eles mostram na chegada. Não transfira por ser presente. **CARTÃO COM MENSAGEM NA MESA**: SIM, a casa imprime (tem impressora e papel fotográfico). Pergunte se a pessoa tem um MODELO/ARTE do cartão (pode mandar a imagem aqui na conversa) ou, se não tiver, os detalhes: o texto, pra quem é e quem assina. Grave em mensagemCartao (texto) e observacoes (ex.: "cliente mandou a arte do cartão na conversa"). Se já tiver criado o vale e o cartão vier depois, diga que a equipe imprime e anote na conversa.
+- **AGÊNCIA OU EMPRESA PAGANDO ANTES (Tabuará)** — premiação, incentivo, voucher DE EMPRESA, "quero reservar e pré-pagar o jantar de um casal/cliente" pela AGÊNCIA/EMPRESA (caso Flytour, 20/10 — pessoa física dando presente NÃO é isso: é o vale-presente acima): a Tabuará ACEITA pagamento antecipado de agência/empresa (regra do dono 20/10). Diga isso com segurança logo na primeira resposta — nunca "não trabalhamos com pré-pagamento". NÃO é orçamento de evento: nada de listar_opcoes_orcamento_evento nem menu de "3 entradas/3 principais". Anote data, nº de pessoas, o que querem incluir (entrada, principal, sobremesa, bebida), valor disponível, nome e empresa; se quiser ajudar, cite 2 ou 3 pratos do cardápio com preço (consultar_cardapio). Com a data e o nº de pessoas na mão, chame transferir_para_humano nessa mesma resposta com o resumo — a equipe fecha o valor e manda o pagamento. Diga que a equipe da casa continua nesta mesma conversa.
 - REGISTRAR LEAD: UMA única vez por conversa, NO MOMENTO CERTO — **NUNCA antes de saber DATA e NÚMERO DE PESSOAS**. Pergunte data em PRIMEIRO lugar (é a chave: define se tem violino, som, ocupação, se está fechada). Depois pergunta tipo de evento, quantas pessoas — só COM TUDO ISSO é que você decide se GERA ORÇAMENTO (padrão) ou REGISTRA LEAD (fora do padrão). Quando decidir registrar: inclua nas observações TUDO que descobriu (formato, cerimônia, local, data, pessoas, visita preferida...). Se o histórico mostrar que você já registrou nesta conversa, NÃO registre de novo — continue a conversa que a equipe vê tudo.
 - BEBIDAS: pergunte se quer incluir pacote de bebidas — sem álcool (refrigerante, água, água de coco, sucos) ou com álcool (+ cerveja). Se a ferramenta avisar que o pacote está sem valor definido, diga que as bebidas ficam por consumo ou em pacote a combinar com a equipe.
 - MÍNIMO: eventos no Terraço têm valor mínimo de R$ 120 por pessoa — se perguntarem "a partir de quanto", pode citar esse mínimo.
@@ -564,6 +577,35 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           observacoes: { type: 'string', description: 'pedidos do cliente (mesa decorada, pôr do sol, etc.)' },
         },
         required: ['espaco', 'data', 'pessoas', 'nomeCliente'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'montar_vale_presente',
+      description:
+        'Cria o VALE-PRESENTE pré-pago (jantar de presente pra outra pessoa/casal): grava o menu escolhido com o PREÇO do sistema + 10% de serviço, gera o Pix e devolve o resumo, o total e o LINK. Pago, o mesmo link vira o voucher QUITADO com código que os presenteados mostram na casa. Use só DEPOIS de montar o menu com consultar_cardapio e o cliente CONFIRMAR os itens. Itens com o nome exato que veio do cardápio.',
+      parameters: {
+        type: 'object',
+        properties: {
+          itens: {
+            type: 'array',
+            description: 'itens do menu, nome exato do cardápio',
+            items: {
+              type: 'object',
+              properties: { nome: { type: 'string' }, qtd: { type: 'number' } },
+              required: ['nome', 'qtd'],
+            },
+          },
+          pessoas: { type: 'number', description: 'quantas pessoas vão jantar (casal = 2)' },
+          data: { type: 'string', description: 'YYYY-MM-DD do jantar, se souber' },
+          nomeComprador: { type: 'string', description: 'quem está comprando/pagando' },
+          presenteados: { type: 'string', description: 'quem vai usar (ex.: "Ana e Pedro")' },
+          mensagemCartao: { type: 'string', description: 'texto do cartão na mesa, com quem assina (se tiver)' },
+          observacoes: { type: 'string', description: 'detalhes do cartão (modelo/arte enviada, nomes), horário, surpresa, etc.' },
+        },
+        required: ['itens', 'pessoas', 'nomeComprador'],
       },
     },
   },
@@ -1459,6 +1501,19 @@ Como usar, SEM EXCEÇÃO:
                 observacoes: String(args.observacoes ?? '') || null,
               })
             : 'Orçamento de espaço indisponível neste número: registre o lead e transfira pra equipe.';
+        } else if (tc.function.name === 'montar_vale_presente') {
+          const itensArg = Array.isArray(args.itens) ? (args.itens as Array<Record<string, unknown>>) : [];
+          resultado = params.executores.montarValePresente
+            ? await params.executores.montarValePresente({
+                itens: itensArg.map((i) => ({ nome: String(i?.nome ?? ''), qtd: Number(i?.qtd) || 1 })),
+                pessoas: Number(args.pessoas) || 2,
+                data: String(args.data ?? '') || null,
+                nomeComprador: String(args.nomeComprador ?? ''),
+                presenteados: String(args.presenteados ?? '') || null,
+                mensagemCartao: String(args.mensagemCartao ?? '') || null,
+                observacoes: String(args.observacoes ?? '') || null,
+              })
+            : 'Vale-presente indisponível neste número: anote o pedido e transfira pra equipe.';
         } else if (tc.function.name === 'consultar_cardapio') {
           resultado = await params.executores.consultarCardapio(
             String(args.termo ?? ''),

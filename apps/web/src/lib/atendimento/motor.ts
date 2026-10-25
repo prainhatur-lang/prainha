@@ -34,6 +34,7 @@ import { consultarMareTexto } from './mare';
 import { consultarTempoTexto } from './clima';
 import { consultarCotacoesFornecedor, cadastrarFornecedorProspect } from './fornecedor';
 import { listarOpcoesOrcamento, gerarOrcamentoEvento, gerarOrcamentoEspaco } from './orcamento';
+import { criarValePresente } from '@/lib/vale-presente';
 import { casasComAtendente, acharCasa, linkPassagem, passagemRecebida, casasCobertas, acharCasaCoberta, type OutraCasa, type PassagemRecebida, type CasaCoberta } from './outras-casas';
 
 const DEBOUNCE_MS = 6_000;
@@ -664,6 +665,32 @@ export async function processarEntrada(params: {
           void avisarEquipe(numerosEquipe, {
             motivo: `Aluguel do ${dados.espaco || 'Terraço'}: orçamento enviado — ${d}/${m}/${a}${dados.hora ? ` ${dados.hora}` : ''}, ${dados.pessoas} pessoas${dados.tipoEvento ? `, ${dados.tipoEvento}` : ''}`,
             nomeCliente: dados.nomeCliente || conversa.nomeCliente || '-',
+            telefone: entrada.telefone,
+            filial: filialNome,
+          }).catch(() => {});
+        }
+        return r;
+      },
+      // Vale-presente pré-pago (24/10/2026, caso Thai na Tabuará): menu do
+      // cardápio + 10%, Pix e voucher QUITADO. Avisa a equipe (cartão/mesa).
+      montarValePresente: async (dados: import('./ia').DadosValePresente) => {
+        const r = await criarValePresente({
+          filialId: entrada.filialId,
+          filialNome,
+          telefone: entrada.telefone,
+          compradorNome: dados.nomeComprador || conversa.nomeCliente || 'Cliente',
+          presenteados: dados.presenteados ?? undefined,
+          mensagem: dados.mensagemCartao ?? undefined,
+          observacao: dados.observacoes ?? undefined,
+          data: dados.data ?? undefined,
+          pessoas: dados.pessoas,
+          itens: dados.itens,
+        });
+        if (/\/presente\//.test(r)) {
+          const total = /TOTAL (R\$\s?[\d.,]+)/.exec(r)?.[1] ?? '';
+          void avisarEquipe(numerosEquipe, {
+            motivo: `Vale-presente criado (aguardando Pix) — ${dados.pessoas} pessoas${dados.data ? `, ${dados.data.split('-').reverse().join('/')}` : ''}${total ? `, ${total}` : ''}${dados.presenteados ? `, para ${dados.presenteados}` : ''}${dados.mensagemCartao || dados.observacoes ? ' — tem CARTÃO pra imprimir' : ''}`,
+            nomeCliente: dados.nomeComprador || conversa.nomeCliente || '-',
             telefone: entrada.telefone,
             filial: filialNome,
           }).catch(() => {});
