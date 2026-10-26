@@ -193,5 +193,25 @@ export function casarBoletos(
         deFora.find(r.mesmoVenc),
     );
   });
+  // 3ª passada: mesmo CNPJ + mesmo vencimento e valor até 2% diferente — a
+  // conta lançada pelo pedido/nota com centavos a menos que o boleto (CRBS
+  // 4.302,64 × boleto 4.304,19, Bar, 26/10/2026). Só com UMA candidata; a
+  // tela marca "valor diferente, confira" e deixa fora do lote.
+  pagamentos.forEach((p, i) => {
+    if (res[i]) return;
+    const r = regras[i]!;
+    const alvo = centavos(p.valorNominal) || centavos(p.valorPago);
+    if (!alvo) return;
+    const perto = contas.filter(
+      (c) =>
+        !usadas.has(c.id) &&
+        r.mesmoCnpj(c) &&
+        r.mesmoVenc(c) &&
+        Math.abs(centavos(c.valor) - alvo) <= Math.round(alvo * 0.02),
+    );
+    const daCasa = perto.filter((c) => c.filialId === filialId);
+    const lista = daCasa.length ? daCasa : perto;
+    if (lista.length === 1) usar(i, lista[0]);
+  });
   return res;
 }

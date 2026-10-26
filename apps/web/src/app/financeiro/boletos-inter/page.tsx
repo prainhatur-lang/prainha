@@ -226,6 +226,13 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
           conta.dataVencimento !== p.dataVencimentoDigitada;
       }
     }
+    // casou pela 3ª passada (CNPJ + vencimento, valor até 2% diferente):
+    // também fica fora do lote, com aviso
+    const valorDiferente =
+      !!conta &&
+      centavos(conta.valor) !== centavos(p.valorNominal) &&
+      centavos(conta.valor) !== centavos(p.valorPago);
+    if (valorDiferente && baixa) conferir = true;
     // juros/multa: o que o banco pagou acima do valor do título
     const jurosBanco = Math.max(0, centavos(p.valorPago) - centavos(p.valorNominal)) / 100;
     // conta de outra casa paga por este Inter: vai pro encontro de contas
@@ -244,7 +251,7 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
         : null;
     const emDobro =
       conta && !outraCasa ? (emDobroEncontro.get(p.codigoTransacao) ?? null) : null;
-    return { p, conta, situacao, baixa, conferir, jurosBanco, outraCasa, encontro, paraEncontro, emDobro, bloqueada };
+    return { p, conta, situacao, baixa, conferir, valorDiferente, jurosBanco, outraCasa, encontro, paraEncontro, emDobro, bloqueada };
   });
   const podeBaixar = await podeUsuario(user.id, 'conta_pagar.marcar_pago');
   const lote = podeBaixar
@@ -506,7 +513,7 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                     {foraLote.outraCasa > 0 &&
                       ` ${int(foraLote.outraCasa)} de outra casa (baixe pela linha);`}
                     {foraLote.conferir > 0 &&
-                      ` ${int(foraLote.conferir)} com vencimento diferente do boleto (confira e baixe pela linha);`}
+                      ` ${int(foraLote.conferir)} com vencimento ou valor diferente do boleto (confira e baixe pela linha);`}
                     {foraLote.bloqueada > 0 &&
                       ` ${int(foraLote.bloqueada)} de outra casa pagas pela casa errada desde 22/10 (travadas);`}
                   </p>
@@ -533,7 +540,7 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                           </td>
                         </tr>
                       ) : (
-                        visiveis.map(({ p, conta, situacao, baixa, conferir, jurosBanco, outraCasa, encontro, paraEncontro, emDobro, bloqueada }) => (
+                        visiveis.map(({ p, conta, situacao, baixa, conferir, valorDiferente, jurosBanco, outraCasa, encontro, paraEncontro, emDobro, bloqueada }) => (
                           <tr key={p.codigoTransacao} className="border-t border-slate-100">
                             <td className="px-4 py-2 font-mono text-xs text-slate-700">
                               {p.dataPagamento ? formatDate(p.dataPagamento) : '—'}
@@ -642,9 +649,14 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                                 </span>
                               )}
                               {podeBaixar && baixa && <BaixarBoleto boleto={baixa} />}
-                              {baixa && conferir && (
+                              {baixa && conferir && !valorDiferente && (
                                 <span className="ml-1.5 text-[10px] text-amber-700">
                                   vencimento diferente, confira
+                                </span>
+                              )}
+                              {baixa && valorDiferente && conta && (
+                                <span className="ml-1.5 text-[10px] text-amber-700">
+                                  valor diferente (conta {brl(Number(conta.valor))}), confira
                                 </span>
                               )}
                               {situacao === 'aberta' && baixaNoPdv(conta) && (
