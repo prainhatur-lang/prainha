@@ -32,6 +32,8 @@ export interface PostFila {
 
 const MAX = 50 * 1024 * 1024;
 const NOME_REDE: Record<string, string> = { instagram: 'Instagram', tiktok: 'TikTok' };
+/** Instagram mostra a foto em 1080 px: abaixo disso ela é esticada e borra. */
+const FOTO_MIN_PX = 1080;
 
 /** ISO → valor do campo datetime-local na hora de Aracaju (UTC−3, sem horário de verão). */
 const paraCampo = (iso: string | null) =>
@@ -185,6 +187,8 @@ function Card({ filialId, p, casas }: { filialId: string; p: PostFila; casas: Ar
   const [msg, setMsg] = useState<{ ok: boolean; txt: string } | null>(null);
   const [aberto, setAberto] = useState(false);
   const [doIg, setDoIg] = useState(false);
+  // Largura real de cada foto do card: abaixo de 1080 px o Instagram estica e borra (26/10: posts da Mar com miniatura do cardápio).
+  const [larguras, setLarguras] = useState<Record<string, number>>({});
 
   const mudouTexto =
     legenda !== p.legenda || legendaTt !== (p.legendaTiktok ?? '') || quando !== paraCampo(p.agendadoPara) ||
@@ -263,6 +267,14 @@ function Card({ filialId, p, casas }: { filialId: string; p: PostFila; casas: Ar
     if (qual === 'aprovar') {
       if (!midias.length) return setMsg({ ok: false, txt: 'Falta a foto ou o vídeo. Ponha o arquivo antes de aprovar.' });
       if (!redes.length) return setMsg({ ok: false, txt: 'Escolha Instagram, TikTok ou os dois.' });
+      if (
+        pequenas.length &&
+        !window.confirm(
+          `${pequenas.length === 1 ? 'Uma foto é pequena' : `${pequenas.length} fotos são pequenas`} (menos de ${FOTO_MIN_PX} px de largura) e vai sair borrada no Instagram. Aprovar mesmo assim?`,
+        )
+      ) {
+        return;
+      }
       const iso = doCampo(quando);
       if ((!iso || new Date(iso).getTime() <= Date.now() + 60_000) && !window.confirm('O horário já passou (ou está vazio). Publicar agora?')) {
         return;
@@ -305,6 +317,7 @@ function Card({ filialId, p, casas }: { filialId: string; p: PostFila; casas: Ar
 
   const alternar = (r: string) => setRedes((l) => (l.includes(r) ? l.filter((x) => x !== r) : [...l, r]));
   const semMidia = !midias.length;
+  const pequenas = midias.filter((m) => m.tipo !== 'video' && (larguras[m.path] ?? FOTO_MIN_PX) < FOTO_MIN_PX);
 
   return (
     <div id={`fila-${p.id}`} className="scroll-mt-4 rounded-lg border border-violet-200 bg-white p-3 target:ring-2 target:ring-emerald-400">
@@ -318,6 +331,8 @@ function Card({ filialId, p, casas }: { filialId: string; p: PostFila; casas: Ar
         </div>
         {semMidia ? (
           <span className="rounded bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800">falta foto/vídeo</span>
+        ) : pequenas.length ? (
+          <span className="rounded bg-rose-100 px-2 py-0.5 text-[11px] font-medium text-rose-800">foto pequena: vai sair borrada</span>
         ) : (
           <span className="rounded bg-emerald-100 px-2 py-0.5 text-[11px] font-medium text-emerald-800">pronto pra aprovar</span>
         )}
@@ -334,13 +349,24 @@ function Card({ filialId, p, casas }: { filialId: string; p: PostFila; casas: Ar
         {midias.map((m) => (
           <div key={m.path} className="relative">
             {m.url ? (
-              <img src={m.url} alt="" className="h-20 w-16 rounded object-cover" />
+              <img
+                src={m.url}
+                alt=""
+                className="h-20 w-16 rounded object-cover"
+                onLoad={(e) => {
+                  const w = e.currentTarget.naturalWidth;
+                  setLarguras((l) => (l[m.path] === w ? l : { ...l, [m.path]: w }));
+                }}
+              />
             ) : (
               <div className="flex h-20 w-16 items-center justify-center rounded bg-slate-100 text-xl">
                 {m.tipo === 'video' ? '🎞' : '🖼'}
               </div>
             )}
             {m.tipo === 'video' && <span className="absolute bottom-0.5 left-0.5 rounded bg-black/60 px-1 text-[10px] text-white">vídeo</span>}
+            {m.tipo !== 'video' && (larguras[m.path] ?? FOTO_MIN_PX) < FOTO_MIN_PX && (
+              <span className="absolute bottom-0.5 left-0.5 rounded bg-rose-600 px-1 text-[10px] text-white">{larguras[m.path]} px</span>
+            )}
             <button
               type="button"
               disabled={!!ocupado}
@@ -379,6 +405,12 @@ function Card({ filialId, p, casas }: { filialId: string; p: PostFila; casas: Ar
           }}
         />
       </div>
+      {pequenas.length > 0 && (
+        <p className="mt-1 text-xs text-rose-700">
+          ⚠ Foto com menos de {FOTO_MIN_PX} px de largura fica borrada no Instagram. Troque por uma foto do celular ou pelo 📷 do Instagram
+          (a miniatura do cardápio do QR não serve pra post).
+        </p>
+      )}
       {doIg && (
         <DoInstagram
           filialId={filialId}
