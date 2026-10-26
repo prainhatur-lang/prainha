@@ -406,6 +406,10 @@ export const contaPagarBaixa = pgTable(
     valor: numeric('valor', { precision: 14, scale: 2 }).notNull(),
     /** juros/multa pagos JUNTO nessa baixa (atraso) — não abate saldo */
     juros: numeric('juros', { precision: 14, scale: 2 }),
+    /** desconto obtido nessa baixa — JÁ ESTÁ dentro de `valor` (abate o saldo)
+     *  mas não saiu do caixa: pago em dinheiro = valor - desconto + juros.
+     *  (migrate:baixa-desconto, 26/10/2026) */
+    desconto: numeric('desconto', { precision: 14, scale: 2 }),
     observacao: text('observacao'),
     criadoPor: uuid('criado_por'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),

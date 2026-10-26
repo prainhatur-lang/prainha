@@ -26,6 +26,7 @@ export function BaixaForm({
   const [data, setData] = useState(hojeBr());
   const [valor, setValor] = useState(saldo != null ? saldo.toFixed(2).replace('.', ',') : '');
   const [juros, setJuros] = useState('');
+  const [desconto, setDesconto] = useState('');
   const [observacao, setObservacao] = useState('');
   const [ocupado, setOcupado] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -68,6 +69,11 @@ export function BaixaForm({
     if (v == null || v <= 0) return setErro('Valor inválido — digite como 1.250,00 ou 1250.');
     const j = juros.trim() ? parseValorBr(juros) : 0;
     if (j == null || j < 0) return setErro('Juros inválido — digite como 12,50 (ou deixe vazio).');
+    const dsc = desconto.trim() ? parseValorBr(desconto) : 0;
+    if (dsc == null || dsc < 0) return setErro('Desconto inválido — digite como 12,50 (ou deixe vazio).');
+    if (saldo != null && v + dsc > saldo + 0.005) {
+      return setErro(`Valor + desconto passa do saldo (${saldo.toFixed(2).replace('.', ',')}).`);
+    }
     setOcupado(true);
     try {
       const r = await fetch(`/api/financeiro/contas/${contaId}/baixas`, {
@@ -77,6 +83,7 @@ export function BaixaForm({
           data,
           valor: v,
           juros: j || undefined,
+          desconto: dsc || undefined,
           observacao: observacao.trim() || null,
         }),
       });
@@ -87,6 +94,7 @@ export function BaixaForm({
       }
       setObservacao('');
       setJuros('');
+      setDesconto('');
       router.refresh();
     } finally {
       setOcupado(false);
@@ -119,7 +127,7 @@ export function BaixaForm({
         </div>
         <div>
           <label className={`block text-[10px] ${atrasado ? 'font-semibold text-amber-600' : 'text-slate-400'}`}>
-            Juros/multa (R$)
+            Juros/multa/acréscimo (R$)
           </label>
           <input
             value={juros}
@@ -129,6 +137,26 @@ export function BaixaForm({
             className={`mt-0.5 w-24 rounded-md border px-2 py-1 text-right font-mono text-xs ${
               atrasado ? 'border-amber-400 bg-amber-50' : 'border-slate-300'
             }`}
+          />
+        </div>
+        <div>
+          <label className="block text-[10px] text-slate-400">Desconto (R$)</label>
+          <input
+            value={desconto}
+            onChange={(e) => {
+              const novo = e.target.value;
+              // valor ainda é o saldo cheio (ou saldo - desconto anterior)? acompanha o desconto
+              const dAnt = desconto.trim() ? parseValorBr(desconto) ?? 0 : 0;
+              const dNovo = novo.trim() ? parseValorBr(novo) ?? 0 : 0;
+              const vAtual = parseValorBr(valor);
+              if (saldo != null && vAtual != null && Math.abs(vAtual - (saldo - dAnt)) < 0.005 && dNovo >= 0 && dNovo <= saldo) {
+                setValor((saldo - dNovo).toFixed(2).replace('.', ','));
+              }
+              setDesconto(novo);
+            }}
+            inputMode="decimal"
+            placeholder="0,00"
+            className="mt-0.5 w-24 rounded-md border border-slate-300 px-2 py-1 text-right font-mono text-xs"
           />
         </div>
         <div className="min-w-40 flex-1">
@@ -151,6 +179,7 @@ export function BaixaForm({
       <p className="mt-1.5 text-[10px] text-slate-400">
         Valor menor que o saldo = pagamento parcial; a conta fica como PARCIAL até quitar.
         {' '}O juros vai por fora: não abate o saldo, fica registrado na baixa e no total pago.
+        {' '}Desconto abate o saldo junto com o valor, sem contar como dinheiro pago (valor + desconto = quanto da conta foi quitado).
       </p>
       {atrasado && (
         <p className="mt-1 text-[10px] font-medium text-amber-700">

@@ -48,6 +48,7 @@
     "migrate:permissoes": "tsx scripts/migrate-permissoes.ts",
     "migrate:conta-pagar-baixa": "tsx scripts/migrate-conta-pagar-baixa.ts",
     "migrate:baixa-juros": "tsx scripts/migrate-baixa-juros.ts",
+    "migrate:baixa-desconto": "tsx scripts/migrate-baixa-desconto.ts",
     "migrate:item-kds": "tsx scripts/migrate-item-kds.ts",
     "migrate:usuario-operacao": "tsx scripts/migrate-usuario-operacao.ts",
     "migrate:fiado-fila": "tsx scripts/migrate-fiado-fila.ts",

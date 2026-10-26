@@ -30,6 +30,9 @@ const Body = z.object({
   valor: z.number().positive(),
   /** juros/multa pagos junto (atraso) — vão por fora do saldo */
   juros: z.number().min(0).optional(),
+  /** desconto obtido (26/10/2026) — abate o saldo junto com `valor`, mas não
+   *  sai do caixa. Na baixa grava valor = valor + desconto (principal). */
+  desconto: z.number().min(0).optional(),
   observacao: z.string().trim().max(500).nullable().optional(),
 });
 
@@ -106,7 +109,15 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       .where(eq(schema.contaPagarBaixa.contaPagarId, id))
   ).reduce((s, x) => s + Number(x.valor), 0);
   const saldo = valorConta - jaPago;
-  if (parsed.data.valor > saldo + 0.005) {
+  const desconto = parsed.data.desconto && parsed.data.desconto > 0 ? parsed.data.desconto : 0;
+  const principal = parsed.data.valor + desconto;
+  if (principal > saldo + 0.005) {
+    if (desconto > 0) {
+      return NextResponse.json(
+        { error: `valor + desconto maior que o saldo em aberto (R$ ${saldo.toFixed(2)})` },
+        { status: 400 },
+      );
+    }
     return NextResponse.json(
       { error: `valor maior que o saldo em aberto (R$ ${saldo.toFixed(2)})` },
       { status: 400 },
@@ -117,8 +128,9 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     filialId: conta.filialId,
     contaPagarId: id,
     data: parsed.data.data,
-    valor: parsed.data.valor.toFixed(2),
+    valor: principal.toFixed(2),
     juros: parsed.data.juros && parsed.data.juros > 0 ? parsed.data.juros.toFixed(2) : null,
+    desconto: desconto > 0 ? desconto.toFixed(2) : null,
     observacao: parsed.data.observacao ?? null,
     criadoPor: user.id,
   });

@@ -97,6 +97,7 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
       data: schema.contaPagarBaixa.data,
       valor: schema.contaPagarBaixa.valor,
       juros: schema.contaPagarBaixa.juros,
+      desconto: schema.contaPagarBaixa.desconto,
       observacao: schema.contaPagarBaixa.observacao,
       criadoPor: schema.contaPagarBaixa.criadoPor,
       criadoEm: schema.contaPagarBaixa.criadoEm,
@@ -120,6 +121,7 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
   const valor = Number(conta.valor);
   const pago = baixas.reduce((s, b) => s + Number(b.valor), 0);
   const jurosPagos = baixas.reduce((s, b) => s + Number(b.juros ?? 0), 0);
+  const descontosObtidos = baixas.reduce((s, b) => s + Number(b.desconto ?? 0), 0);
   const saldo = Math.max(0, valor - pago);
   const hoje = hojeBr();
   const quitada = !!conta.dataPagamento || pago >= valor - 0.005;
@@ -236,7 +238,13 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
             {
               label: 'Pago',
               valor: brl(pago),
-              nota: jurosPagos > 0 ? `+ ${brl(jurosPagos)} juros` : undefined,
+              nota:
+                [
+                  jurosPagos > 0 ? `+ ${brl(jurosPagos)} juros` : null,
+                  descontosObtidos > 0 ? `inclui ${brl(descontosObtidos)} de desconto` : null,
+                ]
+                  .filter(Boolean)
+                  .join(' · ') || undefined,
             },
             { label: 'Saldo', valor: brl(saldo), alerta: saldo > 0 && pago > 0 },
             { label: 'Vencimento', valor: formatDate(conta.dataVencimento) },
@@ -307,6 +315,7 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
                   <th className="py-1.5 pr-3">Data</th>
                   <th className="py-1.5 pr-3 text-right">Valor</th>
                   <th className="py-1.5 pr-3 text-right">Juros</th>
+                  <th className="py-1.5 pr-3 text-right">Desconto</th>
                   <th className="py-1.5 pr-3">Observação</th>
                   <th className="py-1.5 pr-3">Por</th>
                   <th className="py-1.5"></th>
@@ -319,6 +328,9 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
                     <td className="py-1.5 pr-3 text-right font-mono">{brl(Number(b.valor))}</td>
                     <td className="py-1.5 pr-3 text-right font-mono text-amber-700">
                       {b.juros != null && Number(b.juros) > 0 ? brl(Number(b.juros)) : '—'}
+                    </td>
+                    <td className="py-1.5 pr-3 text-right font-mono text-emerald-700">
+                      {b.desconto != null && Number(b.desconto) > 0 ? brl(Number(b.desconto)) : '—'}
                     </td>
                     <td className="py-1.5 pr-3 text-slate-500">{b.observacao ?? '—'}</td>
                     <td className="py-1.5 pr-3 text-slate-500">
