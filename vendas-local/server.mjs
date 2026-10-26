@@ -4684,6 +4684,75 @@ async function loopRestricoesNuvem() {
     console.error('[restricoes]', e.message);
   }
 }
+// ---- DESTAQUES DO CARDÁPIO DO QR (26/10/2026) ----
+// "Almoço executivo" (Bar e Mar), "Almoço convidativo" (Tabuará), "Happy hour":
+// card no topo do cardápio do cliente explicando os dias e a hora. Cadastro na
+// nuvem (/cardapio/destaques); só vem o que está com "mostrar no cardápio"
+// ligado. A loja guarda a lista em app_config e decide "vale agora" no relógio
+// de Aracaju. Pedir continua passando pela checagem do apiMesaPedir (só item
+// do cardápio digital) — item fora dele aparece como "peça ao garçom".
+async function loopDestaquesNuvem() {
+  if (!FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  try {
+    const d = await chamarNuvem('/api/loja/cardapio-destaques');
+    if (!d?.ok || !Array.isArray(d.destaques)) return;
+    const lista = d.destaques.slice(0, 10).map((x) => ({
+      id: String(x.id || ''), titulo: String(x.titulo || '').slice(0, 60),
+      texto: x.texto ? String(x.texto).slice(0, 400) : null,
+      dias: Array.isArray(x.dias) ? x.dias.map(Number).filter((n) => n >= 0 && n <= 6) : [],
+      hora_inicio: x.hora_inicio ? String(x.hora_inicio).slice(0, 5) : null,
+      hora_fim: x.hora_fim ? String(x.hora_fim).slice(0, 5) : null,
+      codigos: Array.isArray(x.codigos) ? x.codigos.map(Number).filter((n) => n > 0).slice(0, 80) : [],
+      quando: x.quando ? String(x.quando).slice(0, 120) : '',
+    })).filter((x) => x.titulo);
+    await cfgSet('cardapio_destaques', JSON.stringify(lista));
+  } catch (e) {
+    console.error('[destaques]', e.message);
+  }
+}
+function agoraAracaju() {
+  const ps = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', weekday: 'short',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date()).map((x) => [x.type, x.value]));
+  const dia = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(ps.weekday);
+  return { dia, min: Number(ps.hour) * 60 + Number(ps.minute) };
+}
+function destaqueValeAgora(d, agora) {
+  const mi = (h) => { const [a, b] = String(h).split(':'); return Number(a) * 60 + Number(b || 0); };
+  const ini = d.hora_inicio ? mi(d.hora_inicio) : null;
+  const fim = d.hora_fim ? mi(d.hora_fim) : null;
+  const diaOk = (x) => !d.dias.length || d.dias.includes(x);
+  if (ini != null && fim != null && fim < ini) {
+    // vira a meia-noite (ex.: 22h às 02h): depois da meia-noite vale pelo dia anterior
+    if (agora.min >= ini) return diaOk(agora.dia);
+    if (agora.min < fim) return diaOk((agora.dia + 6) % 7);
+    return false;
+  }
+  if (!diaOk(agora.dia)) return false;
+  if (ini != null && agora.min < ini) return false;
+  if (fim != null && agora.min >= fim) return false;
+  return true;
+}
+async function apiMesaDestaques() {
+  let lista = [];
+  try { lista = JSON.parse(await cfgGet('cardapio_destaques', '[]')) || []; } catch { lista = []; }
+  if (!Array.isArray(lista) || !lista.length) return { ok: true, destaques: [] };
+  const agora = agoraAracaju();
+  const out = [];
+  for (const d of lista) {
+    const cods = (d.codigos || []).map(Number).filter((n) => n > 0);
+    let produtos = [];
+    if (cods.length) {
+      // mesma regra do apiMesaPedir: o cliente só pede item do cardápio digital
+      produtos = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque, estoque, descricao,
+          EXISTS(SELECT 1 FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS tem_foto
+        FROM produto_local WHERE codigo_pdv = ANY(${cods}) AND cardapio_digital
+          AND categoria NOT IN (SELECT categoria FROM grupo_oculto)
+        ORDER BY sem_estoque, nome`;
+    }
+    out.push({ id: d.id, titulo: d.titulo, texto: d.texto, quando: d.quando, agora: destaqueValeAgora(d, agora), produtos });
+  }
+  return { ok: true, destaques: out };
+}
 /** Grupos que a casa escondeu do cardápio do cliente. */
 async function apiGruposOcultos() {
   const todos = await sql`SELECT DISTINCT categoria FROM produto_local WHERE cardapio_digital ORDER BY categoria`;
@@ -25017,8 +25086,10 @@ async function telaPedir(){
   if(!(await sessaoOk()))return;
   await carregaRestr();
   if(CATS&&CATSRQ!==restrQs())CATS=null;
+  setTimeout(carregaDestaques,0);
   app('<h1>Cardápio</h1><input type="search" id="bq" placeholder="buscar…" oninput="buscarProd(this.value)">'+
     restrHtml()+
+    '<div id="dstq"></div>'+
     '<div id="grid" class="cats"><span class="mut">carregando…</span></div><div id="lst"></div>'+
     '<button class="b g" onclick="inicio()">Voltar</button>');
   // Sem try/catch, um soluço de rede deixava a tela em "carregando…" PRA
@@ -25053,6 +25124,33 @@ async function telaPedir(){
       '<i>'+iconeGrupo(c.categoria)+'</i>'+esc(c.categoria)+'<span>'+c.disp+' itens</span></button>';
   }).join('');
   renderCarrinho();
+}
+// ---- DESTAQUES (almoço executivo, happy hour) ----
+// Card no topo do cardápio dizendo os dias e a hora. Dentro do horário o
+// cliente toca e vê os itens pra pedir; fora, só o "quando". Sem destaque
+// ligado na casa, nada aparece e o cardápio fica igual.
+var DSTQ=null;
+async function carregaDestaques(){
+  try{DSTQ=(await (await fetch('/api/mesa/destaques',{cache:'no-store'})).json()).destaques||[]}catch(e){DSTQ=[]}
+  var el=document.getElementById('dstq');if(!el)return;
+  if(!DSTQ.length){el.innerHTML='';return}
+  el.innerHTML=DSTQ.map(function(d,i){
+    var pode=d.agora&&d.produtos&&d.produtos.length;
+    var rod=pode?'<button class="bped" style="margin-top:8px" onclick="abrirDestaque('+i+')">Ver e pedir</button>'
+      :(d.agora?'<div class="mut" style="margin-top:6px;font-size:13px">Peça ao garçom 🙋</div>'
+        :'<div class="mut" style="margin-top:6px;font-size:13px">Fora do horário agora</div>');
+    return '<div style="border:2px solid #f59e0b;background:#fffbeb;color:#78350f;border-radius:12px;padding:12px 14px;margin:0 0 10px">'+
+      '<div style="font-weight:700;font-size:17px">🍽️ '+esc(d.titulo)+(d.agora?' <span style="font-size:12px;background:#16a34a;color:#fff;border-radius:8px;padding:2px 7px;vertical-align:middle">agora</span>':'')+'</div>'+
+      (d.quando?'<div style="font-size:14px;margin-top:2px">'+esc(d.quando)+'</div>':'')+
+      (d.texto?'<div style="font-size:14px;margin-top:4px;white-space:pre-line">'+esc(d.texto)+'</div>':'')+
+      rod+'</div>';
+  }).join('');
+}
+function abrirDestaque(i){
+  var d=DSTQ&&DSTQ[i];if(!d)return;
+  var g=document.getElementById('grid');if(g)g.style.display='none';
+  var el=document.getElementById('dstq');if(el)el.innerHTML='';
+  listar(d.produtos,d.titulo);
 }
 // ---- CARDÁPIO INCLUSIVO ----
 // "Tenho restrição alimentar": o cliente marca sem glúten / sem lactose e o
@@ -31793,6 +31891,8 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/mesa/traducoes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(await apiMesaTraducoes(u.searchParams.get('lang'))); }
     // cardápio inclusivo: com ?restr=g,l a busca/grupo do cliente só devolve o que a cozinha marcou
     if (p === '/api/mesa/restricoes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaRestricoes())); }
+    // destaques do QR (almoço executivo, happy hour) — card no topo do cardápio
+    if (p === '/api/mesa/destaques') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaDestaques())); }
     if (restrPedida(u.searchParams.get('restr')) && u.searchParams.get('cliente') === '1' && (p === '/api/venda/busca' || p === '/api/venda/categoria' || p === '/api/venda/categorias')) {
       const r = restrPedida(u.searchParams.get('restr'));
       let out;
@@ -32354,6 +32454,8 @@ async function main() {
   setInterval(() => loopTraducao().catch(() => {}), 10 * 60 * 1000);
   setTimeout(() => loopRestricoesNuvem().catch(() => {}), 40 * 1000);
   setInterval(() => loopRestricoesNuvem().catch(() => {}), 10 * 60 * 1000);
+  setTimeout(() => loopDestaquesNuvem().catch(() => {}), 50 * 1000);
+  setInterval(() => loopDestaquesNuvem().catch(() => {}), 5 * 60 * 1000);
   setTimeout(() => loopEspelhoWizard().catch(() => {}), 90 * 1000);
   setInterval(() => loopEspelhoWizard().catch(() => {}), 30 * 60 * 1000);
   setTimeout(() => loopNfceFila().catch(() => {}), 30 * 1000);
