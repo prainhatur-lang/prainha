@@ -101,7 +101,204 @@ interface Props {
   endpointMpiToken?: string;
   /** Campos a mais no corpo do POST (ex.: os parametros assinados da mesa). */
   extraPayload?: Record<string, unknown>;
+  /** Idioma da tela (delivery com ?lang=); sem ele, português. */
+  lang?: LangCartao;
 }
+
+// Delivery com ?lang= (turista): a tela do cartão sai no idioma do cliente.
+// Reserva e QR da mesa não passam lang → português de sempre.
+type LangCartao = 'pt' | 'en' | 'es' | 'fr' | 'it';
+interface TextosCartao {
+  numeroInvalido: string; nomeFalta: string; validadeInvalida: string; cvvInvalido: string;
+  cpfInvalido: string; enderecoFalta: string; bancoNegou: string; recusado: string; erroProcessar: string;
+  credito: string; debito: string; numeroCartao: string; nomeCartao: string; comoNoCartao: string;
+  validade: string; mmaa: string; celular: string; paisCelular: string; soNumeros: string;
+  email: string; emailPh: string; cpfTitular: string; enderecoCobranca: string; buscando: string;
+  cep: string; numero: string; rua: string; bairro: string; cidade: string; uf: string;
+  autenticando: string; processando: string; pagarCom: (credito: boolean) => string; seguro: string;
+}
+const TXT_CARTAO: Record<LangCartao, TextosCartao> = {
+  pt: {
+    numeroInvalido: 'Número do cartão inválido.',
+    nomeFalta: 'Digite o nome impresso no cartão.',
+    validadeInvalida: 'Validade inválida.',
+    cvvInvalido: 'Código de segurança inválido.',
+    cpfInvalido: 'CPF inválido.',
+    enderecoFalta: 'Preencha o endereço de cobrança do cartão.',
+    bancoNegou: 'O banco não autorizou esse cartão. Tente outro cartão ou pague via Pix.',
+    recusado: 'Pagamento recusado. Tente outro cartão ou pague via Pix.',
+    erroProcessar: 'Erro ao processar cartão.',
+    credito: 'Crédito',
+    debito: 'Débito',
+    numeroCartao: 'Número do cartão',
+    nomeCartao: 'Nome no cartão',
+    comoNoCartao: 'Como está no cartão',
+    validade: 'Validade',
+    mmaa: 'MM/AA',
+    celular: 'Celular',
+    paisCelular: 'País do celular',
+    soNumeros: 'só números',
+    email: 'E-mail',
+    emailPh: 'voce@email.com',
+    cpfTitular: 'CPF do titular',
+    enderecoCobranca: 'Endereço de cobrança do cartão',
+    buscando: 'buscando…',
+    cep: 'CEP',
+    numero: 'Número',
+    rua: 'Rua',
+    bairro: 'Bairro',
+    cidade: 'Cidade',
+    uf: 'UF',
+    autenticando: 'Autenticando com o banco…',
+    processando: 'Processando…',
+    pagarCom: (c) => `Pagar com ${c ? 'crédito' : 'débito'}`,
+    seguro: 'Pagamento seguro processado pela Cielo (3DS)',
+  },
+  en: {
+    numeroInvalido: 'Invalid card number.',
+    nomeFalta: 'Enter the name printed on the card.',
+    validadeInvalida: 'Invalid expiry date.',
+    cvvInvalido: 'Invalid security code.',
+    cpfInvalido: 'Invalid CPF.',
+    enderecoFalta: 'Fill in the card billing address.',
+    bancoNegou: "The bank didn't authorize this card. Try another card or pay with Pix.",
+    recusado: 'Payment declined. Try another card or pay with Pix.',
+    erroProcessar: 'Error processing card.',
+    credito: 'Credit',
+    debito: 'Debit',
+    numeroCartao: 'Card number',
+    nomeCartao: 'Name on card',
+    comoNoCartao: 'As shown on the card',
+    validade: 'Expiry',
+    mmaa: 'MM/YY',
+    celular: 'Mobile',
+    paisCelular: 'Mobile country code',
+    soNumeros: 'numbers only',
+    email: 'Email',
+    emailPh: 'you@email.com',
+    cpfTitular: 'Cardholder CPF (Brazilian tax ID)',
+    enderecoCobranca: 'Card billing address',
+    buscando: 'searching…',
+    cep: 'ZIP code',
+    numero: 'Number',
+    rua: 'Street',
+    bairro: 'Neighborhood',
+    cidade: 'City',
+    uf: 'State',
+    autenticando: 'Authenticating with your bank…',
+    processando: 'Processing…',
+    pagarCom: (c) => `Pay by ${c ? 'credit' : 'debit'}`,
+    seguro: 'Secure payment processed by Cielo (3DS)',
+  },
+  es: {
+    numeroInvalido: 'Número de tarjeta inválido.',
+    nomeFalta: 'Escribe el nombre impreso en la tarjeta.',
+    validadeInvalida: 'Fecha de vencimiento inválida.',
+    cvvInvalido: 'Código de seguridad inválido.',
+    cpfInvalido: 'CPF inválido.',
+    enderecoFalta: 'Completa la dirección de facturación de la tarjeta.',
+    bancoNegou: 'El banco no autorizó esta tarjeta. Prueba con otra tarjeta o paga con Pix.',
+    recusado: 'Pago rechazado. Prueba con otra tarjeta o paga con Pix.',
+    erroProcessar: 'Error al procesar la tarjeta.',
+    credito: 'Crédito',
+    debito: 'Débito',
+    numeroCartao: 'Número de tarjeta',
+    nomeCartao: 'Nombre en la tarjeta',
+    comoNoCartao: 'Como aparece en la tarjeta',
+    validade: 'Vencimiento',
+    mmaa: 'MM/AA',
+    celular: 'Celular',
+    paisCelular: 'País del celular',
+    soNumeros: 'solo números',
+    email: 'Correo electrónico',
+    emailPh: 'tu@email.com',
+    cpfTitular: 'CPF del titular (documento brasileño)',
+    enderecoCobranca: 'Dirección de facturación de la tarjeta',
+    buscando: 'buscando…',
+    cep: 'Código postal',
+    numero: 'Número',
+    rua: 'Calle',
+    bairro: 'Barrio',
+    cidade: 'Ciudad',
+    uf: 'Estado',
+    autenticando: 'Autenticando con el banco…',
+    processando: 'Procesando…',
+    pagarCom: (c) => `Pagar con ${c ? 'crédito' : 'débito'}`,
+    seguro: 'Pago seguro procesado por Cielo (3DS)',
+  },
+  fr: {
+    numeroInvalido: 'Numéro de carte invalide.',
+    nomeFalta: 'Saisissez le nom imprimé sur la carte.',
+    validadeInvalida: 'Date d’expiration invalide.',
+    cvvInvalido: 'Code de sécurité invalide.',
+    cpfInvalido: 'CPF invalide.',
+    enderecoFalta: 'Renseignez l’adresse de facturation de la carte.',
+    bancoNegou: 'La banque n’a pas autorisé cette carte. Essayez une autre carte ou payez par Pix.',
+    recusado: 'Paiement refusé. Essayez une autre carte ou payez par Pix.',
+    erroProcessar: 'Erreur lors du traitement de la carte.',
+    credito: 'Crédit',
+    debito: 'Débit',
+    numeroCartao: 'Numéro de carte',
+    nomeCartao: 'Nom sur la carte',
+    comoNoCartao: 'Tel qu’indiqué sur la carte',
+    validade: 'Expiration',
+    mmaa: 'MM/AA',
+    celular: 'Portable',
+    paisCelular: 'Pays du portable',
+    soNumeros: 'chiffres uniquement',
+    email: 'E-mail',
+    emailPh: 'vous@email.com',
+    cpfTitular: 'CPF du titulaire (n° fiscal brésilien)',
+    enderecoCobranca: 'Adresse de facturation de la carte',
+    buscando: 'recherche…',
+    cep: 'Code postal',
+    numero: 'Numéro',
+    rua: 'Rue',
+    bairro: 'Quartier',
+    cidade: 'Ville',
+    uf: 'État',
+    autenticando: 'Authentification auprès de la banque…',
+    processando: 'Traitement…',
+    pagarCom: (c) => `Payer par carte de ${c ? 'crédit' : 'débit'}`,
+    seguro: 'Paiement sécurisé traité par Cielo (3DS)',
+  },
+  it: {
+    numeroInvalido: 'Numero di carta non valido.',
+    nomeFalta: 'Inserisci il nome stampato sulla carta.',
+    validadeInvalida: 'Data di scadenza non valida.',
+    cvvInvalido: 'Codice di sicurezza non valido.',
+    cpfInvalido: 'CPF non valido.',
+    enderecoFalta: 'Compila l’indirizzo di fatturazione della carta.',
+    bancoNegou: 'La banca non ha autorizzato questa carta. Prova con un’altra carta o paga con Pix.',
+    recusado: 'Pagamento rifiutato. Prova con un’altra carta o paga con Pix.',
+    erroProcessar: 'Errore durante l’elaborazione della carta.',
+    credito: 'Credito',
+    debito: 'Debito',
+    numeroCartao: 'Numero della carta',
+    nomeCartao: 'Nome sulla carta',
+    comoNoCartao: 'Come riportato sulla carta',
+    validade: 'Scadenza',
+    mmaa: 'MM/AA',
+    celular: 'Cellulare',
+    paisCelular: 'Paese del cellulare',
+    soNumeros: 'solo numeri',
+    email: 'E-mail',
+    emailPh: 'tu@email.com',
+    cpfTitular: 'CPF del titolare (codice fiscale brasiliano)',
+    enderecoCobranca: 'Indirizzo di fatturazione della carta',
+    buscando: 'ricerca…',
+    cep: 'CAP',
+    numero: 'Numero',
+    rua: 'Via',
+    bairro: 'Quartiere',
+    cidade: 'Città',
+    uf: 'Stato',
+    autenticando: 'Autenticazione con la banca…',
+    processando: 'Elaborazione…',
+    pagarCom: (c) => `Paga con carta di ${c ? 'credito' : 'debito'}`,
+    seguro: 'Pagamento sicuro elaborato da Cielo (3DS)',
+  },
+};
 
 const inp =
   'mt-1.5 w-full rounded-xl border border-[var(--rsv-field-border)] bg-[var(--rsv-field-bg)] px-3.5 py-2.5 text-sm text-[var(--rsv-ink)] outline-none transition-colors placeholder:text-[var(--rsv-placeholder)] focus:border-[var(--rsv-accent)] focus:ring-2 focus:ring-[var(--rsv-accent)]/20';
@@ -117,7 +314,9 @@ export function CreditCardForm({
   endpointPagamento,
   endpointMpiToken,
   extraPayload,
+  lang = 'pt',
 }: Props) {
+  const t = TXT_CARTAO[lang] ?? TXT_CARTAO.pt;
   const urlPagamento = endpointPagamento ?? `/api/reservar/${token}/pagamento-cartao`;
   const urlMpiToken = endpointMpiToken ?? `/api/reservar/${token}/mpi-token`;
   const [cardNumber, setCardNumber] = useState('');
@@ -339,13 +538,13 @@ export function CreditCardForm({
   async function handleSubmit() {
     setError(null);
 
-    if (cleanNumber.length < 13) return setError('Número do cartão inválido.');
-    if (!holder.trim()) return setError('Digite o nome impresso no cartão.');
+    if (cleanNumber.length < 13) return setError(t.numeroInvalido);
+    if (!holder.trim()) return setError(t.nomeFalta);
     const expiryDigits = expiry.replace(/\D/g, '');
-    if (expiryDigits.length !== 4) return setError('Validade inválida.');
-    if (cvv.length < 3) return setError('Código de segurança inválido.');
-    if (cpf.replace(/\D/g, '').length < 11) return setError('CPF inválido.');
-    if (!street || !number || !neighborhood) return setError('Preencha o endereço de cobrança do cartão.');
+    if (expiryDigits.length !== 4) return setError(t.validadeInvalida);
+    if (cvv.length < 3) return setError(t.cvvInvalido);
+    if (cpf.replace(/\D/g, '').length < 11) return setError(t.cpfInvalido);
+    if (!street || !number || !neighborhood) return setError(t.enderecoFalta);
 
     setProcessing(true);
 
@@ -372,7 +571,7 @@ export function CreditCardForm({
     motivoRef.current = null;
     detalheRef.current = null;
     if (semAutenticacao && motivo === 'failure') {
-      setError('O banco não autorizou esse cartão. Tente outro cartão ou pague via Pix.');
+      setError(t.bancoNegou);
       setProcessing(false);
       return;
     }
@@ -401,13 +600,13 @@ export function CreditCardForm({
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok || !d.pago) {
-        setError(d.error ?? 'Pagamento recusado. Tente outro cartão ou pague via Pix.');
+        setError(d.error ?? t.recusado);
         setProcessing(false);
         return;
       }
       onPago();
     } catch (err) {
-      setError((err as Error).message || 'Erro ao processar cartão.');
+      setError((err as Error).message || t.erroProcessar);
       setProcessing(false);
     }
   }
@@ -466,19 +665,19 @@ export function CreditCardForm({
           onClick={() => setCardType('CreditCard')}
           className={`flex-1 rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${cardType === 'CreditCard' ? 'border-[var(--rsv-accent)] bg-[var(--rsv-surface)] text-[var(--rsv-strong)]' : 'border-[var(--rsv-field-border)] text-[var(--rsv-muted)]'}`}
         >
-          Crédito
+          {t.credito}
         </button>
         <button
           type="button"
           onClick={() => setCardType('DebitCard')}
           className={`flex-1 rounded-xl border px-3 py-2 text-xs font-semibold transition-colors ${cardType === 'DebitCard' ? 'border-[var(--rsv-accent)] bg-[var(--rsv-surface)] text-[var(--rsv-strong)]' : 'border-[var(--rsv-field-border)] text-[var(--rsv-muted)]'}`}
         >
-          Débito
+          {t.debito}
         </button>
       </div>
 
       <div>
-        <label className={lbl}>Número do cartão</label>
+        <label className={lbl}>{t.numeroCartao}</label>
         <div className="relative">
           <input
             value={cardNumber}
@@ -493,14 +692,14 @@ export function CreditCardForm({
       </div>
 
       <div>
-        <label className={lbl}>Nome no cartão</label>
-        <input value={holder} onChange={(e) => setHolder(e.target.value)} placeholder="Como está no cartão" autoComplete="cc-name" className={inp} />
+        <label className={lbl}>{t.nomeCartao}</label>
+        <input value={holder} onChange={(e) => setHolder(e.target.value)} placeholder={t.comoNoCartao} autoComplete="cc-name" className={inp} />
       </div>
 
       <div className="flex gap-3">
         <div className="flex-1">
-          <label className={lbl}>Validade</label>
-          <input value={expiry} onChange={(e) => setExpiry(formatExpiry(e.target.value))} placeholder="MM/AA" inputMode="numeric" autoComplete="cc-exp" className={inp} />
+          <label className={lbl}>{t.validade}</label>
+          <input value={expiry} onChange={(e) => setExpiry(formatExpiry(e.target.value))} placeholder={t.mmaa} inputMode="numeric" autoComplete="cc-exp" className={inp} />
         </div>
         <div className="flex-1">
           <label className={lbl}>CVV</label>
@@ -512,7 +711,7 @@ export function CreditCardForm({
           sem eles, a autenticacao nem chega a rodar. */}
       <div className="flex gap-3">
         <div className="flex-1">
-          <label className={lbl}>Celular</label>
+          <label className={lbl}>{t.celular}</label>
           <div className="flex gap-1.5">
             <select
               value={foneDdi}
@@ -520,7 +719,7 @@ export function CreditCardForm({
                 setFoneDdi(e.target.value);
                 if (e.target.value !== '55') setFone((f) => f.slice(0, 14));
               }}
-              aria-label="País do celular"
+              aria-label={t.paisCelular}
               className="mt-1.5 flex-none rounded-xl border border-[var(--rsv-field-border)] bg-[var(--rsv-field-bg)] px-1.5 py-2.5 text-sm text-[var(--rsv-ink)] outline-none transition-colors focus:border-[var(--rsv-accent)] focus:ring-2 focus:ring-[var(--rsv-accent)]/20"
             >
               {PAISES_FONE.map((p) => (
@@ -532,7 +731,7 @@ export function CreditCardForm({
             <input
               value={fone}
               onChange={(e) => setFone(e.target.value.replace(/\D/g, '').slice(0, foneDdi === '55' ? 11 : 14))}
-              placeholder={foneDdi === '55' ? '79900000000' : 'só números'}
+              placeholder={foneDdi === '55' ? '79900000000' : t.soNumeros}
               inputMode="numeric"
               autoComplete="tel-national"
               className={`${inp} min-w-0`}
@@ -540,11 +739,11 @@ export function CreditCardForm({
           </div>
         </div>
         <div className="flex-1">
-          <label className={lbl}>E-mail</label>
+          <label className={lbl}>{t.email}</label>
           <input
             value={email}
             onChange={(e) => setEmail(e.target.value.slice(0, 120))}
-            placeholder="voce@email.com"
+            placeholder={t.emailPh}
             inputMode="email"
             autoComplete="email"
             className={inp}
@@ -553,12 +752,12 @@ export function CreditCardForm({
       </div>
 
       <div>
-        <label className={lbl}>CPF do titular</label>
+        <label className={lbl}>{t.cpfTitular}</label>
         <input value={cpf} onChange={(e) => setCpf(formatCPF(e.target.value))} placeholder="000.000.000-00" inputMode="numeric" className={inp} />
       </div>
 
       <div>
-        <label className={lbl}>Endereço de cobrança do cartão</label>
+        <label className={lbl}>{t.enderecoCobranca}</label>
         <div className="mt-1.5 grid grid-cols-2 gap-2">
           <input
             value={cep}
@@ -567,24 +766,28 @@ export function CreditCardForm({
               setCep(v);
               if (v.length === 8) void buscarCep(v);
             }}
-            placeholder={buscandoCep ? 'buscando…' : 'CEP'}
+            placeholder={buscandoCep ? t.buscando : t.cep}
             inputMode="numeric"
             autoComplete="postal-code"
             className={`${inp} mt-0`}
           />
-          <input value={number} onChange={(e) => setNumber(e.target.value)} placeholder="Número" className={`${inp} mt-0`} />
-          <input value={street} onChange={(e) => setStreet(e.target.value)} placeholder="Rua" className={`${inp} col-span-2 mt-0`} />
-          <input value={neighborhood} onChange={(e) => setNeighborhood(e.target.value)} placeholder="Bairro" className={`${inp} mt-0`} />
-          <input value={city} onChange={(e) => setCity(e.target.value)} placeholder="Cidade" className={`${inp} mt-0`} />
-          <input value={state} onChange={(e) => setState(e.target.value.toUpperCase().slice(0, 2))} placeholder="UF" className={`${inp} col-span-2 mt-0`} />
+          <input value={number} onChange={(e) => setNumber(e.target.value)} placeholder={t.numero} className={`${inp} mt-0`} />
+          <input value={street} onChange={(e) => setStreet(e.target.value)} placeholder={t.rua} className={`${inp} col-span-2 mt-0`} />
+          <input value={neighborhood} onChange={(e) => setNeighborhood(e.target.value)} placeholder={t.bairro} className={`${inp} mt-0`} />
+          <input value={city} onChange={(e) => setCity(e.target.value)} placeholder={t.cidade} className={`${inp} mt-0`} />
+          <input value={state} onChange={(e) => setState(e.target.value.toUpperCase().slice(0, 2))} placeholder={t.uf} className={`${inp} col-span-2 mt-0`} />
         </div>
       </div>
 
       <button onClick={handleSubmit} disabled={isProcessing} className={btn}>
-        {isProcessing ? (authenticating3DS ? 'Autenticando com o banco…' : 'Processando…') : `Pagar com ${cardType === 'CreditCard' ? 'crédito' : 'débito'}`}
+        {isProcessing
+          ? authenticating3DS
+            ? t.autenticando
+            : t.processando
+          : t.pagarCom(cardType === 'CreditCard')}
       </button>
 
-      <p className="text-center text-[10px] text-[var(--rsv-muted)]">Pagamento seguro processado pela Cielo (3DS)</p>
+      <p className="text-center text-[10px] text-[var(--rsv-muted)]">{t.seguro}</p>
     </div>
   );
 }

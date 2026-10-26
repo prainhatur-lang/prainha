@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CreditCardForm } from '@/app/reservar/[token]/credit-card-form';
+import { TXT_DELIVERY, TXT_PEDIDO, type IdiomaDelivery } from '@/lib/delivery/idioma';
 
 interface PedidoResp {
   numero: number;
@@ -28,6 +29,7 @@ interface PedidoResp {
   desconto: string;
   total: string;
   freteGratisLabel: string | null;
+  freteGratisMotivo?: string | null;
   cupomCodigo: string | null;
   observacao: string | null;
   canceladoMotivo: string | null;
@@ -65,7 +67,19 @@ function fmtData(ymd: string): string {
 
 const lbl = 'text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--dlv-muted)]';
 
-export function StatusClient({ token }: { token: string }) {
+export function StatusClient({
+  token,
+  lang = 'pt',
+  traducoes = {},
+}: {
+  token: string;
+  /** Idioma da tela (?lang= do cardápio); sem ele, português. */
+  lang?: IdiomaDelivery;
+  /** Nome do prato/complemento em português → no idioma do cliente. */
+  traducoes?: Record<string, string>;
+}) {
+  const t = TXT_PEDIDO[lang] ?? TXT_PEDIDO.pt;
+  const tr = (s: string) => traducoes[s.trim()] ?? s;
   const [pedido, setPedido] = useState<PedidoResp | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [copiado, setCopiado] = useState(false);
@@ -77,7 +91,7 @@ export function StatusClient({ token }: { token: string }) {
     try {
       const r = await fetch(`/api/delivery/pedido/${token}`, { cache: 'no-store' });
       if (!r.ok) {
-        if (r.status === 404) setErro('Pedido não encontrado.');
+        if (r.status === 404) setErro(t.naoEncontrado);
         return;
       }
       const d = (await r.json()) as PedidoResp;
@@ -86,7 +100,7 @@ export function StatusClient({ token }: { token: string }) {
     } catch {
       /* rede oscilou — próximo poll resolve */
     }
-  }, [token]);
+  }, [token, t]);
 
   useEffect(() => {
     void carregar();
@@ -126,11 +140,11 @@ export function StatusClient({ token }: { token: string }) {
     try {
       const r = await fetch(`/api/delivery/pedido/${token}/pix`, { method: 'POST' });
       const d = await r.json().catch(() => ({}));
-      if (!r.ok) setErro(d.error ?? 'Não consegui gerar o Pix agora.');
+      if (!r.ok) setErro(d.error ?? t.pixErro);
       setMostrarCartao(false);
       await carregar();
     } catch {
-      setErro('Falha de conexão — tente de novo.');
+      setErro(t.falhaConexao);
     } finally {
       setGerandoPix(false);
     }
@@ -138,15 +152,21 @@ export function StatusClient({ token }: { token: string }) {
 
   if (erro && !pedido) {
     return (
-      <main className="mx-auto flex min-h-screen w-full max-w-md items-center justify-center px-5">
+      <main
+        className="mx-auto flex min-h-screen w-full max-w-md items-center justify-center px-5"
+        lang={lang !== 'pt' ? lang : undefined}
+      >
         <p className="text-sm text-[var(--dlv-muted)]">{erro}</p>
       </main>
     );
   }
   if (!pedido) {
     return (
-      <main className="mx-auto flex min-h-screen w-full max-w-md items-center justify-center px-5">
-        <p className="text-sm text-[var(--dlv-muted)]">Carregando seu pedido…</p>
+      <main
+        className="mx-auto flex min-h-screen w-full max-w-md items-center justify-center px-5"
+        lang={lang !== 'pt' ? lang : undefined}
+      >
+        <p className="text-sm text-[var(--dlv-muted)]">{t.carregando}</p>
       </main>
     );
   }
@@ -156,26 +176,38 @@ export function StatusClient({ token }: { token: string }) {
   const etapas =
     pedido.tipo === 'entrega'
       ? [
-          { id: 'pago', label: 'Pedido recebido' },
-          { id: 'em_preparo', label: 'Na cozinha' },
-          { id: 'pronto', label: 'Pronto' },
-          { id: 'saiu_entrega', label: 'Saiu pra entrega' },
-          { id: 'chegou', label: 'Entregador na porta' },
-          { id: 'concluido', label: 'Entregue' },
+          { id: 'pago', label: t.recebido },
+          { id: 'em_preparo', label: t.naCozinha },
+          { id: 'pronto', label: t.pronto },
+          { id: 'saiu_entrega', label: t.saiuEntrega },
+          { id: 'chegou', label: t.naPorta },
+          { id: 'concluido', label: t.entregue },
         ]
       : [
-          { id: 'pago', label: 'Pedido recebido' },
-          { id: 'em_preparo', label: 'Na cozinha' },
-          { id: 'pronto', label: 'Pronto pra retirada' },
-          { id: 'concluido', label: 'Retirado' },
+          { id: 'pago', label: t.recebido },
+          { id: 'em_preparo', label: t.naCozinha },
+          { id: 'pronto', label: t.prontoRetirada },
+          { id: 'concluido', label: t.retirado },
         ];
   const idxAtual = etapas.findIndex((e) => e.id === pedido.status);
   const totalCents = Math.round(Number(pedido.total) * 100);
   const aguardandoPixComQr =
     pendente && pedido.pagamento.metodo === 'pix' && !!pedido.pagamento.qrCodeString;
+  // Entrega grátis: em português o rótulo do servidor, como sempre; fora dele
+  // o motivo traduzido (ou o "Entrega grátis" genérico do cardápio).
+  const freteGratisTexto = pedido.freteGratisLabel
+    ? lang === 'pt'
+      ? pedido.freteGratisLabel
+      : (pedido.freteGratisMotivo ? t.freteMotivo[pedido.freteGratisMotivo] : undefined) ??
+        TXT_DELIVERY[lang].entregaGratis
+    : null;
+  const sufixoLang = lang !== 'pt' ? `?lang=${lang}` : '';
 
   return (
-    <main className="mx-auto w-full max-w-lg px-4 pb-16 pt-6 lg:max-w-2xl lg:pt-10">
+    <main
+      className="mx-auto w-full max-w-lg px-4 pb-16 pt-6 lg:max-w-2xl lg:pt-10"
+      lang={lang !== 'pt' ? lang : undefined}
+    >
       <div className="text-center">
         <span
           className="text-2xl tracking-tight text-[var(--dlv-strong)]"
@@ -185,10 +217,8 @@ export function StatusClient({ token }: { token: string }) {
           <span className="text-[var(--dlv-brand-dot)]">.</span>
         </span>
         <p className="mt-1 text-sm text-[var(--dlv-muted)]">
-          Pedido <span className="font-bold text-[var(--dlv-ink)]">#{pedido.numero}</span> ·{' '}
-          {pedido.asap
-            ? 'o quanto antes'
-            : `${fmtData(pedido.agendadoData)} às ${pedido.agendadoHora}`}
+          {t.pedido} <span className="font-bold text-[var(--dlv-ink)]">#{pedido.numero}</span> ·{' '}
+          {pedido.asap ? t.asap : t.agendado(fmtData(pedido.agendadoData), pedido.agendadoHora)}
         </p>
       </div>
 
@@ -196,11 +226,10 @@ export function StatusClient({ token }: { token: string }) {
       {pendente ? (
         <section className="mt-5 rounded-2xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] p-5">
           <h2 className="text-base font-bold text-[var(--dlv-ink)]">
-            Falta só o pagamento — {brl(pedido.total)}
+            {t.faltaPagamento(brl(pedido.total))}
           </h2>
           <p className="mt-1 text-xs text-[var(--dlv-muted)]">
-            Seu pedido segue pra cozinha assim que o pagamento for aprovado. Você tem até 40
-            minutos antes de ele expirar.
+            {t.explicaPagamento}
           </p>
 
           {erro ? <p className="mt-2 text-xs font-semibold text-rose-700">{erro}</p> : null}
@@ -212,21 +241,21 @@ export function StatusClient({ token }: { token: string }) {
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
                     src={`data:image/png;base64,${pedido.pagamento.qrCodeBase64}`}
-                    alt="QR code Pix"
+                    alt={t.qrAlt}
                     className="mx-auto h-52 w-52 rounded-md border border-[var(--dlv-card-line)]"
                   />
                 ) : null}
                 <p className="mt-2 text-xs text-[var(--dlv-muted)]">
-                  Abra o app do seu banco, escolha Pix e escaneie — ou copie o código:
+                  {t.qrInstrucao}
                 </p>
                 <button
                   onClick={() => void copiarPix()}
                   className="mt-2 w-full rounded-full bg-[var(--dlv-escuro)] px-4 py-3 text-sm font-semibold text-[var(--dlv-accent-ink)]"
                 >
-                  {copiado ? '✓ Código copiado!' : 'Copiar código Pix'}
+                  {copiado ? t.copiado : t.copiar}
                 </button>
                 <p className="mt-3 text-xs text-[var(--dlv-muted)]">
-                  Pagou? A confirmação aparece aqui sozinha em segundos.
+                  {t.pagouAviso}
                 </p>
               </div>
             ) : (
@@ -235,7 +264,7 @@ export function StatusClient({ token }: { token: string }) {
                 disabled={gerandoPix}
                 className="mt-4 w-full rounded-full bg-[var(--dlv-escuro)] px-4 py-3 text-sm font-semibold text-[var(--dlv-accent-ink)] disabled:opacity-50"
               >
-                {gerandoPix ? 'Gerando Pix…' : 'Gerar QR code Pix'}
+                {gerandoPix ? t.gerandoPix : t.gerarPix}
               </button>
             )
           ) : null}
@@ -252,6 +281,7 @@ export function StatusClient({ token }: { token: string }) {
                 }}
                 endpointPagamento={`/api/delivery/pedido/${token}/pagamento-cartao`}
                 endpointMpiToken={`/api/delivery/pedido/${token}/mpi-token`}
+                lang={lang}
               />
             </div>
           ) : null}
@@ -263,7 +293,7 @@ export function StatusClient({ token }: { token: string }) {
             }}
             className="mt-3 w-full text-center text-xs font-semibold text-[var(--dlv-strong)] underline"
           >
-            {mostrarCartao ? 'Prefiro pagar com Pix' : 'Prefiro pagar com cartão'}
+            {mostrarCartao ? t.preferePix : t.prefereCartao}
           </button>
         </section>
       ) : null}
@@ -271,21 +301,21 @@ export function StatusClient({ token }: { token: string }) {
       {/* ---- cancelado ---- */}
       {cancelado ? (
         <section className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 p-5 text-center">
-          <p className="text-base font-bold text-rose-700">Pedido cancelado</p>
+          <p className="text-base font-bold text-rose-700">{t.cancelado}</p>
           {pedido.canceladoMotivo ? (
             <p className="mt-1 text-sm text-rose-700/80">{pedido.canceladoMotivo}</p>
           ) : null}
           {pedido.pagamento.status === 'reembolsado' ? (
             <p className="mt-2 text-xs text-rose-700/80">
-              O valor pago foi estornado — pode levar alguns dias pra aparecer na fatura.
+              {t.estornado}
             </p>
           ) : null}
           {pedido.loja?.slug ? (
             <a
-              href={`/delivery/${pedido.loja.slug}`}
+              href={`/delivery/${pedido.loja.slug}${sufixoLang}`}
               className="mt-3 inline-block rounded-full bg-[var(--dlv-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--dlv-accent-ink)]"
             >
-              Fazer novo pedido
+              {t.novoPedido}
             </a>
           ) : null}
         </section>
@@ -317,7 +347,7 @@ export function StatusClient({ token }: { token: string }) {
                     }`}
                   >
                     {e.label}
-                    {atual && pedido.status === 'pago' ? ' — obrigado! 🌅' : ''}
+                    {atual && pedido.status === 'pago' ? t.obrigado : ''}
                   </span>
                 </li>
               );
@@ -325,7 +355,8 @@ export function StatusClient({ token }: { token: string }) {
           </ol>
           {pedido.pagamento.metodo === 'na_entrega' && pedido.status !== 'concluido' ? (
             <p className="mt-3 rounded-xl bg-[var(--dlv-surface)] px-3 py-2 text-xs text-[var(--dlv-text)]">
-              💳 <b>Pagamento na entrega</b> — {brl(pedido.total)} no cartão ou Pix na maquininha do entregador, ou em dinheiro.
+              💳 <b>{t.pagEntregaTitulo}</b>
+              {t.pagEntregaResto(brl(pedido.total))}
             </p>
           ) : null}
           {pedido.status === 'pago' &&
@@ -333,7 +364,7 @@ export function StatusClient({ token }: { token: string }) {
           pedido.loja?.tempoPreparoMax != null &&
           pedido.asap ? (
             <p className="mt-3 text-xs text-[var(--dlv-muted)]">
-              Tempo estimado: {pedido.loja.tempoPreparoMin}–{pedido.loja.tempoPreparoMax} min.
+              {t.tempoEstimado(pedido.loja.tempoPreparoMin, pedido.loja.tempoPreparoMax)}
             </p>
           ) : null}
         </section>
@@ -341,15 +372,15 @@ export function StatusClient({ token }: { token: string }) {
 
       {/* ---- resumo ---- */}
       <section className="mt-3 rounded-2xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] p-5">
-        <p className={lbl}>Resumo</p>
+        <p className={lbl}>{t.resumo}</p>
         <ul className="mt-2 divide-y divide-[var(--dlv-surface)]">
           {pedido.itens.map((i, idx) => (
             <li key={idx} className="flex justify-between py-2 text-sm">
               <span className="text-[var(--dlv-text)]">
-                {i.qtd}× {i.nome}
+                {i.qtd}× {tr(i.nome)}
                 {i.complementos?.length ? (
                   <span className="block text-xs text-[var(--dlv-muted)]">
-                    + {i.complementos.map((c) => c.nome).join(', ')}
+                    + {i.complementos.map((c) => tr(c.nome)).join(', ')}
                   </span>
                 ) : null}
                 {i.obs ? <span className="block text-xs text-[var(--dlv-muted)]">{i.obs}</span> : null}
@@ -360,29 +391,34 @@ export function StatusClient({ token }: { token: string }) {
         </ul>
         <div className="mt-2 space-y-1 border-t border-[var(--dlv-surface)] pt-2 text-sm">
           <div className="flex justify-between text-[var(--dlv-text)]">
-            <span>Subtotal</span>
+            <span>{t.subtotal}</span>
             <span>{brl(pedido.subtotal)}</span>
           </div>
           {Number(pedido.desconto) > 0 ? (
             <div className="flex justify-between text-emerald-700">
-              <span>Cupom {pedido.cupomCodigo}</span>
+              <span>
+                {t.cupom} {pedido.cupomCodigo}
+              </span>
               <span>− {brl(pedido.desconto)}</span>
             </div>
           ) : null}
           {pedido.tipo === 'entrega' ? (
             <div className="flex justify-between text-[var(--dlv-text)]">
-              <span>Entrega{pedido.freteGratisLabel ? ' (grátis)' : ''}</span>
+              <span>
+                {t.entrega}
+                {pedido.freteGratisLabel ? t.gratisSufixo : ''}
+              </span>
               <span>{Number(pedido.taxaEntrega) === 0 ? 'R$ 0,00 🎉' : brl(pedido.taxaEntrega)}</span>
             </div>
           ) : null}
           <div className="flex justify-between text-base font-bold text-[var(--dlv-ink)]">
-            <span>Total</span>
+            <span>{t.total}</span>
             <span>{brl(pedido.total)}</span>
           </div>
         </div>
-        {pedido.freteGratisLabel ? (
+        {freteGratisTexto ? (
           <p className="mt-2 rounded-lg bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700">
-            {pedido.freteGratisLabel}
+            {freteGratisTexto}
           </p>
         ) : null}
       </section>
@@ -391,41 +427,43 @@ export function StatusClient({ token }: { token: string }) {
       <section className="mt-3 rounded-2xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] p-5 text-sm">
         {pedido.tipo === 'entrega' && pedido.endereco ? (
           <>
-            <p className={lbl}>Entregar em</p>
+            <p className={lbl}>{t.entregarEm}</p>
             <p className="mt-1 text-[var(--dlv-text)]">
               {pedido.endereco.rua}, {pedido.endereco.numero}
               {pedido.endereco.complemento ? ` — ${pedido.endereco.complemento}` : ''} ·{' '}
               {pedido.endereco.bairro}
             </p>
             {pedido.endereco.referencia ? (
-              <p className="text-xs text-[var(--dlv-muted)]">Ref: {pedido.endereco.referencia}</p>
+              <p className="text-xs text-[var(--dlv-muted)]">{t.ref}
+                {pedido.endereco.referencia}</p>
             ) : null}
           </>
         ) : (
           <>
-            <p className={lbl}>Retirar em</p>
+            <p className={lbl}>{t.retirarEm}</p>
             <p className="mt-1 text-[var(--dlv-text)]">
               {pedido.loja?.endereco
                 ? `${pedido.loja.endereco.rua ?? ''}${pedido.loja.endereco.numero ? `, ${pedido.loja.endereco.numero}` : ''} · ${pedido.loja.endereco.bairro ?? ''}`
-                : 'No balcão da loja'}
+                : t.balcao}
             </p>
           </>
         )}
         {pedido.observacao ? (
-          <p className="mt-2 text-xs text-[var(--dlv-muted)]">Obs: {pedido.observacao}</p>
+          <p className="mt-2 text-xs text-[var(--dlv-muted)]">{t.obs}
+            {pedido.observacao}</p>
         ) : null}
       </section>
 
       {pedido.loja?.whatsapp ? (
         <p className="pt-5 text-center text-xs text-[var(--dlv-muted)]">
-          Precisa falar com a gente?{' '}
+          {t.precisaFalar}{' '}
           <a
-            href={`https://wa.me/${pedido.loja.whatsapp}?text=${encodeURIComponent(`Oi! Sobre o pedido #${pedido.numero}:`)}`}
+            href={`https://wa.me/${pedido.loja.whatsapp}?text=${encodeURIComponent(t.zapTexto(pedido.numero))}`}
             target="_blank"
             rel="noreferrer"
             className="font-semibold text-[var(--dlv-strong)] underline"
           >
-            Chama no WhatsApp
+            {t.chamaZap}
           </a>
         </p>
       ) : null}

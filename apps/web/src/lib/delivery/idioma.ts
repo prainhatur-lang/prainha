@@ -602,3 +602,349 @@ const it: TextosDelivery = {
 };
 
 export const TXT_DELIVERY: Record<IdiomaDelivery, TextosDelivery> = { pt, en, es, fr, it };
+
+// ---- Acompanhamento do pedido (/delivery/pedido/[token]?lang=xx) ----
+// O cardápio já manda o cliente pra cá com o ?lang= dele. Em português os
+// textos são exatamente os de antes; o rótulo de entrega grátis em português
+// continua vindo do servidor (MOTIVO_FRETE_LABEL), por isso freteMotivo do pt
+// fica vazio.
+
+export interface TextosPedido {
+  naoEncontrado: string;
+  pixErro: string;
+  falhaConexao: string;
+  carregando: string;
+  recebido: string;
+  naCozinha: string;
+  pronto: string;
+  saiuEntrega: string;
+  naPorta: string;
+  entregue: string;
+  prontoRetirada: string;
+  retirado: string;
+  pedido: string;
+  asap: string;
+  agendado: (data: string, hora: string | null) => string;
+  faltaPagamento: (valor: string) => string;
+  explicaPagamento: string;
+  qrAlt: string;
+  qrInstrucao: string;
+  copiado: string;
+  copiar: string;
+  pagouAviso: string;
+  gerandoPix: string;
+  gerarPix: string;
+  preferePix: string;
+  prefereCartao: string;
+  cancelado: string;
+  estornado: string;
+  novoPedido: string;
+  obrigado: string;
+  pagEntregaTitulo: string;
+  pagEntregaResto: (valor: string) => string;
+  tempoEstimado: (min: number, max: number) => string;
+  resumo: string;
+  subtotal: string;
+  cupom: string;
+  entrega: string;
+  gratisSufixo: string;
+  total: string;
+  /** Motivo da entrega grátis (distancia, promocao, primeira_compra, cupom). */
+  freteMotivo: Partial<Record<string, string>>;
+  entregarEm: string;
+  ref: string;
+  retirarEm: string;
+  balcao: string;
+  obs: string;
+  precisaFalar: string;
+  chamaZap: string;
+  zapTexto: (numero: number) => string;
+}
+
+const pedPt: TextosPedido = {
+  naoEncontrado: 'Pedido não encontrado.',
+  pixErro: 'Não consegui gerar o Pix agora.',
+  falhaConexao: 'Falha de conexão — tente de novo.',
+  carregando: 'Carregando seu pedido…',
+  recebido: 'Pedido recebido',
+  naCozinha: 'Na cozinha',
+  pronto: 'Pronto',
+  saiuEntrega: 'Saiu pra entrega',
+  naPorta: 'Entregador na porta',
+  entregue: 'Entregue',
+  prontoRetirada: 'Pronto pra retirada',
+  retirado: 'Retirado',
+  pedido: 'Pedido',
+  asap: 'o quanto antes',
+  agendado: (d, h) => `${d} às ${h}`,
+  faltaPagamento: (v) => `Falta só o pagamento — ${v}`,
+  explicaPagamento:
+    'Seu pedido segue pra cozinha assim que o pagamento for aprovado. Você tem até 40 minutos antes de ele expirar.',
+  qrAlt: 'QR code Pix',
+  qrInstrucao: 'Abra o app do seu banco, escolha Pix e escaneie — ou copie o código:',
+  copiado: '✓ Código copiado!',
+  copiar: 'Copiar código Pix',
+  pagouAviso: 'Pagou? A confirmação aparece aqui sozinha em segundos.',
+  gerandoPix: 'Gerando Pix…',
+  gerarPix: 'Gerar QR code Pix',
+  preferePix: 'Prefiro pagar com Pix',
+  prefereCartao: 'Prefiro pagar com cartão',
+  cancelado: 'Pedido cancelado',
+  estornado: 'O valor pago foi estornado — pode levar alguns dias pra aparecer na fatura.',
+  novoPedido: 'Fazer novo pedido',
+  obrigado: ' — obrigado! 🌅',
+  pagEntregaTitulo: 'Pagamento na entrega',
+  pagEntregaResto: (v) => ` — ${v} no cartão ou Pix na maquininha do entregador, ou em dinheiro.`,
+  tempoEstimado: (a, b) => `Tempo estimado: ${a}–${b} min.`,
+  resumo: 'Resumo',
+  subtotal: 'Subtotal',
+  cupom: 'Cupom',
+  entrega: 'Entrega',
+  gratisSufixo: ' (grátis)',
+  total: 'Total',
+  freteMotivo: {},
+  entregarEm: 'Entregar em',
+  ref: 'Ref: ',
+  retirarEm: 'Retirar em',
+  balcao: 'No balcão da loja',
+  obs: 'Obs: ',
+  precisaFalar: 'Precisa falar com a gente?',
+  chamaZap: 'Chama no WhatsApp',
+  zapTexto: (n) => `Oi! Sobre o pedido #${n}:`,
+};
+
+const pedEn: TextosPedido = {
+  naoEncontrado: 'Order not found.',
+  pixErro: "Couldn't generate the Pix right now.",
+  falhaConexao: 'Connection failed — please try again.',
+  carregando: 'Loading your order…',
+  recebido: 'Order received',
+  naCozinha: 'In the kitchen',
+  pronto: 'Ready',
+  saiuEntrega: 'Out for delivery',
+  naPorta: 'Courier at your door',
+  entregue: 'Delivered',
+  prontoRetirada: 'Ready for pickup',
+  retirado: 'Picked up',
+  pedido: 'Order',
+  asap: 'as soon as possible',
+  agendado: (d, h) => `${d} at ${h}`,
+  faltaPagamento: (v) => `Only the payment is left — ${v}`,
+  explicaPagamento:
+    'Your order goes to the kitchen as soon as the payment is approved. You have up to 40 minutes before it expires.',
+  qrAlt: 'Pix QR code',
+  qrInstrucao: 'Open your bank app, choose Pix and scan — or copy the code:',
+  copiado: '✓ Code copied!',
+  copiar: 'Copy Pix code',
+  pagouAviso: 'Paid? The confirmation shows up here on its own within seconds.',
+  gerandoPix: 'Generating Pix…',
+  gerarPix: 'Generate Pix QR code',
+  preferePix: "I'd rather pay with Pix",
+  prefereCartao: "I'd rather pay by card",
+  cancelado: 'Order cancelled',
+  estornado: 'The amount paid has been refunded — it may take a few days to show on your statement.',
+  novoPedido: 'Place a new order',
+  obrigado: ' — thank you! 🌅',
+  pagEntregaTitulo: 'Payment on delivery',
+  pagEntregaResto: (v) => ` — ${v} by card or Pix on the courier's card machine, or in cash.`,
+  tempoEstimado: (a, b) => `Estimated time: ${a}–${b} min.`,
+  resumo: 'Summary',
+  subtotal: 'Subtotal',
+  cupom: 'Coupon',
+  entrega: 'Delivery',
+  gratisSufixo: ' (free)',
+  total: 'Total',
+  freteMotivo: {
+    distancia: "Free delivery — you're close to us",
+    promocao: 'Free delivery — order above the promotion amount',
+    primeira_compra: 'Free delivery on your first order 🎉',
+    cupom: 'Free delivery with your coupon',
+  },
+  entregarEm: 'Deliver to',
+  ref: 'Ref: ',
+  retirarEm: 'Pick up at',
+  balcao: 'At the restaurant counter',
+  obs: 'Notes: ',
+  precisaFalar: 'Need to talk to us?',
+  chamaZap: 'Message us on WhatsApp',
+  zapTexto: (n) => `Hi! About order #${n}:`,
+};
+
+const pedEs: TextosPedido = {
+  naoEncontrado: 'Pedido no encontrado.',
+  pixErro: 'No pudimos generar el Pix ahora.',
+  falhaConexao: 'Falló la conexión — inténtalo de nuevo.',
+  carregando: 'Cargando tu pedido…',
+  recebido: 'Pedido recibido',
+  naCozinha: 'En la cocina',
+  pronto: 'Listo',
+  saiuEntrega: 'En camino',
+  naPorta: 'Repartidor en la puerta',
+  entregue: 'Entregado',
+  prontoRetirada: 'Listo para recoger',
+  retirado: 'Recogido',
+  pedido: 'Pedido',
+  asap: 'lo antes posible',
+  agendado: (d, h) => `${d} a las ${h}`,
+  faltaPagamento: (v) => `Solo falta el pago — ${v}`,
+  explicaPagamento:
+    'Tu pedido pasa a la cocina en cuanto se apruebe el pago. Tienes hasta 40 minutos antes de que caduque.',
+  qrAlt: 'Código QR Pix',
+  qrInstrucao: 'Abre la app de tu banco, elige Pix y escanea — o copia el código:',
+  copiado: '✓ ¡Código copiado!',
+  copiar: 'Copiar código Pix',
+  pagouAviso: '¿Ya pagaste? La confirmación aparece aquí sola en segundos.',
+  gerandoPix: 'Generando Pix…',
+  gerarPix: 'Generar código QR Pix',
+  preferePix: 'Prefiero pagar con Pix',
+  prefereCartao: 'Prefiero pagar con tarjeta',
+  cancelado: 'Pedido cancelado',
+  estornado: 'El importe pagado fue reembolsado — puede tardar unos días en aparecer en tu estado de cuenta.',
+  novoPedido: 'Hacer un nuevo pedido',
+  obrigado: ' — ¡gracias! 🌅',
+  pagEntregaTitulo: 'Pago al recibir',
+  pagEntregaResto: (v) => ` — ${v} con tarjeta o Pix en la máquina del repartidor, o en efectivo.`,
+  tempoEstimado: (a, b) => `Tiempo estimado: ${a}–${b} min.`,
+  resumo: 'Resumen',
+  subtotal: 'Subtotal',
+  cupom: 'Cupón',
+  entrega: 'Envío',
+  gratisSufixo: ' (gratis)',
+  total: 'Total',
+  freteMotivo: {
+    distancia: 'Envío gratis — estás muy cerca de nosotros',
+    promocao: 'Envío gratis — pedido por encima del valor de la promoción',
+    primeira_compra: 'Envío gratis en tu primera compra 🎉',
+    cupom: 'Envío gratis con tu cupón',
+  },
+  entregarEm: 'Entregar en',
+  ref: 'Ref.: ',
+  retirarEm: 'Recoger en',
+  balcao: 'En el mostrador del restaurante',
+  obs: 'Obs.: ',
+  precisaFalar: '¿Necesitas hablar con nosotros?',
+  chamaZap: 'Escríbenos por WhatsApp',
+  zapTexto: (n) => `¡Hola! Sobre el pedido #${n}:`,
+};
+
+const pedFr: TextosPedido = {
+  naoEncontrado: 'Commande introuvable.',
+  pixErro: 'Impossible de générer le Pix pour le moment.',
+  falhaConexao: 'Échec de connexion — réessayez.',
+  carregando: 'Chargement de votre commande…',
+  recebido: 'Commande reçue',
+  naCozinha: 'En cuisine',
+  pronto: 'Prête',
+  saiuEntrega: 'En cours de livraison',
+  naPorta: 'Livreur à votre porte',
+  entregue: 'Livrée',
+  prontoRetirada: 'Prête à retirer',
+  retirado: 'Retirée',
+  pedido: 'Commande',
+  asap: 'dès que possible',
+  agendado: (d, h) => `${d} à ${h}`,
+  faltaPagamento: (v) => `Il ne reste que le paiement — ${v}`,
+  explicaPagamento:
+    'Votre commande part en cuisine dès que le paiement est approuvé. Vous avez jusqu’à 40 minutes avant son expiration.',
+  qrAlt: 'QR code Pix',
+  qrInstrucao: 'Ouvrez l’application de votre banque, choisissez Pix et scannez — ou copiez le code :',
+  copiado: '✓ Code copié !',
+  copiar: 'Copier le code Pix',
+  pagouAviso: 'Payé ? La confirmation s’affiche ici toute seule en quelques secondes.',
+  gerandoPix: 'Génération du Pix…',
+  gerarPix: 'Générer le QR code Pix',
+  preferePix: 'Je préfère payer par Pix',
+  prefereCartao: 'Je préfère payer par carte',
+  cancelado: 'Commande annulée',
+  estornado: 'Le montant payé a été remboursé — il peut falloir quelques jours pour qu’il apparaisse sur votre relevé.',
+  novoPedido: 'Passer une nouvelle commande',
+  obrigado: ' — merci ! 🌅',
+  pagEntregaTitulo: 'Paiement à la livraison',
+  pagEntregaResto: (v) => ` — ${v} par carte ou Pix sur le terminal du livreur, ou en espèces.`,
+  tempoEstimado: (a, b) => `Temps estimé : ${a}–${b} min.`,
+  resumo: 'Récapitulatif',
+  subtotal: 'Sous-total',
+  cupom: 'Code promo',
+  entrega: 'Livraison',
+  gratisSufixo: ' (offerte)',
+  total: 'Total',
+  freteMotivo: {
+    distancia: 'Livraison offerte — vous êtes tout près de chez nous',
+    promocao: 'Livraison offerte — commande au-dessus du montant de la promotion',
+    primeira_compra: 'Livraison offerte pour votre première commande 🎉',
+    cupom: 'Livraison offerte grâce à votre code promo',
+  },
+  entregarEm: 'Livrer à',
+  ref: 'Repère : ',
+  retirarEm: 'À retirer à',
+  balcao: 'Au comptoir du restaurant',
+  obs: 'Remarque : ',
+  precisaFalar: 'Besoin de nous parler ?',
+  chamaZap: 'Écrivez-nous sur WhatsApp',
+  zapTexto: (n) => `Bonjour ! À propos de la commande #${n} :`,
+};
+
+const pedIt: TextosPedido = {
+  naoEncontrado: 'Ordine non trovato.',
+  pixErro: 'Non è stato possibile generare il Pix ora.',
+  falhaConexao: 'Connessione non riuscita — riprova.',
+  carregando: 'Caricamento del tuo ordine…',
+  recebido: 'Ordine ricevuto',
+  naCozinha: 'In cucina',
+  pronto: 'Pronto',
+  saiuEntrega: 'In consegna',
+  naPorta: 'Corriere alla porta',
+  entregue: 'Consegnato',
+  prontoRetirada: 'Pronto per il ritiro',
+  retirado: 'Ritirato',
+  pedido: 'Ordine',
+  asap: 'il prima possibile',
+  agendado: (d, h) => `${d} alle ${h}`,
+  faltaPagamento: (v) => `Manca solo il pagamento — ${v}`,
+  explicaPagamento:
+    'Il tuo ordine passa in cucina appena il pagamento viene approvato. Hai fino a 40 minuti prima che scada.',
+  qrAlt: 'Codice QR Pix',
+  qrInstrucao: 'Apri l’app della tua banca, scegli Pix e scansiona — oppure copia il codice:',
+  copiado: '✓ Codice copiato!',
+  copiar: 'Copia codice Pix',
+  pagouAviso: 'Hai pagato? La conferma compare qui da sola in pochi secondi.',
+  gerandoPix: 'Generazione del Pix…',
+  gerarPix: 'Genera codice QR Pix',
+  preferePix: 'Preferisco pagare con Pix',
+  prefereCartao: 'Preferisco pagare con carta',
+  cancelado: 'Ordine annullato',
+  estornado: 'L’importo pagato è stato rimborsato — potrebbero volerci alcuni giorni prima che compaia sull’estratto conto.',
+  novoPedido: 'Fai un nuovo ordine',
+  obrigado: ' — grazie! 🌅',
+  pagEntregaTitulo: 'Pagamento alla consegna',
+  pagEntregaResto: (v) => ` — ${v} con carta o Pix sul POS del corriere, oppure in contanti.`,
+  tempoEstimado: (a, b) => `Tempo stimato: ${a}–${b} min.`,
+  resumo: 'Riepilogo',
+  subtotal: 'Subtotale',
+  cupom: 'Codice sconto',
+  entrega: 'Consegna',
+  gratisSufixo: ' (gratis)',
+  total: 'Totale',
+  freteMotivo: {
+    distancia: 'Consegna gratuita — sei vicinissimo a noi',
+    promocao: 'Consegna gratuita — ordine sopra l’importo della promozione',
+    primeira_compra: 'Consegna gratuita sul tuo primo ordine 🎉',
+    cupom: 'Consegna gratuita con il tuo codice sconto',
+  },
+  entregarEm: 'Consegna a',
+  ref: 'Rif.: ',
+  retirarEm: 'Ritiro presso',
+  balcao: 'Al banco del ristorante',
+  obs: 'Note: ',
+  precisaFalar: 'Hai bisogno di parlarci?',
+  chamaZap: 'Scrivici su WhatsApp',
+  zapTexto: (n) => `Ciao! A proposito dell’ordine #${n}:`,
+};
+
+export const TXT_PEDIDO: Record<IdiomaDelivery, TextosPedido> = {
+  pt: pedPt,
+  en: pedEn,
+  es: pedEs,
+  fr: pedFr,
+  it: pedIt,
+};
