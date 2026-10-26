@@ -14,6 +14,7 @@ type Form = {
   horaFim: string;
   codigos: number[];
   mostrar: boolean;
+  excetoFeriados: boolean;
   ordem: number;
 };
 
@@ -21,7 +22,7 @@ const DIAS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
 const SUGESTOES = ['Almoço executivo', 'Almoço convidativo', 'Happy hour'];
 
 function vazio(ordem: number): Form {
-  return { id: null, titulo: '', texto: '', dias: [1, 2, 3, 4, 5], horaInicio: '11:00', horaFim: '15:00', codigos: [], mostrar: false, ordem };
+  return { id: null, titulo: '', texto: '', dias: [1, 2, 3, 4, 5], horaInicio: '11:00', horaFim: '15:00', codigos: [], mostrar: false, excetoFeriados: true, ordem };
 }
 
 function deDestaque(d: Destaque): Form {
@@ -34,6 +35,7 @@ function deDestaque(d: Destaque): Form {
     horaFim: d.horaFim ?? '',
     codigos: d.codigos,
     mostrar: d.mostrar,
+    excetoFeriados: d.excetoFeriados,
     ordem: d.ordem,
   };
 }
@@ -116,6 +118,7 @@ function Cartao(props: {
           horaFim: dados.horaFim || null,
           codigos: dados.codigos,
           mostrar: dados.mostrar,
+          excetoFeriados: dados.excetoFeriados,
           ordem: dados.ordem,
         }),
       });
@@ -196,6 +199,10 @@ function Cartao(props: {
         <span className="text-sm text-slate-500">às</span>
         <input type="time" value={f.horaFim} onChange={(e) => set({ horaFim: e.target.value })} className="rounded-md border border-slate-300 px-2 py-1 text-sm" />
       </div>
+      <label className="mt-2 flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+        <input type="checkbox" checked={f.excetoFeriados} onChange={(e) => set({ excetoFeriados: e.target.checked })} className="h-4 w-4" />
+        Exceto feriados <span className="text-xs text-slate-400">(nacionais, de Sergipe e de Aracaju — no feriado o QR avisa que hoje não tem)</span>
+      </label>
       <p className="mt-1 text-xs text-slate-400">Nenhum dia marcado = todos os dias. Sem hora = o dia inteiro.</p>
 
       <textarea

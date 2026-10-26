@@ -16,6 +16,8 @@ export type Destaque = {
   horaFim: string | null;
   codigos: number[];
   mostrar: boolean;
+  /** não vale em feriado (nacional, Sergipe, Aracaju) */
+  excetoFeriados: boolean;
   ordem: number;
   atualizadoPor: string | null;
   atualizadoEm: string | null;
@@ -30,7 +32,12 @@ function hh(h: string | null): string {
 }
 
 /** "seg a sex, 11h às 15h" / "sáb e dom" / "todos os dias, a partir das 17h". */
-export function quandoTexto(dias: number[], ini: string | null, fim: string | null): string {
+export function quandoTexto(dias: number[], ini: string | null, fim: string | null, excetoFeriados = false): string {
+  const t = quandoBase(dias, ini, fim);
+  return excetoFeriados ? `${t}, exceto feriados` : t;
+}
+
+function quandoBase(dias: number[], ini: string | null, fim: string | null): string {
   const d = [...new Set(dias)].filter((x) => x >= 0 && x <= 6).sort((a, b) => a - b);
   let dt = '';
   if (d.length === 0 || d.length === 7) dt = 'todos os dias';
@@ -52,7 +59,7 @@ export function quandoTexto(dias: number[], ini: string | null, fim: string | nu
 
 type Linha = {
   id: string; filial_id: string; titulo: string; texto: string | null; dias_semana: number[] | null;
-  hora_inicio: string | null; hora_fim: string | null; codigos: number[] | null; mostrar: boolean;
+  hora_inicio: string | null; hora_fim: string | null; codigos: number[] | null; mostrar: boolean; exceto_feriados?: boolean | null;
   ordem: number; atualizado_por: string | null; atualizado_em: string | null;
 };
 
@@ -61,7 +68,7 @@ export async function listarDestaques(filialId: string, soLigados = false): Prom
   try {
     rows = (await db.execute(sql`
       SELECT id, filial_id, titulo, texto, dias_semana, hora_inicio::text, hora_fim::text, codigos,
-             mostrar, ordem, atualizado_por, atualizado_em::text
+             mostrar, exceto_feriados, ordem, atualizado_por, atualizado_em::text
         FROM cardapio_destaque
        WHERE filial_id = ${filialId} ${soLigados ? sql`AND mostrar` : sql``}
        ORDER BY ordem, titulo`)) as unknown as Linha[];
@@ -78,6 +85,7 @@ export async function listarDestaques(filialId: string, soLigados = false): Prom
     horaFim: r.hora_fim ? r.hora_fim.slice(0, 5) : null,
     codigos: (r.codigos ?? []).map(Number),
     mostrar: !!r.mostrar,
+    excetoFeriados: r.exceto_feriados !== false,
     ordem: Number(r.ordem) || 0,
     atualizadoPor: r.atualizado_por,
     atualizadoEm: r.atualizado_em,
@@ -94,6 +102,7 @@ export type DestaqueEntrada = {
   horaFim: string | null;
   codigos: number[];
   mostrar: boolean;
+  excetoFeriados?: boolean;
   ordem: number;
 };
 
@@ -108,16 +117,16 @@ export async function salvarDestaque(d: DestaqueEntrada, quem: string | null): P
     const r = (await db.execute(sql`
       UPDATE cardapio_destaque SET titulo = ${d.titulo}, texto = ${d.texto}, dias_semana = ${dias}::smallint[],
              hora_inicio = ${d.horaInicio}::time, hora_fim = ${d.horaFim}::time, codigos = ${cods}::int[],
-             mostrar = ${d.mostrar}, ordem = ${d.ordem}, atualizado_por = ${quem}, atualizado_em = now()
+             mostrar = ${d.mostrar}, exceto_feriados = ${d.excetoFeriados !== false}, ordem = ${d.ordem}, atualizado_por = ${quem}, atualizado_em = now()
        WHERE id = ${d.id} AND filial_id = ${d.filialId}
        RETURNING id`)) as unknown as Array<{ id: string }>;
     if (!r[0]) throw new Error('destaque não encontrado');
     return r[0].id;
   }
   const r = (await db.execute(sql`
-    INSERT INTO cardapio_destaque (filial_id, titulo, texto, dias_semana, hora_inicio, hora_fim, codigos, mostrar, ordem, atualizado_por)
+    INSERT INTO cardapio_destaque (filial_id, titulo, texto, dias_semana, hora_inicio, hora_fim, codigos, mostrar, exceto_feriados, ordem, atualizado_por)
     VALUES (${d.filialId}, ${d.titulo}, ${d.texto}, ${dias}::smallint[], ${d.horaInicio}::time, ${d.horaFim}::time,
-            ${cods}::int[], ${d.mostrar}, ${d.ordem}, ${quem})
+            ${cods}::int[], ${d.mostrar}, ${d.excetoFeriados !== false}, ${d.ordem}, ${quem})
     RETURNING id`)) as unknown as Array<{ id: string }>;
   return r[0].id;
 }

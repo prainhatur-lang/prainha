@@ -4704,17 +4704,25 @@ async function loopDestaquesNuvem() {
       hora_fim: x.hora_fim ? String(x.hora_fim).slice(0, 5) : null,
       codigos: Array.isArray(x.codigos) ? x.codigos.map(Number).filter((n) => n > 0).slice(0, 80) : [],
       quando: x.quando ? String(x.quando).slice(0, 120) : '',
+      exceto_feriados: x.exceto_feriados === true,
     })).filter((x) => x.titulo);
     await cfgSet('cardapio_destaques', JSON.stringify(lista));
+    // feriados (nacional + Sergipe + Aracaju) dos próximos 60 dias, da nuvem
+    if (Array.isArray(d.feriados)) {
+      const fs = d.feriados.filter((f) => /^\d{4}-\d{2}-\d{2}$/.test(String(f?.data || '')))
+        .slice(0, 40).map((f) => ({ data: String(f.data), nome: String(f.nome || 'feriado').slice(0, 60) }));
+      await cfgSet('cardapio_feriados', JSON.stringify(fs));
+    }
   } catch (e) {
     console.error('[destaques]', e.message);
   }
 }
 function agoraAracaju() {
   const ps = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', weekday: 'short',
+    year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date()).map((x) => [x.type, x.value]));
   const dia = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(ps.weekday);
-  return { dia, min: Number(ps.hour) * 60 + Number(ps.minute) };
+  return { dia, min: Number(ps.hour) * 60 + Number(ps.minute), ymd: ps.year + '-' + ps.month + '-' + ps.day };
 }
 function destaqueValeAgora(d, agora) {
   const mi = (h) => { const [a, b] = String(h).split(':'); return Number(a) * 60 + Number(b || 0); };
@@ -4737,10 +4745,47 @@ async function apiMesaDestaques() {
   try { lista = JSON.parse(await cfgGet('cardapio_destaques', '[]')) || []; } catch { lista = []; }
   if (!Array.isArray(lista) || !lista.length) return { ok: true, destaques: [] };
   const agora = agoraAracaju();
+  let feriados = [];
+  try { feriados = JSON.parse(await cfgGet('cardapio_feriados', '[]')) || []; } catch { feriados = []; }
+  const feriadoHoje = (Array.isArray(feriados) ? feriados : []).find((f) => f && f.data === agora.ymd) || null;
   const out = [];
   for (const d of lista) {
     const cods = (d.codigos || []).map(Number).filter((n) => n > 0);
     let produtos = [];
+    // TODOS os itens ligados, pra tela "o que é cada um" (pedir ou não): nome,
+    // preço, descrição, foto e as perguntas do combo (o que vem dentro).
+    // Item fora do cardápio digital aparece, mas só com "peça ao garçom".
+    let itens = [];
+    if (cods.length) {
+      try {
+        const todos = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, descricao, cardapio_digital,
+            EXISTS(SELECT 1 FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS tem_foto
+          FROM produto_local WHERE codigo_pdv = ANY(${cods})
+          ORDER BY nome`;
+        const perg = await sql`SELECT wp.codigo_pdv, p.codigo, p.texto, wp.ordem FROM wizard_produto wp
+          JOIN wizard_pergunta p ON p.codigo = wp.pergunta WHERE wp.codigo_pdv = ANY(${cods}) ORDER BY wp.ordem, p.codigo`;
+        const pc = perg.map((x) => Number(x.codigo));
+        const ops = pc.length ? await sql`SELECT o.pergunta, COALESCE(NULLIF(o.nome,''), pl.nome) AS nome, o.preco
+          FROM wizard_opcao o LEFT JOIN LATERAL (SELECT nome FROM produto_local WHERE codigo_pdv = o.produto_pdv LIMIT 1) pl ON true
+          WHERE o.pergunta = ANY(${pc}) ORDER BY o.codigo` : [];
+        const vistos = new Set();
+        for (const t of todos) {
+          const c = Number(t.codigo_pdv);
+          if (vistos.has(c)) continue;
+          vistos.add(c);
+          const escolhas = perg.filter((x) => Number(x.codigo_pdv) === c).map((x) => ({
+            pergunta: x.texto || '',
+            opcoes: ops.filter((o) => Number(o.pergunta) === Number(x.codigo)).map((o) => ({ nome: o.nome || '', preco: Number(o.preco || 0) }))
+              .filter((o) => o.nome).slice(0, 40),
+          })).filter((x) => x.opcoes.length);
+          itens.push({ codigo_pdv: c, produto_codigo: t.produto_codigo, nome: t.nome, tamanho: t.tamanho, preco: Number(t.preco || 0),
+            descricao: t.descricao || null, tem_foto: !!t.tem_foto, no_qr: !!t.cardapio_digital, escolhas });
+        }
+      } catch (e) {
+        console.error('[destaques itens]', e.message);
+        itens = [];
+      }
+    }
     if (cods.length) {
       // mesma regra do apiMesaPedir: o cliente só pede item do cardápio digital
       produtos = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque, estoque, descricao,
@@ -4749,7 +4794,9 @@ async function apiMesaDestaques() {
           AND categoria NOT IN (SELECT categoria FROM grupo_oculto)
         ORDER BY sem_estoque, nome`;
     }
-    out.push({ id: d.id, titulo: d.titulo, texto: d.texto, quando: d.quando, agora: destaqueValeAgora(d, agora), produtos });
+    const feriado = d.exceto_feriados && feriadoHoje ? feriadoHoje.nome : null;
+    out.push({ id: d.id, titulo: d.titulo, texto: d.texto, quando: d.quando,
+      agora: !feriado && destaqueValeAgora(d, agora), feriado, produtos, itens });
   }
   return { ok: true, destaques: out };
 }
@@ -24607,6 +24654,9 @@ async function inicio(){
     '<h1>${LOJA_HTML}</h1>'+
     (MESA?'<span class="chip">📍 Mesa '+esc(MESA)+'</span>'
          :'<input id="nm" inputmode="numeric" placeholder="número da sua mesa">')+'</div>';
+  // DESTAQUES NA ENTRADA (26/10): almoço executivo / happy hour logo na capa;
+  // tocar abre a tela com tudo (dias, hora, o que vem e o preço)
+  if(MESA)h+='<div id="dstqi"></div>';
   // AVALIAR MORA SÓ AQUI, NO CARD DO TOPO (29/09): o bloco "Avaliar" lá
   // embaixo repetia o card e saiu. Por isso o card aparece sempre — com o
   // drink quando a casa tem o brinde hoje (quem manda de verdade e' o
@@ -24639,6 +24689,7 @@ async function inicio(){
       (EU&&EU.identificado?'':'<button class="tile" onclick="telaCadastro()"><i>🙋</i>Me identificar<small>opcional</small></button>')+
     '</div>';
   app(h);renderCarrinho();
+  if(MESA)setTimeout(carregaDestaquesInicio,0);
 }
 function nomesBrinde(){
   if(!BRINDE||!BRINDE.opcoes)return '';
@@ -25133,12 +25184,14 @@ var DSTQ=null;
 async function carregaDestaques(){
   try{DSTQ=(await (await fetch('/api/mesa/destaques',{cache:'no-store'})).json()).destaques||[]}catch(e){DSTQ=[]}
   var el=document.getElementById('dstq');if(!el)return;
+  var gg=document.getElementById('grid');if(gg&&gg.style.display==='none')return; // lista do destaque aberta
   if(!DSTQ.length){el.innerHTML='';return}
   el.innerHTML=DSTQ.map(function(d,i){
     var pode=d.agora&&d.produtos&&d.produtos.length;
     var rod=pode?'<button class="bped" style="margin-top:8px" onclick="abrirDestaque('+i+')">Ver e pedir</button>'
       :(d.agora?'<div class="mut" style="margin-top:6px;font-size:13px">Peça ao garçom 🙋</div>'
-        :'<div class="mut" style="margin-top:6px;font-size:13px">Fora do horário agora</div>');
+        :(d.feriado?'<div class="mut" style="margin-top:6px;font-size:13px">Hoje é feriado ('+esc(d.feriado)+'): não tem hoje</div>'
+        :'<div class="mut" style="margin-top:6px;font-size:13px">Fora do horário agora</div>'));
     return '<div style="border:2px solid #f59e0b;background:#fffbeb;color:#78350f;border-radius:12px;padding:12px 14px;margin:0 0 10px">'+
       '<div style="font-weight:700;font-size:17px">🍽️ '+esc(d.titulo)+(d.agora?' <span style="font-size:12px;background:#16a34a;color:#fff;border-radius:8px;padding:2px 7px;vertical-align:middle">agora</span>':'')+'</div>'+
       (d.quando?'<div style="font-size:14px;margin-top:2px">'+esc(d.quando)+'</div>':'')+
@@ -25151,6 +25204,59 @@ function abrirDestaque(i){
   var g=document.getElementById('grid');if(g)g.style.display='none';
   var el=document.getElementById('dstq');if(el)el.innerHTML='';
   listar(d.produtos,d.titulo);
+}
+function iconeDestaque(t){ return /happy/i.test(t||'')?'🍻':'🍽️' }
+// Capa: um card só, com cada destaque numa linha (agora / quando) e "ver tudo"
+async function carregaDestaquesInicio(){
+  try{DSTQ=(await (await fetch('/api/mesa/destaques',{cache:'no-store'})).json()).destaques||[]}catch(e){DSTQ=[]}
+  var el=document.getElementById('dstqi');if(!el)return;
+  if(!DSTQ.length){el.innerHTML='';return}
+  el.innerHTML='<button onclick="telaDestaques()" style="display:block;width:100%;text-align:left;border:2px solid #f59e0b;background:#fffbeb;color:#78350f;border-radius:14px;padding:12px 14px;margin:0 0 12px;font:inherit;cursor:pointer">'+
+    DSTQ.map(function(d){
+      var st=d.agora?'<span style="font-size:12px;background:#16a34a;color:#fff;border-radius:8px;padding:2px 7px;margin-left:6px;vertical-align:middle">agora</span>':'';
+      var sub=d.feriado?('hoje é feriado: não tem hoje'):(d.quando||'');
+      return '<div style="margin:0 0 8px"><div style="font-weight:700;font-size:17px">'+iconeDestaque(d.titulo)+' '+esc(d.titulo)+st+'</div>'+
+        (sub?'<div style="font-size:13px;margin-top:1px">'+esc(sub)+'</div>':'')+'</div>';
+    }).join('')+
+    '<div style="font-weight:700;font-size:14px;color:#b45309">Ver o que é cada um ›</div></button>';
+}
+// Tela com TUDO: dias, hora, texto da casa e cada item com foto, preço,
+// descrição e o que se escolhe dentro (as perguntas do combo).
+async function telaDestaques(){
+  if(!DSTQ){try{DSTQ=(await (await fetch('/api/mesa/destaques',{cache:'no-store'})).json()).destaques||[]}catch(e){DSTQ=[]}}
+  var brl=function(v){return 'R$ '+Number(v||0).toLocaleString('pt-BR',{minimumFractionDigits:2})};
+  var h='<h1>Promoções da casa</h1>';
+  if(!DSTQ.length)h+='<div class="mut">Nada em destaque hoje.</div>';
+  DSTQ.forEach(function(d,i){
+    var pode=d.agora&&d.produtos&&d.produtos.length;
+    var sit=d.agora?'<span style="font-size:12px;background:#16a34a;color:#fff;border-radius:8px;padding:2px 7px;margin-left:6px;vertical-align:middle">agora</span>':'';
+    h+='<div style="border:2px solid #f59e0b;background:#fffbeb;color:#78350f;border-radius:14px;padding:14px;margin:0 0 14px">'+
+      '<div style="font-weight:800;font-size:20px">'+iconeDestaque(d.titulo)+' '+esc(d.titulo)+sit+'</div>'+
+      (d.quando?'<div style="font-size:15px;margin-top:4px">🗓️ '+esc(d.quando)+'</div>':'')+
+      (d.feriado?'<div style="font-size:14px;margin-top:4px;font-weight:600">Hoje é feriado ('+esc(d.feriado)+'): não tem hoje</div>':'')+
+      (d.texto?'<div style="font-size:15px;margin-top:8px;white-space:pre-line">'+esc(d.texto)+'</div>':'');
+    (d.itens||[]).forEach(function(it){
+      h+='<div style="display:flex;gap:10px;background:#fff;border-radius:10px;padding:10px;margin-top:10px;color:#1f2937">'+
+        (it.tem_foto?'<img src="/produto-foto/'+it.produto_codigo+'" loading="lazy" alt="" style="width:72px;height:72px;object-fit:cover;border-radius:8px;flex:none">':'')+
+        '<div style="flex:1;min-width:0"><div style="font-weight:700">'+esc(it.nome)+(it.tamanho?' <small>['+esc(it.tamanho)+']</small>':'')+'</div>'+
+        (it.preco>0?'<div style="font-weight:700;color:#b45309">'+brl(it.preco)+'</div>':'')+
+        (it.descricao?'<div style="font-size:13px;color:#4b5563;margin-top:2px">'+esc(it.descricao)+'</div>':'')+
+        (it.escolhas||[]).map(function(e){
+          return '<div style="font-size:13px;margin-top:6px"><b>'+esc(e.pergunta||'Escolha')+'</b><br>'+
+            e.opcoes.map(function(o){return esc(o.nome)+(o.preco>0?' (+'+brl(o.preco)+')':'')}).join(' · ')+'</div>';
+        }).join('')+
+        '</div></div>';
+    });
+    h+=(pode?'<button class="bped" style="margin-top:12px;width:100%" onclick="pedirDestaque('+i+')">Pedir agora</button>'
+      :(d.agora?'<div style="margin-top:10px;font-weight:600">Peça ao garçom 🙋</div>'
+        :(d.feriado?'':'<div style="margin-top:10px;font-size:14px">Fora do horário agora</div>')))+'</div>';
+  });
+  h+='<button class="b ped" onclick="telaPedir()">🍽 Ver cardápio completo</button><button class="b g" onclick="inicio()">Voltar</button>';
+  app(h);renderCarrinho();
+}
+async function pedirDestaque(i){
+  await telaPedir();
+  if(document.getElementById('lst'))abrirDestaque(i);
 }
 // ---- CARDÁPIO INCLUSIVO ----
 // "Tenho restrição alimentar": o cliente marca sem glúten / sem lactose e o

@@ -22,6 +22,7 @@ const Entrada = z.object({
   horaFim: hora,
   codigos: z.array(z.number().int().positive()).max(80),
   mostrar: z.boolean(),
+  excetoFeriados: z.boolean().optional(),
   ordem: z.number().int().min(0).max(99),
 });
 

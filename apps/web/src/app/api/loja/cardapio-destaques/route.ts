@@ -9,6 +9,8 @@
 import { NextResponse } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { listarDestaques, quandoTexto } from '@/lib/cardapio-destaque';
+import { proximosFeriados } from '@/lib/reservas/feriados';
+import { diasAtrasBr } from '@/lib/datas';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -35,8 +37,17 @@ export async function GET(request: Request) {
   if (!confere([f, String(e)], s)) return NextResponse.json({ ok: false, error: 'assinatura' }, { status: 403 });
 
   const lista = await listarDestaques(f, true);
+  // feriados de ontem até +60 dias (nacional + Sergipe + Aracaju): a loja guarda
+  // e não mostra como "agora" o destaque marcado "exceto feriados"
+  let feriados: Array<{ data: string; nome: string }> = [];
+  try {
+    feriados = (await proximosFeriados(diasAtrasBr(1), 61)).map((x) => ({ data: x.data, nome: x.nome }));
+  } catch {
+    feriados = [];
+  }
   return NextResponse.json({
     ok: true,
+    feriados,
     destaques: lista.map((d) => ({
       id: d.id,
       titulo: d.titulo,
@@ -45,7 +56,8 @@ export async function GET(request: Request) {
       hora_inicio: d.horaInicio,
       hora_fim: d.horaFim,
       codigos: d.codigos,
-      quando: quandoTexto(d.dias, d.horaInicio, d.horaFim),
+      exceto_feriados: d.excetoFeriados,
+      quando: quandoTexto(d.dias, d.horaInicio, d.horaFim, d.excetoFeriados),
     })),
   });
 }
