@@ -26,7 +26,52 @@ const Body = z.object({
   quando: z.string().min(10).optional(),
   tipo: z.enum(['entrada', 'saida']).optional(),
   justificativa: z.string().min(10).max(500),
+  // Trava de sequência: saída depois de saída (ou entrada depois de entrada)
+  // volta 409 com `sequencia: true`; a tela pergunta e reenvia com true.
+  confirmarSequencia: z.boolean().optional(),
 });
+
+const HORA_BR = new Intl.DateTimeFormat('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
+
+/** Confere a sequência do dia com a mudança aplicada. Tem que ser entrada,
+ *  saída, entrada, saída... Felipe (Mar, 03/10/2026): uma alteração trocou a
+ *  volta do jantar (entrada) por "saída" e o dia ficou com duas saídas sem
+ *  entrada. Devolve o aviso, ou null se a sequência está certa. */
+async function avisoSequencia(p: {
+  filialId: string; funcionarioId: string; dia: string; quando: Date; tipo: 'entrada' | 'saida'; batidaId?: string;
+}): Promise<string | null> {
+  const doDia = await db
+    .select({ id: schema.pontoBatida.id, quando: schema.pontoBatida.quando, tipo: schema.pontoBatida.tipo })
+    .from(schema.pontoBatida)
+    .where(
+      and(
+        eq(schema.pontoBatida.filialId, p.filialId),
+        eq(schema.pontoBatida.funcionarioId, p.funcionarioId),
+        eq(schema.pontoBatida.diaOperacional, p.dia),
+        isNull(schema.pontoBatida.excluidaEm),
+      ),
+    );
+  const lista = doDia
+    .filter((b) => b.id !== p.batidaId)
+    .map((b) => ({ quando: b.quando, tipo: b.tipo, nova: false }));
+  lista.push({ quando: p.quando, tipo: p.tipo, nova: true });
+  lista.sort((a, b) => a.quando.getTime() - b.quando.getTime());
+  const i = lista.findIndex((b) => b.nova);
+  const nome = (t: string) => (t === 'entrada' ? 'entrada' : 'saída');
+  const hora = (d: Date) => HORA_BR.format(d);
+  const ant = lista[i - 1];
+  const prox = lista[i + 1];
+  if (!ant && p.tipo === 'saida') {
+    return `Esta saída das ${hora(p.quando)} ficaria antes de qualquer entrada do dia. Toda saída precisa de uma entrada antes.`;
+  }
+  if (ant && ant.tipo === p.tipo) {
+    return `Já existe ${nome(ant.tipo)} às ${hora(ant.quando)}: ficariam duas ${p.tipo === 'entrada' ? 'entradas' : 'saídas'} seguidas (${hora(ant.quando)} e ${hora(p.quando)}).`;
+  }
+  if (prox && prox.tipo === p.tipo) {
+    return `A próxima batida, às ${hora(prox.quando)}, também é ${nome(prox.tipo)}: ficariam duas ${p.tipo === 'entrada' ? 'entradas' : 'saídas'} seguidas (${hora(p.quando)} e ${hora(prox.quando)}).`;
+  }
+  return null;
+}
 
 /** Horário digitado na tela é o da loja (BRT). Se chegar sem fuso (aba aberta
  *  com a tela antiga), assume -03:00 — o servidor roda em UTC e gravaria a
@@ -110,6 +155,17 @@ export async function POST(req: Request) {
       funcionarioId: d.funcionarioId, filialId: filialTela, dia: d.dia, quando: quando!, tipo: d.tipo!,
     });
     if (conflito) return NextResponse.json({ error: conflito }, { status: 409 });
+    if (!d.confirmarSequencia) {
+      const aviso = await avisoSequencia({
+        filialId: filialTela, funcionarioId: d.funcionarioId, dia: d.dia, quando: quando!, tipo: d.tipo!,
+      });
+      if (aviso) {
+        return NextResponse.json(
+          { error: `${aviso} Ao salvar, a sequência do dia é refeita (1ª = entrada) e os tipos podem trocar.`, sequencia: true },
+          { status: 409 },
+        );
+      }
+    }
     const [criada] = await db
       .insert(schema.pontoBatida)
       .values({
@@ -142,6 +198,12 @@ export async function POST(req: Request) {
         funcionarioId: d.funcionarioId, filialId: atual.filialId, dia: d.dia, quando: quando!, tipo: d.tipo!, batidaId: atual.id,
       });
       if (conflito) return NextResponse.json({ error: conflito }, { status: 409 });
+      if (!d.confirmarSequencia) {
+        const aviso = await avisoSequencia({
+          filialId: atual.filialId, funcionarioId: d.funcionarioId, dia: d.dia, quando: quando!, tipo: d.tipo!, batidaId: atual.id,
+        });
+        if (aviso) return NextResponse.json({ error: aviso, sequencia: true }, { status: 409 });
+      }
       await db
         .update(schema.pontoBatida)
         .set({ quando: quando!, tipo: d.tipo!, origem: 'correcao' })

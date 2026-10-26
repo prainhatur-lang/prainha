@@ -451,8 +451,11 @@ function ModalCorrecao({
   const [justificativa, setJustificativa] = useState('');
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+  // Aviso de sequência (saída depois de saída etc.): só salva com o segundo clique.
+  const [avisoSeq, setAvisoSeq] = useState<string | null>(null);
 
   function iniciarInclusao() {
+    setAvisoSeq(null);
     setAcao('inclusao');
     setBatidaAlvo(null);
     setTipo('entrada');
@@ -461,6 +464,7 @@ function ModalCorrecao({
     setErro(null);
   }
   function iniciarAlteracao(b: BatidaCrua) {
+    setAvisoSeq(null);
     setAcao('alteracao');
     setBatidaAlvo(b);
     setTipo(b.tipo as 'entrada' | 'saida');
@@ -475,12 +479,13 @@ function ModalCorrecao({
     setErro(null);
   }
 
-  async function confirmar() {
+  async function confirmar(confirmarSequencia = false) {
     if (justificativa.trim().length < 10) {
       setErro('Justificativa precisa de pelo menos 10 caracteres.');
       return;
     }
     const body: Record<string, unknown> = { funcionarioId, filialId, dia, acao, justificativa: justificativa.trim() };
+    if (confirmarSequencia) body.confirmarSequencia = true;
     // O dia do ponto vira às 05:00: hora antes disso é a madrugada do dia
     // seguinte (quem entrou à noite e saiu depois da meia-noite). Com o próprio
     // dia da coluna a saída ficava 24 h adiantada, na frente das entradas.
@@ -509,9 +514,15 @@ function ModalCorrecao({
       });
       const json = await res.json();
       if (!res.ok || !json.ok) {
+        if (json.sequencia) {
+          setErro(null);
+          setAvisoSeq(json.error ?? 'A sequência entrada/saída do dia ficaria errada.');
+          return;
+        }
         setErro(json.error ?? 'Erro ao salvar');
         return;
       }
+      setAvisoSeq(null);
       onSalvo();
     } finally {
       setSalvando(false);
@@ -644,14 +655,29 @@ function ModalCorrecao({
               />
             </label>
             {erro && <p className="text-xs text-rose-600">{erro}</p>}
+            {avisoSeq && (
+              <div className="rounded-md border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900">
+                <p className="font-medium">⚠ Sequência entrada/saída errada</p>
+                <p className="mt-0.5">{avisoSeq}</p>
+                <p className="mt-0.5">Confira o tipo e o horário. Se estiver certo assim mesmo, salve abaixo.</p>
+                <button
+                  type="button"
+                  disabled={salvando}
+                  onClick={() => confirmar(true)}
+                  className="mt-1.5 rounded-md border border-amber-400 bg-white px-2 py-1 font-medium text-amber-900 hover:bg-amber-100 disabled:opacity-60"
+                >
+                  Salvar mesmo assim
+                </button>
+              </div>
+            )}
             <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => setAcao(null)} className="rounded-md border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50">
+              <button type="button" onClick={() => { setAvisoSeq(null); setAcao(null); }} className="rounded-md border border-slate-200 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50">
                 Voltar
               </button>
               <button
                 type="button"
                 disabled={salvando}
-                onClick={confirmar}
+                onClick={() => confirmar()}
                 className="rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-60"
               >
                 {salvando ? 'Salvando…' : 'Confirmar'}
