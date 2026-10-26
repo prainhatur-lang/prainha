@@ -23,6 +23,7 @@ import { sql } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { consultarPagamentoPixInter, incluirPagamentoPixInter, InterPixRecusado, InterSaldoErro, resolverCredenciaisInterPagamentos } from '@/lib/inter';
 import { conferirChavePix, recebedorBate } from '@/lib/pix-titular';
+import { rescisoesDasContas } from '@/lib/rh/rescisao-pix';
 import { baixarContasDoPix, lerSaldoParaPix, podePagarPix, type SaldoParaPix } from '@/lib/pix-pagamento';
 
 export const dynamic = 'force-dynamic';
@@ -73,11 +74,18 @@ export async function POST(req: Request) {
     .from(schema.fornecedor)
     .where(eq(schema.fornecedor.id, fornecedorId))
     .limit(1);
-  const chave = forn?.chave?.trim();
-  if (!forn || !chave) return NextResponse.json({ error: 'Fornecedor sem chave Pix cadastrada.' }, { status: 400 });
+  if (!forn) return NextResponse.json({ error: 'Fornecedor não encontrado.' }, { status: 400 });
+  // Rescisão (26/10/2026): conta ligada ao termo na ficha do funcionário. Sem
+  // chave no cadastro, o Pix sai pelo CPF do próprio funcionário.
+  const rescisoes = await rescisoesDasContas(contaIds);
+  const cpfRescisao = contaIds.map((id) => rescisoes.get(id)?.cpf).find(Boolean) ?? null;
+  const chave = forn.chave?.trim() || cpfRescisao;
+  if (!chave) return NextResponse.json({ error: 'Fornecedor sem chave Pix cadastrada.' }, { status: 400 });
+  // Documento pra conferir a chave: o do cadastro; na rescisão sem documento, o CPF do funcionário.
+  const docConferir = forn.doc?.trim() || cpfRescisao;
   // Anti-fraude (pedido do dono 22/10/2026): chave CPF/CNPJ de OUTRA pessoa ou
   // empresa, sem "quem recebe" declarado no cadastro, não recebe Pix.
-  const conf = conferirChavePix({ chave, docFornecedor: forn.doc, favorecido: forn.favorecido });
+  const conf = conferirChavePix({ chave, docFornecedor: docConferir, favorecido: forn.favorecido });
   if (conf?.nivel === 'diverge') {
     return NextResponse.json(
       {
@@ -103,7 +111,7 @@ export async function POST(req: Request) {
   if (contas.length !== contaIds.length) {
     return NextResponse.json({ error: 'Alguma conta já foi paga, excluída, está num borderô da folha ou não é desta casa. Recarregue a tela.' }, { status: 409 });
   }
-  if (contas.some((x) => x.fornecedorId !== fornecedorId || ORIGENS_FORA.includes(x.origem ?? ''))) {
+  if (contas.some((x) => x.fornecedorId !== fornecedorId || (ORIGENS_FORA.includes(x.origem ?? '') && !rescisoes.has(x.id)))) {
     return NextResponse.json({ error: 'Conta de outro fornecedor ou que não se paga por aqui.' }, { status: 400 });
   }
   const itens = contas.map((x) => ({ id: x.id, valor: Math.round((Number(x.valor) - Number(x.jaPago)) * 100) / 100 }));
@@ -264,7 +272,7 @@ export async function POST(req: Request) {
         if (consulta?.transacaoPix) {
           await atualizar({ retorno: { ...(resp as object), transacaoPix: consulta.transacaoPix } as object });
         }
-        if (rec && recebedorBate({ recebedorDoc: rec.cpfCnpj, docFornecedor: forn.doc }) === false) {
+        if (rec && recebedorBate({ recebedorDoc: rec.cpfCnpj, docFornecedor: docConferir }) === false) {
           aviso = ` ⚠ ATENÇÃO: quem recebeu foi ${rec.nome ?? '?'} (${rec.cpfCnpj ?? '?'}), que NÃO é o CPF/CNPJ do fornecedor.`;
           console.warn('[pix-pagar] recebedor diferente do fornecedor', { pix: criado.id, fornecedorId });
         }

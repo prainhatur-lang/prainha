@@ -145,6 +145,8 @@ export interface GrupoPedidos {
   chavePix: string | null;
   pixFavorecido: string | null;
   contas: PedidoPix[];
+  /** Rescisão (26/10/2026): sem chave no cadastro, o Pix sai pelo CPF do funcionário. */
+  chaveCpfRescisao?: string | null;
 }
 
 const brl = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -221,7 +223,9 @@ export function GrupoPix({
     () => grupo.contas.filter((c) => marcadas.has(c.id)).reduce((s, c) => s + c.saldo, 0),
     [grupo.contas, marcadas],
   );
-  const chave = grupo.chavePix?.trim() || null;
+  const chaveCadastrada = grupo.chavePix?.trim() || null;
+  const chave = chaveCadastrada || grupo.chaveCpfRescisao?.trim() || null;
+  const chaveEhCpfRescisao = !chaveCadastrada && !!chave;
   // Anti-fraude (22/10/2026): chave × CPF/CNPJ do fornecedor.
   const conferencia = conferirChavePix({ chave, docFornecedor: grupo.documento, favorecido: grupo.pixFavorecido });
   const travadas = useMemo(() => new Set(contasTravadas), [contasTravadas]);
@@ -337,6 +341,9 @@ export function GrupoPix({
                 💠 {chave}
               </span>
               <BotaoCopiar texto={chave} rotulo="Copiar chave" />
+              {chaveEhCpfRescisao && (
+                <span className="text-[11px] text-slate-500">CPF do funcionário (rescisão)</span>
+              )}
             </div>
           ) : (
             <div className="mt-2 text-xs font-medium text-amber-700">Sem chave Pix cadastrada</div>

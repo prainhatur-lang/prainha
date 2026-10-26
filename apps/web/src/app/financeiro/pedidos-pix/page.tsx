@@ -23,7 +23,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
-import { and, eq, isNull, lte, notInArray, sql } from 'drizzle-orm';
+import { and, eq, isNull, lte, notInArray, or, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl } from '@/lib/format';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
@@ -35,6 +35,7 @@ import { contasEmPixAberto, podePagarPix } from '@/lib/pix-pagamento';
 import { resolverCredenciaisInterPagamentos } from '@/lib/inter';
 import { urlFotoPedido } from '@/lib/pedido-sem-nota';
 import { recebedorBate } from '@/lib/pix-titular';
+import { rescisoesDasContas, sqlEhRescisao } from '@/lib/rh/rescisao-pix';
 
 export const dynamic = 'force-dynamic';
 
@@ -189,7 +190,8 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
         isNull(c.dataPagamento),
         isNull(c.dataDelete),
         isNull(c.borderoId), // borderô: quem paga é a lotérica
-        notInArray(c.origem, ORIGENS_FORA),
+        // Rescisão (26/10/2026): origem FOLHA, mas ligada ao termo na ficha → entra.
+        or(notInArray(c.origem, ORIGENS_FORA), sqlEhRescisao(c.id)),
         lte(c.dataVencimento, ate),
       ),
     )
@@ -245,6 +247,9 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
     }
   }
 
+  // Rescisões da lista: CPF do funcionário vira a chave quando falta chave.
+  const rescisoes = await rescisoesDasContas(linhas.map((l) => l.id)).catch(() => new Map());
+
   let escondidas = 0;
   const grupos = new Map<string, GrupoPedidos>();
   for (const l of linhas) {
@@ -255,7 +260,8 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
     const boleto = pareceBoleto(descricao, nome, l.temBoleto);
     // Borderô da folha (22/10/2026): conta única do intermediário (Sobral) se
     // paga por Pix — aparece mesmo sem chave cadastrada, pra cadastrar e pagar.
-    const ehPix = l.origem === 'BORDERO' || semNota || (!boleto && (l.origem === 'MANUAL' || temChave));
+    const rescisao = rescisoes.get(l.id);
+    const ehPix = !!rescisao || l.origem === 'BORDERO' || semNota || (!boleto && (l.origem === 'MANUAL' || temChave));
     if (!ehPix && !verTodas) {
       escondidas += 1;
       continue;
@@ -275,6 +281,7 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
       };
       grupos.set(chave, g);
     }
+    if (rescisao?.cpf && !g.chaveCpfRescisao) g.chaveCpfRescisao = rescisao.cpf;
     g.contas.push({
       id: l.id,
       venc: l.venc,
