@@ -13,7 +13,7 @@ import { db, schema } from '@concilia/db';
 import { and, asc, gte, inArray, isNull, lte, eq } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { hojeBr } from '@/lib/datas';
-import { calcularDia } from '@/lib/rh/calcular-ponto';
+import { calcularDia, minutosNoturnos } from '@/lib/rh/calcular-ponto';
 import { pontoProprioDesde } from '@/lib/rh/ponto-vigencia';
 import { horaMinutoBr, somarDias } from '@/lib/rh/dia-operacional';
 import { diaDaSemana, fmtHoras, fmtSaldo, jornadaNoDia, minutosPrevistos, type VigenciaJornada } from '@/lib/rh/banco-horas';
@@ -50,6 +50,9 @@ interface LinhaDia {
   dia: string;
   batidas: BatidaDia[];
   trabalhadoMin: number;
+  /** Minutos entre 22:00 e 05:00 (relógio) e em hora noturna reduzida. */
+  noturnoMin: number;
+  noturnoFictoMin: number;
   previstoMin: number;
   saldoMin: number | null;
   situacoes: Situacao[];
@@ -66,6 +69,8 @@ interface Resumo {
   horaEntrada: string | null;
   diasTrabalhados: number;
   trabalhadoMin: number;
+  noturnoMin: number;
+  noturnoFictoMin: number;
   previstoMin: number;
   abonadoMin: number;
   saldoMin: number;
@@ -323,6 +328,8 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
       horaEntrada: f.horaEntrada,
       diasTrabalhados: 0,
       trabalhadoMin: 0,
+      noturnoMin: 0,
+      noturnoFictoMin: 0,
       previstoMin: 0,
       abonadoMin: 0,
       saldoMin: 0,
@@ -357,10 +364,15 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
         porCasa.set(b.filialId, l);
       }
       let trab = 0;
+      let notReal = 0;
+      let notFicto = 0;
       let incompleto = false;
       for (const l of porCasa.values()) {
         const c = calcularDia(l);
         trab += c.totalMin;
+        const n = minutosNoturnos(c.pares);
+        notReal += n.reais;
+        notFicto += n.fictos;
         if (c.status === 'incompleto' || c.orfas > 0) incompleto = true;
       }
 
@@ -379,6 +391,8 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
       if (lista.length > 0) {
         r.diasTrabalhados++;
         r.trabalhadoMin += trab;
+        r.noturnoMin += notReal;
+        r.noturnoFictoMin += notFicto;
         for (const b of lista) {
           if (b.origem === 'celular') r.porCelular++;
           if (b.origem === 'correcao') r.corrigidas++;
@@ -439,6 +453,8 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
           outraCasa: b.filialId !== filial.id ? nomeCasa.get(b.filialId) ?? 'outra casa' : null,
         })),
         trabalhadoMin: trab,
+        noturnoMin: notReal,
+        noturnoFictoMin: notFicto,
         previstoMin: prev,
         saldoMin: saldo,
         situacoes,
@@ -499,7 +515,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
   };
 
   const csvSintetico = csvHref([
-    ['Pessoa', 'Cargo', 'Jornada', 'Dias trabalhados', 'Horas trabalhadas', 'Horas previstas', 'Saldo do mês', 'Saldo anterior', 'Acertos do mês', 'Saldo geral', 'Hora extra', 'Faltas', 'Horas de falta', 'Incompletos', 'Atrasos', 'Min de atraso', 'Dias de atestado', 'Batidas pelo celular', 'Ajustes à mão (inclusão, alteração, exclusão)'],
+    ['Pessoa', 'Cargo', 'Jornada', 'Dias trabalhados', 'Horas trabalhadas', 'Horas previstas', 'Saldo do mês', 'Saldo anterior', 'Acertos do mês', 'Saldo geral', 'Hora extra', 'Noturno 22h–5h (relógio)', 'Noturno (hora reduzida 52min30s)', 'Faltas', 'Horas de falta', 'Incompletos', 'Atrasos', 'Min de atraso', 'Dias de atestado', 'Batidas pelo celular', 'Ajustes à mão (inclusão, alteração, exclusão)'],
     ...resumos.map((r) => [
       r.nome,
       r.cargo ?? '',
@@ -512,6 +528,8 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
       r.temBanco || r.temLancamento ? fmtSaldo(r.acertosMesMin) : '',
       r.temBanco || r.temLancamento ? fmtSaldo(r.saldoGeralMin) : '',
       r.temBanco ? fmtHoras(r.extraMin) : '',
+      r.noturnoMin ? fmtHoras(r.noturnoMin) : '',
+      r.noturnoFictoMin ? fmtHoras(r.noturnoFictoMin) : '',
       r.faltas,
       r.temBanco ? fmtHoras(r.faltaMin) : '',
       r.incompletos,
@@ -523,7 +541,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
     ]),
   ]);
   const csvAnalitico = csvHref([
-    ['Pessoa', 'Dia', 'Semana', 'Batidas', 'Trabalhado', 'Previsto', 'Saldo', 'Situação', 'Atraso (min)'],
+    ['Pessoa', 'Dia', 'Semana', 'Batidas', 'Trabalhado', 'Noturno 22h–5h', 'Noturno (hora reduzida)', 'Previsto', 'Saldo', 'Situação', 'Atraso (min)'],
     ...doAnalitico.flatMap((r) =>
       r.dias
         .filter((d) => !d.situacoes.includes('fora'))
@@ -533,6 +551,8 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
           SEMANA[diaDaSemana(d.dia)],
           d.batidas.map((b) => `${b.tipo === 'entrada' ? 'E' : 'S'} ${b.hora}${b.origem === 'celular' ? ' (celular)' : b.origem === 'correcao' ? ' (corrigida)' : ''}${b.outraCasa ? ` [${b.outraCasa}]` : ''}`).join(' · '),
           d.batidas.length ? fmtHoras(d.trabalhadoMin) : '',
+          d.noturnoMin ? fmtHoras(d.noturnoMin) : '',
+          d.noturnoFictoMin ? fmtHoras(d.noturnoFictoMin) : '',
           d.previstoMin ? fmtHoras(d.previstoMin) : '',
           d.saldoMin === null ? '' : fmtSaldo(d.saldoMin),
           d.situacoes.map((s) => ROTULO[s].txt).join(', ') + (d.atestado ? ` (${d.atestado})` : ''),
@@ -633,6 +653,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
                   <th className="px-2 py-2 text-right" title="Banco de horas antes deste mês: Stelanto + acertos + ponto próprio">Saldo anterior</th>
                   <th className="px-2 py-2 text-right" title="Saldo anterior + acertos do mês + saldo do mês">Saldo geral</th>
                   <th className="px-2 py-2 text-right">Hora extra</th>
+                  <th className="px-2 py-2 text-right" title="Horas entre 22:00 e 05:00 (CLT art. 73). Entre parênteses, em hora noturna reduzida de 52min30s — é a que leva os 20%">🌙 Noturno</th>
                   <th className="px-2 py-2 text-right">Faltas</th>
                   <th className="px-2 py-2 text-right">Incompl.</th>
                   <th className="px-2 py-2 text-right">Atrasos</th>
@@ -668,6 +689,15 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
                       {r.temBanco || r.temLancamento ? fmtSaldo(r.saldoGeralMin) : '—'}
                     </td>
                     <td className="px-2 py-2 text-right text-blue-700">{r.temBanco && r.extraMin ? fmtHoras(r.extraMin) : ''}</td>
+                    <td className="whitespace-nowrap px-2 py-2 text-right text-indigo-700">
+                      {r.noturnoMin ? (
+                        <>
+                          {fmtHoras(r.noturnoMin)} <span className="text-xs text-indigo-400">({fmtHoras(r.noturnoFictoMin)})</span>
+                        </>
+                      ) : (
+                        ''
+                      )}
+                    </td>
                     <td className={`px-2 py-2 text-right ${r.faltas ? 'font-semibold text-red-600' : 'text-slate-300'}`}>{r.faltas || '0'}</td>
                     <td className={`px-2 py-2 text-right ${r.incompletos ? 'font-semibold text-amber-700' : 'text-slate-300'}`}>
                       {r.incompletos ? (
@@ -708,6 +738,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
                   {r.faltas ? ` · ${r.faltas} falta(s)` : ''}
                   {r.incompletos ? ` · ${r.incompletos} incompleto(s)` : ''}
                   {r.atrasos ? ` · ${r.atrasos} atraso(s)` : ''}
+                  {r.noturnoMin ? ` · 🌙 noturno ${fmtHoras(r.noturnoMin)} (${fmtHoras(r.noturnoFictoMin)} reduzida)` : ''}
                 </div>
               </div>
               <table className="w-full text-sm">
@@ -716,6 +747,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
                     <th className="px-4 py-1.5">Dia</th>
                     <th className="px-2 py-1.5">Batidas</th>
                     <th className="px-2 py-1.5 text-right">Trabalhado</th>
+                    <th className="px-2 py-1.5 text-right" title="Horas entre 22:00 e 05:00">🌙 Noturno</th>
                     <th className="px-2 py-1.5 text-right">Previsto</th>
                     <th className="px-2 py-1.5 text-right">Saldo</th>
                     <th className="px-4 py-1.5">Situação</th>
@@ -749,6 +781,9 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
                             </div>
                           </td>
                           <td className="px-2 py-1.5 text-right">{d.batidas.length ? fmtHoras(d.trabalhadoMin) : ''}</td>
+                          <td className="px-2 py-1.5 text-right text-indigo-700" title={d.noturnoMin ? `${fmtHoras(d.noturnoFictoMin)} em hora reduzida` : undefined}>
+                            {d.noturnoMin ? fmtHoras(d.noturnoMin) : ''}
+                          </td>
                           <td className="px-2 py-1.5 text-right text-slate-400">{d.previstoMin ? fmtHoras(d.previstoMin) : ''}</td>
                           <td className={`px-2 py-1.5 text-right ${d.saldoMin === null || d.saldoMin === 0 ? 'text-slate-300' : d.saldoMin < 0 ? 'text-red-600' : 'text-blue-700'}`}>
                             {d.saldoMin === null || (d.saldoMin === 0 && !d.previstoMin) ? '' : fmtSaldo(d.saldoMin)}
@@ -787,7 +822,9 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
           Horas somam o ponto de todas as casas (marcado com o nome da outra casa). Previsto e saldo seguem a jornada,
           a mesma conta do banco de horas; intermitente não tem saldo. Falta = dia de trabalho na escala do mês (ou na
           jornada, se não tem escala) sem nenhuma batida e sem atestado. Atraso = entrada mais de {TOLERANCIA_ATRASO_MIN} min
-          depois da hora de entrada cadastrada em Escala do mês (sem hora cadastrada aparece —). ✏️ = batida lançada ou corrigida à mão (a coluna Ajustes conta cada inclusão, alteração e exclusão feita no /rh/ponto); 📱 = batida pelo celular.
+          depois da hora de entrada cadastrada em Escala do mês (sem hora cadastrada aparece —). ✏️ = batida lançada ou corrigida à mão (a coluna Ajustes conta cada inclusão, alteração e exclusão feita no /rh/ponto); 📱 = batida pelo celular. 🌙 Noturno = horas
+          trabalhadas entre 22:00 e 05:00 (CLT art. 73: adicional de 20%); entre parênteses, a mesma conta em hora noturna
+          reduzida (52min30s vale 1 hora), que é a base do adicional.
         </p>
       </section>
     </main>
