@@ -17,6 +17,7 @@ import { ValorBoletoForm } from './valor-boleto-form';
 import { PagaOutraCasa } from './paga-outra-casa';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { ehAdmin } from '@/lib/usuario-admin';
+import { origemInterDasBaixas } from '@/lib/comprovante-inter';
 
 export const dynamic = 'force-dynamic';
 
@@ -101,10 +102,13 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
       observacao: schema.contaPagarBaixa.observacao,
       criadoPor: schema.contaPagarBaixa.criadoPor,
       criadoEm: schema.contaPagarBaixa.criadoEm,
+      lancamentoBancoId: schema.contaPagarBaixa.lancamentoBancoId,
     })
     .from(schema.contaPagarBaixa)
     .where(eq(schema.contaPagarBaixa.contaPagarId, id))
     .orderBy(desc(schema.contaPagarBaixa.data), desc(schema.contaPagarBaixa.criadoEm));
+
+  const origemInter = await origemInterDasBaixas(baixas);
 
   const autores = new Map<string, string>();
   const autorIds = [
@@ -337,6 +341,16 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
                       {b.criadoPor ? autores.get(b.criadoPor) ?? '?' : '—'}
                     </td>
                     <td className="py-1.5 text-right">
+                      {origemInter.has(b.id) && (
+                        <a
+                          href={`/financeiro/conta/${conta.id}/comprovante-inter/${b.id}`}
+                          target="_blank"
+                          rel="noopener"
+                          className="mr-2 whitespace-nowrap text-xs font-semibold text-orange-700 hover:underline"
+                        >
+                          🧾 Comprovante Inter
+                        </a>
+                      )}
                       {(!consumer || consumerAqui) && <BaixaForm contaId={conta.id} estornarId={b.id} />}
                     </td>
                   </tr>

@@ -209,6 +209,65 @@ export async function buscarExtratoInter(
   return data.transacoes ?? [];
 }
 
+/** Transação do extrato completo (GET /banking/v2/extrato/completo): igual à
+ *  do extrato simples + `detalhes` (quem recebeu, chave, endToEnd...). O
+ *  formato de `detalhes` muda por tipo de transação, por isso fica solto. */
+export interface InterTransacaoCompleta {
+  idTransacao?: string;
+  dataInclusao?: string;
+  dataTransacao?: string; // YYYY-MM-DD
+  tipoTransacao?: string;
+  tipoOperacao?: 'C' | 'D';
+  valor?: string | number;
+  titulo?: string;
+  descricao?: string;
+  detalhes?: Record<string, unknown>;
+}
+
+/** Extrato completo do período (todas as páginas). Só leitura (extrato.read). */
+export async function buscarExtratoCompletoInter(
+  cred: InterCredenciais,
+  dataInicio: string,
+  dataFim: string,
+): Promise<InterTransacaoCompleta[]> {
+  const token = await getAccessToken(cred);
+  const todas: InterTransacaoCompleta[] = [];
+  for (let pagina = 0; pagina < 20; pagina++) {
+    const { status, data } = await requestJson<{ transacoes?: InterTransacaoCompleta[]; totalPaginas?: number }>({
+      method: 'GET',
+      path: `/banking/v2/extrato/completo?dataInicio=${dataInicio}&dataFim=${dataFim}&pagina=${pagina}&tamanhoPagina=1000`,
+      authorization: `Bearer ${token}`,
+      timeoutMs: 30_000,
+      cred,
+    });
+    if (status !== 200) throw new Error(`Inter extrato completo erro (${status}): ${JSON.stringify(data).slice(0, 300)}`);
+    todas.push(...(data.transacoes ?? []));
+    if (!data.totalPaginas || pagina + 1 >= data.totalPaginas) break;
+  }
+  return todas;
+}
+
+/** PDF oficial do extrato do período, gerado pelo Inter
+ *  (GET /banking/v2/extrato/exportar → { pdf: base64 }). */
+export async function exportarExtratoPdfInter(
+  cred: InterCredenciais,
+  dataInicio: string,
+  dataFim: string,
+): Promise<Buffer> {
+  const token = await getAccessToken(cred);
+  const { status, data } = await requestJson<{ pdf?: string }>({
+    method: 'GET',
+    path: `/banking/v2/extrato/exportar?dataInicio=${dataInicio}&dataFim=${dataFim}`,
+    authorization: `Bearer ${token}`,
+    timeoutMs: 45_000,
+    cred,
+  });
+  if (status !== 200 || !data.pdf) {
+    throw new Error(`Inter extrato PDF erro (${status}): ${JSON.stringify(data).slice(0, 300)}`);
+  }
+  return Buffer.from(data.pdf, 'base64');
+}
+
 /**
  * Saldo da conta no fim do dia `data` (GET /banking/v2/saldo, mesmo escopo do
  * extrato). Devolve o disponível, ou null se o banco não responder o campo.
