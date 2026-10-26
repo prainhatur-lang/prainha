@@ -81,7 +81,11 @@ Campos:
 
 Saída: SOMENTE um objeto JSON, sem cerca de código e sem texto em volta:
 {"guia": true, "tipo": "DAS", "contribuinteCnpj": "05486249000172", "contribuinteNome": "E B SERVICOS LTDA", "competencia": "2026-09", "vencimento": "2026-10-20", "valor": 840.12, "codigoBarras": "85890000008...", "descricao": "DAS Simples Nacional 09/2026", "codigoReceita": null, "numeroDocumento": "07.20.26..."}
-Se NÃO for guia de imposto, ou estiver ilegível: {"guia": false, "motivo": "o que é / o que falta"}.`;
+Se NÃO for guia de imposto, ou estiver ilegível: {"guia": false, "motivo": "o que é / o que falta"}.
+
+EXCEÇÃO — RATEIO DA CONTABILIDADE: se o arquivo for um relatório que DIVIDE o INSS/FGTS (ou outro imposto) de uma empresa entre departamentos/casas (ex.: "RATEIO DE INSS E FGTS EB SERVIÇOS - MÊS DE SETEMBRO/2026", com linhas "FGTS DEPARTAMENTO TABUARA R$ 1.894,54"), NÃO é guia: devolva
+{"rateio": true, "empresaCnpj": "05486249000172" ou null se não houver CNPJ, "empresaNome": "EB SERVIÇOS", "competencia": "2026-09", "linhas": [{"imposto": "FGTS", "departamento": "TABUARA", "valor": 1894.54}, {"imposto": "INSS", "departamento": "PRAINHA MAR E GRILL", "valor": 106.17}, {"imposto": "SALARIO_FAMILIA", "departamento": "PRAINHA", "valor": 405.24, "quantidade": 6}], "totais": {"FGTS": 3667.81, "INSS": 2495.06, "SALARIO_FAMILIA": 1215.72}}
+Regras do rateio: "imposto" é INSS, FGTS, SALARIO_FAMILIA, DAS ou OUTRO. "departamento" é o nome da casa/departamento como impresso, SEM as palavras "DEPARTAMENTO"/"DEP"/"DE PARTAMENTO". As linhas "GERAL EMPRESA ..." são o total da empresa: vão em "totais", NUNCA em "linhas". A linha "TOTAL" do fim vai em totais com a chave do imposto que ela soma. "competencia" em AAAA-MM pelo mês do título.`;
 
 type Bloco =
   | { type: 'text'; text: string }
@@ -130,7 +134,68 @@ const ym = (v: unknown) => (typeof v === 'string' && /^\d{4}-\d{2}/.test(v) ? v.
 
 export class NaoEGuia extends Error {}
 
+/** O PDF de RATEIO do contador (não é guia): valor de cada departamento por imposto. */
+export interface RateioLido {
+  empresaCnpj: string | null;
+  empresaNome: string | null;
+  competencia: string | null;
+  linhas: Array<{ imposto: string; departamento: string; valor: number; quantidade: number | null }>;
+  totais: Record<string, number>;
+  bruto: Record<string, unknown>;
+}
+
+const IMPOSTOS_RATEIO = new Set(['INSS', 'FGTS', 'SALARIO_FAMILIA', 'DAS', 'OUTRO']);
+
+function montarRateio(j: Record<string, unknown>): RateioLido {
+  const linhas: RateioLido['linhas'] = [];
+  for (const l of Array.isArray(j.linhas) ? (j.linhas as Array<Record<string, unknown>>) : []) {
+    const imp = (txt(l?.imposto) ?? 'OUTRO').toUpperCase().replace(/[^A-Z_]/g, '_');
+    const valor = num(l?.valor);
+    const dep = txt(l?.departamento);
+    if (!dep || valor === null) continue;
+    linhas.push({
+      imposto: IMPOSTOS_RATEIO.has(imp) ? imp : 'OUTRO',
+      departamento: dep.slice(0, 80),
+      valor: r2(valor),
+      quantidade: num(l?.quantidade),
+    });
+  }
+  const totais: Record<string, number> = {};
+  if (j.totais && typeof j.totais === 'object') {
+    for (const [k, v] of Object.entries(j.totais as Record<string, unknown>)) {
+      const n = num(v);
+      if (n !== null) totais[k.toUpperCase()] = r2(n);
+    }
+  }
+  const doc = digitos(txt(j.empresaCnpj));
+  return {
+    empresaCnpj: doc.length === 14 ? doc : null,
+    empresaNome: txt(j.empresaNome),
+    competencia: ym(j.competencia),
+    linhas,
+    totais,
+    bruto: j,
+  };
+}
+
+/** Lê o arquivo: guia de imposto OU o rateio do contador. */
+export async function lerArquivoImposto(
+  buf: Buffer,
+  mime: string,
+  nome: string,
+): Promise<{ tipo: 'guia'; guia: GuiaLida } | { tipo: 'rateio'; rateio: RateioLido }> {
+  const j = await lerJson(buf, mime, nome);
+  if (j.rateio === true) return { tipo: 'rateio', rateio: montarRateio(j) };
+  return { tipo: 'guia', guia: montarGuia(j) };
+}
+
 export async function lerGuia(buf: Buffer, mime: string, nome: string): Promise<GuiaLida> {
+  const j = await lerJson(buf, mime, nome);
+  if (j.rateio === true) throw new NaoEGuia('é o rateio da contabilidade, não uma guia');
+  return montarGuia(j);
+}
+
+async function lerJson(buf: Buffer, mime: string, nome: string): Promise<Record<string, unknown>> {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) throw new Error('ANTHROPIC_API_KEY não configurada');
   const data = buf.toString('base64');
@@ -157,6 +222,10 @@ export async function lerGuia(buf: Buffer, mime: string, nome: string): Promise<
   } catch {
     throw new Error('a IA devolveu um JSON quebrado — envie de novo');
   }
+  return j;
+}
+
+function montarGuia(j: Record<string, unknown>): GuiaLida {
   if (j.guia === false) throw new NaoEGuia(`não parece guia de imposto: ${txt(j.motivo) ?? 'sem motivo'}`);
   const tipoBruto = (txt(j.tipo) ?? 'OUTRO').toUpperCase();
   const tipo = (TIPOS_IMPOSTO as readonly string[]).includes(tipoBruto) ? (tipoBruto as TipoImposto) : 'OUTRO';
@@ -246,6 +315,8 @@ export interface Proposta {
   cnpjFolha: string | null;
   folha: ProporcaoFolha | null;
   percentuais: Array<{ filialId: string; percentual: number }>;
+  /** Valor exato de cada casa (rateio que o contador mandou), quando bate com a guia. */
+  valores?: Array<{ filialId: string; valor: number }> | null;
   explicacao: string;
 }
 
@@ -269,9 +340,23 @@ export async function proporRateio(g: {
   const doc = digitos(g.contribuinteCnpj);
   if (doc === EB_CNPJ || doc === LELIS_CNPJ) {
     const eb = doc === EB_CNPJ;
-    const folha = await proporcaoFolha(doc, g.competencia);
     const pagadora = eb ? await filialDoCnpj(EB_CNPJ) : null;
     const nome = eb ? 'E.B. Serviços' : 'Lelis';
+    // 1º: o rateio que o contador mandou pra essa competência (valor de cada casa)
+    const doContador = await rateioDoContador(doc, g.competencia, g.tipo);
+    if (doContador) {
+      return {
+        regra: 'FOLHA',
+        pagadoraNome: nome,
+        pagadoraFilialId: pagadora?.id ?? null,
+        cnpjFolha: doc,
+        folha: null,
+        percentuais: doContador.percentuais,
+        valores: doContador.valores,
+        explicacao: `Guia da ${nome}: cada casa repassa por Pix a parte dela e a ${nome} paga a guia inteira. Valores do RATEIO do contador de ${g.competencia!.slice(5)}/${g.competencia!.slice(0, 4)} (total R$ ${doContador.total.toFixed(2).replace('.', ',')}).`,
+      };
+    }
+    const folha = await proporcaoFolha(doc, g.competencia);
     return {
       regra: 'FOLHA',
       pagadoraNome: nome,
@@ -410,3 +495,75 @@ export const NOME_TIPO: Record<TipoImposto, string> = {
   TAXA: 'Taxa',
   OUTRO: 'Imposto',
 };
+
+// ───────────────────────── rateio do contador ─────────────────────────
+
+const FILIAL_BAR = '7c5c66ce-cceb-4e89-9c6d-d0785255c4f9';
+const FILIAL_TABUARA = 'fde37b95-7c7e-4b41-a618-2aba1fbc0de7';
+const FILIAL_MAR = 'e899dae2-38bf-4f3f-9149-7effd059fab8';
+
+const normDep = (s: string) =>
+  s
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/\b(DEPARTAMENTO|DEPTO|DEP)\b/g, '')
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .trim();
+
+/** Casa do departamento do rateio: pelo nome do departamento na folha do
+ *  contador; senão pelo nome (MAR → Mar, TABUAR → Tabuará, PRAINHA → Bar). */
+export async function filialDoDepartamento(cnpj: string, departamento: string): Promise<string | null> {
+  const alvo = normDep(departamento);
+  const r = schema.folhaContadorResumo;
+  const deps = await db
+    .selectDistinct({ departamento: r.departamento, filialId: r.filialId })
+    .from(r)
+    .where(eq(r.cnpj, cnpj));
+  const igual = deps.find((d) => d.filialId && d.departamento && normDep(d.departamento) === alvo);
+  if (igual) return igual.filialId;
+  if (/\bMAR\b|GRILL/.test(alvo)) return FILIAL_MAR;
+  if (alvo.includes('TABUAR')) return FILIAL_TABUARA;
+  if (alvo.includes('PRAINHA') || alvo === 'BAR') return FILIAL_BAR;
+  return null;
+}
+
+/** CNPJ da empresa do rateio (o PDF da E.B. não traz CNPJ, só o nome). */
+export function cnpjDoRateio(r: RateioLido): string | null {
+  if (r.empresaCnpj) return r.empresaCnpj;
+  const n = normDep(r.empresaNome ?? '');
+  if (/\bE ?B\b/.test(n) || n.includes('EB SERV')) return EB_CNPJ;
+  if (n.includes('LELIS')) return LELIS_CNPJ;
+  return null;
+}
+
+/** Valor de cada casa pro tipo de imposto, pelo rateio salvo da competência. */
+export async function rateioDoContador(
+  cnpj: string,
+  competencia: string | null,
+  tipo: TipoImposto | null,
+): Promise<{ percentuais: Array<{ filialId: string; percentual: number }>; valores: Array<{ filialId: string; valor: number }>; total: number } | null> {
+  if (!competencia || !tipo) return null;
+  const t = schema.impostoRateioContador;
+  const [row] = await db
+    .select({ linhas: t.linhas })
+    .from(t)
+    .where(and(eq(t.cnpj, cnpj), eq(t.competencia, competencia)))
+    .limit(1);
+  if (!row) return null;
+  const porCasa = new Map<string, number>();
+  for (const l of row.linhas) {
+    if (l.imposto !== tipo || !l.filialId || !(l.valor > 0)) continue;
+    porCasa.set(l.filialId, r2((porCasa.get(l.filialId) ?? 0) + l.valor));
+  }
+  const valores = [...porCasa.entries()].map(([filialId, valor]) => ({ filialId, valor }));
+  const total = r2(valores.reduce((s, v) => s + v.valor, 0));
+  if (!valores.length || total <= 0) return null;
+  const percentuais = valores.map((v) => ({ filialId: v.filialId, percentual: Math.round((v.valor / total) * 10000) / 100 }));
+  const soma = r2(percentuais.reduce((s, p) => s + p.percentual, 0));
+  if (soma !== 100) {
+    const maior = percentuais.reduce((a, b) => (b.percentual > a.percentual ? b : a));
+    maior.percentual = r2(maior.percentual + (100 - soma));
+  }
+  return { percentuais, valores, total };
+}

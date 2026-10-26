@@ -13,7 +13,7 @@
 // Arquivo no bucket público `producao-fotos`, pasta `impostos/` (o mesmo do
 // boleto anexado: as contas geradas levam o caminho em boleto_storage_path).
 
-import { pgTable, uuid, varchar, timestamp, text, numeric, date, index, jsonb } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, text, numeric, date, index, uniqueIndex, jsonb } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 export interface ImpostoRateio {
@@ -63,5 +63,41 @@ export const impostoGuia = pgTable(
   (t) => ({
     statusIdx: index('imposto_guia_status_idx').on(t.status, t.criadoEm),
     barrasIdx: index('imposto_guia_barras_idx').on(t.codigoBarras),
+  }),
+);
+
+/** Linha do RATEIO que o contador manda junto com as guias da E.B. (26/10/2026):
+ *  "INSS DEPARTAMENTO TABUARA R$ 1.775,68" → { imposto: 'INSS', departamento: 'TABUARA', filialId, valor }. */
+export interface ImpostoRateioLinha {
+  /** INSS | FGTS | SALARIO_FAMILIA | DAS | OUTRO */
+  imposto: string;
+  departamento: string;
+  /** Casa do departamento; nulo = não reconhecida (a conferência escolhe). */
+  filialId: string | null;
+  valor: number;
+}
+
+/** Rateio do contador por empresa e competência (o PDF "RATEIO DE INSS E FGTS
+ *  EB SERVIÇOS"). Quando existe, a guia daquela empresa/competência/imposto
+ *  usa o valor exato de cada casa em vez da proporção da folha. Um por
+ *  (cnpj, competencia): mandar de novo substitui. */
+export const impostoRateioContador = pgTable(
+  'imposto_rateio_contador',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    cnpj: varchar('cnpj', { length: 14 }).notNull(),
+    /** AAAA-MM */
+    competencia: varchar('competencia', { length: 7 }).notNull(),
+    linhas: jsonb('linhas').$type<ImpostoRateioLinha[]>().notNull().default(sql`'[]'::jsonb`),
+    /** Totais "GERAL EMPRESA" do documento: { INSS: 2495.06, FGTS: 3667.81, ... } */
+    totais: jsonb('totais').$type<Record<string, number>>().notNull().default(sql`'{}'::jsonb`),
+    arquivoPath: text('arquivo_path'),
+    arquivoHash: varchar('arquivo_hash', { length: 64 }),
+    lido: jsonb('lido'),
+    criadoPor: uuid('criado_por'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    unico: uniqueIndex('imposto_rateio_contador_unico').on(t.cnpj, t.competencia),
   }),
 );

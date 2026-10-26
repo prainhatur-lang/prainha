@@ -1,7 +1,9 @@
 'use client';
 
 // Envio da guia (PDF ou foto), conferência dos dados lidos e do rateio, e o
-// lançamento. Rotas: /api/financeiro/impostos/ler e /lancar.
+// lançamento. Rotas: /api/financeiro/impostos/ler e /lancar — ou, no link do
+// contador (/contador/impostos), /api/contador/impostos/* com ?t=<token>.
+// Aceita vários arquivos de uma vez (guias + o PDF de RATEIO do contador).
 
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -32,6 +34,12 @@ interface Proposta {
   explicacao: string;
   percentuais: Array<{ filialId: string; percentual: number }>;
   folha: { partes: Array<{ filialId: string; departamento: string; valor: number; percentual: number }> } | null;
+  valores?: Array<{ filialId: string; valor: number }> | null;
+}
+
+export interface GuiaPendente {
+  id: string;
+  rotulo: string;
 }
 
 const TIPOS: Array<[string, string]> = [
@@ -70,7 +78,21 @@ async function reduzirFoto(file: File, lado = 2200, qualidade = 0.85): Promise<F
   }
 }
 
-export function GuiaImpostoForm({ filiais }: { filiais: Filial[] }) {
+export function GuiaImpostoForm({
+  filiais,
+  apiBase = '/api/financeiro/impostos',
+  token,
+  pendentes = [],
+}: {
+  filiais: Filial[];
+  apiBase?: string;
+  token?: string;
+  pendentes?: GuiaPendente[];
+}) {
+  const qs = token ? `?t=${encodeURIComponent(token)}` : '';
+  const [fila, setFila] = useState<GuiaPendente[]>([]);
+  const [lidos, setLidos] = useState<string[]>([]);
+  const [vals, setVals] = useState<Record<string, string>>({});
   const router = useRouter();
   const arqRef = useRef<HTMLInputElement>(null);
   const fotoRef = useRef<HTMLInputElement>(null);
@@ -107,6 +129,69 @@ export function GuiaImpostoForm({ filiais }: { filiais: Filial[] }) {
     for (const f of filiais) m[f.id] = '';
     for (const x of p.percentuais) m[x.filialId] = String(x.percentual).replace('.', ',');
     setPct(m);
+    const v: Record<string, string> = {};
+    for (const x of p.valores ?? []) v[x.filialId] = x.valor.toFixed(2).replace('.', ',');
+    setVals(v);
+  }
+
+  async function conferir(guiaId: string) {
+    setErro(null);
+    setOk(null);
+    setAviso(null);
+    setAndamento('Abrindo a guia…');
+    try {
+      const r = await fetch(`${apiBase}/ler${qs}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ guiaId }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error ?? `erro ${r.status}`);
+      carregar(d.guia as Guia, d.proposta as Proposta);
+      setFila((f) => f.filter((x) => x.id !== guiaId));
+    } catch (e) {
+      setErro((e as Error).message);
+    } finally {
+      setAndamento(null);
+    }
+  }
+
+  /** Vários arquivos: lê um por um; rateio é guardado, guias entram na fila de conferência. */
+  async function enviarVarios(files: FileList | null) {
+    const lista = files ? [...files] : [];
+    if (lista.length <= 1) return enviar(lista[0]);
+    setErro(null);
+    setOk(null);
+    setAviso(null);
+    const msgs: string[] = [];
+    const novas: GuiaPendente[] = [];
+    for (const [i, file] of lista.entries()) {
+      setAndamento(`Lendo ${i + 1} de ${lista.length}: ${file.name}…`);
+      try {
+        const form = new FormData();
+        form.set('arquivo', await reduzirFoto(file));
+        const r = await fetch(`${apiBase}/ler${qs}`, { method: 'POST', body: form });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error ?? `erro ${r.status}`);
+        if (d.rateio) {
+          msgs.push(`✓ ${file.name}: rateio de ${String(d.rateio.competencia).slice(5)}/${String(d.rateio.competencia).slice(0, 4)} guardado${d.aviso ? ` (${d.aviso})` : ''}`);
+        } else if (d.guia?.status === 'LANCADA') {
+          msgs.push(`• ${file.name}: já estava lançada`);
+        } else if (d.guia) {
+          novas.push({ id: d.guia.id, rotulo: `${d.guia.descricao ?? d.guia.tipo ?? 'Guia'} — ${file.name}` });
+          msgs.push(`✓ ${file.name}: lida${d.duplicada ? ' (ATENÇÃO: código de barras repetido)' : ''}`);
+        }
+      } catch (e) {
+        msgs.push(`✗ ${file.name}: ${(e as Error).message}`);
+      }
+    }
+    setAndamento(null);
+    setLidos(msgs);
+    if (arqRef.current) arqRef.current.value = '';
+    // rateio pode ter chegado depois das guias: abre a primeira já com ele
+    setFila((f) => [...f, ...novas.slice(1)]);
+    if (novas[0]) await conferir(novas[0].id);
+    router.refresh();
   }
 
   async function enviar(file: File | undefined) {
@@ -121,9 +206,17 @@ export function GuiaImpostoForm({ filiais }: { filiais: Filial[] }) {
       const f = await reduzirFoto(file);
       const form = new FormData();
       form.set('arquivo', f);
-      const r = await fetch('/api/financeiro/impostos/ler', { method: 'POST', body: form });
+      const r = await fetch(`${apiBase}/ler${qs}`, { method: 'POST', body: form });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.error ?? `erro ${r.status}`);
+      if (d.rateio) {
+        setOk(
+          `Rateio de ${String(d.rateio.competencia).slice(5)}/${String(d.rateio.competencia).slice(0, 4)} guardado — as guias de INSS/FGTS dessa competência já usam o valor de cada casa.`,
+        );
+        if (d.aviso) setAviso(d.aviso);
+        router.refresh();
+        return;
+      }
       carregar(d.guia as Guia, d.proposta as Proposta);
       if (d.repetida) {
         setAviso(
@@ -151,6 +244,12 @@ export function GuiaImpostoForm({ filiais }: { filiais: Filial[] }) {
   };
   const valorNum = Number(valor.replace(/\./g, '').replace(',', '.')) || 0;
   const somaPct = Math.round(filiais.reduce((s, f) => s + numPct(pct[f.id]), 0) * 100) / 100;
+  const numVal = (s: string | undefined) => Number((s ?? '').replace(/\./g, '').replace(',', '.')) || 0;
+  // R$ por casa: vale quando toda casa com % tem valor digitado
+  const ativas = filiais.filter((f) => numPct(pct[f.id]) > 0 || numVal(vals[f.id]) > 0);
+  const modoValor = ativas.length > 0 && ativas.every((f) => numVal(vals[f.id]) > 0);
+  const somaVal = Math.round(ativas.reduce((s, f) => s + numVal(vals[f.id]), 0) * 100) / 100;
+  const rateioOk = modoValor ? Math.abs(somaVal - valorNum) <= 0.01 : Math.abs(somaPct - 100) <= 0.01;
   const ebPagadora = proposta?.regra === 'FOLHA' && proposta.pagadoraFilialId;
 
   async function lancar(acao: 'lancar' | 'descartar') {
@@ -159,7 +258,7 @@ export function GuiaImpostoForm({ filiais }: { filiais: Filial[] }) {
     setErro(null);
     setAndamento(acao === 'lancar' ? 'Lançando…' : 'Descartando…');
     try {
-      const r = await fetch('/api/financeiro/impostos/lancar', {
+      const r = await fetch(`${apiBase}/lancar${qs}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -174,7 +273,9 @@ export function GuiaImpostoForm({ filiais }: { filiais: Filial[] }) {
           codigoBarras: barras,
           descricao,
           regra: proposta?.regra ?? 'CASA',
-          rateio: filiais.map((f) => ({ filialId: f.id, percentual: numPct(pct[f.id]) })).filter((x) => x.percentual > 0),
+          rateio: modoValor
+            ? ativas.map((f) => ({ filialId: f.id, percentual: numPct(pct[f.id]), valor: numVal(vals[f.id]) }))
+            : filiais.map((f) => ({ filialId: f.id, percentual: numPct(pct[f.id]) })).filter((x) => x.percentual > 0),
         }),
       });
       const d = await r.json().catch(() => ({}));
@@ -187,6 +288,7 @@ export function GuiaImpostoForm({ filiais }: { filiais: Filial[] }) {
       setGuia(null);
       setProposta(null);
       router.refresh();
+      if (fila[0]) void conferir(fila[0].id);
     } catch (e) {
       setErro((e as Error).message);
     } finally {
@@ -205,7 +307,7 @@ export function GuiaImpostoForm({ filiais }: { filiais: Filial[] }) {
           onClick={() => arqRef.current?.click()}
           className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
         >
-          📄 Subir PDF ou imagem
+          📄 Subir PDF ou imagem (pode ser vários)
         </button>
         <button
           type="button"
@@ -219,8 +321,9 @@ export function GuiaImpostoForm({ filiais }: { filiais: Filial[] }) {
           ref={arqRef}
           type="file"
           accept="application/pdf,image/jpeg,image/png,image/webp"
+          multiple
           className="hidden"
-          onChange={(e) => enviar(e.target.files?.[0])}
+          onChange={(e) => enviarVarios(e.target.files)}
         />
         <input
           ref={fotoRef}
@@ -236,6 +339,37 @@ export function GuiaImpostoForm({ filiais }: { filiais: Filial[] }) {
       {erro && <p className="mt-3 rounded-md bg-red-50 p-2 text-sm text-red-700">{erro}</p>}
       {ok && <p className="mt-3 rounded-md bg-emerald-50 p-2 text-sm text-emerald-700">{ok}</p>}
       {aviso && <p className="mt-3 rounded-md bg-amber-50 p-2 text-sm text-amber-800">{aviso}</p>}
+      {lidos.length > 0 && (
+        <ul className="mt-3 space-y-0.5 rounded-md bg-slate-50 p-2 text-xs text-slate-700">
+          {lidos.map((m, i) => (
+            <li key={i}>{m}</li>
+          ))}
+        </ul>
+      )}
+      {(() => {
+        const todas = [...fila, ...pendentes.filter((p) => !fila.some((f) => f.id === p.id))].filter((p) => p.id !== guia?.id);
+        if (!todas.length) return null;
+        return (
+          <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-2 text-sm">
+            <div className="text-xs font-medium text-amber-800">Lidas, falta conferir e lançar:</div>
+            <ul className="mt-1 space-y-1">
+              {todas.map((p) => (
+                <li key={p.id} className="flex items-center justify-between gap-2">
+                  <span className="text-slate-700">{p.rotulo}</span>
+                  <button
+                    type="button"
+                    disabled={!!andamento}
+                    onClick={() => conferir(p.id)}
+                    className="rounded border border-amber-300 bg-white px-2 py-0.5 text-xs text-amber-800 disabled:opacity-50"
+                  >
+                    Conferir
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })()}
 
       {guia && proposta && guia.status !== 'LANCADA' && (
         <div className="mt-5 space-y-5">
@@ -294,10 +428,25 @@ export function GuiaImpostoForm({ filiais }: { filiais: Filial[] }) {
                       value={pct[f.id] ?? ''}
                       placeholder="0"
                       inputMode="decimal"
-                      onChange={(e) => setPct({ ...pct, [f.id]: e.target.value })}
+                      onChange={(e) => {
+                        setPct({ ...pct, [f.id]: e.target.value });
+                        setVals({ ...vals, [f.id]: '' });
+                      }}
                     />
                     <span className="text-slate-500">%</span>
-                    <span className="w-28 text-right text-slate-700">{p > 0 ? brl((valorNum * p) / 100) : ''}</span>
+                    <span className="text-slate-500">R$</span>
+                    <input
+                      className="w-28 rounded-md border border-slate-300 px-2 py-1 text-right"
+                      value={vals[f.id] ?? ''}
+                      placeholder={p > 0 ? ((valorNum * p) / 100).toFixed(2).replace('.', ',') : '0,00'}
+                      inputMode="decimal"
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setVals({ ...vals, [f.id]: v });
+                        const n = numVal(v);
+                        if (valorNum > 0) setPct({ ...pct, [f.id]: n > 0 ? String(Math.round((n / valorNum) * 10000) / 100).replace('.', ',') : '' });
+                      }}
+                    />
                     {dep && (
                       <span className="text-xs text-slate-500">
                         folha: {dep.departamento} ({brl(dep.valor)})
@@ -307,9 +456,16 @@ export function GuiaImpostoForm({ filiais }: { filiais: Filial[] }) {
                 );
               })}
             </div>
-            <p className={`mt-2 text-sm ${Math.abs(somaPct - 100) > 0.01 ? 'text-red-600' : 'text-emerald-700'}`}>
-              Soma: {somaPct.toLocaleString('pt-BR')}%{Math.abs(somaPct - 100) > 0.01 ? ' — tem que dar 100%' : ''}
-            </p>
+            {modoValor ? (
+              <p className={`mt-2 text-sm ${rateioOk ? 'text-emerald-700' : 'text-red-600'}`}>
+                Soma das casas: {brl(somaVal)}
+                {rateioOk ? ' — bate com a guia' : ` — a guia é ${brl(valorNum)}`}
+              </p>
+            ) : (
+              <p className={`mt-2 text-sm ${Math.abs(somaPct - 100) > 0.01 ? 'text-red-600' : 'text-emerald-700'}`}>
+                Soma: {somaPct.toLocaleString('pt-BR')}%{Math.abs(somaPct - 100) > 0.01 ? ' — tem que dar 100%' : ''}
+              </p>
+            )}
             {proposta.regra === 'FOLHA' && (
               <p className="mt-2 text-xs text-slate-600">
                 Vai criar em cada casa uma conta “Repasse {proposta.pagadoraNome}” com a parte dela (Pix pra{' '}
@@ -322,7 +478,7 @@ export function GuiaImpostoForm({ filiais }: { filiais: Filial[] }) {
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
-              disabled={!!andamento || Math.abs(somaPct - 100) > 0.01 || valorNum <= 0 || !vencimento}
+              disabled={!!andamento || !rateioOk || valorNum <= 0 || !vencimento}
               onClick={() => lancar('lancar')}
               className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
             >

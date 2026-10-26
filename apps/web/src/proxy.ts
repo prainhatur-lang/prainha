@@ -138,6 +138,8 @@ export async function proxy(request: NextRequest) {
   const isNotaChavePublico = path === '/nota-chave' || path.startsWith('/zxing/');
   // /atestado-celular: foto do atestado pelo celular (link assinado, sem login)
   const isAtestadoCelularPublico = path === '/atestado-celular';
+  // /contador/impostos: o contador sobe as guias de imposto (link assinado, sem login)
+  const isContadorImpostosPublico = path === '/contador/impostos';
   // /pedido-celular: foto do pedido sem nota pelo celular (QR da Entrada de notas; link assinado, sem login)
   const isPedidoCelularPublico = path === '/pedido-celular';
   // /agente-release/* sao bundles do agente local baixados pelo PowerShell
@@ -192,6 +194,7 @@ export async function proxy(request: NextRequest) {
     isNotaBoletoPublico ||
     isNotaChavePublico ||
     isAtestadoCelularPublico ||
+    isContadorImpostosPublico ||
     isPedidoCelularPublico ||
     isAgenteRelease ||
     isAvaliarPublico ||

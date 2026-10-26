@@ -13,6 +13,7 @@ import { desc, inArray } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDate } from '@/lib/format';
 import { NOME_TIPO, PERM_IMPOSTO_LANCAR, PERM_IMPOSTO_LER, urlGuia, type TipoImposto } from '@/lib/impostos/guia';
+import { gerarTokenContador } from '@/lib/impostos/contador-link';
 import { GuiaImpostoForm } from './guia-form';
 
 export const dynamic = 'force-dynamic';
@@ -56,6 +57,14 @@ export default async function ImpostosPage() {
     for (const f of extra) nomes.set(f.id, f.nome);
   }
   const visiveis = new Set(filiais.map((f) => f.id));
+  const rateios = await db
+    .select()
+    .from(schema.impostoRateioContador)
+    .orderBy(desc(schema.impostoRateioContador.criadoEm))
+    .limit(12);
+  const linkContador = podeLancar
+    ? `https://app.prainhabar.com/contador/impostos?t=${gerarTokenContador(user.id)}`
+    : null;
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -69,11 +78,56 @@ export default async function ImpostosPage() {
         </p>
 
         {podeLancar ? (
-          <GuiaImpostoForm filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))} />
+          <GuiaImpostoForm
+            filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
+            pendentes={guias
+              .filter((g) => g.status === 'LIDA')
+              .map((g) => ({
+                id: g.id,
+                rotulo: `${g.descricao ?? (g.tipo ? NOME_TIPO[g.tipo as TipoImposto] : 'Guia')}${g.valor ? ` — ${brl(Number(g.valor))}` : ''}`,
+              }))}
+          />
         ) : (
           <p className="mt-6 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
             Você vê as guias, mas lançar pede a permissão de criar contas a pagar.
           </p>
+        )}
+
+        {linkContador && (
+          <div className="mt-6 rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm">
+            <div className="font-medium text-blue-900">Link do contador (sem login)</div>
+            <p className="mt-0.5 text-xs text-blue-800">
+              Mande pro contador: ele sobe as guias e o RATEIO, confere e lança direto nas contas a pagar (em seu nome,
+              nas suas casas). O link vale enquanto você tiver a permissão de lançar.
+            </p>
+            <input
+              readOnly
+              value={linkContador}
+              className="mt-2 w-full rounded-md border border-blue-200 bg-white px-2 py-1 font-mono text-xs text-slate-700"
+            />
+          </div>
+        )}
+
+        {rateios.length > 0 && (
+          <>
+            <h2 className="mt-10 text-lg font-semibold text-slate-900">Rateios recebidos do contador</h2>
+            <ul className="mt-2 space-y-1 text-sm text-slate-700">
+              {rateios.map((r) => (
+                <li key={r.id} className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+                  <b>
+                    {r.competencia.slice(5, 7)}/{r.competencia.slice(0, 4)}
+                  </b>{' '}
+                  · CNPJ {r.cnpj} ·{' '}
+                  {(r.linhas ?? [])
+                    .map(
+                      (l) =>
+                        `${l.imposto} ${l.departamento} → ${l.filialId ? (nomes.get(l.filialId) ?? 'casa') : 'sem casa'}: ${brl(l.valor)}`,
+                    )
+                    .join(' · ')}
+                </li>
+              ))}
+            </ul>
+          </>
         )}
 
         <h2 className="mt-10 text-lg font-semibold text-slate-900">Guias recentes</h2>
