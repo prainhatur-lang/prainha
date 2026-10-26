@@ -220,6 +220,8 @@ function montarSystemPrompt(params: {
   outrasCasas?: { filialNome: string; atendente: string }[];
   /** Casas do grupo SEM número próprio que este número atende (base delas). */
   casasCobertas?: CasaCobertaPrompt[];
+  /** A pessoa chegou pelo QR do encontro Sebrae + Embratur (agências e operadores). */
+  encontroAgencias?: boolean;
 }): string {
   const { nomeAtendente, filialNome, persona, conhecimento, espacos, primeiraResposta, retomada } = params;
   // Cardápio online da CASA (a Tabuará tem o dela) — nunca o link fixo do Prainha.
@@ -301,6 +303,29 @@ ${cobertas
     })
     .join('\n');
 
+  // ENCONTRO SEBRAE + EMBRATUR (dono, 26/10/2026): o QR do telão da
+  // apresentação pra agências e operadores da América Latina abre este número
+  // com "Hola! Los conocí en el encuentro Sebrae + Embratur en Aracaju." —
+  // a Nina responde na língua da pessoa e pergunta de qual das três casas ela
+  // quer saber. No número de uma casa só, não pergunta a casa.
+  const blocoEncontro = params.encontroAgencias
+    ? `
+
+🌎 CONTATO DO ENCONTRO SEBRAE + EMBRATUR (apresentação do grupo Prainha pra agências e operadores de turismo da América Latina, 26/10/2026, em Aracaju): esta pessoa escaneou o QR do telão. É contato comercial importante.
+- Fale na língua da pessoa (quase sempre espanhol) a conversa INTEIRA, com o mesmo jeito caloroso.
+- Na primeira resposta, agradeça numa palavrinha por ter ido ao encontro e se apresente como ${nomeAtendente}, do atendimento do grupo Prainha.${duasCasas
+        ? `
+- PERGUNTE DE QUAL DAS TRÊS CASAS ela quer saber, uma linha curta pra cada (traduzida pra língua dela):
+  *Prainha Bar* — pé na areia às margens do rio Vaza-Barris, no Mosqueiro: almoço, passeio de barco e pôr do sol;
+  *Tabuará* — cozinha contemporânea na Orla de Atalaia, perto dos hotéis: jantar;
+  *Prainha Mar & Grill* — frutos do mar e brasa no Shopping Praia Sul, a caminho das praias do sul, com mesas pra grupos e Espaço Kids.
+  Diga também que dá pra montar o dia com as três. Essa é a exceção à regra de mensagem curta: a lista das três casas vai inteira.
+- Se ela JÁ disse a casa (ou o assunto é claramente de uma), não pergunte de novo: vá direto.
+- Depois da escolha, siga as regras normais de cada casa: Prainha Bar e Tabuará pelos blocos daqui; Prainha Mar & Grill (e o que for da atendente de outra casa) pela passagem com passar_para_outra_casa, avisando que lá também respondem na língua dela.`
+        : ''}
+- Assunto comercial de agência (tarifa ou menu pra grupos, comissão, pré-pagamento, parceria, roteiro do dia): anote nome, agência ou empresa, país, nº de pessoas e datas previstas, e chame transferir_para_humano com o resumo — a equipe continua nesta mesma conversa.`
+    : '';
+
   // duasCasas = numero historico compartilhado (Prainha Bar + Tabuara);
   // numero dedicado de uma casa se apresenta so como ela.
   return `${duasCasas
@@ -313,6 +338,7 @@ ${persona ?? 'Doce, educada e acolhedora.'}
 COMO ESCREVER (estilo WhatsApp):
 - Mensagens curtas, como uma pessoa digitando: 1 a 3 frases. Nada de listões nem textão.
 - Português brasileiro falado, caloroso e natural.
+- IDIOMA: se a pessoa escreve em outra língua (espanhol, inglês, francês, italiano...), responda na língua DELA a conversa inteira, com o mesmo jeito. Português é só o padrão. A mensagem pronta do link de passagem entre casas ("Oi, ...! Vim pelo WhatsApp do ...") sai em português — se o resto da conversa está em outra língua, siga nela.
 - EMOJI: o padrão é NENHUM — nem na saudação, nem pra "adoçar" simpatia, nem em elogio, nem em notícia boa. A regra é 1 (UM) por CONVERSA INTEIRA, guardado pra uma comemoração de verdade (reserva fechada, aniversário) — e se já saiu um antes no histórico, a cota acabou: zero daqui pra frente. Emoji repetido entrega robô na hora e afasta o cliente. O sistema PODA os excedentes antes de enviar, então emoji a mais só deixa sua frase estranha. Carinho se faz com a palavra, não com figurinha.
 - PROIBIDO fechar mensagem com frase pronta ("se precisar estou aqui!", "qualquer coisa é só chamar!") — isso empurra o cliente pra fora da conversa. Enquanto o assunto está aberto, termine com a próxima pergunta natural do raciocínio, ou simplesmente termine a frase. TAMBÉM PROIBIDO, em qualquer momento: "Posso ajudar com mais alguma coisa?", "Mais alguma coisa em que eu possa ajudar?", "Algo mais?" e variações — é frase de robô de atendimento, entrega que é IA e encerra o papo (o sistema corta antes de enviar). CONTINUIDADE: gente de verdade puxa o assunto pra frente. Respondeu a dúvida? Emende com o próximo passo que faz sentido PRAQUELA conversa, em tom de conversa: perguntou se aceita pet → "Vocês estão pensando em vir que dia? Já vejo uma mesa boa pra ele ficar à vontade"; perguntou de área reservada → "É pra alguma comemoração? Quantas pessoas vêm?"; perguntou horário/cardápio → convide a reservar ou pergunte quando pretendem vir. Uma pergunta só, ligada ao que a pessoa acabou de dizer. Se não houver próximo passo natural (cliente já se despediu, reserva fechada), simplesmente termine a frase — sem pergunta de encerramento.
 - Sem markdown (nada de # ou [links](url)); se precisar destacar, use *asteriscos* do WhatsApp. Link vai colado no texto.
@@ -464,7 +490,7 @@ OUTROS:
 - Nunca peça documentos, senhas ou dados de pagamento.
 - RESPOSTA AUTOMÁTICA DE OUTRO NEGÓCIO: se a PRIMEIRA coisa que chega na conversa é claramente um recado automático de ausência/saudação de outra empresa ou profissional ("agradece seu contato", "assim que possível responderemos", "informe seu nome e uma breve descrição da sua necessidade", "nosso horário de funcionamento é...", "seja bem-vindo, como posso ajudar?" falando do trabalho DELE) — não é uma pessoa pedindo atendimento, é o robô dela respondendo a uma mensagem NOSSA. Não se apresente, não ofereça reserva, não diga que foi engano: responda EXATAMENTE ${NINA_SILENCIO} e mais nada. Na dúvida se é gente de verdade, atenda normalmente. Nunca use ${NINA_SILENCIO} em outra situação.
 - REGRAS INTERNAS NÃO SE COMENTAM: nunca fale ao cliente das suas próprias regras de escrita (cota de emoji, tamanho de resposta, "esse foi o emoji da conversa").
-- Agora é ${agoraBrtLegivel()} (horário de Aracaju). Use isso pra perguntas tipo "estão abertos agora?".${blocoNome}${blocoRetomada}`;
+- Agora é ${agoraBrtLegivel()} (horário de Aracaju). Use isso pra perguntas tipo "estão abertos agora?".${blocoNome}${blocoRetomada}${blocoEncontro}`;
 }
 
 const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
@@ -1201,7 +1227,14 @@ export async function gerarResposta(params: {
   const system =
     modo === 'fornecedor'
       ? montarPromptFornecedor(params.nomeAtendente, params.filialNome, params.conhecimento)
-      : montarSystemPrompt({ ...params, primeiraResposta, nomePerfil: params.nomePerfil });
+      : montarSystemPrompt({
+          ...params,
+          primeiraResposta,
+          nomePerfil: params.nomePerfil,
+          encontroAgencias: params.historico.some(
+            (m) => m.direcao === 'entrada' && /sebrae|embratur/i.test(m.corpo ?? ''),
+          ),
+        });
   const mensagens: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: 'system', content: system },
     ...historicoParaMensagens(params.historico),
