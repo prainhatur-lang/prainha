@@ -14,7 +14,7 @@ async function soDono() {
   const guard = await exigirPermApi('relatorio.read');
   if (guard.error) return guard.error;
   const orgs = await organizacoesDoDono(guard.user.id);
-  if (!orgs.length) return NextResponse.json({ error: 'só o dono mexe no modelo' }, { status: 403 });
+  if (!orgs.length) return NextResponse.json({ error: 'só o Admin mexe no modelo' }, { status: 403 });
   return null;
 }
 

@@ -14,7 +14,7 @@ export async function POST(request: Request) {
   const guard = await exigirPermApi('relatorio.read');
   if (guard.error) return guard.error;
   const orgs = await organizacoesDoDono(guard.user.id);
-  if (!orgs.length) return NextResponse.json({ error: 'só o dono manda o relatório' }, { status: 403 });
+  if (!orgs.length) return NextResponse.json({ error: 'só o Admin manda o relatório' }, { status: 403 });
   const b = (await request.json().catch(() => null)) as { telefone?: string; dias?: string[] } | null;
   const telefone = typeof b?.telefone === 'string' ? b.telefone.replace(/\D/g, '') : '';
   const dias = Array.isArray(b?.dias) ? b.dias.filter((x): x is string => typeof x === 'string') : [];

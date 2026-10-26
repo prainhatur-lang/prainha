@@ -14,7 +14,7 @@ export async function POST() {
   const guard = await exigirPermApi('relatorio.read');
   if (guard.error) return guard.error;
   const orgs = await organizacoesDoDono(guard.user.id);
-  if (!orgs.length) return NextResponse.json({ error: 'só o dono manda o relatório' }, { status: 403 });
+  if (!orgs.length) return NextResponse.json({ error: 'só o Admin manda o relatório' }, { status: 403 });
   const resultados = await enviarRelatoriosPorCasa('manual');
   return NextResponse.json({ ok: true, resultados });
 }

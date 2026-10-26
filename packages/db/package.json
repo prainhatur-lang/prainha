@@ -232,7 +232,8 @@
     "migrate:ponto-cerca": "tsx scripts/migrate-ponto-cerca.ts",
     "migrate:ponto-selfie": "tsx scripts/migrate-ponto-selfie.ts",
     "migrate:plano-contabil": "tsx scripts/migrate-plano-contabil.ts",
-    "migrate:traducao-texto": "tsx scripts/migrate-traducao-texto.ts"
+    "migrate:traducao-texto": "tsx scripts/migrate-traducao-texto.ts",
+    "migrate:relatorio-ponto-aberto": "tsx scripts/migrate-relatorio-ponto-aberto.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",

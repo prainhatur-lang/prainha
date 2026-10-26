@@ -24,6 +24,7 @@ import {
   type RelatorioCasa,
 } from './relatorio-diario';
 import { dateToBrYmd, hojeBr } from './datas';
+import { ehAdmin } from './usuario-admin';
 
 const BASE_URL = 'https://app.prainhabar.com';
 /** Folga antes das 24 h da Meta: toque de ontem 07:30 ainda vale no cron de hoje 07:00. */
@@ -313,35 +314,64 @@ export interface ConfigRelatorio {
   organizacaoId: string;
   ativo: boolean;
   telefones: string[];
+  /** manda o ponto em aberto no resumo (padrão: sim) */
+  pontoAberto: boolean;
+}
+
+/** Tira o ponto em aberto do resumo quando a configuração mandou desligar. */
+function aplicarConfigPonto(casas: RelatorioCasa[], cfg: { pontoAberto: boolean }): RelatorioCasa[] {
+  if (!cfg.pontoAberto) for (const c of casas) c.pontoEmAberto = [];
+  return casas;
+}
+
+/** Relatório da organização já com as opções da configuração aplicadas. */
+async function relatorioConfigurado(organizacaoId: string, dia: string): Promise<RelatorioCasa[]> {
+  const [casas, cfg] = await Promise.all([montarRelatorioOrganizacao(organizacaoId, dia), lerConfig(organizacaoId)]);
+  return aplicarConfigPonto(casas, cfg);
 }
 
 export async function lerConfig(organizacaoId: string): Promise<ConfigRelatorio> {
   const [row] = await db
-    .select({ ativo: schema.relatorioDiarioConfig.ativo, telefones: schema.relatorioDiarioConfig.telefones })
+    .select({
+      ativo: schema.relatorioDiarioConfig.ativo,
+      telefones: schema.relatorioDiarioConfig.telefones,
+      pontoAberto: schema.relatorioDiarioConfig.pontoAberto,
+    })
     .from(schema.relatorioDiarioConfig)
     .where(eq(schema.relatorioDiarioConfig.organizacaoId, organizacaoId))
     .limit(1);
-  return { organizacaoId, ativo: row?.ativo ?? true, telefones: row?.telefones ?? [] };
+  return {
+    organizacaoId,
+    ativo: row?.ativo ?? true,
+    telefones: row?.telefones ?? [],
+    pontoAberto: row?.pontoAberto ?? true,
+  };
 }
 
 export async function salvarConfig(
   organizacaoId: string,
-  dados: { ativo: boolean; telefones: string[] },
+  dados: { ativo: boolean; telefones: string[]; pontoAberto?: boolean },
   usuarioId: string | null,
 ): Promise<ConfigRelatorio> {
   const telefones = [...new Set(dados.telefones)].slice(0, 10);
+  // Sem o campo (tela antiga), mantém o que estava salvo.
+  const pontoAberto = dados.pontoAberto ?? (await lerConfig(organizacaoId)).pontoAberto;
   await db
     .insert(schema.relatorioDiarioConfig)
-    .values({ organizacaoId, ativo: dados.ativo, telefones, atualizadoPor: usuarioId })
+    .values({ organizacaoId, ativo: dados.ativo, telefones, pontoAberto, atualizadoPor: usuarioId })
     .onConflictDoUpdate({
       target: schema.relatorioDiarioConfig.organizacaoId,
-      set: { ativo: dados.ativo, telefones, atualizadoPor: usuarioId, atualizadoEm: new Date() },
+      set: { ativo: dados.ativo, telefones, pontoAberto, atualizadoPor: usuarioId, atualizadoEm: new Date() },
     });
-  return { organizacaoId, ativo: dados.ativo, telefones };
+  return { organizacaoId, ativo: dados.ativo, telefones, pontoAberto };
 }
 
-/** Organizações em que o usuário é DONO (só o dono mexe em quem recebe). */
+/**
+ * Organizações em que o usuário é DONO e está no grupo Admin. Só ele vê e mexe
+ * nas configurações das mensagens (tela /relatorios/diario e rotas da API).
+ */
 export async function organizacoesDoDono(userId: string): Promise<Array<{ id: string; nome: string }>> {
+  if (!(await ehAdmin(userId))) return [];
   return (await db.execute(sql`
     SELECT DISTINCT o.id, o.nome
       FROM usuario_filial uf
@@ -665,7 +695,7 @@ export async function enviarRelatorioDiario(opts: {
     .map((t) => ({ telefone: t, canal: 'nenhum' as const, ok: true, pulado: true }));
   if (!pendentes.length) return { dia, resultados };
 
-  const casas = await montarRelatorioOrganizacao(opts.organizacaoId, dia);
+  const casas = aplicarConfigPonto(await montarRelatorioOrganizacao(opts.organizacaoId, dia), cfg);
   const resumo = resumoUmaLinha(casas);
 
   for (const telefone of pendentes) {
@@ -832,7 +862,7 @@ export async function reconhecerPedidoRelatorio(msg: {
 export async function responderPedidoRelatorio(p: PedidoRelatorio): Promise<void> {
   if (p.repetida) return;
   try {
-    const casas = await montarRelatorioOrganizacao(p.organizacaoId, p.dia);
+    const casas = await relatorioConfigurado(p.organizacaoId, p.dia);
     await enviarTextoCompleto(p, p.dia, p.origem, casas);
   } catch (e) {
     await registrar({
@@ -880,7 +910,7 @@ export async function registrarFalhaRelatorio(waMessageId: string, erro: string 
     .limit(1);
   if (jaFoiModelo) return;
 
-  const casas = await montarRelatorioOrganizacao(linha.organizacaoId, linha.dia);
+  const casas = await relatorioConfigurado(linha.organizacaoId, linha.dia);
   const m = await enviarModelo(linha.telefone, linha.dia, resumoUmaLinha(casas));
   await registrar({
     organizacaoId: linha.organizacaoId,

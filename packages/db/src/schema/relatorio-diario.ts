@@ -39,6 +39,8 @@ export const relatorioDiarioConfig = pgTable('relatorio_diario_config', {
     .primaryKey()
     .references(() => organizacao.id, { onDelete: 'cascade' }),
   ativo: boolean('ativo').notNull().default(true),
+  /** Manda os pontos em aberto (entrada sem saída etc.) no resumo diário. */
+  pontoAberto: boolean('ponto_aberto').notNull().default(true),
   /** Telefones (só dígitos, com DDI 55) que recebem o relatório. */
   telefones: jsonb('telefones').$type<string[]>().notNull().default(sql`'[]'::jsonb`),
   /**

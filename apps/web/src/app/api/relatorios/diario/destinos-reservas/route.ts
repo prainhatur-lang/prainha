@@ -26,7 +26,7 @@ export async function GET(req: Request) {
   const guard = await exigirPermApi('relatorio.read');
   if (guard.error) return guard.error;
   const org = await organizacaoDoDono(guard.user.id, new URL(req.url).searchParams.get('organizacaoId'));
-  if (!org) return NextResponse.json({ error: 'só o dono configura o envio' }, { status: 403 });
+  if (!org) return NextResponse.json({ error: 'só o Admin configura o envio' }, { status: 403 });
   return NextResponse.json({ ok: true, destinos: await destinosReservas(org.id) });
 }
 
@@ -38,7 +38,7 @@ export async function POST(req: Request) {
     | null;
   if (!body) return NextResponse.json({ error: 'corpo inválido' }, { status: 400 });
   const org = await organizacaoDoDono(guard.user.id, body.organizacaoId);
-  if (!org) return NextResponse.json({ error: 'só o dono configura o envio' }, { status: 403 });
+  if (!org) return NextResponse.json({ error: 'só o Admin configura o envio' }, { status: 403 });
 
   if (body.enviarAgora) {
     const soTelefone = body.telefone ? normalizarTelefone(body.telefone) ?? undefined : undefined;

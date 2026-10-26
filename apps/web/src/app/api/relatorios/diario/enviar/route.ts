@@ -15,7 +15,7 @@ export async function POST(req: Request) {
   const body = (await req.json().catch(() => null)) as { organizacaoId?: string; dia?: string } | null;
   const orgs = await organizacoesDoDono(guard.user.id);
   const org = (body?.organizacaoId ? orgs.find((o) => o.id === body.organizacaoId) : orgs[0]) ?? null;
-  if (!org) return NextResponse.json({ error: 'só o dono manda o relatório' }, { status: 403 });
+  if (!org) return NextResponse.json({ error: 'só o Admin manda o relatório' }, { status: 403 });
   const dia = body?.dia && /^\d{4}-\d{2}-\d{2}$/.test(body.dia) ? body.dia : undefined;
 
   const r = await enviarRelatorioDiario({ organizacaoId: org.id, dia, origem: 'manual' });

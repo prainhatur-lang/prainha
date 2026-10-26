@@ -36,6 +36,8 @@ interface Props {
   organizacaoId: string;
   ativo: boolean;
   telefones: string[];
+  /** manda o ponto em aberto no resumo */
+  pontoAberto?: boolean;
   envios: Envio[];
   dia: string;
   diaRotulo: string;
@@ -77,6 +79,7 @@ export function EnvioCard({
   organizacaoId,
   ativo: ativoInicial,
   telefones,
+  pontoAberto: pontoAbertoInicial = true,
   envios,
   dia,
   diaRotulo,
@@ -86,6 +89,7 @@ export function EnvioCard({
 }: Props) {
   const router = useRouter();
   const [ativo, setAtivo] = useState(ativoInicial);
+  const [pontoAberto, setPontoAberto] = useState(pontoAbertoInicial);
   const [texto, setTexto] = useState(telefones.map((t) => formatFone(t)).join('\n'));
   const [salvando, setSalvando] = useState(false);
   const [enviando, setEnviando] = useState(false);
@@ -136,7 +140,7 @@ export function EnvioCard({
       const r = await fetch('/api/relatorios/diario/config', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ organizacaoId, ativo, telefones: linhas }),
+        body: JSON.stringify({ organizacaoId, ativo, telefones: linhas, pontoAberto }),
       });
       const j = (await r.json().catch(() => null)) as { error?: string; config?: { telefones: string[] } } | null;
       if (!r.ok) {
@@ -307,15 +311,30 @@ export function EnvioCard({
             <strong>relatório 02/10</strong>) pro WhatsApp da casa e ele responde na hora.
           </p>
         </div>
-        <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
-          <input
-            type="checkbox"
-            className="h-4 w-4 rounded border-slate-300"
-            checked={ativo}
-            onChange={(e) => setAtivo(e.target.checked)}
-          />
-          Enviar todo dia às 07:00
-        </label>
+        <div className="flex flex-col gap-1.5">
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-slate-300"
+              checked={ativo}
+              onChange={(e) => setAtivo(e.target.checked)}
+            />
+            Enviar todo dia às 07:00
+          </label>
+          <label
+            className="flex cursor-pointer items-center gap-2 text-sm text-slate-700"
+            title="Entrada sem saída (ou saída sem entrada) dos últimos 7 dias, com link pra corrigir"
+          >
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-slate-300"
+              checked={pontoAberto}
+              onChange={(e) => setPontoAberto(e.target.checked)}
+            />
+            Incluir ponto em aberto
+          </label>
+          <span className="text-[11px] text-slate-500">Vale depois de salvar.</span>
+        </div>
       </div>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-2">

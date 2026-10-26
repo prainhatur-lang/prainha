@@ -795,6 +795,7 @@ export default async function RelatorioDiarioPage(props: { searchParams: Promise
             organizacaoId={orgDono.id}
             ativo={config.ativo}
             telefones={config.telefones}
+            pontoAberto={config.pontoAberto}
             envios={envios}
             dia={dia}
             diaRotulo={rotuloDia(dia)}

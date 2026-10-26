@@ -22,7 +22,7 @@ export async function GET(req: Request) {
   const guard = await exigirPermApi('relatorio.read');
   if (guard.error) return guard.error;
   const org = await organizacaoDoDono(guard.user.id, new URL(req.url).searchParams.get('organizacaoId'));
-  if (!org) return NextResponse.json({ error: 'só o dono configura o envio' }, { status: 403 });
+  if (!org) return NextResponse.json({ error: 'só o Admin configura o envio' }, { status: 403 });
   return NextResponse.json({ ok: true, destinos: await destinosDaOrganizacao(org.id) });
 }
 
@@ -32,7 +32,7 @@ export async function POST(req: Request) {
   const body = (await req.json().catch(() => null)) as { organizacaoId?: string; destinos?: unknown } | null;
   if (!body || !Array.isArray(body.destinos)) return NextResponse.json({ error: 'corpo inválido' }, { status: 400 });
   const org = await organizacaoDoDono(guard.user.id, body.organizacaoId);
-  if (!org) return NextResponse.json({ error: 'só o dono configura o envio' }, { status: 403 });
+  if (!org) return NextResponse.json({ error: 'só o Admin configura o envio' }, { status: 403 });
 
   const daOrg = (await db.execute(sql`
     SELECT id FROM filial WHERE organizacao_id = ${org.id}::uuid
