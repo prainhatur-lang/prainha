@@ -37,8 +37,8 @@ export interface Lancamento {
   fornecedorId: string;
   pessoaNome: string;
   papel: PessoaInput['papel'];
-  /** 'comissao' | 'diaria' | 'gratificacao' | 'transporte' | 'premiacao' */
-  tipo: 'comissao' | 'diaria' | 'gratificacao' | 'transporte' | 'premiacao';
+  /** 'comissao' | 'diaria' | 'gratificacao' | 'transporte' | 'premiacao' | 'noturno' */
+  tipo: 'comissao' | 'diaria' | 'gratificacao' | 'transporte' | 'premiacao' | 'noturno';
   /** Valor BRUTO (antes de descontos). */
   valorBruto: number;
   /** Desconto/fiado a abater (so na linha de comissao). */
@@ -108,8 +108,14 @@ export function calcularFolha(args: {
    *  SO o pote dos funcionarios daquele dia, antes do rateio por horas —
    *  empresa e gerente ficam com os pp deles sobre o 10% cheio. */
   perdasPorDia?: Record<string, number>;
+  /** Adicional noturno (CLT 73: 20%, 22h–05h, hora reduzida de 52min30s)
+   *  por fornecedor: minutos noturnos já reduzidos da semana (do ponto) e,
+   *  pro intermitente, a taxa por hora do cadastro do funcionário. Só vira
+   *  lançamento pra quem recebe por hora: diarista 'por_hora' (taxa da
+   *  diária) e intermitente (taxaHora). CLT mensal fica só no espelho. */
+  noturno?: Record<string, { fictoMin: number; taxaHora?: number | null }>;
 }): ResultadoCalculo {
-  const { config, dezPctPorDia, pessoas, horas, ajustes = {}, perdasPorDia = {} } = args;
+  const { config, dezPctPorDia, pessoas, horas, ajustes = {}, perdasPorDia = {}, noturno = {} } = args;
   // Inclui dias que so tem perda lancada (dia sem movimento nao aparece em
   // dezPctPorDia) — senao a perda desse dia nunca seria abatida.
   const dias = Array.from(
@@ -247,6 +253,36 @@ export function calcularFolha(args: {
           descricao: `Diária semana — ${p.nome}`,
           detalhe,
         });
+      }
+    }
+
+    // Adicional noturno — só quem recebe por hora (diarista por hora ou
+    // intermitente com taxa no cadastro). 20% × taxa × horas reduzidas.
+    {
+      const n = noturno[p.fornecedorId];
+      if (n && n.fictoMin > 0) {
+        let taxa: number | null = null;
+        if (p.papel === 'diarista' && p.diaristaModelo !== 'fixo_por_dia') {
+          taxa = p.diaristaTaxaHoraOverride ?? config.taxaDiaristaHora;
+        } else if (p.papel !== 'diarista' && n.taxaHora && n.taxaHora > 0) {
+          taxa = n.taxaHora;
+        }
+        if (taxa && taxa > 0) {
+          const v = round2(0.2 * taxa * (n.fictoMin / 60));
+          if (v > 0) {
+            lancamentos.push({
+              fornecedorId: p.fornecedorId,
+              pessoaNome: p.nome,
+              papel: p.papel,
+              tipo: 'noturno',
+              valorBruto: v,
+              desconto: 0,
+              valorLiquido: v,
+              descricao: `Adicional noturno semana — ${p.nome}`,
+              detalhe: `${minutosToHM(n.fictoMin)} reduzidas (22h–5h) × 20% × R$ ${taxa.toFixed(2)}/h`,
+            });
+          }
+        }
       }
     }
 

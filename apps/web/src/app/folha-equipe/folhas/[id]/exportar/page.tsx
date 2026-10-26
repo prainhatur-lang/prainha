@@ -70,6 +70,7 @@ export default async function ExportarFolhaPage(props: {
         horas: Array.from(inputs.horasMap, ([fornecedorId, porDia]) => ({ fornecedorId, porDia })),
         ajustes: Object.fromEntries(inputs.ajustesMap),
         perdasPorDia: inputs.perdasPorDia,
+        noturno: inputs.noturno,
       });
 
   // Agrupa lancamentos por pessoa (uma linha por garcom no arquivo de pagamento)

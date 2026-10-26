@@ -70,6 +70,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     horas: Array.from(inputs.horasMap, ([fornecedorId, porDia]) => ({ fornecedorId, porDia })),
     ajustes: Object.fromEntries(inputs.ajustesMap),
     perdasPorDia: inputs.perdasPorDia,
+    noturno: inputs.noturno,
   });
 
   // Mapeia tipo de lancamento → categoriaId da config
@@ -79,6 +80,8 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     gratificacao: config.categoriaGratificacaoId,
     transporte: config.categoriaTransporteId,
     premiacao: config.categoriaPremiacaoId,
+    // Adicional noturno vai na mesma categoria da diária (pagamento por hora).
+    noturno: config.categoriaDiariaId ?? config.categoriaComissaoId,
   };
 
   // Data de vencimento: data_pagamento se setada, senao data_fim + 1

@@ -6,7 +6,8 @@
 // outros recalculavam como `diasTrab`, mesmo resultado mas duplicado).
 
 import { db, schema } from '@concilia/db';
-import { and, eq, gt, inArray, lt } from 'drizzle-orm';
+import { and, eq, gt, gte, inArray, lt, lte } from 'drizzle-orm';
+import { minutosNoturnos } from '@/lib/rh/calcular-ponto';
 import type { ConfigFolha, PessoaInput } from './calcular';
 import { contasPorCpf, temConta } from '@/lib/rh/conta-da-pessoa';
 
@@ -42,6 +43,9 @@ export interface InputsFolha {
   /** Perdas/quebras da semana somadas por dia: { 'YYYY-MM-DD': valor }.
    *  Abatem o pote dos funcionarios daquele dia no motor. */
   perdasPorDia: Record<string, number>;
+  /** Adicional noturno da semana por fornecedor: minutos noturnos reduzidos
+   *  (ponto_dia.pares) + taxa/hora do intermitente. Vai pro motor. */
+  noturno: Record<string, { fictoMin: number; taxaHora: number | null }>;
 }
 
 /** Carrega config+pessoas+horas+ajustes de uma folha e monta os inputs
@@ -136,7 +140,11 @@ export async function montarInputsFolha(folhaSemanaId: string, filialId: string)
   // a Tabuará ia pagar 7 dias "da loja"). Só quem NUNCA bateu ponto na
   // filial usa os dias com movimento.
   const [folhaRow] = await db
-    .select({ dezPctPorDia: schema.folhaSemana.dezPctPorDia, dataInicio: schema.folhaSemana.dataInicio })
+    .select({
+      dezPctPorDia: schema.folhaSemana.dezPctPorDia,
+      dataInicio: schema.folhaSemana.dataInicio,
+      dataFim: schema.folhaSemana.dataFim,
+    })
     .from(schema.folhaSemana)
     .where(eq(schema.folhaSemana.id, folhaSemanaId))
     .limit(1);
@@ -194,7 +202,61 @@ export async function montarInputsFolha(folhaSemanaId: string, filialId: string)
     diaristaValorFixoDia: p.diaristaValorFixoDia ? Number(p.diaristaValorFixoDia) : null,
   }));
 
-  return { config, cfg, pessoasRows, pessoas, horasMap, ajustesMap, perdasPorDia };
+  const noturno = folhaRow
+    ? await noturnoDaSemana(filialId, folhaRow.dataInicio, folhaRow.dataFim, pessoasRows, horasMap)
+    : {};
+
+  return { config, cfg, pessoasRows, pessoas, horasMap, ajustesMap, perdasPorDia, noturno };
+}
+
+/** Minutos noturnos (22h–05h, hora reduzida) da semana por fornecedor, lidos
+ *  dos pares do ponto (ponto_dia) da filial. Só conta dia que tem horas na
+ *  folha (folha_horas > 0) — dia zerado/corrigido pra zero não paga noturno.
+ *  Funcionário → fornecedor: FK direta, senão CPF (igual projetar-horas). */
+async function noturnoDaSemana(
+  filialId: string,
+  de: string,
+  ate: string,
+  pessoasRows: InputsFolha['pessoasRows'],
+  horasMap: Map<string, Record<string, number>>,
+): Promise<InputsFolha['noturno']> {
+  const rows = await db
+    .select({
+      dia: schema.pontoDia.dia,
+      pares: schema.pontoDia.pares,
+      funcFornecedorId: schema.funcionario.fornecedorId,
+      cpf: schema.funcionario.cpf,
+      regime: schema.funcionario.regimeSalarial,
+      salarioBase: schema.funcionario.salarioBase,
+    })
+    .from(schema.pontoDia)
+    .innerJoin(schema.funcionario, eq(schema.funcionario.id, schema.pontoDia.funcionarioId))
+    .where(and(eq(schema.pontoDia.filialId, filialId), gte(schema.pontoDia.dia, de), lte(schema.pontoDia.dia, ate)));
+
+  const ids = new Set(pessoasRows.map((p) => p.fornecedorId));
+  const porCpf = new Map<string, string>();
+  for (const p of pessoasRows) {
+    const d = (p.cpf ?? '').replace(/\D/g, '');
+    if (d) porCpf.set(d, p.fornecedorId);
+  }
+
+  const out: InputsFolha['noturno'] = {};
+  for (const r of rows) {
+    const fid =
+      r.funcFornecedorId && ids.has(r.funcFornecedorId)
+        ? r.funcFornecedorId
+        : porCpf.get((r.cpf ?? '').replace(/\D/g, ''));
+    if (!fid) continue;
+    if (!((horasMap.get(fid)?.[r.dia] ?? 0) > 0)) continue;
+    const pares = Array.isArray(r.pares) ? (r.pares as { entrada: string; saida: string }[]) : [];
+    const { fictos } = minutosNoturnos(pares);
+    const taxaHora = r.regime === 'intermitente_hora' && r.salarioBase ? Number(r.salarioBase) : null;
+    const cur = out[fid] ?? { fictoMin: 0, taxaHora };
+    cur.fictoMin += fictos;
+    if (taxaHora) cur.taxaHora = taxaHora;
+    out[fid] = cur;
+  }
+  return out;
 }
 
 /** Gerentes (fornecedorIds) que já tiveram horas (>0) em alguma folha

@@ -12,6 +12,7 @@ import type { ResultadoCalculo, Lancamento } from './calcular';
 
 function tipoDaDescricao(desc: string): Lancamento['tipo'] {
   const d = (desc ?? '').toLowerCase();
+  if (d.startsWith('adicional noturno')) return 'noturno';
   if (d.startsWith('diária') || d.startsWith('diaria')) return 'diaria';
   if (d.startsWith('premiação') || d.startsWith('premiacao')) return 'premiacao';
   if (d.startsWith('gratificação') || d.startsWith('gratificacao')) return 'gratificacao';

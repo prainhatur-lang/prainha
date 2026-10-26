@@ -25,7 +25,7 @@ interface Lancamento {
   fornecedorId: string;
   pessoaNome: string;
   papel: string;
-  tipo: 'comissao' | 'diaria' | 'gratificacao' | 'transporte' | 'premiacao';
+  tipo: 'comissao' | 'diaria' | 'gratificacao' | 'transporte' | 'premiacao' | 'noturno';
   valorBruto: number;
   desconto: number;
   valorLiquido: number;
@@ -714,7 +714,7 @@ export function CalculoFechar({
                       // Por nome (alfabetica), mantendo lancamentos da mesma
                       // pessoa juntos. Tipo desempata: comissao, diaria,
                       // gratificacao, premiacao, transporte (ordem do select abaixo).
-                      const ordemTipo = { comissao: 0, diaria: 1, gratificacao: 2, premiacao: 3, transporte: 4 } as const;
+                      const ordemTipo = { comissao: 0, diaria: 1, noturno: 1.5, gratificacao: 2, premiacao: 3, transporte: 4 } as const;
                       const nome = a.pessoaNome.localeCompare(b.pessoaNome, 'pt-BR');
                       if (nome !== 0) return nome;
                       return ordemTipo[a.tipo] - ordemTipo[b.tipo];
@@ -730,6 +730,7 @@ export function CalculoFechar({
                         {l.tipo === 'gratificacao' && '🎁 Gratificação'}
                         {l.tipo === 'premiacao' && '🏆 Premiação'}
                         {l.tipo === 'transporte' && '🚗 Transporte'}
+                        {l.tipo === 'noturno' && '🌙 Adicional noturno'}
                       </td>
                       <td className="px-2 py-1.5 text-right font-mono">{brl(l.valorBruto)}</td>
                       <td className="px-2 py-1.5 text-right font-mono text-emerald-700">

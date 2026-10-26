@@ -51,6 +51,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     horas: Array.from(inputs.horasMap, ([fornecedorId, porDia]) => ({ fornecedorId, porDia })),
     ajustes: Object.fromEntries(inputs.ajustesMap),
     perdasPorDia: inputs.perdasPorDia,
+    noturno: inputs.noturno,
   });
 
   return NextResponse.json(resultado);
