@@ -6,6 +6,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import {
+  IDIOMAS_DELIVERY,
+  NOME_IDIOMA,
+  TXT_DELIVERY,
+  type IdiomaDelivery,
+  type TextosDelivery,
+} from '@/lib/delivery/idioma';
 
 interface OpcaoPergunta {
   id: string;
@@ -33,6 +40,9 @@ interface ItemCardapio {
   destaque: boolean;
   /** Perguntas que a casa faz depois da escolha (ponto, acompanhamento). */
   perguntas: PerguntaCardapio[];
+  /** Fora do português: nome e descrição originais, pra busca achar o prato
+   *  também pelo nome em português. */
+  buscaExtra?: string;
 }
 
 interface CategoriaCardapio {
@@ -79,6 +89,10 @@ interface Props {
   loja: LojaInfo;
   categorias: CategoriaCardapio[];
   agendaInicial: { dias: DiaAgenda[]; asapDisponivel: boolean };
+  /** Idioma da tela (?lang= da URL). Sem ele, português como sempre. */
+  lang?: IdiomaDelivery;
+  /** Algum texto do cardápio ainda sem tradução (sai em português). */
+  traducaoPendente?: boolean;
 }
 
 interface LinhaCarrinho {
@@ -132,19 +146,27 @@ function fmtCep(v: string): string {
   return `${d.slice(0, 5)}-${d.slice(5)}`;
 }
 
-function labelDia(d: DiaAgenda, idx: number): string {
-  if (idx === 0) return 'Hoje';
-  if (idx === 1) return 'Amanhã';
+function labelDia(d: DiaAgenda, idx: number, t: TextosDelivery = TXT_DELIVERY.pt): string {
+  if (idx === 0) return t.hoje;
+  if (idx === 1) return t.amanha;
   const [, m, dia] = d.data.split('-');
-  return `${DIAS_LABEL[d.diaSemana]} ${dia}/${m}`;
+  return `${(t.dias[d.diaSemana] ?? DIAS_LABEL[d.diaSemana])} ${dia}/${m}`;
 }
 
 const inp =
   'mt-1 w-full rounded-xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] px-3.5 py-2.5 text-base text-[var(--dlv-ink)] outline-none transition-colors placeholder:text-[var(--dlv-placeholder)] focus:border-[var(--dlv-accent)] focus:ring-2 focus:ring-[var(--dlv-accent)]/20 sm:text-sm';
 const lbl = 'text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--dlv-muted)]';
 
-export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props) {
+export function CardapioClient({
+  slug,
+  loja,
+  categorias,
+  agendaInicial,
+  lang = 'pt',
+  traducaoPendente = false,
+}: Props) {
   const router = useRouter();
+  const t = TXT_DELIVERY[lang];
   const [tela, setTela] = useState<'cardapio' | 'sacola'>('cardapio');
   const [carrinho, setCarrinho] = useState<LinhaCarrinho[]>([]);
   const [itemModal, setItemModal] = useState<ItemCardapio | null>(null);
@@ -250,6 +272,23 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
   const taxa = tipo === 'entrega' ? (frete?.ok ? frete.taxaCentavos : null) : 0;
   const total = subtotal - desconto + (taxa ?? 0);
   const minimoCentavos = loja.pedidoMinimo != null ? Math.round(loja.pedidoMinimo * 100) : 0;
+
+  // Fora do português a sacola mostra o nome do cardápio da tela (traduzido);
+  // em português segue o nome guardado na linha, como sempre foi.
+  const nomesCatalogo = useMemo(() => {
+    const itens = new Map<string, string>();
+    const opcoes = new Map<string, string>();
+    for (const c of categorias)
+      for (const i of c.itens) {
+        itens.set(i.id, i.nome);
+        for (const q of i.perguntas) for (const o of q.opcoes) opcoes.set(o.id, o.nome);
+      }
+    return { itens, opcoes };
+  }, [categorias]);
+  const nomeLinha = (l: LinhaCarrinho) =>
+    lang === 'pt' ? l.nome : (nomesCatalogo.itens.get(l.itemId) ?? l.nome);
+  const nomeOpcao = (o: OpcaoPergunta) =>
+    lang === 'pt' ? o.nome : (nomesCatalogo.opcoes.get(o.id) ?? o.nome);
 
   function addItem(
     item: ItemCardapio,
@@ -364,7 +403,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
       const d = (await r.json()) as CupomResult;
       setCupom(d);
     } catch {
-      setCupom({ ok: false, erro: 'Não consegui validar o cupom agora.', descontoCentavos: 0, freteGratis: false });
+      setCupom({ ok: false, erro: t.cupomFalha, descontoCentavos: 0, freteGratis: false });
     } finally {
       setCupomCarregando(false);
     }
@@ -413,17 +452,17 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
 
   async function fazerPedido() {
     setErro(null);
-    if (carrinho.length === 0) return setErro('Sua sacola está vazia.');
-    if (nome.trim().length < 2) return setErro('Informe seu nome.');
-    if (telefone.replace(/\D/g, '').length < 10) return setErro('Informe seu WhatsApp com DDD.');
+    if (carrinho.length === 0) return setErro(t.erroSacolaVazia);
+    if (nome.trim().length < 2) return setErro(t.informeNome);
+    if (telefone.replace(/\D/g, '').length < 10) return setErro(t.informeZap);
     if (tipo === 'entrega') {
       if (!rua.trim() || !numero.trim() || !bairro.trim())
-        return setErro('Preencha o endereço de entrega (rua, número e bairro).');
-      if (frete && !frete.ok) return setErro(frete.erro ?? 'Endereço fora da área de entrega.');
+        return setErro(t.preenchaEndereco);
+      if (frete && !frete.ok) return setErro((lang !== 'pt' && frete.foraDaArea ? null : frete.erro) ?? t.foraArea);
     }
-    if (!asap && (!diaSel || !horaSel)) return setErro('Escolha o dia e o horário.');
+    if (!asap && (!diaSel || !horaSel)) return setErro(t.escolhaDiaHora);
     if (minimoCentavos > 0 && subtotal < minimoCentavos)
-      return setErro(`Pedido mínimo de ${brl(minimoCentavos)} (sem contar a entrega).`);
+      return setErro(t.minimoErro(brl(minimoCentavos)));
 
     setEnviando(true);
     try {
@@ -462,9 +501,9 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
         return;
       }
       localStorage.removeItem(chaveCart);
-      router.push(`/delivery/pedido/${d.token}`);
+      router.push(`/delivery/pedido/${d.token}${lang !== 'pt' ? `?lang=${lang}` : ''}`);
     } catch {
-      setErro('Falha de conexão — tente de novo.');
+      setErro(t.falhaConexao);
       setEnviando(false);
     }
   }
@@ -478,7 +517,8 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
           itens: c.itens.filter(
             (i) =>
               i.nome.toLowerCase().includes(buscaNorm) ||
-              (i.descricao ?? '').toLowerCase().includes(buscaNorm),
+              (i.descricao ?? '').toLowerCase().includes(buscaNorm) ||
+              (i.buscaExtra ?? '').toLowerCase().includes(buscaNorm),
           ),
         }))
         .filter((c) => c.itens.length > 0)
@@ -486,10 +526,10 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
 
   const chipsGratis: string[] = [];
   if (loja.gratisAcimaDe != null && loja.gratisAcimaDe > 0)
-    chipsGratis.push(`🛵 Entrega grátis acima de ${brlNum(loja.gratisAcimaDe)}`);
+    chipsGratis.push(t.gratisAcima(brlNum(loja.gratisAcimaDe)));
   if (loja.gratisAteKm != null && loja.gratisAteKm > 0)
-    chipsGratis.push(`📍 Entrega grátis até ${loja.gratisAteKm} km`);
-  if (loja.gratisPrimeiraCompra) chipsGratis.push('🎉 Entrega grátis na 1ª compra');
+    chipsGratis.push(t.gratisKm(loja.gratisAteKm));
+  if (loja.gratisPrimeiraCompra) chipsGratis.push(t.gratisPrimeira);
 
   // ---------- SACOLA / CHECKOUT ----------
   if (tela === 'sacola') {
@@ -497,15 +537,18 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
     return (
       // No desktop vira duas colunas: formulário à esquerda, resumo fixo à
       // direita. No celular segue coluna única com a barra colada embaixo.
-      <main className="mx-auto w-full max-w-lg px-4 pb-40 pt-4 lg:max-w-5xl lg:px-8 lg:pb-10">
+      <main
+        lang={lang !== 'pt' ? lang : undefined}
+        className="mx-auto w-full max-w-lg px-4 pb-40 pt-4 lg:max-w-5xl lg:px-8 lg:pb-10"
+      >
         <button
           onClick={() => setTela('cardapio')}
           className="text-sm font-semibold text-[var(--dlv-strong)]"
         >
-          ◂ Voltar pro cardápio
+          {t.voltarCardapio}
         </button>
         <h1 className="mt-2 text-2xl text-[var(--dlv-ink)] lg:text-3xl" style={{ fontFamily: 'var(--dlv-display)' }}>
-          Sua sacola
+          {t.suaSacola}
         </h1>
         <div className="lg:grid lg:grid-cols-[1fr_22rem] lg:items-start lg:gap-6">
         <div>
@@ -513,16 +556,16 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
         {/* itens */}
         <section className="mt-4 rounded-2xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] p-4">
           {carrinho.length === 0 ? (
-            <p className="py-6 text-center text-sm text-[var(--dlv-muted)]">Sacola vazia.</p>
+            <p className="py-6 text-center text-sm text-[var(--dlv-muted)]">{t.sacolaVazia}</p>
           ) : (
             <ul className="divide-y divide-[var(--dlv-surface)]">
               {carrinho.map((l, idx) => (
                 <li key={`${l.itemId}-${idx}`} className="flex items-center gap-3 py-3">
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-semibold text-[var(--dlv-ink)]">{l.nome}</p>
+                    <p className="truncate text-sm font-semibold text-[var(--dlv-ink)]">{nomeLinha(l)}</p>
                     {l.complementos.length > 0 ? (
                       <p className="text-xs text-[var(--dlv-muted)]">
-                        + {l.complementos.map((c) => c.nome).join(', ')}
+                        + {l.complementos.map((c) => nomeOpcao(c)).join(', ')}
                       </p>
                     ) : null}
                     {l.obs ? <p className="truncate text-xs text-[var(--dlv-muted)]">{l.obs}</p> : null}
@@ -532,7 +575,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                     <button
                       onClick={() => mudarQtd(idx, -1)}
                       className="h-8 w-8 rounded-full border border-[var(--dlv-card-line)] text-[var(--dlv-strong)]"
-                      aria-label="menos"
+                      aria-label={t.menos}
                     >
                       −
                     </button>
@@ -542,7 +585,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                     <button
                       onClick={() => mudarQtd(idx, 1)}
                       className="h-8 w-8 rounded-full border border-[var(--dlv-card-line)] text-[var(--dlv-strong)]"
-                      aria-label="mais"
+                      aria-label={t.mais}
                     >
                       +
                     </button>
@@ -555,7 +598,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
 
         {/* cupom */}
         <section className="mt-3 rounded-2xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] p-4">
-          <p className={lbl}>Cupom promocional</p>
+          <p className={lbl}>{t.cupomPromocional}</p>
           <div className="mt-1 flex gap-2">
             <input
               value={cupomCodigo}
@@ -563,7 +606,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                 setCupomCodigo(e.target.value.toUpperCase());
                 if (cupom) setCupom(null);
               }}
-              placeholder="Ex: PRAINHA10"
+              placeholder={t.cupomEx}
               className={`${inp} mt-0 flex-1 uppercase`}
             />
             <button
@@ -571,7 +614,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
               disabled={cupomCarregando || !cupomCodigo.trim()}
               className="rounded-xl bg-[var(--dlv-escuro)] px-4 text-sm font-semibold text-[var(--dlv-accent-ink)] disabled:opacity-50"
             >
-              {cupomCarregando ? '...' : 'Aplicar'}
+              {cupomCarregando ? '...' : t.aplicar}
             </button>
           </div>
           {cupom?.ok ? (
@@ -585,7 +628,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
 
         {/* entrega ou retirada */}
         <section className="mt-3 rounded-2xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] p-4">
-          <p className={lbl}>Como você quer receber?</p>
+          <p className={lbl}>{t.comoReceber}</p>
           <div className="mt-2 grid grid-cols-2 gap-2">
             {loja.entregaAtiva ? (
               <button
@@ -596,7 +639,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                     : 'border-[var(--dlv-card-line)] text-[var(--dlv-muted)]'
                 }`}
               >
-                🛵 Entrega
+                {t.entrega}
               </button>
             ) : null}
             {loja.retiradaAtiva ? (
@@ -608,7 +651,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                     : 'border-[var(--dlv-card-line)] text-[var(--dlv-muted)]'
                 }`}
               >
-                🏖️ Retirar no balcão
+                {t.retirar}
               </button>
             ) : null}
           </div>
@@ -617,7 +660,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
             <div className="mt-3 space-y-3">
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className={lbl}>CEP {buscandoCep ? '(buscando…)' : ''}</label>
+                  <label className={lbl}>{t.cep} {buscandoCep ? t.buscando : ''}</label>
                   <input
                     value={cep}
                     onChange={(e) => setCep(fmtCep(e.target.value))}
@@ -628,7 +671,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                   />
                 </div>
                 <div>
-                  <label className={lbl}>Número</label>
+                  <label className={lbl}>{t.numero}</label>
                   <input
                     value={numero}
                     onChange={(e) => setNumero(e.target.value)}
@@ -638,36 +681,36 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                 </div>
               </div>
               <div>
-                <label className={lbl}>Rua</label>
+                <label className={lbl}>{t.rua}</label>
                 <input value={rua} onChange={(e) => setRua(e.target.value)} className={inp} />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className={lbl}>Bairro</label>
+                  <label className={lbl}>{t.bairro}</label>
                   <input value={bairro} onChange={(e) => setBairro(e.target.value)} className={inp} />
                 </div>
                 <div>
-                  <label className={lbl}>Complemento</label>
+                  <label className={lbl}>{t.complemento}</label>
                   <input
                     value={complemento}
                     onChange={(e) => setComplemento(e.target.value)}
-                    placeholder="Apto, bloco…"
+                    placeholder={t.complementoEx}
                     className={inp}
                   />
                 </div>
               </div>
               <div>
-                <label className={lbl}>Ponto de referência</label>
+                <label className={lbl}>{t.referencia}</label>
                 <input
                   value={referencia}
                   onChange={(e) => setReferencia(e.target.value)}
-                  placeholder="Ex: portão azul"
+                  placeholder={t.referenciaEx}
                   className={inp}
                 />
               </div>
 
               {freteCarregando ? (
-                <p className="text-xs text-[var(--dlv-muted)]">Calculando a taxa de entrega…</p>
+                <p className="text-xs text-[var(--dlv-muted)]">{t.calculandoTaxa}</p>
               ) : frete ? (
                 frete.ok ? (
                   <div
@@ -679,7 +722,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                   >
                     {frete.gratis ? (
                       <>
-                        {frete.motivoLabel ?? 'Entrega grátis'}{' '}
+                        {(lang === 'pt' ? frete.motivoLabel : null) ?? t.entregaGratis}{' '}
                         {frete.taxaCheiaCentavos > 0 ? (
                           <span className="ml-1 text-xs font-normal line-through opacity-60">
                             {brl(frete.taxaCheiaCentavos)}
@@ -687,7 +730,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                         ) : null}
                       </>
                     ) : (
-                      <>Taxa de entrega: {brl(frete.taxaCentavos)}</>
+                      <>{t.taxaEntrega} {brl(frete.taxaCentavos)}</>
                     )}
                     {frete.distanciaKm != null ? (
                       <span className="ml-1 text-xs font-normal text-[var(--dlv-muted)]">
@@ -697,7 +740,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                   </div>
                 ) : (
                   <div className="rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">
-                    {frete.erro}
+                    {lang !== 'pt' && frete.foraDaArea ? t.foraArea : frete.erro}
                   </div>
                 )
               ) : null}
@@ -707,7 +750,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
 
         {/* agendamento */}
         <section className="mt-3 rounded-2xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] p-4">
-          <p className={lbl}>{tipo === 'entrega' ? 'Quando entregar?' : 'Quando retirar?'}</p>
+          <p className={lbl}>{tipo === 'entrega' ? t.quandoEntregar : t.quandoRetirar}</p>
           {agenda.asapDisponivel ? (
             <button
               onClick={() => setAsap(true)}
@@ -715,7 +758,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                 asap ? 'border-[var(--dlv-accent)] bg-[var(--dlv-accent)]/10 text-[var(--dlv-strong)]' : 'border-[var(--dlv-card-line)] text-[var(--dlv-muted)]'
               }`}
             >
-              ⚡ O quanto antes
+              {t.oQuantoAntes}
               {loja.tempoPreparoMin != null && loja.tempoPreparoMax != null ? (
                 <span className="ml-1 font-normal">
                   (~{loja.tempoPreparoMin}–{loja.tempoPreparoMax} min)
@@ -724,7 +767,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
             </button>
           ) : (
             <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              Estamos fechados agora — agende seu pedido pra um horário aberto. 👇
+              {t.fechadoAgende}
             </p>
           )}
           <button
@@ -733,7 +776,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
               !asap ? 'border-[var(--dlv-accent)] bg-[var(--dlv-accent)]/10 text-[var(--dlv-strong)]' : 'border-[var(--dlv-card-line)] text-[var(--dlv-muted)]'
             }`}
           >
-            📅 Agendar dia e hora
+            {t.agendar}
           </button>
 
           {!asap ? (
@@ -755,7 +798,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                           : 'bg-[var(--dlv-card)] text-[var(--dlv-text)] ring-1 ring-[var(--dlv-card-line)]'
                     }`}
                   >
-                    {labelDia(d, idx)}
+                    {labelDia(d, idx, t)}
                   </button>
                 ))}
               </div>
@@ -777,10 +820,10 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                     ))}
                   </div>
                 ) : (
-                  <p className="mt-2 text-xs text-[var(--dlv-muted)]">Sem horários nesse dia.</p>
+                  <p className="mt-2 text-xs text-[var(--dlv-muted)]">{t.semHorarios}</p>
                 )
               ) : (
-                <p className="mt-2 text-xs text-[var(--dlv-muted)]">Escolha um dia acima.</p>
+                <p className="mt-2 text-xs text-[var(--dlv-muted)]">{t.escolhaDia}</p>
               )}
             </div>
           ) : null}
@@ -788,12 +831,12 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
 
         {/* dados do cliente */}
         <section className="mt-3 rounded-2xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] p-4">
-          <p className={lbl}>Seus dados</p>
+          <p className={lbl}>{t.seusDados}</p>
           <div className="mt-2 space-y-3">
             {/* CPF na frente: é ele que diz quem é a pessoa. Achando o
                 cadastro, nome e WhatsApp já vêm preenchidos. */}
             <div>
-              <label className={lbl}>CPF</label>
+              <label className={lbl}>{t.cpf}</label>
               <input
                 value={cpf}
                 onChange={(e) => {
@@ -803,23 +846,23 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                   else setReconhecido(null);
                 }}
                 inputMode="numeric"
-                placeholder="Só os números"
+                placeholder={t.soNumeros}
                 className={inp}
               />
               <p className="mt-1 text-[11px] text-[var(--dlv-muted)]">
                 {identificando
-                  ? 'Procurando seu cadastro…'
+                  ? t.procurando
                   : reconhecido
-                    ? `Achamos seu cadastro, ${reconhecido}! Confira os dados abaixo.`
-                    : 'Com o CPF a gente já reconhece você e preenche o resto.'}
+                    ? t.achamos(reconhecido)
+                    : t.cpfDica}
               </p>
             </div>
             <div>
-              <label className={lbl}>Nome</label>
+              <label className={lbl}>{t.nome}</label>
               <input value={nome} onChange={(e) => setNome(e.target.value)} className={inp} />
             </div>
             <div>
-              <label className={lbl}>WhatsApp</label>
+              <label className={lbl}>{t.whatsapp}</label>
               <input
                 value={telefone}
                 onChange={(e) => setTelefone(fmtTelefone(e.target.value))}
@@ -829,11 +872,11 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
               />
             </div>
             <div>
-              <label className={lbl}>Observação do pedido</label>
+              <label className={lbl}>{t.observacaoPedido}</label>
               <input
                 value={observacao}
                 onChange={(e) => setObservacao(e.target.value)}
-                placeholder="Ex: tirar a cebola"
+                placeholder={t.obsEx}
                 className={inp}
               />
             </div>
@@ -842,7 +885,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
 
         {/* pagamento */}
         <section className="mt-3 rounded-2xl border border-[var(--dlv-card-line)] bg-[var(--dlv-card)] p-4">
-          <p className={lbl}>{naEntregaDisponivel ? 'Pagamento' : 'Pagamento — 100% online e seguro'}</p>
+          <p className={lbl}>{naEntregaDisponivel ? t.pagamento : t.pagamentoOnline}</p>
           <div className={`mt-2 grid gap-2 ${naEntregaDisponivel ? 'grid-cols-3' : 'grid-cols-2'}`}>
             {loja.pixAtivo ? (
               <button
@@ -853,7 +896,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                     : 'border-[var(--dlv-card-line)] text-[var(--dlv-muted)]'
                 }`}
               >
-                ⚡ Pix
+                {t.pix}
               </button>
             ) : null}
             {loja.cartaoAtivo ? (
@@ -865,7 +908,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                     : 'border-[var(--dlv-card-line)] text-[var(--dlv-muted)]'
                 }`}
               >
-                💳 Cartão
+                {t.cartao}
               </button>
             ) : null}
             {naEntregaDisponivel ? (
@@ -877,14 +920,14 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                     : 'border-[var(--dlv-card-line)] text-[var(--dlv-muted)]'
                 }`}
               >
-                🛵 Na entrega
+                {t.naEntrega}
               </button>
             ) : null}
           </div>
           <p className="mt-2 text-xs text-[var(--dlv-muted)]">
             {pagamento === 'na_entrega'
-              ? 'Você paga na porta: cartão ou Pix na maquininha do entregador, ou dinheiro. O pedido já vai pra cozinha.'
-              : 'O pedido só vai pra cozinha depois do pagamento aprovado.'}
+              ? t.notaNaEntrega
+              : t.notaOnline}
           </p>
         </section>
 
@@ -894,30 +937,30 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
         <div className="fixed inset-x-0 bottom-0 border-t border-[var(--dlv-card-line)] bg-[var(--dlv-accent-ink)]/95 p-4 backdrop-blur lg:sticky lg:top-6 lg:mt-4 lg:rounded-2xl lg:border lg:border-[var(--dlv-card-line)] lg:bg-[var(--dlv-card)] lg:p-5 lg:backdrop-blur-none">
           <div className="mx-auto w-full max-w-lg lg:max-w-none">
             <div className="flex justify-between text-sm text-[var(--dlv-text)]">
-              <span>Subtotal</span>
+              <span>{t.subtotal}</span>
               <span>{brl(subtotal)}</span>
             </div>
             {desconto > 0 ? (
               <div className="flex justify-between text-sm text-emerald-700">
-                <span>Cupom {cupom?.codigo}</span>
+                <span>{t.cupom} {cupom?.codigo}</span>
                 <span>− {brl(desconto)}</span>
               </div>
             ) : null}
             {tipo === 'entrega' ? (
               <div className="flex justify-between text-sm text-[var(--dlv-text)]">
-                <span>Entrega</span>
+                <span>{t.entregaResumo}</span>
                 <span>
-                  {taxa == null ? '—' : taxa === 0 ? 'Grátis 🎉' : brl(taxa)}
+                  {taxa == null ? '—' : taxa === 0 ? t.gratisResumo : brl(taxa)}
                 </span>
               </div>
             ) : null}
             <div className="mt-1 flex justify-between text-base font-bold text-[var(--dlv-ink)]">
-              <span>Total</span>
+              <span>{t.total}</span>
               <span>{brl(total)}</span>
             </div>
             {minimoCentavos > 0 && subtotal < minimoCentavos ? (
               <p className="mt-1 text-xs text-amber-800">
-                Pedido mínimo de {brl(minimoCentavos)} — falta {brl(minimoCentavos - subtotal)}.
+                {t.minimoFalta(brl(minimoCentavos), brl(minimoCentavos - subtotal))}
               </p>
             ) : null}
             {erro ? <p className="mt-1 text-xs font-semibold text-rose-700">{erro}</p> : null}
@@ -927,10 +970,10 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
               className="mt-2 w-full rounded-full bg-[var(--dlv-accent)] px-4 py-3.5 text-sm font-semibold text-[var(--dlv-accent-ink)] shadow-[0_14px_30px_-12px_rgba(231,114,58,0.85)] transition-all hover:bg-[var(--dlv-accent-hover)] disabled:opacity-50"
             >
               {enviando
-                ? 'Enviando…'
+                ? t.enviando
                 : pagamento === 'pix'
-                  ? 'Fazer pedido e pagar com Pix'
-                  : 'Fazer pedido e pagar com cartão'}
+                  ? t.pedirPix
+                  : t.pedirCartao}
             </button>
           </div>
         </div>
@@ -941,21 +984,45 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
 
   // ---------- CARDÁPIO ----------
   return (
-    <main className="pb-28">
+    <main className="pb-28" lang={lang !== 'pt' ? lang : undefined}>
       {/* cabeçalho golden hour */}
       <header
-        className="px-4 pb-5 pt-6 text-center lg:pb-8 lg:pt-10"
+        className="relative px-4 pb-5 pt-6 text-center lg:pb-8 lg:pt-10"
         style={{
           background:
             'var(--dlv-capa)',
         }}
       >
+        {/* troca de idioma: recarrega a página com ?lang= (a sacola fica no
+            aparelho e volta igual) */}
+        <nav
+          aria-label={t.idioma}
+          className="mb-3 flex flex-wrap items-center justify-center gap-1 lg:absolute lg:right-6 lg:top-4 lg:mb-0"
+        >
+          {IDIOMAS_DELIVERY.map((l) => (
+            <a
+              key={l}
+              href={l === 'pt' ? '?' : `?lang=${l}`}
+              hrefLang={l}
+              lang={l}
+              title={NOME_IDIOMA[l]}
+              aria-current={l === lang ? 'true' : undefined}
+              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] transition-opacity ${
+                l === lang
+                  ? 'bg-[var(--dlv-gold)]/25 text-[var(--dlv-accent-ink)]'
+                  : 'text-[var(--dlv-linha-suave)] hover:opacity-70'
+              }`}
+            >
+              {l}
+            </a>
+          ))}
+        </nav>
         {loja.siteUrl ? (
           <a
             href={loja.siteUrl}
             className="mb-4 block text-xs tracking-[0.2em] text-[var(--dlv-linha-suave)] transition-opacity hover:opacity-70"
           >
-            ◂ VOLTAR AO SITE
+            {t.voltarSite}
           </a>
         ) : null}
         <span
@@ -971,15 +1038,15 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
         <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
           {loja.pausado ? (
             <span className="rounded-full bg-rose-100 px-3 py-1 text-xs font-semibold text-rose-700">
-              ⏸ Pausado agora — volte já já
+              {t.pausado}
             </span>
           ) : loja.abertaAgora ? (
             <span className="rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800">
-              ● Aberto — pedindo agora
+              {t.aberto}
             </span>
           ) : (
             <span className="rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-800">
-              🌙 Fechado agora — agende seu pedido
+              {t.fechado}
             </span>
           )}
         </div>
@@ -1003,12 +1070,16 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
         </div>
       ) : null}
 
+      {traducaoPendente ? (
+        <p className="px-4 pt-3 text-center text-[11px] text-[var(--dlv-muted)]">{t.traducaoPendente}</p>
+      ) : null}
+
       {/* busca */}
       <div className="mx-auto w-full max-w-lg px-4 pt-4 lg:max-w-5xl lg:px-8">
         <input
           value={busca}
           onChange={(e) => setBusca(e.target.value)}
-          placeholder="🔎 Buscar no cardápio…"
+          placeholder={t.buscar}
           className={`${inp} mt-0 lg:mx-auto lg:max-w-xl`}
         />
       </div>
@@ -1017,7 +1088,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
       {destaques.length > 0 && !buscaNorm ? (
         <section className="mx-auto w-full max-w-lg px-4 pt-4 lg:max-w-5xl lg:px-8">
           <h2 className="text-sm font-bold uppercase tracking-[0.14em] text-[var(--dlv-nota)]">
-            ⭐ Destaques
+            {t.destaques}
           </h2>
           <div className="mt-2 flex gap-3 overflow-x-auto pb-1 lg:grid lg:grid-cols-5 lg:overflow-visible">
             {destaques.map((i) => (
@@ -1051,7 +1122,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
       <div className="mx-auto w-full max-w-lg px-4 lg:max-w-5xl lg:px-8">
         {categoriasVisiveis.length === 0 ? (
           <p className="py-16 text-center text-sm text-[var(--dlv-muted)]">
-            {buscaNorm ? 'Nada encontrado com essa busca.' : 'Cardápio em montagem — volte logo!'}
+            {buscaNorm ? t.nadaEncontrado : t.emMontagem}
           </p>
         ) : (
           categoriasVisiveis.map((cat) => (
@@ -1090,7 +1161,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                           {brl(i.precoCentavos)}
                           {i.esgotado ? (
                             <span className="ml-2 rounded-full bg-rose-100 px-2 py-0.5 text-[10px] font-semibold text-rose-700">
-                              Esgotado
+                              {t.esgotado}
                             </span>
                           ) : null}
                         </p>
@@ -1113,14 +1184,14 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
 
         {loja.whatsapp ? (
           <p className="pb-4 pt-8 text-center text-xs text-[var(--dlv-muted)]">
-            Dúvidas?{' '}
+            {t.duvidas}{' '}
             <a
               href={`https://wa.me/${loja.whatsapp}`}
               target="_blank"
               rel="noreferrer"
               className="font-semibold text-[var(--dlv-strong)] underline"
             >
-              Chama no WhatsApp
+              {t.chamaZap}
             </a>
           </p>
         ) : null}
@@ -1134,7 +1205,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
               onClick={() => void abrirSacola()}
               className="w-full rounded-full bg-[var(--dlv-accent)] px-5 py-3.5 text-sm font-semibold text-[var(--dlv-accent-ink)] shadow-[0_14px_30px_-12px_rgba(231,114,58,0.85)] transition-all hover:bg-[var(--dlv-accent-hover)]"
             >
-              Ver sacola ({qtdTotal}) · {brl(subtotal)}
+              {t.verSacola(qtdTotal, brl(subtotal))}
             </button>
           </div>
         </div>
@@ -1180,8 +1251,8 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                       }`}
                     >
                       {obrigatoria
-                        ? `obrigatório · escolha ${q.min}${q.max > q.min ? ` a ${q.max}` : ''}`
-                        : 'opcional'}
+                        ? t.obrigatorio(q.min, q.max)
+                        : t.opcional}
                     </span>
                   </div>
                   <ul className="mt-2 max-h-52 space-y-1 overflow-y-auto pr-1">
@@ -1224,7 +1295,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                                   : 'text-[var(--dlv-muted)]'
                               }`}
                             >
-                              {o.precoCentavos > 0 ? `+ ${brl(o.precoCentavos)}` : 'grátis'}
+                              {o.precoCentavos > 0 ? `+ ${brl(o.precoCentavos)}` : t.gratisOpcao}
                             </span>
                           </label>
                         </li>
@@ -1236,11 +1307,11 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
             })}
 
             <div className="mt-3">
-              <label className={lbl}>Alguma observação?</label>
+              <label className={lbl}>{t.algumaObs}</label>
               <input
                 value={modalObs}
                 onChange={(e) => setModalObs(e.target.value.slice(0, 200))}
-                placeholder="Ex: sem cebola"
+                placeholder={t.obsItemEx}
                 className={inp}
               />
             </div>
@@ -1273,7 +1344,7 @@ export function CardapioClient({ slug, loja, categorias, agendaInicial }: Props)
                 }}
                 className="flex-1 rounded-full bg-[var(--dlv-accent)] px-4 py-3 text-sm font-semibold text-[var(--dlv-accent-ink)] shadow-[0_14px_30px_-12px_rgba(231,114,58,0.85)] hover:bg-[var(--dlv-accent-hover)] disabled:opacity-40"
               >
-                Adicionar ·{' '}
+                {t.adicionar}{' '}
                 {brl(
                   (itemModal.precoCentavos +
                     itemModal.perguntas

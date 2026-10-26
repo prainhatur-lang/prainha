@@ -3,6 +3,7 @@
 // o resto (sacola, endereço, agendamento, cupom, pagamento) é o client.
 
 import { notFound } from 'next/navigation';
+import { after } from 'next/server';
 import { ZapFlutuante } from '@/components/zap-flutuante';
 import { headers } from 'next/headers';
 import { db, schema } from '@concilia/db';
@@ -11,8 +12,14 @@ import { lojaDeliveryPorSlug, abertaAgora, agendaDelivery } from '@/lib/delivery
 import { saldosDasVariantes, semDisponibilidade } from '@/lib/delivery/estoque';
 import { CardapioClient } from './cardapio-client';
 import { temaDeliveryDaFilial, estiloTemaDelivery } from '@/lib/tema-delivery';
+import { idiomaDe, TXT_DELIVERY } from '@/lib/delivery/idioma';
+import { MAX_CHARS, preencherTraducoes, traducoesSalvas } from '@/lib/traduzir-cardapio';
 
 export const dynamic = 'force-dynamic';
+// Fora do português a página pede à IA, depois de responder, a tradução dos
+// textos do cardápio que ainda não estão guardados (um cardápio inteiro leva
+// uns minutos na primeira vez).
+export const maxDuration = 300;
 
 // Idem reserva: o title do layout do delivery é só "Delivery", genérico pras
 // duas casas. Aqui já se sabe qual é a loja — a aba passa a dizer o nome dela.
@@ -25,8 +32,11 @@ export async function generateMetadata(props: { params: Promise<{ slug: string }
 
 export default async function DeliveryLojaPage(props: {
   params: Promise<{ slug: string }>;
+  searchParams: Promise<{ lang?: string | string[] }>;
 }) {
   const { slug } = await props.params;
+  // ?lang=en|es|fr|it (vem do site prainhabar.com/es/delivery...). Sem ele, português.
+  const lang = idiomaDe((await props.searchParams).lang);
   const loja = await lojaDeliveryPorSlug(slug);
   if (!loja) notFound();
 
@@ -115,6 +125,91 @@ export default async function DeliveryLojaPage(props: {
   const { dias, asapDisponivel } = agendaDelivery(loja.config);
   const c = loja.config;
 
+  const categoriasPt = categorias.map((cat) => ({
+    ...cat,
+    itens: itens
+      .filter((i) => i.categoriaId === cat.id)
+      .map((i) => ({
+        id: i.id,
+        nome: i.nome,
+        descricao: i.descricao,
+        precoCentavos: Math.round(Number(i.preco) * 100),
+        fotoUrl: i.fotoUrl,
+        esgotado: semDisponibilidade(i, saldos),
+        destaque: i.destaque,
+        perguntas: perguntas
+          .filter((q) => q.itemId === i.id)
+          .map((q) => ({
+            codigo: q.perguntaCodigo,
+            texto: q.texto ?? 'Escolha uma opção',
+            // max 0 no Consumer = sem limite de respostas.
+            min: q.min ?? 0,
+            max: q.max ?? 0,
+            opcoes: opcoesWizard
+              .filter((o) => o.perguntaCodigo === q.perguntaCodigo)
+              .map((o) => ({
+                id: o.id,
+                nome: o.nome ?? '',
+                precoCentavos: Math.round(Number(o.preco) * 100),
+              }))
+              .filter((o) => o.nome),
+          }))
+          .filter((q) => q.opcoes.length > 0),
+      })),
+  }));
+
+  // Outro idioma: troca cada texto do cardápio pela tradução guardada em
+  // traducao_texto; o que ainda não tem tradução sai em português e é pedido à
+  // IA depois da resposta (after), pra próxima visita já vir traduzida.
+  // Em português nada disso roda — a página é a mesma de sempre.
+  let categoriasTela = categoriasPt;
+  let subtitulo = c.subtitulo ?? null;
+  let avisoTopo = c.avisoTopo ?? null;
+  let traducaoPendente = false;
+  if (lang !== 'pt') {
+    const textos: string[] = [];
+    for (const cat of categoriasPt) {
+      textos.push(cat.nome);
+      for (const i of cat.itens) {
+        textos.push(i.nome);
+        if (i.descricao) textos.push(i.descricao);
+        for (const q of i.perguntas) {
+          textos.push(q.texto);
+          for (const o of q.opcoes) textos.push(o.nome);
+        }
+      }
+    }
+    if (subtitulo) textos.push(subtitulo);
+    if (avisoTopo) textos.push(avisoTopo);
+    const mapa = await traducoesSalvas(textos, lang).catch(() => new Map<string, string>());
+    const tr = (t: string) => mapa.get(t.trim()) ?? t;
+    categoriasTela = categoriasPt.map((cat) => ({
+      ...cat,
+      nome: tr(cat.nome),
+      itens: cat.itens.map((i) => ({
+        ...i,
+        nome: tr(i.nome),
+        descricao: i.descricao ? tr(i.descricao) : i.descricao,
+        // a busca acha o prato também pelo nome em português
+        buscaExtra: `${i.nome} ${i.descricao ?? ''}`,
+        perguntas: i.perguntas.map((q) => ({
+          ...q,
+          texto: tr(q.texto),
+          opcoes: q.opcoes.map((o) => ({ ...o, nome: tr(o.nome) })),
+        })),
+      })),
+    }));
+    if (subtitulo) subtitulo = tr(subtitulo);
+    if (avisoTopo) avisoTopo = tr(avisoTopo);
+    const faltando = [...new Set(textos.map((t) => t.trim()))].filter(
+      (t) => t && t.length <= MAX_CHARS && !mapa.has(t),
+    );
+    if (faltando.length) {
+      traducaoPendente = true;
+      after(() => preencherTraducoes(faltando));
+    }
+  }
+
   // O delivery da Tabuará não pode abrir na cara do Prainha — é a mesma marca
   // que o cliente acabou de ver no site. Aqui a paleta e o par de fontes.
   const tema = temaDeliveryDaFilial(loja.nome);
@@ -130,8 +225,8 @@ export default async function DeliveryLojaPage(props: {
       slug={slug}
       loja={{
         titulo: c.titulo ?? loja.nome,
-        subtitulo: c.subtitulo ?? null,
-        avisoTopo: c.avisoTopo ?? null,
+        subtitulo,
+        avisoTopo,
         whatsapp: c.whatsapp ?? null,
         pausado: c.pausado === true,
         abertaAgora: abertaAgora(c),
@@ -150,41 +245,17 @@ export default async function DeliveryLojaPage(props: {
         uf: c.endereco?.uf ?? 'SE',
         siteUrl,
       }}
-      categorias={categorias.map((cat) => ({
-        ...cat,
-        itens: itens
-          .filter((i) => i.categoriaId === cat.id)
-          .map((i) => ({
-            id: i.id,
-            nome: i.nome,
-            descricao: i.descricao,
-            precoCentavos: Math.round(Number(i.preco) * 100),
-            fotoUrl: i.fotoUrl,
-            esgotado: semDisponibilidade(i, saldos),
-            destaque: i.destaque,
-            perguntas: perguntas
-              .filter((q) => q.itemId === i.id)
-              .map((q) => ({
-                codigo: q.perguntaCodigo,
-                texto: q.texto ?? 'Escolha uma opção',
-                // max 0 no Consumer = sem limite de respostas.
-                min: q.min ?? 0,
-                max: q.max ?? 0,
-                opcoes: opcoesWizard
-                  .filter((o) => o.perguntaCodigo === q.perguntaCodigo)
-                  .map((o) => ({
-                    id: o.id,
-                    nome: o.nome ?? '',
-                    precoCentavos: Math.round(Number(o.preco) * 100),
-                  }))
-                  .filter((o) => o.nome),
-              }))
-              .filter((q) => q.opcoes.length > 0),
-          })),
-      }))}
+      categorias={categoriasTela}
       agendaInicial={{ dias, asapDisponivel }}
+      lang={lang}
+      traducaoPendente={traducaoPendente}
     />
-    <ZapFlutuante filialId={loja.filialId} assunto="Tenho uma dúvida sobre o delivery." acimaDaBarra />
+    <ZapFlutuante
+      filialId={loja.filialId}
+      assunto={TXT_DELIVERY[lang].assuntoZap}
+      acimaDaBarra
+      lang={lang}
+    />
     </div>
   );
 }
