@@ -270,6 +270,7 @@ export default async function FichaFuncionarioPage(props: { params: Promise<{ id
       descricao: schema.funcionarioDocumento.descricao,
       arquivoNome: schema.funcionarioDocumento.arquivoNome,
       criadoEm: schema.funcionarioDocumento.criadoEm,
+      contaPagarId: schema.funcionarioDocumento.contaPagarId,
     })
     .from(schema.funcionarioDocumento)
     .where(and(eq(schema.funcionarioDocumento.funcionarioId, f.id), isNull(schema.funcionarioDocumento.canceladoEm)))

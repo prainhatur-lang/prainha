@@ -15,6 +15,7 @@ import {
   DOCS_ADMISSAO,
   DOCS_DESLIGAMENTO,
   MOTIVOS_SAIDA,
+  TIPOS_DOC_RESCISAO,
   faltando,
   type MomentoDoc,
   type TipoDoc,
@@ -27,6 +28,8 @@ export interface DocVinculo {
   descricao: string | null;
   arquivoNome: string | null;
   criadoEm: string;
+  /** Conta a pagar da rescisão lançada a partir deste termo (26/10/2026). */
+  contaPagarId?: string | null;
 }
 
 async function chamar(body: Record<string, unknown>) {
@@ -319,6 +322,14 @@ function LinhaTipo(props: {
                 tirar
               </button>
             )}
+            {TIPOS_DOC_RESCISAO.includes(tipo.tipo) &&
+              (a.contaPagarId ? (
+                <a href={`/financeiro/conta/${a.contaPagarId}`} className="ml-2 text-emerald-700 hover:underline">
+                  ✓ conta a pagar lançada
+                </a>
+              ) : (
+                props.pode && <LancarRescisao documentoId={a.id} />
+              ))}
           </p>
         ))}
       </div>
@@ -346,5 +357,143 @@ function LinhaTipo(props: {
         </>
       )}
     </li>
+  );
+}
+
+// Lê o termo de rescisão pela IA e lança a conta a pagar (lib/rh/rescisao.ts).
+function LancarRescisao({ documentoId }: { documentoId: string }) {
+  const router = useRouter();
+  const [estado, setEstado] = useState<'fechado' | 'lendo' | 'form' | 'salvando'>('fechado');
+  const [erro, setErro] = useState<string | null>(null);
+  const [avisos, setAvisos] = useState<string[]>([]);
+  const [valor, setValor] = useState('');
+  const [venc, setVenc] = useState('');
+  const [desc, setDesc] = useState('');
+  const [info, setInfo] = useState<string | null>(null);
+
+  async function post(body: Record<string, unknown>) {
+    const r = await fetch('/api/rh/rescisao', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error ?? `erro ${r.status}`);
+    return j;
+  }
+
+  async function ler() {
+    setErro(null);
+    setEstado('lendo');
+    try {
+      const j = await post({ acao: 'ler', documentoId });
+      setValor(j.proposta.valor != null ? String(j.proposta.valor.toFixed(2)).replace('.', ',') : '');
+      setVenc(j.proposta.vencimento ?? '');
+      setDesc(j.proposta.descricao ?? '');
+      setAvisos(j.avisos ?? []);
+      const l = j.lida ?? {};
+      const partes = [
+        l.causa,
+        l.dataAfastamento ? `afastamento ${String(l.dataAfastamento).split('-').reverse().join('/')}` : null,
+        l.bruto != null ? `bruto R$ ${Number(l.bruto).toFixed(2).replace('.', ',')}` : null,
+        l.descontos != null ? `descontos R$ ${Number(l.descontos).toFixed(2).replace('.', ',')}` : null,
+      ].filter(Boolean);
+      setInfo(partes.length ? partes.join(' · ') : null);
+      setEstado('form');
+    } catch (e) {
+      setErro(e instanceof Error ? e.message : String(e));
+      setEstado('fechado');
+    }
+  }
+
+  async function lancar() {
+    const v = Number(valor.replace(/\./g, '').replace(',', '.'));
+    if (!Number.isFinite(v) || v <= 0) return setErro('valor inválido');
+    if (!venc) return setErro('falta o vencimento');
+    setErro(null);
+    setEstado('salvando');
+    try {
+      await post({ acao: 'lancar', documentoId, valor: v, vencimento: venc, descricao: desc.trim() || undefined });
+      router.refresh();
+    } catch (e) {
+      setErro(e instanceof Error ? e.message : String(e));
+      setEstado('form');
+    }
+  }
+
+  if (estado === 'fechado' || estado === 'lendo') {
+    return (
+      <>
+        <button
+          type="button"
+          disabled={estado === 'lendo'}
+          onClick={ler}
+          className="ml-2 rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
+        >
+          {estado === 'lendo' ? 'Lendo o termo…' : '💰 Lançar pagamento da rescisão'}
+        </button>
+        {erro && <span className="ml-2 text-red-600">{erro}</span>}
+      </>
+    );
+  }
+
+  return (
+    <span className="mt-2 block rounded-md border border-emerald-200 bg-emerald-50/50 p-3 text-slate-700">
+      <span className="block text-xs font-semibold text-slate-900">Conta a pagar da rescisão</span>
+      {info && <span className="mt-0.5 block text-[11px] text-slate-600">Lido do termo: {info}</span>}
+      {avisos.map((a) => (
+        <span key={a} className="mt-0.5 block text-[11px] text-amber-700">⚠ {a}</span>
+      ))}
+      <span className="mt-2 flex flex-wrap items-end gap-2">
+        <label className="text-[11px] text-slate-600">
+          Líquido (R$)
+          <input
+            value={valor}
+            onChange={(e) => setValor(e.target.value)}
+            inputMode="decimal"
+            className="mt-0.5 block w-28 rounded border border-slate-300 px-2 py-1 text-sm"
+          />
+        </label>
+        <label className="text-[11px] text-slate-600">
+          Vencimento
+          <input
+            type="date"
+            value={venc}
+            onChange={(e) => setVenc(e.target.value)}
+            className="mt-0.5 block rounded border border-slate-300 px-2 py-1 text-sm"
+          />
+        </label>
+        <label className="min-w-[180px] flex-1 text-[11px] text-slate-600">
+          Descrição
+          <input
+            value={desc}
+            onChange={(e) => setDesc(e.target.value)}
+            maxLength={200}
+            className="mt-0.5 block w-full rounded border border-slate-300 px-2 py-1 text-sm"
+          />
+        </label>
+      </span>
+      <span className="mt-2 flex gap-2">
+        <button
+          type="button"
+          disabled={estado === 'salvando'}
+          onClick={lancar}
+          className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+        >
+          {estado === 'salvando' ? 'Lançando…' : 'Lançar no contas a pagar'}
+        </button>
+        <button
+          type="button"
+          onClick={() => setEstado('fechado')}
+          className="rounded-md border border-slate-200 bg-white px-3 py-1 text-xs text-slate-700"
+        >
+          Cancelar
+        </button>
+      </span>
+      {erro && <span className="mt-1 block text-xs text-red-600">{erro}</span>}
+      <span className="mt-1 block text-[10px] text-slate-500">
+        Vai pra casa da lotação, categoria Rescisão Contratual, em nome do funcionário.
+      </span>
+    </span>
   );
 }

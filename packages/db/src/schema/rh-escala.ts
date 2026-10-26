@@ -265,6 +265,10 @@ export const funcionarioDocumento = pgTable(
     canceladoEm: timestamp('cancelado_em', { withTimezone: true }),
     canceladoPor: uuid('cancelado_por'),
     canceladoMotivo: text('cancelado_motivo'),
+    /** Conta a pagar da rescisão lançada a partir deste documento (TRCT). */
+    contaPagarId: uuid('conta_pagar_id'),
+    /** O que a IA leu do termo (líquido, datas…). */
+    dados: jsonb('dados'),
   },
   (t) => ({
     porPessoa: index('idx_funcionario_documento_pessoa').on(t.funcionarioId, t.momento),

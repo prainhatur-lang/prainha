@@ -83,3 +83,6 @@ export function extensaoDoc(nome: string): string {
 export function pastaDocRh(filialId: string): string {
   return `rh-documentos/${filialId}`;
 }
+
+/** Documentos de saída que viram conta a pagar da rescisão (lib/rh/rescisao.ts). */
+export const TIPOS_DOC_RESCISAO = ['trct', 'recibo_acerto'];
