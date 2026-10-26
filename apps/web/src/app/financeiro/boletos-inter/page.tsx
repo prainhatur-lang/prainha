@@ -26,6 +26,7 @@ import {
   centavos,
   contasBaixadasPorBoleto,
   contasDaJanela,
+  notasSemContaDosBoletos,
   pagamentoAgendado,
   pagamentoCancelado,
 } from '@/lib/boletos-inter';
@@ -119,6 +120,17 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
         )
       : new Map();
   const casadas = casarBoletos(validos, contas, escolhida?.id, baixadas);
+  // Boleto sem conta: a nota da SEFAZ que bate (raiz do CNPJ + valor) e
+  // ainda não foi lançada — link pra lançar na tela da nota.
+  const semConta = validos.filter((_, i) => !casadas[i]);
+  const notasSemConta =
+    escolhida && semConta.length > 0
+      ? await notasSemContaDosBoletos(
+          filiais.map((f) => f.id),
+          semConta,
+          escolhida.id,
+        )
+      : new Map();
   // Conta do Consumer só fica sem botão (baixa no PDV) enquanto o Consumer da
   // casa manda conta; casa que saiu dele baixa aqui (lib/consumer-contas).
   const consumerParado = await casasComConsumerParado(
@@ -593,6 +605,18 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                                   sem conta lançada
                                 </span>
                               )}
+                              {!conta && notasSemConta.get(p.codigoTransacao) && (() => {
+                                const n = notasSemConta.get(p.codigoTransacao)!;
+                                return (
+                                  <Link
+                                    href={`/movimento/entrada-notas/${n.id}`}
+                                    className="ml-1.5 inline-flex rounded-md bg-sky-100 px-2 py-0.5 text-[11px] text-sky-800 hover:underline"
+                                    title="Nota chegou da SEFAZ e não virou conta a pagar — abra e clique em Lançar"
+                                  >
+                                    📄 NF-e {n.numero ?? '?'} da {nomeFilial.get(n.filialId) ?? 'casa'} — lançar
+                                  </Link>
+                                );
+                              })()}
                               {outraCasa && (
                                 <span className="ml-1.5 rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-800">
                                   conta da {outraCasa}

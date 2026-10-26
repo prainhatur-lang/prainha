@@ -4,7 +4,7 @@
 // Inter da outra — entra no encontro de contas, decisão do dono 14/10/2026).
 
 import { db, schema } from '@concilia/db';
-import { and, eq, gte, ilike, inArray, isNull, lte } from 'drizzle-orm';
+import { and, eq, gte, ilike, inArray, isNull, lte, sql } from 'drizzle-orm';
 import type { InterPagamento } from '@/lib/inter';
 
 export const soDigitos = (v: string | null | undefined) => (v ?? '').replace(/\D/g, '');
@@ -149,6 +149,10 @@ export function casarBoletos(
     return {
       livres: () => contas.filter((c) => !usadas.has(c.id) && valores.has(centavos(c.valor))),
       mesmoCnpj: (c: ContaJanela) => !!cnpj && soDigitos(c.fornecedorCnpj) === cnpj,
+      // mesma empresa, outro estabelecimento: o boleto sai pela matriz e a
+      // nota pela filial (Megga 0001-88 × 0009-35, Mar, 16/10/2026)
+      mesmaRaiz: (c: ContaJanela) =>
+        cnpj.length === 14 && soDigitos(c.fornecedorCnpj).slice(0, 8) === cnpj.slice(0, 8),
       mesmoVenc: (c: ContaJanela) =>
         c.dataVencimento === p.dataVencimentoTitulo || c.dataVencimento === p.dataVencimentoDigitada,
     };
@@ -190,7 +194,9 @@ export function casarBoletos(
       daCasa.find(r.mesmoCnpj) ??
         daCasa.find(r.mesmoVenc) ??
         deFora.find(r.mesmoCnpj) ??
-        deFora.find(r.mesmoVenc),
+        deFora.find(r.mesmoVenc) ??
+        daCasa.find(r.mesmaRaiz) ??
+        deFora.find(r.mesmaRaiz),
     );
   });
   // 3ª passada: mesmo CNPJ + mesmo vencimento e valor até 5% diferente — a
@@ -206,7 +212,7 @@ export function casarBoletos(
     const perto = contas.filter(
       (c) =>
         !usadas.has(c.id) &&
-        r.mesmoCnpj(c) &&
+        (r.mesmoCnpj(c) || r.mesmaRaiz(c)) &&
         r.mesmoVenc(c) &&
         Math.abs(centavos(c.valor) - alvo) <= Math.round(alvo * 0.05),
     );
@@ -214,5 +220,51 @@ export function casarBoletos(
     const lista = daCasa.length ? daCasa : perto;
     if (lista.length === 1) usar(i, lista[0]);
   });
+  return res;
+}
+
+/** Boleto sem conta: a nota de compra do mesmo fornecedor (raiz do CNPJ) e
+ *  mesmo valor que chegou da SEFAZ mas nunca virou conta a pagar (Megga
+ *  628617 e Maxx 35110, Mar, pagas 15/10/2026). Só aponta; quem lança é a
+ *  tela da nota. Uma nota por boleto. */
+export async function notasSemContaDosBoletos(
+  filialIds: string[],
+  pagamentos: InterPagamento[],
+  filialId: string | null | undefined,
+): Promise<Map<string, { id: string; filialId: string; numero: number | null; valorTotal: string | null; dataEmissao: Date | null }>> {
+  const res = new Map<string, { id: string; filialId: string; numero: number | null; valorTotal: string | null; dataEmissao: Date | null }>();
+  const raizes = [...new Set(pagamentos.map((p) => soDigitos(p.cpfCnpjBeneficiario)).filter((c) => c.length === 14).map((c) => c.slice(0, 8)))];
+  if (!filialIds.length || !raizes.length) return res;
+  const notas = await db
+    .select({
+      id: schema.notaCompra.id,
+      filialId: schema.notaCompra.filialId,
+      numero: schema.notaCompra.numero,
+      valorTotal: schema.notaCompra.valorTotal,
+      dataEmissao: schema.notaCompra.dataEmissao,
+      emitCnpj: schema.notaCompra.emitCnpj,
+    })
+    .from(schema.notaCompra)
+    .where(
+      and(
+        inArray(schema.notaCompra.filialId, filialIds),
+        inArray(sql`left(${schema.notaCompra.emitCnpj}, 8)`, raizes),
+        gte(schema.notaCompra.dataEmissao, new Date(Date.now() - 180 * 86400000)),
+        sql`not exists (select 1 from conta_pagar cp where cp.nota_compra_id = ${schema.notaCompra.id} and cp.data_delete is null)`,
+      ),
+    );
+  const usadas = new Set<string>();
+  for (const p of pagamentos) {
+    const raiz = soDigitos(p.cpfCnpjBeneficiario).slice(0, 8);
+    const valor = centavos(p.valorNominal);
+    if (raiz.length !== 8 || !valor) continue;
+    const cand = notas.filter(
+      (n) => !usadas.has(n.id) && soDigitos(n.emitCnpj).slice(0, 8) === raiz && centavos(n.valorTotal) === valor,
+    );
+    const n = cand.find((x) => x.filialId === filialId) ?? cand[0];
+    if (!n) continue;
+    usadas.add(n.id);
+    res.set(p.codigoTransacao, n);
+  }
   return res;
 }
