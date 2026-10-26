@@ -283,7 +283,18 @@ export interface RelatorioCasa {
   caixa: CaixaDia | null;
   /** eventos com prato "de ticket" cadastrados no dia (evento_ticket) — receita que não passa pelo PDV */
   eventos?: EventoDia[];
+  /** pontos incompletos da casa nos últimos dias, ainda sem correção (entrada sem saída / saída sem entrada) */
+  pontoEmAberto?: PontoAberto[];
   atencao: string[];
+}
+
+/** Dia de ponto que não fechou: mesma regra do /rh/ponto/relatorio (incompleto ou saída órfã). */
+export interface PontoAberto {
+  funcionarioId: string;
+  nome: string;
+  dia: string;
+  /** "entrou 08:12, sem saída" · "saída 17:03 sem entrada" */
+  falta: string[];
 }
 
 /** Quem tirou os 10%: contas com consumo (valor > 0) e serviço zerado, no dia e no mesmo dia da semana passada. */
@@ -1513,6 +1524,48 @@ export async function montarRelatorioOrganizacao(organizacaoId: string, dia: str
   return montarRelatorioFiliais(filiais, dia);
 }
 
+/** Quantos dias pra trás o relatório procura ponto sem fechar (até o próprio dia). */
+const DIAS_PONTO_ABERTO = 7;
+
+/**
+ * Pontos incompletos da casa nos últimos 7 dias operacionais até `dia`, que
+ * ninguém corrigiu ainda. Mesma regra do /rh/ponto/relatorio: por casa, entrada
+ * sem saída (inclusive duas entradas seguidas) ou saída sem entrada.
+ */
+async function pontoEmAbertoDaCasa(filialId: string, dia: string): Promise<PontoAberto[]> {
+  const desde = somaDias(dia, -(DIAS_PONTO_ABERTO - 1));
+  const rows = await q<{ funcionario_id: string; nome: string; dia: string; batidas: Array<{ h: string; t: string }> }>(sql`
+    SELECT b.funcionario_id, f.nome, b.dia_operacional::text AS dia,
+           json_agg(json_build_object(
+             'h', to_char(b.quando AT TIME ZONE ${TZ}, 'HH24:MI'),
+             't', b.tipo) ORDER BY b.quando) AS batidas
+      FROM ponto_batida b
+      JOIN funcionario f ON f.id = b.funcionario_id
+     WHERE b.filial_id = ${filialId}
+       AND b.dia_operacional >= ${desde}::date AND b.dia_operacional <= ${dia}::date
+       AND b.excluida_em IS NULL
+     GROUP BY b.funcionario_id, f.nome, b.dia_operacional
+  `);
+  const out: PontoAberto[] = [];
+  for (const r of rows) {
+    const falta: string[] = [];
+    let aberta: string | null = null;
+    for (const b of r.batidas ?? []) {
+      if (b.t === 'saida') {
+        if (aberta == null) falta.push(`saída ${b.h} sem entrada`);
+        aberta = null;
+      } else {
+        if (aberta != null) falta.push(`entrou ${aberta}, sem saída`);
+        aberta = b.h;
+      }
+    }
+    if (aberta != null) falta.push(`entrou ${aberta}, sem saída`);
+    if (falta.length) out.push({ funcionarioId: r.funcionario_id, nome: r.nome, dia: r.dia, falta });
+  }
+  // Mais recente primeiro; no mesmo dia, por nome.
+  return out.sort((a, b) => (a.dia === b.dia ? a.nome.localeCompare(b.nome, 'pt-BR') : a.dia < b.dia ? 1 : -1));
+}
+
 /** Eventos de ticket cadastrados na casa nesse dia: encerrado vale a foto, aberto conta ao vivo. */
 async function eventosDoDia(filialId: string, dia: string): Promise<EventoDia[]> {
   const linhas = await q<{
@@ -1550,6 +1603,11 @@ export async function montarRelatorioFiliais(
         // Evento de ticket é extra: se a leitura falhar, o relatório sai sem ele.
         eventosDoDia(f.id, dia).catch(() => [] as EventoDia[]),
       ]);
+      // Ponto em aberto (26/10/2026, dono): também é extra — falhou, sai sem.
+      casa.pontoEmAberto = await pontoEmAbertoDaCasa(f.id, dia).catch((e) => {
+        console.error('[relatorio-diario] ponto em aberto:', e);
+        return [] as PontoAberto[];
+      });
       if (eventos.length) {
         casa.eventos = eventos;
         // A queda contra a semana passada foi medida só com o PDV; com ticket de
@@ -1599,7 +1657,24 @@ export function resumoUmaLinha(casas: RelatorioCasa[]): string {
       ? `${c.nome} ${reais(faturamentoDoDia(c), false)} (${pl(c.movimento.contas, 'conta', 'contas')}${ticketsDeEvento(c) > 0 ? ', com evento' : ''})`
       : `${c.nome} sem movimento`,
   );
-  return `${partes.join(' · ')} · Total ${reais(total, false)}`;
+  const abertos = casas.reduce((s, c) => s + (c.pontoEmAberto?.length ?? 0), 0);
+  return `${partes.join(' · ')} · Total ${reais(total, false)}${abertos ? ` · Ponto em aberto: ${abertos}` : ''}`;
+}
+
+/** Pontos incompletos da casa pro texto do WhatsApp (vazio = nenhum). */
+function linhasPontoAberto(c: RelatorioCasa): string[] {
+  const lista = c.pontoEmAberto ?? [];
+  if (!lista.length) return [];
+  const MAX = 15;
+  const L = [`🕘 Ponto em aberto (${lista.length}) — sem saída ou sem entrada, falta corrigir:`];
+  for (const p of lista.slice(0, MAX)) {
+    const [, mm, dd] = p.dia.split('-');
+    L.push(`• ${p.nome} — ${dd}/${mm}: ${p.falta.join('; ')}`);
+  }
+  if (lista.length > MAX) L.push(`• e mais ${lista.length - MAX}`);
+  const maisAntigo = lista.reduce((m, p) => (p.dia < m ? p.dia : m), lista[0].dia);
+  L.push(`Corrigir: https://app.prainhabar.com/rh/ponto?${new URLSearchParams({ filialId: c.filialId, inicio: maisAntigo }).toString()}`);
+  return L;
 }
 
 /** Gaveta, saídas de dinheiro e maquininhas sem fechar, pro texto do WhatsApp. */
@@ -1678,6 +1753,7 @@ function textoCasa(c: RelatorioCasa): string {
         for (const a of doCaixa) L.push(`• ${a}`);
       }
     }
+    L.push(...linhasPontoAberto(c));
     return L.join('\n');
   }
   const m = c.movimento;
@@ -1736,6 +1812,7 @@ function textoCasa(c: RelatorioCasa): string {
     );
   }
   L.push(...linhasCaixa(c));
+  L.push(...linhasPontoAberto(c));
   if (c.atencao.length) {
     L.push('⚠️ Atenção:');
     for (const a of c.atencao) L.push(`• ${a}`);
