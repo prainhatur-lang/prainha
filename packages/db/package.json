@@ -168,6 +168,7 @@
     "migrate:escala-mensal": "tsx scripts/migrate-escala-mensal.ts",
     "migrate:atestado": "tsx scripts/migrate-atestado.ts",
     "migrate:funcionario-documento": "tsx scripts/migrate-funcionario-documento.ts",
+    "migrate:empresa-documento": "tsx scripts/migrate-empresa-documento.ts",
     "migrate:atestado-celular": "tsx scripts/migrate-atestado-celular.ts",
     "migrate:imposto-guia": "tsx scripts/migrate-imposto-guia.ts",
     "migrate:imposto-rateio-contador": "tsx scripts/migrate-imposto-rateio-contador.ts",

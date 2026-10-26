@@ -16,6 +16,7 @@ import { dateToBrYmd } from '@/lib/datas';
 import {
   faturamentoDoDia,
   faturamentoSemServico,
+  fraseDocVencendo,
   pctSemServico,
   montarRelatorioFiliais,
   rotuloDia,
@@ -392,6 +393,24 @@ function Casa({ c }: { c: RelatorioCasa }) {
           cor={c.avaliacoes.baixas.length ? 'text-amber-700' : 'text-slate-900'}
         />
       </div>
+
+      {(c.documentosVencendo?.length ?? 0) > 0 && (
+        <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-4">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-red-800">
+            📄 Documentos vencidos ou vencendo em até 30 dias
+          </h3>
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-red-900">
+            {c.documentosVencendo!.map((d, i) => (
+              <li key={i}>
+                {d.titulo} — {fraseDocVencendo(d)}
+              </li>
+            ))}
+          </ul>
+          <a href={`/empresa/documentos?filialId=${c.filialId}`} className="mt-2 inline-block text-xs text-red-800 underline">
+            Ver e renovar
+          </a>
+        </div>
+      )}
 
       {c.atencao.length > 0 && (
         <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-4">

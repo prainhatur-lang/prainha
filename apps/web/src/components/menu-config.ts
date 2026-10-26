@@ -277,6 +277,7 @@ export const MENU_AREAS: MenuArea[] = [
           { label: 'A receber de canais (iFood)', href: '/financeiro/receber-canal', perm: 'conta_receber.read' },
           { label: 'Faturamento do iFood', href: '/ifood/financeiro', perm: 'conta_receber.read' },
           { label: 'Plano de contas', href: '/cadastros/plano-contas', perm: 'configuracao.read' },
+          { label: 'Documentos da empresa (alvarás)', href: '/empresa/documentos', perm: 'configuracao.read' },
         ],
       },
       {

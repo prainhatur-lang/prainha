@@ -12,7 +12,8 @@
 import { motivoSemExtrato, semExtratoCielo } from '@/lib/caixa-sem-extrato';
 import { db } from '@concilia/db';
 import { sql, type SQL } from 'drizzle-orm';
-import { dateToBrYmd } from './datas';
+import { dateToBrYmd, hojeBr } from './datas';
+import { diasEntre, rotuloTipoDoc } from './empresa-documento';
 import { chamarLojaCaixa } from './caixa-loja';
 import { contarEvento } from './evento-ticket';
 
@@ -285,7 +286,16 @@ export interface RelatorioCasa {
   eventos?: EventoDia[];
   /** pontos incompletos da casa nos últimos dias, ainda sem correção (entrada sem saída / saída sem entrada) */
   pontoEmAberto?: PontoAberto[];
+  /** documentos da empresa (alvará, certidão…) vencidos ou vencendo em até 30 dias — /empresa/documentos */
+  documentosVencendo?: DocVencendo[];
   atencao: string[];
+}
+
+export interface DocVencendo {
+  titulo: string;
+  validade: string;
+  /** dias até vencer (negativo = vencido há N dias) */
+  dias: number;
 }
 
 /** Dia de ponto que não fechou: mesma regra do /rh/ponto/relatorio (incompleto ou saída órfã). */
@@ -1608,6 +1618,11 @@ export async function montarRelatorioFiliais(
         console.error('[relatorio-diario] ponto em aberto:', e);
         return [] as PontoAberto[];
       });
+      // Documentos da empresa (26/10/2026): vencido ou vence em até 30 dias. Extra — falhou, sai sem.
+      casa.documentosVencendo = await documentosVencendoDaCasa(f.id).catch((e) => {
+        console.error('[relatorio-diario] documentos:', e);
+        return [] as DocVencendo[];
+      });
       if (eventos.length) {
         casa.eventos = eventos;
         // A queda contra a semana passada foi medida só com o PDV; com ticket de
@@ -1645,6 +1660,21 @@ export async function montarRelatorioFiliais(
   return casas.filter((c) => c.ativa || c.temMovimento);
 }
 
+/** Documentos vigentes da casa vencidos ou vencendo em até 30 dias (a contar de hoje). */
+async function documentosVencendoDaCasa(filialId: string): Promise<DocVencendo[]> {
+  const hoje = hojeBr();
+  const rows = (await db.execute(sql`
+    SELECT tipo, titulo, validade::text AS validade
+      FROM empresa_documento
+     WHERE filial_id = ${filialId}
+       AND substituido_por IS NULL AND cancelado_em IS NULL
+       AND NOT sem_vencimento AND validade IS NOT NULL
+       AND validade <= (${hoje}::date + 30)
+     ORDER BY validade
+  `)) as unknown as Array<{ tipo: string; titulo: string | null; validade: string }>;
+  return rows.map((r) => ({ titulo: r.titulo || rotuloTipoDoc(r.tipo), validade: r.validade, dias: diasEntre(hoje, r.validade) }));
+}
+
 // ---------------------------------------------------------------------------
 // Texto (WhatsApp)
 // ---------------------------------------------------------------------------
@@ -1658,7 +1688,29 @@ export function resumoUmaLinha(casas: RelatorioCasa[]): string {
       : `${c.nome} sem movimento`,
   );
   const abertos = casas.reduce((s, c) => s + (c.pontoEmAberto?.length ?? 0), 0);
-  return `${partes.join(' · ')} · Total ${reais(total, false)}${abertos ? ` · Ponto em aberto: ${abertos}` : ''}`;
+  const docs = casas.reduce((s, c) => s + (c.documentosVencendo?.length ?? 0), 0);
+  return `${partes.join(' · ')} · Total ${reais(total, false)}${abertos ? ` · Ponto em aberto: ${abertos}` : ''}${
+    docs ? ` · Documentos vencendo: ${docs}` : ''
+  }`;
+}
+
+/** Frase da validade de um documento ("venceu há 3 dias", "vence em 7 dias"). */
+export function fraseDocVencendo(d: DocVencendo): string {
+  const [a, m, dd] = d.validade.split('-');
+  const data = `${dd}/${m}/${a}`;
+  if (d.dias < 0) return `VENCEU em ${data} (há ${-d.dias} ${-d.dias === 1 ? 'dia' : 'dias'})`;
+  if (d.dias === 0) return `vence HOJE (${data})`;
+  return `vence em ${d.dias} ${d.dias === 1 ? 'dia' : 'dias'} (${data})`;
+}
+
+/** Documentos vencidos/vencendo pro texto do WhatsApp (vazio = nenhum). */
+function linhasDocumentos(c: RelatorioCasa): string[] {
+  const lista = c.documentosVencendo ?? [];
+  if (!lista.length) return [];
+  const L = [`📄 Documentos (${lista.length}) — vencido ou vencendo em até 30 dias:`];
+  for (const d of lista) L.push(`• ${d.dias < 0 ? '🔴' : d.dias <= 7 ? '🟠' : '🟡'} ${d.titulo} — ${fraseDocVencendo(d)}`);
+  L.push(`Renovar: https://app.prainhabar.com/empresa/documentos?${new URLSearchParams({ filialId: c.filialId }).toString()}`);
+  return L;
 }
 
 /** Pontos incompletos da casa pro texto do WhatsApp (vazio = nenhum). */
@@ -1754,6 +1806,7 @@ function textoCasa(c: RelatorioCasa): string {
       }
     }
     L.push(...linhasPontoAberto(c));
+    L.push(...linhasDocumentos(c));
     return L.join('\n');
   }
   const m = c.movimento;
@@ -1813,6 +1866,7 @@ function textoCasa(c: RelatorioCasa): string {
   }
   L.push(...linhasCaixa(c));
   L.push(...linhasPontoAberto(c));
+  L.push(...linhasDocumentos(c));
   if (c.atencao.length) {
     L.push('⚠️ Atenção:');
     for (const a of c.atencao) L.push(`• ${a}`);

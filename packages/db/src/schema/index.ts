@@ -66,3 +66,4 @@ export * from './marketing-post';
 export * from './marketing-espelho';
 export * from './vale-presente';
 export * from './traducao-texto';
+export * from './empresa-documento';
