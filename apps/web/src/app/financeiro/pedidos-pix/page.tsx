@@ -59,7 +59,11 @@ const ORIGENS_FORA = ['CONSUMER', 'FOLHA', 'TRANSFERENCIA', 'ENCONTRO_CONTAS'];
 function pareceBoleto(descricao: string, fornecedor: string, temBoleto: boolean) {
   if (temBoleto) return true;
   if (/(darf|fgts|inss|guia|boleto)/i.test(descricao)) return true;
-  if (/\b\d{1,2}\s*\/\s*\d{1,2}\b/.test(descricao)) return true; // parcela "2/4"
+  // Datas não são parcela (26/10/2026): "16/10/2026" e "09/10 a 16/10" saem antes do teste.
+  const semDatas = descricao
+    .replace(/\b\d{1,2}\s*\/\s*\d{1,2}\s*(?:a|até|ate|-|–)\s*\d{1,2}\s*\/\s*\d{1,2}(?:\s*\/\s*\d{2,4})?\b/gi, ' ')
+    .replace(/\b\d{1,2}\s*\/\s*\d{1,2}\s*\/\s*\d{2,4}\b/g, ' ');
+  if (/\b\d{1,2}\s*\/\s*\d{1,2}\b/.test(semDatas)) return true; // parcela "2/4"
   if (/^receita\b/i.test(fornecedor.trim())) return true;
   return false;
 }
