@@ -5,7 +5,7 @@
 // encerrar / responder como equipe.
 
 import Link from 'next/link';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 
 interface Conversa {
   id: string;
@@ -27,6 +27,8 @@ interface Mensagem {
   autor: string;
   tipo: string;
   corpo: string | null;
+  /** Id da mídia na Meta (foto/vídeo/áudio/documento recebido). */
+  mediaId?: string | null;
   statusEnvio: string | null;
   erro: string | null;
   criadoEm: string;
@@ -62,6 +64,72 @@ function diaHora(s: string | null): string {
     minute: '2-digit',
     timeZone: 'America/Maceio',
   });
+}
+
+const TIPOS_COM_MIDIA = new Set(['imagem', 'figurinha', 'video', 'audio', 'documento']);
+
+// Texto do balão + a mídia que o cliente mandou (foto, vídeo, áudio,
+// documento), baixada da Meta pela rota do painel. Se a Meta não entregar
+// mais (expirou), volta pro "[imagem]" de antes.
+function CorpoMensagem({ m }: { m: Mensagem }) {
+  const [falhou, setFalhou] = useState(false);
+  const temMidia = !!m.mediaId && !falhou && TIPOS_COM_MIDIA.has(m.tipo);
+  const src = `/api/atendimento/midia/${m.id}`;
+  const erro = () => setFalhou(true);
+
+  let midia: ReactNode = null;
+  if (temMidia) {
+    if (m.tipo === 'imagem' || m.tipo === 'figurinha') {
+      midia = (
+        <a href={src} target="_blank" rel="noopener noreferrer" title="Abrir a imagem inteira" className="mb-1 block">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={src}
+            alt={m.tipo === 'figurinha' ? 'Figurinha' : 'Imagem enviada pelo cliente'}
+            loading="lazy"
+            onError={erro}
+            className={
+              m.tipo === 'figurinha'
+                ? 'h-24 w-24 object-contain'
+                : 'max-h-72 max-w-full rounded-md bg-white object-contain'
+            }
+          />
+        </a>
+      );
+    } else if (m.tipo === 'video') {
+      midia = (
+        <video controls preload="metadata" src={src} onError={erro} className="mb-1 max-h-72 max-w-full rounded-md bg-black" />
+      );
+    } else if (m.tipo === 'audio') {
+      midia = <audio controls preload="none" src={src} onError={erro} className="mb-1 h-9 w-64 max-w-full" />;
+    } else {
+      midia = (
+        <a
+          href={src}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="mb-1 inline-block rounded border border-slate-300 bg-white px-2 py-1 text-xs text-sky-700 hover:bg-slate-50"
+        >
+          📄 Abrir documento
+        </a>
+      );
+    }
+  }
+
+  return (
+    <>
+      {midia}
+      {(m.corpo || !temMidia) && (
+        <p className="whitespace-pre-wrap break-words">
+          {m.corpo || (
+            <span className="italic text-slate-400">
+              [{m.tipo}]{falhou && ' · a Meta não entrega mais'}
+            </span>
+          )}
+        </p>
+      )}
+    </>
+  );
 }
 
 export function AtendimentoClient(props: {
@@ -387,9 +455,7 @@ export function AtendimentoClient(props: {
                             {m.autor === 'equipe' ? 'Equipe' : atAberta.nome}
                           </p>
                         )}
-                        <p className="whitespace-pre-wrap break-words">
-                          {m.corpo || <span className="italic text-slate-400">[{m.tipo}]</span>}
-                        </p>
+                        <CorpoMensagem m={m} />
                         <p className="mt-0.5 text-right text-[10px] text-slate-400">
                           {m.tipo === 'audio' && '🎙 '}
                           {hora(m.criadoEm)}
