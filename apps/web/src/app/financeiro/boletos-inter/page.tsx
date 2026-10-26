@@ -226,7 +226,7 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
           conta.dataVencimento !== p.dataVencimentoDigitada;
       }
     }
-    // casou pela 3ª passada (CNPJ + vencimento, valor até 2% diferente):
+    // casou pela 3ª passada (CNPJ + vencimento, valor até 5% diferente):
     // também fica fora do lote, com aviso
     const valorDiferente =
       !!conta &&

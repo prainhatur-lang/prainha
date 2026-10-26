@@ -193,9 +193,10 @@ export function casarBoletos(
         deFora.find(r.mesmoVenc),
     );
   });
-  // 3ª passada: mesmo CNPJ + mesmo vencimento e valor até 2% diferente — a
+  // 3ª passada: mesmo CNPJ + mesmo vencimento e valor até 5% diferente — a
   // conta lançada pelo pedido/nota com centavos a menos que o boleto (CRBS
-  // 4.302,64 × boleto 4.304,19, Bar, 26/10/2026). Só com UMA candidata; a
+  // 4.302,64 × boleto 4.304,19, Bar, 26/10/2026; a CRBS às vezes põe o
+  // financeiro ou juros no boleto). Só com UMA candidata; a
   // tela marca "valor diferente, confira" e deixa fora do lote.
   pagamentos.forEach((p, i) => {
     if (res[i]) return;
@@ -207,7 +208,7 @@ export function casarBoletos(
         !usadas.has(c.id) &&
         r.mesmoCnpj(c) &&
         r.mesmoVenc(c) &&
-        Math.abs(centavos(c.valor) - alvo) <= Math.round(alvo * 0.02),
+        Math.abs(centavos(c.valor) - alvo) <= Math.round(alvo * 0.05),
     );
     const daCasa = perto.filter((c) => c.filialId === filialId);
     const lista = daCasa.length ? daCasa : perto;
