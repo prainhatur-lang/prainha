@@ -19345,6 +19345,49 @@ async function apiMesaPedir(body) {
   return r;
 }
 
+// ================= 2º CHOPE DO DOBRADO PELO QR (26/10/2026) =================
+// Pedido do dono: o cliente solta sozinho, no celular, o 2º chope do dobrado
+// que ficou guardado na conta. Mesmo vale do garçom/caixa (apiValeSoltar) —
+// cada vale sai uma vez só — e só da mesa dele e das comandas ligadas a ela.
+async function numerosDaMesaCliente(numero) {
+  const nums = [numero];
+  if (numero < COMANDA_DE) {
+    const vinc = await sql`SELECT comanda FROM mesa_comanda WHERE mesa=${numero} AND fechada_em IS NULL ORDER BY comanda`;
+    for (const v of vinc) nums.push(Number(v.comanda));
+  }
+  return nums;
+}
+async function apiMesaVales(numero, sessao, desde) {
+  const n = Number(numero);
+  if (!nativo() || !(n >= 1 && n <= NUMERO_MAX)) return { ok: true, vales: [] };
+  if (sessao != null || desde != null) {
+    const ses = await apiMesaSessao(n, sessao, desde);
+    if (!ses.ok) return { ok: true, vales: [] };
+  }
+  const out = [];
+  for (const num of await numerosDaMesaCliente(n)) {
+    for (const v of await valesDoNumero(num)) {
+      if (v.pendente > 0) out.push({ numero: num, item: v.item, nome: v.nome, pendente: v.pendente });
+    }
+  }
+  return { ok: true, vales: out };
+}
+async function apiMesaValeSoltar(body) {
+  const mesa = Number(body.mesa), numero = Number(body.numero || body.mesa);
+  if (!(mesa >= 1 && mesa <= NUMERO_MAX)) return { ok: false, erro: 'mesa inválida' };
+  if (body.sessao != null || body.desde != null) {
+    const ses = await apiMesaSessao(mesa, body.sessao, body.desde);
+    if (!ses.ok) return { ok: false, erro: ses.aviso || 'sessão expirada', reescanear: true };
+  }
+  if (!(await numerosDaMesaCliente(mesa)).includes(numero)) return { ok: false, erro: 'essa conta não é desta mesa' };
+  const r = await apiValeSoltar({ numero, item: body.item, qtd: 1, _garcom: 'cliente', _garcom_nome: 'CLIENTE (celular)' });
+  if (r.ok) {
+    await apiChamadoCriar({ mesa, tipo: 'garcom', origem: 'pedido-cliente',
+      texto: 'soltou pelo celular o 2º chope do dobrado' }).catch(() => {});
+  }
+  return r;
+}
+
 // ================= AVALIE E GANHE UM DRINK (QR da mesa) =================
 // Regra do dono (27/09/2026): quem avalia pelo QR ganha UM drink da casa —
 // com álcool (Prainha GT) ou sem (Soda Italiana). Um por pessoa (CPF) — a
@@ -24656,7 +24699,7 @@ async function inicio(){
          :'<input id="nm" inputmode="numeric" placeholder="número da sua mesa">')+'</div>';
   // DESTAQUES NA ENTRADA (26/10): almoço executivo / happy hour logo na capa;
   // tocar abre a tela com tudo (dias, hora, o que vem e o preço)
-  if(MESA)h+='<div id="dstqi"></div>';
+  if(MESA)h+='<div id="valei"></div><div id="dstqi"></div>';
   // AVALIAR MORA SÓ AQUI, NO CARD DO TOPO (29/09): o bloco "Avaliar" lá
   // embaixo repetia o card e saiu. Por isso o card aparece sempre — com o
   // drink quando a casa tem o brinde hoje (quem manda de verdade e' o
@@ -24690,6 +24733,37 @@ async function inicio(){
     '</div>';
   app(h);renderCarrinho();
   if(MESA)setTimeout(carregaDestaquesInicio,0);
+  if(MESA)setTimeout(function(){carregaValesCliente('valei')},0);
+}
+// 2º CHOPE DO DOBRADO (26/10): o que ficou guardado na conta aparece em
+// cima, com "Soltar agora" — vai pro bar na hora, sem chamar o garçom.
+var VALESCLI=[];
+function pintaValesCliente(id){
+  var el=document.getElementById(id);if(!el)return;
+  if(!VALESCLI.length){el.innerHTML='';return}
+  el.innerHTML='<div style="border:2px solid #b45309;background:#fff7e0;color:#78350f;border-radius:14px;padding:12px 14px;margin:0 0 12px">'+
+    '<div style="font-weight:700;font-size:17px">🍺 Seu 2º chopp está guardado</div>'+
+    '<div style="font-size:13px;margin:2px 0 6px">Já está pago no dobrado. Toque quando quiser e ele sai do bar pra sua mesa.</div>'+
+    VALESCLI.map(function(v,k){
+      return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid #f3d27a">'+
+        '<div style="flex:1"><b>'+v.pendente+'x '+esc(v.nome)+'</b>'+(Number(v.numero)!==Number(MESA)?'<div style="font-size:12px">comanda '+v.numero+'</div>':'')+'</div>'+
+        '<button id="vsol'+k+'" onclick="soltarValeCliente('+k+',\\''+id+'\\')" style="background:#b45309;color:#fff;border:0;border-radius:10px;padding:10px 14px;font:inherit;font-weight:700;cursor:pointer">Soltar agora</button></div>';
+    }).join('')+'</div>';
+}
+async function carregaValesCliente(id){
+  pintaValesCliente(id);
+  var n=MESA?Number(MESA):null;if(!n)return;
+  var q='/api/mesa/vales?n='+n+(SES&&SES.comanda!=null?'&c='+encodeURIComponent(SES.comanda):'')+(SES&&SES.desde!=null?'&t='+encodeURIComponent(SES.desde):'');
+  try{VALESCLI=(await (await fetch(q,{cache:'no-store'})).json()).vales||[]}catch(e){return}
+  pintaValesCliente(id);
+}
+async function soltarValeCliente(k,id){
+  var v=VALESCLI[k];if(!v)return;
+  var bt=document.getElementById('vsol'+k);if(bt){if(bt.disabled)return;bt.disabled=true;bt.textContent='enviando…'}
+  var r;try{r=await post('/api/mesa/vale-soltar',{mesa:Number(MESA),numero:v.numero,item:v.item,sessao:SES&&SES.comanda,desde:SES&&SES.desde})}catch(e){r={ok:false,erro:'sem conexão'}}
+  if(!r||!r.ok){alert((r&&r.erro)||'não consegui soltar agora — chame o garçom');if(bt){bt.disabled=false;bt.textContent='Soltar agora'}return}
+  if(bt)bt.textContent='✓ saindo do bar';
+  setTimeout(function(){carregaValesCliente(id)},1200);
 }
 function nomesBrinde(){
   if(!BRINDE||!BRINDE.opcoes)return '';
@@ -25691,6 +25765,7 @@ async function pintaJa(n,aoVivo){
     // Em BLOCOS: a mesa primeiro, depois cada comanda com o número. O que foi
     // lançado numa comanda não aparecia aqui — o cliente pedia a Heineken na
     // comanda e a tela dizia que não havia nada pedido.
+    '<div id="valej"></div>'+
     '<div id="jalista">'+(its.length?(d.grupos||[]).map(function(g){
       var cab=(g.tipo==='comanda')
         ? '<div class="jcab">Comanda '+g.numero+(g.nome?' · '+esc(g.nome):'')+'</div>'
@@ -25724,6 +25799,7 @@ async function pintaJa(n,aoVivo){
     window.scrollTo(0,y);
   } else app(html);
   JA_HTML=html;
+  carregaValesCliente('valej');
   if(mudou&&navigator.vibrate)try{navigator.vibrate(120)}catch(e){}
 }
 function minhaConta(){var n=mesaAtual();if(n===null)return;location.href='/conta/ver?n='+n}
@@ -32053,6 +32129,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/mesa/avaliacao-convite') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaAvaliacaoConvite(body))); }
     if (req.method === 'POST' && p === '/api/mesa/avaliacao') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaAvaliacaoLivre(body))); }
     if (req.method === 'POST' && p === '/api/mesa/avaliar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaAvaliar(body))); }
+    if (p === '/api/mesa/vales') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaVales(u.searchParams.get('n'), u.searchParams.get('c'), u.searchParams.get('t')))); }
+    if (req.method === 'POST' && p === '/api/mesa/vale-soltar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaValeSoltar(body))); }
     if (req.method === 'POST' && p === '/api/mesa/pedir') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaPedir(body))); }
     if (p === '/qrcodes') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(QRCODES_HTML); }
     if (p === '/reservas') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(RESERVAS_HTML); }
