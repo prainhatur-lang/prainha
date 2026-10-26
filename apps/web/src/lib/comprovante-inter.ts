@@ -268,13 +268,23 @@ async function boleto(baixa: BaixaMin & { data: string; valor: string | number }
       out.data = p.dataPagamento ?? baixa.data;
       out.valor = p.valorPago ?? out.valor;
       out.campos = [];
+      const br = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+      const dBr = (ymd: string) => ymd.split('-').reverse().join('/');
       if (p.nomeBeneficiario) out.campos.push(['Beneficiário', p.nomeBeneficiario]);
       if (p.cpfCnpjBeneficiario) out.campos.push(['CPF/CNPJ do beneficiário', p.cpfCnpjBeneficiario]);
+      if (p.dataVencimentoTitulo) out.campos.push(['Data do vencimento', dBr(p.dataVencimentoTitulo)]);
+      if (p.dataPagamento) out.campos.push(['Data da transação', dBr(p.dataPagamento)]);
+      const hora = /\d{2}:\d{2}/.exec(p.dataInclusao ?? '')?.[0];
+      if (hora) out.campos.push(['Horário', hora]);
+      if (p.valorNominal != null) out.campos.push(['Valor original', br(Number(p.valorNominal))]);
+      if (p.valorNominal != null && p.valorPago != null) {
+        const dif = Math.round((Number(p.valorPago) - Number(p.valorNominal)) * 100) / 100;
+        if (dif > 0) out.campos.push(['Juros/multa/acréscimo', br(dif)]);
+        if (dif < 0) out.campos.push(['Desconto', br(-dif)]);
+      }
+      if (p.valorPago != null) out.campos.push(['Valor total', br(Number(p.valorPago))]);
       if (p.codigoBarra) out.campos.push(['Código de barras', p.codigoBarra]);
-      if (p.dataVencimentoTitulo) out.campos.push(['Vencimento', p.dataVencimentoTitulo]);
-      if (p.valorNominal != null) out.campos.push(['Valor do título', String(p.valorNominal)]);
-      if (p.dataPagamento) out.campos.push(['Data do pagamento', p.dataPagamento]);
-      if (p.dataInclusao) out.campos.push(['Incluído em', p.dataInclusao]);
+      if (p.autenticacao) out.campos.push(['Autenticação', p.autenticacao]);
       if (p.statusPagamento) out.campos.push(['Situação no Inter', p.statusPagamento]);
       if (p.nsu) out.campos.push(['NSU', p.nsu]);
       out.campos.push(['Código da transação', p.codigoTransacao]);

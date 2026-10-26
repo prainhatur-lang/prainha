@@ -380,6 +380,8 @@ export interface InterPagamento {
   statusPagamento?: string; // REALIZADO, CANCELADO, AGENDADO, ...
   cpfCnpjBeneficiario?: string;
   nomeBeneficiario?: string;
+  /** Autenticação bancária (a mesma do comprovante do app) */
+  autenticacao?: string;
 }
 
 /** Boletos pagos ou agendados no período. Só leitura (pagamento-boleto.read). */

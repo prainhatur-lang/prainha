@@ -25,6 +25,15 @@ export interface PedidoPix {
   saldo: number;
   parcial: boolean;
   pareceBoleto: boolean;
+  /** Boleto desta conta já pago no Inter (26/10/2026): baixa pronta. */
+  boletoInter?: {
+    codigo: string;
+    data: string;
+    hora: string | null;
+    valorPago: number;
+    juros: number;
+    beneficiario: string | null;
+  };
   /** Pedido ligado, quem lançou e quem conferiu (20/10/2026). */
   origem?: {
     notaId: string | null;
@@ -105,6 +114,61 @@ function FotosPedido({ fotos }: { fotos: Array<{ url: string; rotulo: string }> 
         </div>
       )}
     </>
+  );
+}
+
+/** Conta cujo boleto já foi pago no Inter: mostra o pagamento e dá a baixa
+ *  com a data e os juros do banco (mesmo texto da tela Boletos Inter, que
+ *  liga o comprovante do Inter na conta). */
+function FaixaBoletoInter({ conta, b }: { conta: PedidoPix; b: NonNullable<PedidoPix['boletoInter']> }) {
+  const router = useRouter();
+  const [pending, setPending] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  async function baixar() {
+    const juros = b.juros > 0 ? ` + ${brl(b.juros)} de juros` : '';
+    if (!window.confirm(`Dar baixa pelo boleto pago no Inter?\n${brl(conta.saldo)}${juros}, pago em ${dataBr(b.data)}.`)) return;
+    setPending(true);
+    setErro(null);
+    const r = await fetch(`/api/financeiro/contas/${conta.id}/baixas`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        data: b.data,
+        valor: Math.round(conta.saldo * 100) / 100,
+        juros: b.juros > 0 ? b.juros : undefined,
+        observacao: `Boleto pago no Inter (${b.codigo})`,
+      }),
+    }).catch(() => null);
+    setPending(false);
+    if (!r || !r.ok) {
+      const d = r ? ((await r.json().catch(() => ({}))) as { error?: string }) : {};
+      setErro(d.error ?? 'falha de rede');
+      return;
+    }
+    router.refresh();
+  }
+  return (
+    <div className="mx-4 mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900">
+      <span className="font-semibold">🧾 Boleto pago no Inter</span>
+      <span>
+        {dataBr(b.data)}
+        {b.hora ? ` ${b.hora}` : ''} · {brl(b.valorPago)}
+        {b.juros > 0 ? ` (juros ${brl(b.juros)})` : ''}
+        {b.beneficiario ? ` · ${b.beneficiario}` : ''}
+      </span>
+      <button
+        type="button"
+        disabled={pending}
+        onClick={() => void baixar()}
+        className="ml-auto rounded-md bg-emerald-700 px-2 py-1 text-[11px] font-semibold text-white disabled:bg-slate-400"
+      >
+        {pending ? 'Baixando…' : '✓ Dar baixa pelo boleto'}
+      </button>
+      <span className="w-full text-[11px] text-emerald-800">
+        Depois da baixa, o comprovante do Inter fica na conta (🧾 Comprovante Inter).
+      </span>
+      {erro && <span className="w-full text-rose-700">Não baixou: {erro}</span>}
+    </div>
   );
 }
 
@@ -298,6 +362,15 @@ export function GrupoPix({
       );
       if (!segue) return;
     }
+    const pagasBoleto = contas.filter((c) => c.boletoInter);
+    if (pagasBoleto.length > 0) {
+      const segue = window.confirm(
+        `⚠ ${pagasBoleto.length} conta(s) marcada(s) já aparecem pagas por BOLETO no Inter (${pagasBoleto
+          .map((c) => `${dataBr(c.boletoInter!.data)} ${brl(c.boletoInter!.valorPago)}`)
+          .join(', ')}).\n\nO certo é usar "Dar baixa pelo boleto" na linha da conta (data e juros do banco + comprovante).\n\nDar baixa como Pix mesmo assim?`,
+      );
+      if (!segue) return;
+    }
     const ok = window.confirm(
       `Dar baixa em ${contas.length} conta(s) de ${grupo.nome}, total ${brl(totalMarcado)}, pagas em ${dataBr(dataPgto)}?\n\nSó confirme depois que o Pix saiu no Inter.`,
     );
@@ -445,6 +518,7 @@ export function GrupoPix({
               />
             )}
             {c.origem && <LinhaOrigem o={c.origem} />}
+            {c.boletoInter && <FaixaBoletoInter conta={c} b={c.boletoInter} />}
             </li>
           );
         })}

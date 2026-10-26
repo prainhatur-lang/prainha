@@ -32,7 +32,15 @@ import { conferirPixAbertosNoInter, situacaoPixDasContas } from '@/lib/pix-confe
 import { PixEnviados, type PixEnviado } from './pix-enviados';
 import { SaldoInterFaixa } from './saldo-inter';
 import { contasEmPixAberto, podePagarPix } from '@/lib/pix-pagamento';
-import { resolverCredenciaisInterPagamentos } from '@/lib/inter';
+import { resolverCredenciaisInterPagamentos, buscarPagamentosInter } from '@/lib/inter';
+import {
+  casarBoletos,
+  centavos,
+  contasBaixadasPorBoleto,
+  contasDaJanela,
+  pagamentoAgendado,
+  pagamentoCancelado,
+} from '@/lib/boletos-inter';
 import { urlFotoPedido } from '@/lib/pedido-sem-nota';
 import { recebedorBate } from '@/lib/pix-titular';
 import { rescisoesDasContas, sqlEhRescisao } from '@/lib/rh/rescisao-pix';
@@ -313,6 +321,48 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
         };
       })(),
     });
+  }
+
+  // 26/10/2026: conta que já foi paga por BOLETO no Inter (CRBS 497020: pediu
+  // Pix, pagaram o boleto com juros). Mesmo casamento da tela Boletos Inter;
+  // a linha ganha "Boleto pago no Inter" com a baixa pronta (data e juros do
+  // banco). Falhou o Inter → a tela segue igual, sem a faixa.
+  const credBoleto = resolverCredenciaisInterPagamentos(escolhida.id);
+  if (credBoleto && grupos.size > 0) {
+    try {
+      const ini = diasAtrasBr(30);
+      const fim = hojeBr();
+      const pags = (await buscarPagamentosInter(credBoleto, ini, fim)).filter(
+        (p) => !pagamentoCancelado(p) && !pagamentoAgendado(p) && !!p.dataPagamento,
+      );
+      if (pags.length > 0) {
+        const ids = filiais.map((f) => f.id);
+        const contasJ = await contasDaJanela(ids, ini, fim);
+        const baixadasJ = await contasBaixadasPorBoleto(ids, pags, ini, fim);
+        const casadas = casarBoletos(pags, contasJ, escolhida.id, baixadasJ);
+        const porConta = new Map<string, (typeof pags)[number]>();
+        casadas.forEach((c, i) => {
+          if (c) porConta.set(c.id, pags[i]!);
+        });
+        for (const g of grupos.values()) {
+          for (const c of g.contas) {
+            const p = porConta.get(c.id);
+            if (!p) continue;
+            const pago = Number(p.valorPago ?? p.valorNominal ?? 0);
+            c.boletoInter = {
+              codigo: p.codigoTransacao,
+              data: p.dataPagamento!.slice(0, 10),
+              hora: /\d{2}:\d{2}/.exec(p.dataInclusao ?? '')?.[0] ?? null,
+              valorPago: pago,
+              juros: Math.max(0, (centavos(pago) - centavos(c.saldo)) / 100),
+              beneficiario: p.nomeBeneficiario ?? null,
+            };
+          }
+        }
+      }
+    } catch {
+      // Inter fora: sem a faixa
+    }
   }
 
   // mais atrasado primeiro
