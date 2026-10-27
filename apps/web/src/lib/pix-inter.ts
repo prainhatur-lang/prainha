@@ -119,6 +119,8 @@ export async function pixDoExtrato(
   }));
 }
 
+const NOMES_ORGAO_IMPOSTO = 'SECRETARIA FAZENDA PREFEITURA SEFAZ RECEITA';
+
 function selecionarContas(onde: SQL | undefined) {
   const baixado = sql<string>`(SELECT COALESCE(SUM(b.valor), 0) FROM conta_pagar_baixa b WHERE b.conta_pagar_id = ${schema.contaPagar.id})`;
   return db
@@ -134,6 +136,7 @@ function selecionarContas(onde: SQL | undefined) {
       fornecedorNome: schema.fornecedor.nome,
       razaoSocial: schema.fornecedor.razaoSocial,
       pixFavorecido: schema.fornecedor.pixFavorecido,
+      boletoStoragePath: schema.contaPagar.boletoStoragePath,
       baixado,
     })
     .from(schema.contaPagar)
@@ -144,7 +147,15 @@ function selecionarContas(onde: SQL | undefined) {
       rows.map((r) => ({
         ...r,
         saldo: Number(r.valor) - Number(r.baixado ?? 0),
-        nomes: [r.fornecedorNome, r.razaoSocial, r.pixFavorecido, r.descricao],
+        nomes: [
+          r.fornecedorNome,
+          r.razaoSocial,
+          r.pixFavorecido,
+          r.descricao,
+          // Guia de imposto (tela /financeiro/impostos) não tem fornecedor: o Pix
+          // sai pro órgão ("SECRETARIA MUNICIPAL DA FAZEND", DAM da Tabuará 27/10).
+          r.boletoStoragePath?.startsWith('impostos/') ? NOMES_ORGAO_IMPOSTO : null,
+        ],
       })),
     );
 }
