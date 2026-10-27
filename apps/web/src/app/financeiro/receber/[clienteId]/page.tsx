@@ -13,6 +13,7 @@ import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDateTime, int } from '@/lib/format';
 import { fiadoSaldoTexto } from '@/lib/fiado-saldo';
+import { favorecidoDoPix } from '@/lib/pix-inter';
 import { LancarFiado } from './lancar-fiado';
 import { ClienteFiltros } from './filtros';
 
@@ -281,6 +282,28 @@ export default async function ClienteFiadoPage(props: {
     )
     .orderBy(desc(schema.fiadoLancamento.criadoEm))
     .limit(5);
+  // Baixas de fiado amarradas a um Pix do extrato (lib/fiado-pix).
+  const baixasPix = cli.codigoExterno == null ? [] : await db
+    .select({
+      id: schema.fiadoLancamento.id,
+      valor: schema.fiadoLancamento.valor,
+      status: schema.fiadoLancamento.status,
+      criadoEm: schema.fiadoLancamento.criadoEm,
+      criadoPor: schema.fiadoLancamento.criadoPor,
+      pixData: sql<string>`${schema.lancamentoBanco.dataMovimento}::text`,
+      pixValor: schema.lancamentoBanco.valor,
+      pixDescricao: schema.lancamentoBanco.descricao,
+    })
+    .from(schema.fiadoLancamento)
+    .innerJoin(schema.lancamentoBanco, eq(schema.lancamentoBanco.id, schema.fiadoLancamento.lancamentoBancoId))
+    .where(
+      and(
+        eq(schema.fiadoLancamento.filialId, cli.filialId),
+        eq(schema.fiadoLancamento.clienteCodigoExterno, cli.codigoExterno),
+      ),
+    )
+    .orderBy(desc(schema.fiadoLancamento.criadoEm))
+    .limit(20);
   const totalCredito = Number(saldoRow?.totalCredito ?? 0);
   const totalDebito = Number(saldoRow?.totalDebito ?? 0);
   const qtdTotal = Number(saldoRow?.qtdTotal ?? 0);
@@ -334,6 +357,24 @@ export default async function ClienteFiadoPage(props: {
                   )}
                   {p.condicao === 'avista' && <span className="text-amber-800"> · à vista</span>}
                   {p.erro ? <span className="ml-2 font-semibold text-rose-700">erro: {p.erro}</span> : ' · na fila'}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {baixasPix.length > 0 && (
+          <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50 p-4">
+            <p className="text-sm font-semibold text-blue-900">Baixas ligadas a Pix recebido</p>
+            <ul className="mt-2 space-y-1 text-sm text-blue-900">
+              {baixasPix.map((b) => (
+                <li key={b.id}>
+                  🔗 Baixa de <b>{brl(Number(b.valor))}</b> em {formatDateTime(b.criadoEm)}
+                  {b.criadoPor && <span className="text-blue-800"> por {b.criadoPor}</span>}
+                  {' ← '}Pix de {b.pixData.split('-').reverse().join('/')} · {brl(Number(b.pixValor))}
+                  {favorecidoDoPix(b.pixDescricao) && <span> · {favorecidoDoPix(b.pixDescricao)}</span>}
+                  {b.status === 'pendente' && <span className="text-amber-700"> · aguardando a loja</span>}
+                  {b.status === 'erro' && <span className="font-semibold text-rose-700"> · erro na loja (não abateu)</span>}
                 </li>
               ))}
             </ul>

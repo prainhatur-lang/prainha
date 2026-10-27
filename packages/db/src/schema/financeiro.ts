@@ -261,6 +261,8 @@ export const fiadoLancamento = pgTable(
     vencimento: date('vencimento'),
     /** PAGAMENTOS.CODIGO criado na loja (é o que amarra a forma ao movimento). */
     pagamentoCodigo: integer('pagamento_codigo'),
+    /** Pix recebido no extrato (lancamento_banco) que pagou esta baixa. */
+    lancamentoBancoId: uuid('lancamento_banco_id'),
     /** pendente · aplicado · erro */
     status: varchar('status', { length: 10 }).notNull().default('pendente'),
     erro: text('erro'),

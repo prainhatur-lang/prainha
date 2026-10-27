@@ -9,7 +9,9 @@ import { z } from 'zod';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
+import { favorecidoDoPix } from '@/lib/pix-inter';
+import { pixRotulo } from '@/lib/fiado-pix';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -23,6 +25,8 @@ const Body = z.object({
   formaCodigo: z.number().int().positive().optional(),
   condicao: z.enum(['avista', 'prazo']).optional(),
   vencimento: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  /** Pix recebido no extrato (lancamento_banco) que pagou esta baixa. Opcional. */
+  lancamentoBancoId: z.string().uuid().optional(),
 });
 
 export async function POST(request: Request) {
@@ -31,7 +35,10 @@ export async function POST(request: Request) {
 
   const parsed = Body.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ ok: false, erro: 'dados inválidos' }, { status: 400 });
-  const { clienteId, tipo, valor, observacao, formaCodigo, condicao, vencimento } = parsed.data;
+  const { clienteId, tipo, valor, observacao, formaCodigo, condicao, vencimento, lancamentoBancoId } = parsed.data;
+  if (lancamentoBancoId && tipo !== 'pagamento') {
+    return NextResponse.json({ ok: false, erro: 'Pix recebido só se liga a pagamento' }, { status: 400 });
+  }
   if (tipo === 'pagamento' && !formaCodigo) {
     return NextResponse.json({ ok: false, erro: 'escolha a forma de pagamento' }, { status: 400 });
   }
@@ -84,23 +91,60 @@ export async function POST(request: Request) {
   } else if (condicao === 'avista') {
     partes.push('à vista');
   }
-  const obs = partes.join(' · ').slice(0, 200);
-  const [novo] = await db
-    .insert(schema.fiadoLancamento)
-    .values({
-      filialId: cli.filialId,
-      clienteCodigoExterno: cli.codigoExterno,
-      clienteNome: cli.nome ?? null,
-      tipo,
-      valor: valor.toFixed(2),
-      observacao: obs,
-      formaCodigo: formaCodigo ?? null,
-      formaNome,
-      condicao: condicao ?? null,
-      vencimento: vencimento ?? null,
-      criadoPor: auth.user.email ?? null,
-    })
-    .returning({ id: schema.fiadoLancamento.id });
+  const valores = {
+    filialId: cli.filialId,
+    clienteCodigoExterno: cli.codigoExterno,
+    clienteNome: cli.nome ?? null,
+    tipo,
+    valor: valor.toFixed(2),
+    formaCodigo: formaCodigo ?? null,
+    formaNome,
+    condicao: condicao ?? null,
+    vencimento: vencimento ?? null,
+    criadoPor: auth.user.email ?? null,
+  };
 
-  return NextResponse.json({ ok: true, id: novo.id, aguardando: true });
+  // Sem Pix: igual sempre foi.
+  if (!lancamentoBancoId) {
+    const [novo] = await db
+      .insert(schema.fiadoLancamento)
+      .values({ ...valores, observacao: partes.join(' · ').slice(0, 200) })
+      .returning({ id: schema.fiadoLancamento.id });
+    return NextResponse.json({ ok: true, id: novo.id, aguardando: true });
+  }
+
+  // Com Pix: trava a linha do extrato, confere que é crédito da mesma casa e
+  // que ainda sobra valor nele (soma das baixas ligadas ≤ valor do Pix).
+  const res = await db.transaction(async (tx) => {
+    const r = (await tx.execute(sql`
+      SELECT id, filial_id, tipo, valor::text AS valor, data_movimento::text AS data, descricao
+        FROM lancamento_banco WHERE id = ${lancamentoBancoId} FOR UPDATE
+    `)) as unknown as Array<{ id: string; filial_id: string; tipo: string; valor: string; data: string; descricao: string | null }>;
+    const pix = r[0];
+    if (!pix || pix.tipo !== 'C') return { erro: 'Pix não encontrado no extrato', status: 404 };
+    if (pix.filial_id !== cli.filialId) return { erro: 'esse Pix caiu na conta de outra casa', status: 422 };
+    const u = (await tx.execute(sql`
+      SELECT COALESCE(SUM(valor), 0)::text AS usado FROM fiado_lancamento
+       WHERE lancamento_banco_id = ${lancamentoBancoId} AND status <> 'erro'
+    `)) as unknown as Array<{ usado: string }>;
+    const restante = Math.round((Number(pix.valor) - Number(u[0]?.usado ?? 0)) * 100) / 100;
+    if (valor > restante + 0.005) {
+      return {
+        erro: restante <= 0
+          ? 'esse Pix já foi todo usado em outra baixa'
+          : `esse Pix só tem ${restante.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} sobrando`,
+        status: 409,
+      };
+    }
+    const rotulo = pixRotulo({ data: pix.data, valor: Number(pix.valor), pagador: favorecidoDoPix(pix.descricao) });
+    // Pix entra logo depois do texto base, pra não ser cortado nos 200 caracteres.
+    const obs = [partes[0], rotulo, ...partes.slice(1)].join(' · ').slice(0, 200);
+    const [novo] = await tx
+      .insert(schema.fiadoLancamento)
+      .values({ ...valores, observacao: obs, lancamentoBancoId })
+      .returning({ id: schema.fiadoLancamento.id });
+    return { id: novo.id };
+  });
+  if ('erro' in res) return NextResponse.json({ ok: false, erro: res.erro }, { status: res.status });
+  return NextResponse.json({ ok: true, id: res.id, aguardando: true });
 }

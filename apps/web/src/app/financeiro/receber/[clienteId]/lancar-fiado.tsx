@@ -12,6 +12,20 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
+/** Pix recebido no extrato (resposta de /api/financeiro/fiado/pix-recebidos). */
+interface PixRecebido {
+  id: string;
+  data: string;
+  valor: number;
+  pagador: string | null;
+  usado: number;
+  restante: number;
+  parecido: number;
+}
+
+const brlTxt = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+const dataTxt = (d: string) => `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}`;
+
 /** Códigos reais do Consumer (forma_pagamento_consumer). A API valida. */
 const FORMAS: Array<{ codigo: number; label: string }> = [
   { codigo: 1, label: 'Dinheiro' },
@@ -40,18 +54,60 @@ export function LancarFiado({ clienteId, saldo }: { clienteId: string; saldo: nu
   const [obs, setObs] = useState('');
   const [enviando, setEnviando] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; texto: string } | null>(null);
+  // Pix do extrato que pagou a baixa (opcional)
+  const [pix, setPix] = useState<PixRecebido | null>(null);
+  const [lista, setLista] = useState<PixRecebido[] | null>(null);
+  const [abrirPix, setAbrirPix] = useState(false);
+  const [carregandoPix, setCarregandoPix] = useState(false);
+  const [erroPix, setErroPix] = useState<string | null>(null);
+  const [busca, setBusca] = useState('');
 
   const num = Number(valor.replace(/\./g, '').replace(',', '.'));
   const valido =
     Number.isFinite(num) && num > 0 &&
     (tipo === 'credito' || !!forma) &&
-    (condicao === 'avista' || !!vencimento);
+    (condicao === 'avista' || !!vencimento) &&
+    (!pix || num <= pix.restante + 0.005);
+
+  async function carregarPix() {
+    setAbrirPix(true);
+    if (lista || carregandoPix) return;
+    setCarregandoPix(true);
+    setErroPix(null);
+    try {
+      const r = await fetch(`/api/financeiro/fiado/pix-recebidos?clienteId=${clienteId}`);
+      const j = await r.json();
+      if (!r.ok || !j.ok) setErroPix(j.erro || 'não deu pra carregar o extrato');
+      else setLista(j.pix as PixRecebido[]);
+    } catch {
+      setErroPix('sem conexão');
+    } finally {
+      setCarregandoPix(false);
+    }
+  }
+
+  function escolherPix(p: PixRecebido) {
+    setPix(p);
+    setAbrirPix(false);
+    setForma('18');
+    // sugere o menor entre o que sobra no Pix e o que o cliente deve
+    const sugerido = saldo > 0.01 ? Math.min(p.restante, saldo) : p.restante;
+    setValor(sugerido.toFixed(2).replace('.', ','));
+  }
+
+  const termo = busca.trim().toUpperCase();
+  const termoNum = Number(busca.replace(/\./g, '').replace(',', '.'));
+  const filtrados = (lista ?? []).filter((p) => {
+    if (!termo) return true;
+    if ((p.pagador ?? '').toUpperCase().includes(termo)) return true;
+    return Number.isFinite(termoNum) && termoNum > 0 && Math.abs(p.valor - termoNum) < 1;
+  });
 
   function trocarTipo(t: 'credito' | 'pagamento') {
     setTipo(t);
     // dívida nasce a prazo (tem data pra pagar); pagamento é à vista por natureza
     setCondicao(t === 'credito' ? 'prazo' : 'avista');
-    if (t === 'credito') setForma('');
+    if (t === 'credito') { setForma(''); setPix(null); setAbrirPix(false); }
     else if (!forma) setForma('1');
   }
 
@@ -71,6 +127,7 @@ export function LancarFiado({ clienteId, saldo }: { clienteId: string; saldo: nu
           formaCodigo: forma ? Number(forma) : undefined,
           condicao,
           vencimento: condicao === 'prazo' ? vencimento : undefined,
+          lancamentoBancoId: tipo === 'pagamento' && pix ? pix.id : undefined,
         }),
       });
       const j = await r.json();
@@ -80,6 +137,8 @@ export function LancarFiado({ clienteId, saldo }: { clienteId: string; saldo: nu
         setMsg({ ok: true, texto: 'Lançado. A loja aplica em até 1 minuto — a página atualiza sozinha.' });
         setValor('');
         setObs('');
+        setPix(null);
+        setLista(null);
         setTimeout(() => router.refresh(), 3000);
       }
     } catch {
@@ -179,6 +238,87 @@ export function LancarFiado({ clienteId, saldo }: { clienteId: string; saldo: nu
           />
         </div>
       </div>
+
+      {tipo === 'pagamento' && (
+        <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={rotulo}>Pix recebido (extrato do banco)</span>
+            <span className="text-[11px] text-slate-400">opcional · amarra a baixa ao Pix que pagou</span>
+          </div>
+          {pix ? (
+            <div className="mt-2 flex flex-wrap items-center gap-3 text-sm">
+              <span className="rounded-md border border-blue-300 bg-white px-3 py-1.5 text-blue-900">
+                🔗 {dataTxt(pix.data)} · <b>{brlTxt(pix.valor)}</b> · {pix.pagador ?? 'pagador não identificado'}
+                {pix.usado > 0.009 && <span className="text-slate-500"> · sobra {brlTxt(pix.restante)}</span>}
+              </span>
+              <button type="button" onClick={carregarPix} className="text-xs text-slate-600 underline">trocar</button>
+              <button type="button" onClick={() => setPix(null)} className="text-xs text-rose-700 underline">tirar</button>
+              {num > pix.restante + 0.005 && (
+                <span className="text-xs font-medium text-rose-700">valor maior que o que sobra no Pix ({brlTxt(pix.restante)})</span>
+              )}
+            </div>
+          ) : (
+            !abrirPix && (
+              <button
+                type="button"
+                onClick={carregarPix}
+                className="mt-2 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 hover:border-slate-400"
+              >
+                Escolher o Pix recebido…
+              </button>
+            )
+          )}
+
+          {abrirPix && (
+            <div className="mt-3">
+              <input
+                value={busca}
+                onChange={(e) => setBusca(e.target.value)}
+                placeholder="buscar por nome de quem pagou ou valor"
+                className={`${campo} mt-0 bg-white`}
+              />
+              {carregandoPix && <p className="mt-2 text-xs text-slate-500">carregando extrato…</p>}
+              {erroPix && <p className="mt-2 text-xs text-rose-700">{erroPix}</p>}
+              {lista && filtrados.length === 0 && (
+                <p className="mt-2 text-xs text-slate-500">
+                  Nenhum Pix recebido nos últimos 120 dias com esse filtro. Se o dinheiro caiu em outro banco
+                  (fora do extrato do Inter), lance sem Pix e anote na observação.
+                </p>
+              )}
+              {filtrados.length > 0 && (
+                <ul className="mt-2 max-h-64 divide-y divide-slate-200 overflow-y-auto rounded-lg border border-slate-200 bg-white">
+                  {filtrados.slice(0, 60).map((p) => {
+                    const esgotado = p.restante <= 0.009;
+                    return (
+                      <li key={p.id}>
+                        <button
+                          type="button"
+                          disabled={esgotado}
+                          onClick={() => escolherPix(p)}
+                          className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-left text-sm hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-white"
+                        >
+                          <span className="w-20 text-slate-500">{dataTxt(p.data)}</span>
+                          <span className="w-28 font-semibold text-slate-900">{brlTxt(p.valor)}</span>
+                          <span className="min-w-0 flex-1 truncate text-slate-700">{p.pagador ?? '—'}</span>
+                          {p.parecido > 0 && (
+                            <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[11px] font-medium text-emerald-800">nome parecido</span>
+                          )}
+                          {esgotado ? (
+                            <span className="text-[11px] text-slate-500">já usado em baixa</span>
+                          ) : p.usado > 0.009 ? (
+                            <span className="text-[11px] text-amber-700">sobra {brlTxt(p.restante)}</span>
+                          ) : null}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              <button type="button" onClick={() => setAbrirPix(false)} className="mt-2 text-xs text-slate-500 underline">fechar</button>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="mt-3 grid gap-3 sm:grid-cols-[1fr_auto]">
         <div>
