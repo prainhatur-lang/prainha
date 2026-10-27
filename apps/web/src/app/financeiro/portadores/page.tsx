@@ -6,7 +6,7 @@
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, isNull } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { createClient } from '@/lib/supabase/server';
 import { exigirPerm } from '@/lib/exigir-perm';
 import { podeUsuario } from '@/lib/permissoes-runtime';
@@ -24,6 +24,7 @@ export const runtime = 'nodejs';
 interface SP {
   filialId?: string;
   portador?: string;
+  excluidos?: string;
 }
 
 export default async function Page({ searchParams }: { searchParams: Promise<SP> }) {
@@ -44,6 +45,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
   const saldos = await saldosDaFilial(filial.id);
   const total = saldos.reduce((s, p) => s + p.saldo, 0);
   const filtro = sp.portador === 'sem' ? 'sem' : saldos.find((p) => p.id === sp.portador)?.id ?? null;
+  const verExcluidos = sp.excluidos === '1';
   const nomePortador = new Map(saldos.filter((p) => p.id).map((p) => [p.id as string, p.nome]));
 
   const movs = await db
@@ -55,11 +57,17 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
       valor: schema.portadorMovimento.valor,
       descricao: schema.portadorMovimento.descricao,
       quemLevou: schema.portadorMovimento.quemLevou,
+      criadoPor: schema.portadorMovimento.criadoPor,
+      criadoEm: schema.portadorMovimento.criadoEm,
+      atribuidoPor: schema.portadorMovimento.atribuidoPor,
+      atribuidoEm: schema.portadorMovimento.atribuidoEm,
+      excluidoPor: schema.portadorMovimento.excluidoPor,
+      excluidoEm: schema.portadorMovimento.excluidoEm,
     })
     .from(schema.portadorMovimento)
     .where(and(
       eq(schema.portadorMovimento.filialId, filial.id),
-      isNull(schema.portadorMovimento.excluidoEm),
+      verExcluidos ? isNotNull(schema.portadorMovimento.excluidoEm) : isNull(schema.portadorMovimento.excluidoEm),
       filtro === 'sem'
         ? isNull(schema.portadorMovimento.portadorId)
         : filtro
@@ -68,6 +76,19 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
     ))
     .orderBy(desc(schema.portadorMovimento.data), desc(schema.portadorMovimento.criadoEm))
     .limit(200);
+
+  // quem fez: nome do usuário logado que lançou / atribuiu / excluiu
+  const idsUsuarios = [...new Set(movs.flatMap((m) => [m.criadoPor, m.atribuidoPor, m.excluidoPor]).filter((x): x is string => !!x))];
+  const usuarios = idsUsuarios.length
+    ? await db
+        .select({ id: schema.usuario.id, nome: schema.usuario.nome, email: schema.usuario.email })
+        .from(schema.usuario)
+        .where(inArray(schema.usuario.id, idsUsuarios))
+    : [];
+  const nomeUsuario = new Map(usuarios.map((u) => [u.id, u.nome?.trim() || u.email.split('@')[0]]));
+  const quem = (id: string | null) => (id ? nomeUsuario.get(id) ?? 'usuário removido' : null);
+  const hora = (d: Date | null) =>
+    d ? d.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
 
   const ativos = saldos.filter((p) => p.id && p.ativo).map((p) => ({ id: p.id as string, nome: p.nome }));
   const link = (extra: Record<string, string>) =>
@@ -151,13 +172,22 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
         <div className="mt-6 overflow-x-auto rounded-xl border border-slate-200 bg-white">
           <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
             <h2 className="text-sm font-semibold text-slate-700">
-              Lançamentos{filtro ? ` · ${filtro === 'sem' ? 'sem portador' : nomePortador.get(filtro)}` : ''}
+              {verExcluidos ? 'Lançamentos excluídos' : 'Lançamentos'}
+              {filtro ? ` · ${filtro === 'sem' ? 'sem portador' : nomePortador.get(filtro)}` : ''}
             </h2>
-            {filtro && (
-              <Link href={link({})} className="text-xs text-slate-500 underline">
-                ver todos
+            <div className="flex gap-3">
+              <Link
+                href={link({ ...(filtro ? { portador: filtro } : {}), ...(verExcluidos ? {} : { excluidos: '1' }) })}
+                className="text-xs text-slate-500 underline"
+              >
+                {verExcluidos ? 'ver ativos' : 'ver excluídos'}
               </Link>
-            )}
+              {filtro && (
+                <Link href={link(verExcluidos ? { excluidos: '1' } : {})} className="text-xs text-slate-500 underline">
+                  ver todos
+                </Link>
+              )}
+            </div>
           </div>
           {movs.length === 0 ? (
             <p className="px-4 py-6 text-sm text-slate-400">Nenhum lançamento ainda.</p>
@@ -176,13 +206,24 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
                         <span className="text-slate-400">{ROTULO_TIPO[m.tipo] ?? m.tipo}</span>
                         {m.quemLevou && <span> · levou “{m.quemLevou}”</span>}
                         {m.descricao && <span> · {m.descricao}</span>}
+                        <div className="text-xs text-slate-400">
+                          {m.criadoPor ? `lançado por ${quem(m.criadoPor)}` : m.tipo === 'SANGRIA' ? 'veio do caixa' : 'lançado'}
+                          {' · '}
+                          {hora(m.criadoEm)}
+                          {m.atribuidoPor && ` · atribuído por ${quem(m.atribuidoPor)} ${hora(m.atribuidoEm)}`}
+                          {m.excluidoEm && (
+                            <span className="text-red-500">
+                              {' · '}excluído por {quem(m.excluidoPor) ?? '?'} {hora(m.excluidoEm)}
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className={`whitespace-nowrap px-2 py-2 text-right font-semibold ${v < 0 ? 'text-red-600' : 'text-emerald-700'}`}>
                         {v < 0 ? '− ' : '+ '}
                         {brl(Math.abs(v))}
                       </td>
                       <td className="whitespace-nowrap px-4 py-2 text-right">
-                        {podeLancar && (
+                        {podeLancar && !verExcluidos && (
                           <AcoesMovimento
                             filialId={filial.id}
                             movimentoId={m.id}

@@ -60,6 +60,9 @@ export const portadorMovimento = pgTable(
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
     excluidoEm: timestamp('excluido_em', { withTimezone: true }),
     excluidoPor: uuid('excluido_por').references(() => usuario.id),
+    /** Quem (usuário logado) atribuiu a sangria "sem portador" a um portador. */
+    atribuidoPor: uuid('atribuido_por').references(() => usuario.id),
+    atribuidoEm: timestamp('atribuido_em', { withTimezone: true }),
   },
   (t) => ({
     filialDataIdx: index('idx_portador_mov_filial_data').on(t.filialId, t.data),

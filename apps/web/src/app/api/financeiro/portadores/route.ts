@@ -100,7 +100,7 @@ export async function POST(request: Request) {
       if (!p || !UUID.test(mid)) return err('parâmetros');
       await db
         .update(schema.portadorMovimento)
-        .set({ portadorId: p.id })
+        .set({ portadorId: p.id, atribuidoPor: user.id, atribuidoEm: new Date() })
         .where(and(
           eq(schema.portadorMovimento.id, mid),
           eq(schema.portadorMovimento.filialId, filialId),
