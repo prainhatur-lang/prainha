@@ -91,6 +91,10 @@ const DIAS_SEMANA = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sab'] as const;
  *   horas_total × taxa_diarista_hora (override por pessoa OU padrao da filial)
  * - Aux transporte (se ativo): horas em dias selecionados × valor_hora
  */
+/** Adicional noturno na folha semanal: desligado a pedido do dono (27/10/2026).
+ *  Noturno vai só no contracheque; o espelho do ponto continua mostrando. */
+const PAGAR_NOTURNO_NA_FOLHA_SEMANAL = false;
+
 export function calcularFolha(args: {
   config: ConfigFolha;
   dezPctPorDia: Record<string, number>;
@@ -258,7 +262,9 @@ export function calcularFolha(args: {
 
     // Adicional noturno — só quem recebe por hora (diarista por hora ou
     // intermitente com taxa no cadastro). 20% × taxa × horas reduzidas.
-    {
+    // DESLIGADO (dono, 27/10/2026): noturno se paga só no contracheque do
+    // contador; a folha semanal (10% + diárias) não paga noturno.
+    if (PAGAR_NOTURNO_NA_FOLHA_SEMANAL) {
       const n = noturno[p.fornecedorId];
       if (n && n.fictoMin > 0) {
         let taxa: number | null = null;
