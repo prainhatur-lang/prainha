@@ -1,5 +1,7 @@
 // Cria bucket 'producao-fotos' no Supabase Storage como público
 // (URLs são longas/aleatórias via storage_path = filialId/opId/uuid.jpg).
+// PDF entra desde 27/10/2026: guias de imposto e boletos de nota caem aqui.
+// Uso: pnpm --filter @concilia/db setup:bucket-fotos
 
 import { config as loadEnv } from 'dotenv';
 import { resolve } from 'node:path';
@@ -29,7 +31,7 @@ async function main() {
     const { error } = await supabase.storage.updateBucket('producao-fotos', {
       public: true,
       fileSizeLimit: 10 * 1024 * 1024, // 10MB
-      allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/heic'],
+      allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'application/pdf'],
     });
     if (error) {
       console.error('  erro:', error.message);
@@ -39,7 +41,7 @@ async function main() {
     const { error } = await supabase.storage.createBucket('producao-fotos', {
       public: true,
       fileSizeLimit: 10 * 1024 * 1024,
-      allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/heic'],
+      allowedMimeTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'application/pdf'],
     });
     if (error) {
       console.error('  erro:', error.message);
