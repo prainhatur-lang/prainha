@@ -24,7 +24,7 @@ import { exigirPermApi } from '@/lib/exigir-perm';
 import { consultarPagamentoPixInter, incluirPagamentoPixInter, InterPixRecusado, InterSaldoErro, resolverCredenciaisInterPagamentos } from '@/lib/inter';
 import { conferirChavePix, recebedorBate } from '@/lib/pix-titular';
 import { rescisoesDasContas } from '@/lib/rh/rescisao-pix';
-import { baixarContasDoPix, lerSaldoParaPix, podePagarPix, type SaldoParaPix } from '@/lib/pix-pagamento';
+import { baixarContasDoPix, lerSaldoParaPix, podePagarPix, sincronizarPixAbertos, type SaldoParaPix } from '@/lib/pix-pagamento';
 
 export const dynamic = 'force-dynamic';
 // 90: saldo (até ~12 s) + envio do Pix (até 45 s) + banco.
@@ -130,6 +130,11 @@ export async function POST(req: Request) {
   // ENVIANDO, tudo junto. O saldo fica dentro da trava: dois Pix da mesma casa
   // ao mesmo tempo não passam os dois no mesmo saldo (o primeiro já entra no
   // comprometido do segundo).
+  // Pix anteriores já resolvidos no Inter (aprovados no app) saem do
+  // comprometido antes da conta do saldo (27/10/2026). Fora da trava: a baixa
+  // é uma vez só (baixado_em) e não briga com outro pedido.
+  await sincronizarPixAbertos(filialId, cred).catch(() => null);
+
   const conta0 = contas[0]!;
   const descricao = `${forn.nome} - ${conta0.descricao ?? 'pedido'} (venc ${conta0.venc})`.slice(0, 140);
   const resultado = await db.transaction(async (tx) => {

@@ -8,8 +8,13 @@ import { db, schema } from '@concilia/db';
 import { and, eq, sql } from 'drizzle-orm';
 import { podeUsuario } from '@/lib/permissoes-runtime';
 import { recalcularAgregado } from '@/lib/conta-pagar-baixa';
-import { hojeBr } from '@/lib/datas';
-import { consultarSaldoAtualInter, type InterCredenciais } from '@/lib/inter';
+import { dateToBrYmd, hojeBr } from '@/lib/datas';
+import {
+  classificarStatusPixInter,
+  consultarPagamentoPixInter,
+  consultarSaldoAtualInter,
+  type InterCredenciais,
+} from '@/lib/inter';
 
 export const STATUS_PIX_ABERTO = ['ENVIANDO', 'APROVACAO', 'AGENDADO'] as const;
 
@@ -138,4 +143,101 @@ export async function baixarContasDoPix(pixId: string, dataPagamento?: string | 
     }
     return { baixadas };
   });
+}
+
+/**
+ * Confere no Inter os Pix do sistema desta casa ainda sem desfecho e fecha os
+ * que já se resolveram (caso 27/10/2026, Prainha Bar: 3 Pix aprovados no app
+ * do Inter às 16:55 ficaram "APROVACAO" até alguém clicar "Conferir no
+ * Inter" — o saldo do banco já tinha caído e o "Livre pra Pix" descontava de
+ * novo, deu −R$ 368,90 e travou o Pix seguinte).
+ * Pago → baixa nas contas (baixarContasDoPix, uma vez só). Recusado → ERRO
+ * (libera as contas). Pendente → só atualiza o status do Inter.
+ * Pix sem código do Inter (resposta perdida) não tem o que consultar: segue
+ * no "Saiu / Não saiu" manual. Melhor esforço: erro ou demora do Inter não
+ * derruba quem chamou — o Pix só continua contado como sem desfecho.
+ * Pix mexido há menos de 15 s fica de fora (acabou de ser enviado/conferido).
+ */
+export async function sincronizarPixAbertos(
+  filialId: string,
+  cred: InterCredenciais,
+  limiteMs = 8_000,
+): Promise<{ conferidos: number; pagos: number; recusados: number }> {
+  const fim = Date.now() + limiteMs;
+  const out = { conferidos: 0, pagos: 0, recusados: 0 };
+  // PAGO sem baixa (baixa caiu no meio): só termina a baixa, sem ir ao banco.
+  const semBaixa = (await db.execute(sql`
+    SELECT id FROM pix_pagamento
+     WHERE filial_id = ${filialId}::uuid AND status = 'PAGO' AND baixado_em IS NULL
+  `)) as unknown as Array<{ id: string }>;
+  for (const r of semBaixa) {
+    try {
+      await baixarContasDoPix(r.id);
+      out.pagos += 1;
+    } catch (e) {
+      console.warn('[pix-sincronizar] baixa', r.id, e instanceof Error ? e.message : e);
+    }
+  }
+  const abertos = (await db.execute(sql`
+    SELECT id, codigo_solicitacao FROM pix_pagamento
+     WHERE filial_id = ${filialId}::uuid
+       AND status IN ('ENVIANDO','APROVACAO','AGENDADO')
+       AND codigo_solicitacao IS NOT NULL
+       AND atualizado_em < now() - interval '15 seconds'
+     ORDER BY criado_em
+     LIMIT 10
+  `)) as unknown as Array<{ id: string; codigo_solicitacao: string }>;
+  for (const p of abertos) {
+    const resta = fim - Date.now();
+    if (resta < 1_000) break;
+    let consulta;
+    try {
+      consulta = await Promise.race([
+        consultarPagamentoPixInter(cred, p.codigo_solicitacao),
+        new Promise<null>((r) => setTimeout(() => r(null), resta)),
+      ]);
+    } catch (e) {
+      console.warn('[pix-sincronizar] consulta', p.id, e instanceof Error ? e.message : e);
+      break; // token/limite do Inter: não insiste nos outros agora
+    }
+    if (!consulta) break;
+    out.conferidos += 1;
+    const t = consulta.transacaoPix ?? {};
+    const statusInter = String(t.status ?? '');
+    const nosso = classificarStatusPixInter(statusInter);
+    await db
+      .update(schema.pixPagamento)
+      .set({
+        statusInter: statusInter || null,
+        ...(t.endToEnd ? { endToEndId: t.endToEnd } : {}),
+        retorno: consulta as object,
+        atualizadoEm: new Date(),
+      })
+      .where(eq(schema.pixPagamento.id, p.id));
+    if (nosso === 'PAGO') {
+      const mov = t.dataHoraMovimento ? new Date(t.dataHoraMovimento) : null;
+      const data = mov && !Number.isNaN(mov.getTime()) ? dateToBrYmd(mov) : null;
+      await baixarContasDoPix(p.id, data);
+      out.pagos += 1;
+    } else if (nosso === 'ERRO') {
+      const motivo = (t.erros ?? []).map((x) => x.descricaoErro ?? x.codigoErro).filter(Boolean).join('; ');
+      await db
+        .update(schema.pixPagamento)
+        .set({ status: 'ERRO', erro: `Inter: ${statusInter}${motivo ? ` — ${motivo}` : ''}`, atualizadoEm: new Date() })
+        .where(and(eq(schema.pixPagamento.id, p.id), sql`baixado_em IS NULL`));
+      out.recusados += 1;
+    }
+  }
+  if (out.conferidos || out.pagos) console.info('[pix-sincronizar]', { filialId, ...out });
+  return out;
+}
+
+/** Casas com Pix do sistema sem desfecho que dá pra conferir no Inter (cron). */
+export async function filiaisComPixAberto(): Promise<string[]> {
+  const rows = (await db.execute(sql`
+    SELECT DISTINCT filial_id::text AS id FROM pix_pagamento
+     WHERE (status IN ('ENVIANDO','APROVACAO','AGENDADO') AND codigo_solicitacao IS NOT NULL)
+        OR (status = 'PAGO' AND baixado_em IS NULL)
+  `)) as unknown as Array<{ id: string }>;
+  return rows.map((r) => r.id);
 }

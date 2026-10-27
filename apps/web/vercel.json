@@ -73,6 +73,10 @@
       "schedule": "30 8 * * *"
     },
     {
+      "path": "/api/cron/pix-sistema-conferir",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/cron/marketing-publicar",
       "schedule": "*/5 * * * *"
     },

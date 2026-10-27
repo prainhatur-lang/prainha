@@ -8,7 +8,7 @@ import { and, eq } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { InterSaldoErro, resolverCredenciaisInterPagamentos } from '@/lib/inter';
-import { lerSaldoParaPix, podePagarPix } from '@/lib/pix-pagamento';
+import { lerSaldoParaPix, podePagarPix, sincronizarPixAbertos } from '@/lib/pix-pagamento';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 30;
@@ -34,8 +34,14 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'Esta casa não tem a integração de pagamentos do Inter configurada.' }, { status: 400 });
   }
 
+  // Antes do saldo: fecha os Pix que o Inter já resolveu (aprovado no app,
+  // pago ou recusado), senão o que já saiu do banco é descontado de novo
+  // como "sem desfecho" (27/10/2026). Melhor esforço, até 8 s.
+  const sinc = await sincronizarPixAbertos(filialId, cred).catch(() => null);
+
   try {
     const saldo = await lerSaldoParaPix(filialId, cred);
+    if (sinc && (sinc.pagos || sinc.recusados)) return NextResponse.json({ ok: true, ...saldo, sincronizados: sinc });
     return NextResponse.json({ ok: true, ...saldo });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

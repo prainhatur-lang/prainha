@@ -6,6 +6,7 @@
 // dentro da trava da casa e recusa se faltar.
 
 import { useCallback, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 
 export interface SaldoPix {
   disponivel: number;
@@ -26,6 +27,7 @@ export function useSaldoPix(filialId: string | undefined, ativo = true) {
   const [saldo, setSaldo] = useState<SaldoPix | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [carregando, setCarregando] = useState(false);
+  const router = useRouter();
 
   const ler = useCallback(async () => {
     if (!filialId) return;
@@ -34,15 +36,23 @@ export function useSaldoPix(filialId: string | undefined, ativo = true) {
     const r = await fetch(`/api/financeiro/pedidos-pix/saldo?filialId=${encodeURIComponent(filialId)}`, {
       cache: 'no-store',
     }).catch(() => null);
-    const d = r ? ((await r.json().catch(() => ({}))) as Partial<SaldoPix> & { error?: string }) : {};
+    const d = r
+      ? ((await r.json().catch(() => ({}))) as Partial<SaldoPix> & {
+          error?: string;
+          sincronizados?: { pagos?: number; recusados?: number };
+        })
+      : {};
     if (r?.ok && typeof d.disponivel === 'number' && typeof d.livre === 'number') {
       setSaldo(d as SaldoPix);
+      // O servidor fechou Pix que o Inter já resolveu: recarrega a lista
+      // (contas baixadas saem, "Pix enviados" muda o status). 27/10/2026.
+      if (d.sincronizados?.pagos || d.sincronizados?.recusados) router.refresh();
     } else {
       setSaldo(null);
       setErro(d.error ?? 'Sem resposta do sistema.');
     }
     setCarregando(false);
-  }, [filialId]);
+  }, [filialId, router]);
 
   useEffect(() => {
     if (!ativo) return;
