@@ -326,7 +326,10 @@ export const GRUPOS_SISTEMA: Array<{
           c === 'nota_compra.lancar_estoque' ||
           c.startsWith('conciliacao.') ||
           c.startsWith('relatorio.') ||
-          c === 'fornecedor.read',
+          c === 'fornecedor.read' ||
+          // 27/10/2026: o financeiro corrige chave Pix / "quem recebe" do
+          // fornecedor pra lançar o Pix (Pedidos Pix). Pedido do dono.
+          c === 'fornecedor.update',
       ),
   },
   {
