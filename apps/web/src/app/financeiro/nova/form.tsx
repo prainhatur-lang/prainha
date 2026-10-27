@@ -252,6 +252,8 @@ export function NovaContaForm({
     }
     setSalvando(true);
     try {
+      let forcarDuplicada = false;
+      let forcarCasa = false;
       const enviar = (forcar: boolean) =>
         fetch('/api/financeiro/contas', {
           method: 'POST',
@@ -267,6 +269,7 @@ export function NovaContaForm({
             categoriaId,
             observacao: observacao.trim() || null,
             ...(forcar ? { forcar: true } : {}),
+            ...(forcarDuplicada ? { forcarDuplicada: true } : {}),
           }),
         });
       let r = await enviar(false);
@@ -280,7 +283,20 @@ export function NovaContaForm({
           setErro(d.error);
           return;
         }
+        forcarCasa = true;
         r = await enviar(true);
+        d = await r.json().catch(() => ({}));
+      }
+      // Mesmo nº + mesmo valor + mesma empresa (27/10/2026). Pedido/NF-e já
+      // lançado não deixa; outra conta manual com o mesmo nº pergunta.
+      if (r.status === 409 && d.duplicada && d.podeForcar) {
+        const ok = window.confirm(`⚠️ ${d.error}\n\nÉ outra compra? Lançar mesmo assim?`);
+        if (!ok) {
+          setErro(d.error);
+          return;
+        }
+        forcarDuplicada = true;
+        r = await enviar(forcarCasa);
         d = await r.json().catch(() => ({}));
       }
       if (!r.ok) {

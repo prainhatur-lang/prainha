@@ -12,6 +12,7 @@
 //     categoriaId?: uuid,              // categoria OU subcategoria do plano
 //     observacao?: string,
 //     forcar?: boolean,               // lança mesmo com o aviso "nota de outra casa"
+//     forcarDuplicada?: boolean,      // lança mesmo com o aviso "mesmo nº em outra conta manual"
 //   }
 //
 // 409 { casaErrada } quando o histórico/observação traz o número de uma NF-e
@@ -27,6 +28,7 @@ import { exigirPermApi } from '@/lib/exigir-perm';
 import { hojeBr } from '@/lib/datas';
 import { garantirFornecedorNaFilial } from '@/lib/fornecedor-unico';
 import { notaDeOutraCasa } from '@/lib/conta-casa-errada';
+import { acharContaMesmoPedido, msgContaDuplicada, numerosDoTexto } from '@/lib/conta-duplicada';
 
 export const dynamic = 'force-dynamic';
 
@@ -42,6 +44,7 @@ const Body = z.object({
   categoriaId: z.string().uuid().nullable().optional(),
   observacao: z.string().trim().max(1000).nullable().optional(),
   forcar: z.boolean().optional(),
+  forcarDuplicada: z.boolean().optional(),
 });
 
 export async function POST(req: Request) {
@@ -122,6 +125,22 @@ export async function POST(req: Request) {
         { status: 409 },
       );
     }
+  }
+
+  // Conta em dobro (27/10/2026): mesma empresa + mesmo valor + mesmo número de
+  // pedido/nota = a mesma compra. Bateu com pedido/NF-e já lançado: não lança.
+  // Bateu só com o histórico de outra conta manual: pergunta (forcarDuplicada).
+  const dup = await acharContaMesmoPedido({
+    filialId: b.filialId,
+    fornecedorId,
+    valor: b.valor,
+    numeros: numerosDoTexto(b.descricao, b.observacao),
+  }).catch(() => null);
+  if (dup && (dup.pelaNota || !b.forcarDuplicada)) {
+    return NextResponse.json(
+      { error: msgContaDuplicada(dup), duplicada: dup, podeForcar: !dup.pelaNota },
+      { status: 409 },
+    );
   }
 
   const lancamento = b.dataLancamento ?? hojeBr();

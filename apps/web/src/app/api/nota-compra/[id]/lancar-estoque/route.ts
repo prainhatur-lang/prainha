@@ -31,10 +31,11 @@ import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { contasDoPedidoPraNota, ligarDuplicatasAoPedido } from '@/lib/pedido-encomenda';
-import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { aplicarMpmEntrada, fatorRateioNfe } from '@/lib/custo-medio';
 import { lerConferenciaNota } from '@/lib/nota-conferencia';
 import { fatorDoItemNota } from '@/lib/fator-nota-item';
+import { acharContaMesmoPedido, fornecedoresMesmaEmpresa, msgContaDuplicada } from '@/lib/conta-duplicada';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -103,6 +104,37 @@ export async function POST(
       { error: `nao pode lancar nota ${nota.situacao}` },
       { status: 400 },
     );
+  }
+
+  // Pedido em dobro (27/10/2026, Rio Mar nº 2560): mesma empresa (outro
+  // cadastro do mesmo grupo/CNPJ/chave Pix), mesmo valor e mesmo número que
+  // OUTRO pedido já lançado = a mesma compra. Recusa antes de mexer no estoque.
+  // Conta digitada na mão (sem nota ligada) não trava: é aproveitada abaixo.
+  if (nota.origemImportacao === 'PEDIDO_FOTO' && nota.fornecedorId && nota.numero != null) {
+    const dup = await acharContaMesmoPedido({
+      filialId: nota.filialId,
+      fornecedorId: nota.fornecedorId,
+      valor: nota.valorTotal ?? 0,
+      numeros: [String(nota.numero)],
+      ignorarNotaCompraId: id,
+    }).catch(() => null);
+    if (dup) {
+      const [ligada] = dup.notaCompraId
+        ? [{ id: dup.notaCompraId }]
+        : await db
+            .select({ id: schema.notaCompraDuplicata.id })
+            .from(schema.notaCompraDuplicata)
+            .where(
+              and(
+                eq(schema.notaCompraDuplicata.contaPagarId, dup.id),
+                sql`${schema.notaCompraDuplicata.notaCompraId} <> ${id}`,
+              ),
+            )
+            .limit(1);
+      if (ligada) {
+        return NextResponse.json({ error: msgContaDuplicada(dup), duplicada: dup }, { status: 409 });
+      }
+    }
   }
 
   const itens = await db
@@ -286,13 +318,42 @@ export async function POST(
       // existe em vez de criar outra. A conta não ganha nota_compra_id: excluir o
       // pedido não apaga o que foi lançado na mão.
       if (nota.origemImportacao === 'PEDIDO_FOTO') {
+        // Mesma empresa = todos os cadastros dela nesta casa (grupo, CNPJ, Pix).
+        const mesmaEmpresa = await fornecedoresMesmaEmpresa(nota.filialId, nota.fornecedorId);
+        // Mesmo número de pedido no histórico da conta manual: aproveita sem
+        // olhar a janela de vencimento.
+        const porNumero =
+          nota.numero != null
+            ? await acharContaMesmoPedido({
+                filialId: nota.filialId,
+                fornecedorId: nota.fornecedorId,
+                valor: d.valor,
+                numeros: [String(nota.numero)],
+                ignorarNotaCompraId: id,
+              }).catch(() => null)
+            : null;
+        if (porNumero && !porNumero.notaCompraId) {
+          const [ocupada] = await db
+            .select({ id: schema.notaCompraDuplicata.id })
+            .from(schema.notaCompraDuplicata)
+            .where(eq(schema.notaCompraDuplicata.contaPagarId, porNumero.id))
+            .limit(1);
+          if (!ocupada) {
+            await db
+              .update(schema.notaCompraDuplicata)
+              .set({ contaPagarId: porNumero.id })
+              .where(eq(schema.notaCompraDuplicata.id, d.id));
+            contasAproveitadas++;
+            continue;
+          }
+        }
         const [jaExiste] = await db
           .select({ id: schema.contaPagar.id })
           .from(schema.contaPagar)
           .where(
             and(
               eq(schema.contaPagar.filialId, nota.filialId),
-              eq(schema.contaPagar.fornecedorId, nota.fornecedorId),
+              inArray(schema.contaPagar.fornecedorId, mesmaEmpresa),
               eq(schema.contaPagar.valor, d.valor),
               isNull(schema.contaPagar.dataDelete),
               isNull(schema.contaPagar.notaCompraId),
