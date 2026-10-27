@@ -164,6 +164,8 @@ export function Publicar({
   const [msg, setMsg] = useState<{ ok: boolean; txt: string } | null>(null);
   const [arrastando, setArrastando] = useState(false);
   const [mexendo, setMexendo] = useState('');
+  const [reagendando, setReagendando] = useState('');
+  const [novoQuando, setNovoQuando] = useState('');
 
   const temVideo = arquivos.some((a) => a.tipo === 'video');
   const enviando = arquivos.some((a) => a.situacao === 'enviando');
@@ -301,6 +303,46 @@ export function Publicar({
     setMexendo(id);
     try {
       await chamar('/api/marketing/posts', 'PATCH', { filialId, id, acao: qual });
+      router.refresh();
+    } catch (e) {
+      window.alert((e as Error).message);
+    } finally {
+      setMexendo('');
+    }
+  }
+
+  /** ISO → 'AAAA-MM-DDTHH:mm' na hora de Aracaju (valor do datetime-local). */
+  function paraCampo(iso: string | null): string {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    const x = Object.fromEntries(
+      new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Sao_Paulo',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23',
+      })
+        .formatToParts(d)
+        .map((q) => [q.type, q.value]),
+    );
+    return `${x.year}-${x.month}-${x.day}T${x.hour}:${x.minute}`;
+  }
+
+  async function salvarHorario(id: string) {
+    if (!novoQuando) return window.alert('Escolha o dia e a hora.');
+    setMexendo(id);
+    try {
+      await chamar('/api/marketing/posts', 'PATCH', {
+        filialId,
+        id,
+        acao: 'reagendar',
+        agendadoPara: new Date(`${novoQuando}:00-03:00`).toISOString(), // hora de Aracaju
+      });
+      setReagendando('');
       router.refresh();
     } catch (e) {
       window.alert((e as Error).message);
@@ -581,6 +623,19 @@ export function Publicar({
                           {mexendo === p.id ? 'Publicando…' : '🚀 Publicar agora'}
                         </button>
                       )}
+                      {p.status === 'AGENDADO' && (
+                        <button
+                          type="button"
+                          disabled={mexendo === p.id}
+                          onClick={() => {
+                            setReagendando(reagendando === p.id ? '' : p.id);
+                            setNovoQuando(paraCampo(p.agendadoPara));
+                          }}
+                          className="rounded border border-slate-300 px-2 py-0.5 hover:bg-slate-50 disabled:opacity-50"
+                        >
+                          🕒 Mudar horário
+                        </button>
+                      )}
                       {p.legenda && (
                         <button
                           type="button"
@@ -601,6 +656,32 @@ export function Publicar({
                         </button>
                       )}
                     </div>
+                    {reagendando === p.id && p.status === 'AGENDADO' && (
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <input
+                          type="datetime-local"
+                          value={novoQuando}
+                          onChange={(e) => setNovoQuando(e.target.value)}
+                          className="rounded border border-slate-300 px-2 py-1 text-xs"
+                        />
+                        <button
+                          type="button"
+                          disabled={mexendo === p.id}
+                          onClick={() => void salvarHorario(p.id)}
+                          className="rounded bg-slate-900 px-2 py-1 font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+                        >
+                          {mexendo === p.id ? 'Salvando…' : 'Salvar horário'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setReagendando('')}
+                          className="rounded border border-slate-300 px-2 py-1 hover:bg-slate-50"
+                        >
+                          Cancelar
+                        </button>
+                        <span className="text-slate-400">hora de Aracaju</span>
+                      </div>
+                    )}
                   </div>
                 </li>
               );

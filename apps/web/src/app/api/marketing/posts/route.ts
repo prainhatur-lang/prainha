@@ -1,6 +1,7 @@
 // /api/marketing/posts — tela /marketing → Publicar.
 //   POST  { filialId, midias, legenda, redes, agendadoPara? }  cria; sem agendadoPara publica na hora
 //   PATCH { filialId, id, acao: 'refazer' | 'excluir' | 'publicar' }
+//   PATCH { filialId, id, acao: 'reagendar', agendadoPara }  troca o horário de um AGENDADO
 // Publicar = lib/marketing/publicar.ts (o mesmo que o cron usa pros agendados).
 
 import { NextResponse } from 'next/server';
@@ -78,7 +79,12 @@ export async function POST(req: Request) {
 }
 
 export async function PATCH(req: Request) {
-  const b = (await req.json().catch(() => ({}))) as { filialId?: string; id?: string; acao?: string };
+  const b = (await req.json().catch(() => ({}))) as {
+    filialId?: string;
+    id?: string;
+    acao?: string;
+    agendadoPara?: string;
+  };
   const a = await acessoMarketingApi(b.filialId);
   if (a.error) return a.error;
   if (!b.id || !/^[0-9a-f-]{36}$/.test(b.id)) return erro('post inválido');
@@ -105,6 +111,20 @@ export async function PATCH(req: Request) {
       // arquivo fica no depósito; não atrapalha
     }
     return NextResponse.json({ ok: true });
+  }
+  if (b.acao === 'reagendar') {
+    if (p.status !== 'AGENDADO') return erro('Só dá pra mudar o horário de post agendado.', 409);
+    const d = new Date(String(b.agendadoPara ?? ''));
+    if (Number.isNaN(d.getTime())) return erro('Data do agendamento inválida.');
+    if (d.getTime() < Date.now() + 60_000) return erro('Escolha um horário daqui pra frente.');
+    // Só troca se ainda está AGENDADO (o cron pode ter pegado nesse meio tempo).
+    const [novo] = await db
+      .update(T)
+      .set({ agendadoPara: d, atualizadoEm: new Date() })
+      .where(and(eq(T.id, p.id), eq(T.status, 'AGENDADO')))
+      .returning();
+    if (!novo) return erro('O post já começou a sair; recarregue a página.', 409);
+    return NextResponse.json({ post: novo });
   }
   if (b.acao === 'refazer' || b.acao === 'publicar') {
     const fim = await processarPost(p.id, baseDoApp(req.url), { refazer: b.acao === 'refazer', ateMs: ate() });
