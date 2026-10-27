@@ -40,6 +40,7 @@ import { tratarPedidoReservas } from '@/lib/reservas-do-dia-envio';
 import {
   registrarEntrada,
   processarEntrada,
+  passagemNaConversaDaEquipe,
   registrarStatusEnvio,
   type EntradaWebhook,
 } from '@/lib/atendimento/motor';
@@ -299,6 +300,11 @@ async function tratarMensagemComum(
     // tem resposta automática — o Victor da Saraiva ficou 2 dias sem isso.
     if (tipo === 'texto' && corpo && perguntaFaturamento(corpo)) {
       after(() => responderFaturamento(entrada, registro.conversaId));
+    }
+    // Nina passou pra equipe por promessa e o cliente diz que é de outra casa
+    // ("o do shopping") → manda o link da atendente de lá (caso Diego, 27/10).
+    else if (tipo === 'texto' && corpo) {
+      after(() => passagemNaConversaDaEquipe(entrada, registro.conversaId));
     }
     return;
   }

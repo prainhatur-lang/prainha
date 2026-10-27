@@ -35,7 +35,7 @@ import { consultarTempoTexto } from './clima';
 import { consultarCotacoesFornecedor, cadastrarFornecedorProspect } from './fornecedor';
 import { listarOpcoesOrcamento, gerarOrcamentoEvento, gerarOrcamentoEspaco } from './orcamento';
 import { criarValePresente } from '@/lib/vale-presente';
-import { casasComAtendente, acharCasa, linkPassagem, passagemRecebida, casasCobertas, acharCasaCoberta, type OutraCasa, type PassagemRecebida, type CasaCoberta } from './outras-casas';
+import { casasComAtendente, casasCitadas, acharCasa, linkPassagem, passagemRecebida, casasCobertas, acharCasaCoberta, type OutraCasa, type PassagemRecebida, type CasaCoberta } from './outras-casas';
 
 const DEBOUNCE_MS = 6_000;
 const HISTORICO_MAX = 30;
@@ -971,8 +971,11 @@ export async function processarEntrada(params: {
       const norm = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
       const fala = norm(falasCliente);
       // Nome inteiro da casa ("tabuara", "prainha mar") ou da atendente ("otavio"), palavra inteira; só vale se casar UMA.
-      const citadas = outrasCasas.filter((c) =>
-        [c.filialNome, c.atendente].some((n) => n && new RegExp(`\\b${norm(n).replace(/[^a-z0-9 ]/g, '')}\\b`).test(fala)),
+      const citadas = outrasCasas.filter(
+        (c) =>
+          [c.filialNome, c.atendente].some((n) => n && new RegExp(`\\b${norm(n).replace(/[^a-z0-9 ]/g, '')}\\b`).test(fala)) ||
+          // Apelido também vale ("o do shopping" = Prainha Mar, 27/10/2026).
+          casasCitadas([c], falasCliente).length > 0,
       );
       const destino = citadas.length === 1 ? citadas[0] : null;
       if (destino) {
@@ -1232,6 +1235,80 @@ export async function processarEntrada(params: {
       .where(eq(schema.atendimentoConversa.id, registro.conversaId));
   } catch (e) {
     console.error('nina: processarEntrada falhou', e);
+  }
+}
+
+/**
+ * Conversa que a Nina jogou pra equipe por promessa ("vou passar pra equipe") e
+ * o cliente diz em seguida que o assunto é de OUTRA casa — caso Diego
+ * (27/10/2026): sugestão de cardápio de happy hour no número do Bar, a equipe
+ * perguntou "Em qual restaurante?" e ele respondeu "O do shopping" (Prainha
+ * Mar). Quem resolve é a atendente de lá: a Nina manda o link da passagem.
+ * Só com motivo de promessa da Nina (transferência de verdade fica com a
+ * equipe), uma casa só citada na mensagem e uma vez por conversa. Nunca lança.
+ */
+export async function passagemNaConversaDaEquipe(entrada: EntradaWebhook, conversaId: string): Promise<void> {
+  try {
+    if (entrada.tipo !== 'texto' || !entrada.corpo) return;
+    const [conversa] = await db
+      .select({ status: schema.atendimentoConversa.status, motivo: schema.atendimentoConversa.motivoTransferencia })
+      .from(schema.atendimentoConversa)
+      .where(eq(schema.atendimentoConversa.id, conversaId))
+      .limit(1);
+    if (!conversa || conversa.status !== 'humano' || !/^Nina prometeu/i.test(conversa.motivo ?? '')) return;
+    const outrasCasas = await casasComAtendente(entrada.filialId);
+    const citadas = casasCitadas(outrasCasas, entrada.corpo);
+    if (citadas.length !== 1) return;
+    const destino = citadas[0];
+
+    const msgs = await db
+      .select({ direcao: schema.atendimentoMensagem.direcao, tipo: schema.atendimentoMensagem.tipo, corpo: schema.atendimentoMensagem.corpo })
+      .from(schema.atendimentoMensagem)
+      .where(eq(schema.atendimentoMensagem.conversaId, conversaId))
+      .orderBy(desc(schema.atendimentoMensagem.criadoEm))
+      .limit(20);
+    // Já mandou o link dessa casa nesta conversa: não repete.
+    if (msgs.some((m) => m.direcao === 'saida' && (m.corpo ?? '').includes(`wa.me/${destino.numero}`))) return;
+
+    const [fil] = await db
+      .select({ nome: schema.filial.nome })
+      .from(schema.filial)
+      .where(eq(schema.filial.id, entrada.filialId))
+      .limit(1);
+    const filialNome = fil?.nome ?? 'Prainha Bar';
+    const pedido = msgs
+      .filter((m) => m.direcao === 'entrada' && m.tipo === 'texto' && m.corpo && m.corpo !== entrada.corpo)
+      .slice(0, 3)
+      .reverse()
+      .map((m) => (m.corpo ?? '').trim())
+      .filter((t) => t && !/^(oi+|ol[aá]|bom dia|boa (tarde|noite)|tudo bem)[!.,?\s]*$/i.test(t))
+      .join(' ');
+    const resumo = `${pedido ? `${pedido} ` : ''}(É sobre o ${destino.filialNome}.)`;
+    const link = linkPassagem(destino, filialNome, resumo);
+    const texto = `Ah, é sobre o ${destino.filialNome}! Quem atende lá é ${destino.atendente}, que resolve direto com você. É só tocar no link abaixo e mandar a mensagem que já vai escrita:\n\n${link}`;
+
+    const envio = await enviarTexto(entrada.phoneNumberId, entrada.telefone, texto);
+    await db.insert(schema.atendimentoMensagem).values({
+      conversaId,
+      waMessageId: envio.waMessageId,
+      direcao: 'saida',
+      autor: 'bot',
+      tipo: 'texto',
+      corpo: texto,
+      statusEnvio: envio.erro ? 'erro' : 'enviada',
+      erro: envio.erro ?? null,
+    });
+    await db
+      .update(schema.atendimentoConversa)
+      .set({
+        motivoTransferencia: `${conversa.motivo} · passado pra ${destino.atendente} (${destino.filialNome})`.slice(0, 500),
+        ultimaMsgEm: sql`now()`,
+        atualizadoEm: sql`now()`,
+      })
+      .where(eq(schema.atendimentoConversa.id, conversaId));
+    console.log('[nina] passagem na conversa da equipe', filialNome, '→', destino.filialNome, conversaId);
+  } catch (e) {
+    console.error('nina: passagemNaConversaDaEquipe falhou', e);
   }
 }
 

@@ -167,7 +167,32 @@ export function acharCasa(casas: OutraCasa[], pedido: string): OutraCasa | null 
   // "Mar" sozinho, "Tabu": pedaço que só uma casa tem.
   const palavras = p.split(/\s+/).filter((w) => w.length >= 3 && !['prainha', 'restaurante', 'casa', 'bar'].includes(w));
   const candidatas = casas.filter((c) => palavras.some((w) => semAcento(c.filialNome).includes(w)));
-  return candidatas.length === 1 ? candidatas[0] : null;
+  if (candidatas.length === 1) return candidatas[0];
+  // Apelido ("shopping", "Praia Sul" = Prainha Mar).
+  const porApelido = casasCitadas(casas, pedido);
+  return porApelido.length === 1 ? porApelido[0] : null;
+}
+
+// Como o cliente chama a casa sem dizer o nome (caso Diego, 27/10/2026: "O do
+// shopping" = Prainha Mar e a Nina não reconheceu). Palavra inteira, sem acento.
+const APELIDOS_POR_FILIAL: Record<string, string[]> = {
+  'e899dae2-38bf-4f3f-9149-7effd059fab8': ['shopping', 'praia sul', 'mar e grill', 'mar grill'],
+};
+
+function soLetras(s: string): string {
+  return semAcento(s).replace(/&/g, ' e ').replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** Casas citadas no texto do cliente: nome inteiro, nome da atendente ou apelido
+ *  ("shopping" = Prainha Mar). Quem chama decide o que fazer com mais de uma. */
+export function casasCitadas(casas: OutraCasa[], texto: string): OutraCasa[] {
+  const fala = ` ${soLetras(texto)} `;
+  return casas.filter((c) =>
+    [c.filialNome, c.atendente, ...(APELIDOS_POR_FILIAL[c.filialId] ?? [])].some((n) => {
+      const t = n ? soLetras(n) : '';
+      return t.length >= 3 && fala.includes(` ${t} `);
+    }),
+  );
 }
 
 /** Link que abre a conversa no número da outra casa com a mensagem já escrita. */
