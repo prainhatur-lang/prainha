@@ -63,7 +63,13 @@ function pareceBoleto(descricao: string, fornecedor: string, temBoleto: boolean)
   const semDatas = descricao
     .replace(/\b\d{1,2}\s*\/\s*\d{1,2}\s*(?:a|até|ate|-|–)\s*\d{1,2}\s*\/\s*\d{1,2}(?:\s*\/\s*\d{2,4})?\b/gi, ' ')
     .replace(/\b\d{1,2}\s*\/\s*\d{1,2}\s*\/\s*\d{2,4}\b/g, ' ');
-  if (/\b\d{1,2}\s*\/\s*\d{1,2}\b/.test(semDatas)) return true; // parcela "2/4"
+  // Parcela "2/4": n ≤ total. "TOCOU 23/10" (27/10/2026) é data do show, não
+  // parcela — 23 de 10 não existe, e a conta da banda sumia da lista do Pix.
+  for (const m of semDatas.matchAll(/\b(\d{1,2})\s*\/\s*(\d{1,2})\b/g)) {
+    const n = Number(m[1]);
+    const total = Number(m[2]);
+    if (n >= 1 && total >= 2 && n <= total) return true;
+  }
   if (/^receita\b/i.test(fornecedor.trim())) return true;
   return false;
 }
