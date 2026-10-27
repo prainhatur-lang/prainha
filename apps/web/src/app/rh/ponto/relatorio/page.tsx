@@ -44,6 +44,10 @@ interface BatidaDia {
   tipo: 'entrada' | 'saida';
   origem: string;
   outraCasa: string | null;
+  /** GPS da batida pelo celular (abre o mapa no 📱). */
+  geoLat: number | null;
+  geoLng: number | null;
+  geoDistanciaM: number | null;
 }
 
 interface LinhaDia {
@@ -184,6 +188,9 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
             quando: schema.pontoBatida.quando,
             tipo: schema.pontoBatida.tipo,
             origem: schema.pontoBatida.origem,
+            geoLat: schema.pontoBatida.geoLat,
+            geoLng: schema.pontoBatida.geoLng,
+            geoDistanciaM: schema.pontoBatida.geoDistanciaM,
           })
           .from(schema.pontoBatida)
           .where(
@@ -451,6 +458,9 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
           tipo: b.tipo as 'entrada' | 'saida',
           origem: b.origem,
           outraCasa: b.filialId !== filial.id ? nomeCasa.get(b.filialId) ?? 'outra casa' : null,
+          geoLat: b.geoLat != null ? Number(b.geoLat) : null,
+          geoLng: b.geoLng != null ? Number(b.geoLng) : null,
+          geoDistanciaM: b.geoDistanciaM ?? null,
         })),
         trabalhadoMin: trab,
         noturnoMin: notReal,
@@ -774,7 +784,21 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
                                   }`}
                                 >
                                   {b.tipo === 'entrada' ? '↘' : '↗'} {b.hora}
-                                  {b.origem === 'celular' ? ' 📱' : b.origem === 'correcao' ? ' ✏️' : ''}
+                                  {b.origem === 'celular' ? (
+                                    b.geoLat != null && b.geoLng != null ? (
+                                      <a
+                                        href={`https://www.google.com/maps?q=${b.geoLat},${b.geoLng}`}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        title={`Ver no mapa onde bateu${b.geoDistanciaM != null ? ` (${b.geoDistanciaM} m da casa)` : ''}`}
+                                        className="ml-0.5 underline decoration-dotted"
+                                      >
+                                        📱
+                                      </a>
+                                    ) : (
+                                      ' 📱'
+                                    )
+                                  ) : b.origem === 'correcao' ? ' ✏️' : ''}
                                   {b.outraCasa ? ` · ${b.outraCasa}` : ''}
                                 </span>
                               ))}
@@ -822,7 +846,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
           Horas somam o ponto de todas as casas (marcado com o nome da outra casa). Previsto e saldo seguem a jornada,
           a mesma conta do banco de horas; intermitente não tem saldo. Falta = dia de trabalho na escala do mês (ou na
           jornada, se não tem escala) sem nenhuma batida e sem atestado. Atraso = entrada mais de {TOLERANCIA_ATRASO_MIN} min
-          depois da hora de entrada cadastrada em Escala do mês (sem hora cadastrada aparece —). ✏️ = batida lançada ou corrigida à mão (a coluna Ajustes conta cada inclusão, alteração e exclusão feita no /rh/ponto); 📱 = batida pelo celular. 🌙 Noturno = horas
+          depois da hora de entrada cadastrada em Escala do mês (sem hora cadastrada aparece —). ✏️ = batida lançada ou corrigida à mão (a coluna Ajustes conta cada inclusão, alteração e exclusão feita no /rh/ponto); 📱 = batida pelo celular (clique pra ver no mapa onde bateu). 🌙 Noturno = horas
           trabalhadas entre 22:00 e 05:00 (CLT art. 73: adicional de 20%); entre parênteses, a mesma conta em hora noturna
           reduzida (52min30s vale 1 hora), que é a base do adicional.
         </p>
