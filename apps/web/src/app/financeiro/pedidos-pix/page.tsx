@@ -44,7 +44,7 @@ import {
 import { urlFotoPedido } from '@/lib/pedido-sem-nota';
 import { recebedorBate } from '@/lib/pix-titular';
 import { rescisoesDasContas, sqlEhRescisao } from '@/lib/rh/rescisao-pix';
-import { consumerParado } from '@/lib/consumer-contas';
+import { consumerParado, FORNECEDORES_CONSUMER_NO_PIX } from '@/lib/consumer-contas';
 
 export const dynamic = 'force-dynamic';
 
@@ -288,10 +288,11 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
     // Borderô da folha (22/10/2026): conta única do intermediário (Sobral) se
     // paga por Pix — aparece mesmo sem chave cadastrada, pra cadastrar e pagar.
     const rescisao = rescisoes.get(l.id);
-    // Conta do Consumer só com chave Pix, sem cara de boleto e vencida há no
+    // Conta do Consumer só dos fornecedores liberados (hoje só a Maria Mistão),
+    // com chave Pix, sem cara de boleto e vencida há no
     // máximo 30 dias (nem em "Todas"): as mais velhas do Bar (Pescados 2022,
     // bandas de jun/jul) já foram pagas fora e iam virar Pix em dobro.
-    if (l.origem === 'CONSUMER' && !rescisao && (!temChave || boleto || l.venc < diasAtrasBr(30))) continue;
+    if (l.origem === 'CONSUMER' && !rescisao && (!FORNECEDORES_CONSUMER_NO_PIX.includes(l.fornecedorId ?? '') || !temChave || boleto || l.venc < diasAtrasBr(30))) continue;
     const ehPix = !!rescisao || l.origem === 'BORDERO' || semNota || (!boleto && (l.origem === 'MANUAL' || temChave));
     if (!ehPix && !verTodas) {
       escondidas += 1;

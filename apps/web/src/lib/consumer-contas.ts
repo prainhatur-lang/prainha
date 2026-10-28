@@ -36,3 +36,9 @@ export async function casasComConsumerParado(filialIds: string[]): Promise<Set<s
 export async function consumerParado(filialId: string): Promise<boolean> {
   return (await casasComConsumerParado([filialId])).has(filialId);
 }
+
+/** Fornecedores com conta do Consumer que entram em Pedidos a pagar por Pix
+ *  (dono 28/10/2026: "coloca só essa de maria"). Só eles; o resto do Consumer
+ *  fica fora da tela do Pix. Bar: fornecedor 183 "maria mistao( Graziella de
+ *  Santana Bonfim)", R$ 500/mês. */
+export const FORNECEDORES_CONSUMER_NO_PIX: readonly string[] = ['7f517065-eec0-4bf1-8539-e75dc4690905'];
