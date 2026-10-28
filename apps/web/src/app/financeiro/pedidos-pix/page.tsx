@@ -30,6 +30,7 @@ import { hojeBr, diasAtrasBr } from '@/lib/datas';
 import { GrupoPix, type GrupoPedidos } from './grupo-pix';
 import { conferirPixAbertosNoInter, situacaoPixDasContas } from '@/lib/pix-conferir-auto';
 import { PixEnviados, type PixEnviado } from './pix-enviados';
+import { destinatarioDoPix, ROTULO_ORIGEM, ultimosEnviosComprovante } from '@/lib/pix-comprovante-whatsapp';
 import { SaldoInterFaixa } from './saldo-inter';
 import { contasEmPixAberto, podePagarPix } from '@/lib/pix-pagamento';
 import { resolverCredenciaisInterPagamentos, buscarPagamentosInter } from '@/lib/inter';
@@ -145,6 +146,7 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
       rec_nome: string | null;
       rec_doc: string | null;
       forn_doc: string | null;
+      fornecedor_id: string | null;
     };
     const rows = (await db.execute(sql`
       SELECT p.id, to_char(p.criado_em AT TIME ZONE 'America/Sao_Paulo', 'DD/MM HH24:MI') AS quando,
@@ -153,7 +155,7 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
              jsonb_array_length(p.conta_ids) AS qtd,
              p.retorno->'transacaoPix'->'recebedor'->>'nome' AS rec_nome,
              p.retorno->'transacaoPix'->'recebedor'->>'cpfCnpj' AS rec_doc,
-             fo.cnpj_ou_cpf AS forn_doc
+             fo.cnpj_ou_cpf AS forn_doc, p.fornecedor_id
         FROM pix_pagamento p
         LEFT JOIN usuario u ON u.id = p.usuario_id
         LEFT JOIN fornecedor fo ON fo.id = p.fornecedor_id
@@ -179,9 +181,35 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
       recebedorNome: r.rec_nome,
       recebedorDoc: r.rec_doc,
       recebedorBate: recebedorBate({ recebedorDoc: r.rec_doc, docFornecedor: r.forn_doc }),
+      fornecedorId: r.fornecedor_id,
     }));
   } catch (e) {
     console.error('[pedidos-pix] pix enviados', e);
+  }
+  // Comprovante no WhatsApp de quem recebeu (28/10/2026): último envio + número.
+  try {
+    const pagos = enviados.filter((p) => p.status === 'PAGO');
+    const ultimos = await ultimosEnviosComprovante(pagos.map((p) => p.id));
+    await Promise.all(
+      pagos.map(async (p) => {
+        const dest = await destinatarioDoPix(p.fornecedorId ?? null).catch(() => null);
+        p.foneDestino = dest?.telefone ?? null;
+        p.origemFone = dest ? (ROTULO_ORIGEM[dest.origem] ?? dest.origem) : null;
+        const u = ultimos.get(p.id);
+        p.comprovante = u
+          ? {
+              quando: u.criadoEm.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }),
+              telefone: u.telefone,
+              status: u.status,
+              erro: u.erro,
+              modo: u.modo,
+              auto: u.auto,
+            }
+          : null;
+      }),
+    );
+  } catch (e) {
+    console.error('[pedidos-pix] comprovante whatsapp', e);
   }
 
   const c = schema.contaPagar;

@@ -213,6 +213,7 @@
     "migrate:conta-pagar-criado-por": "tsx scripts/migrate-conta-pagar-criado-por.ts",
     "migrate:registro-exclusao": "tsx scripts/migrate-registro-exclusao.ts",
     "migrate:pix-pagamento": "tsx scripts/migrate-pix-pagamento.ts",
+    "migrate:pix-comprovante": "tsx scripts/migrate-pix-comprovante.ts",
     "migrate:marketing-post": "tsx scripts/migrate-marketing-post.ts",
     "migrate:marketing-espelho": "tsx scripts/migrate-marketing-espelho.ts",
     "migrate:marketing-fila": "tsx scripts/migrate-marketing-fila.ts",

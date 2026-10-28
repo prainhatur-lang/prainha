@@ -26,6 +26,18 @@ export interface PixEnviado {
   recebedorDoc?: string | null;
   /** true = CPF/CNPJ de quem recebeu é o do fornecedor; false = OUTRO; null = sem como conferir. */
   recebedorBate?: boolean | null;
+  /** Comprovante no WhatsApp de quem recebeu (28/10/2026). */
+  fornecedorId?: string | null;
+  foneDestino?: string | null;
+  origemFone?: string | null;
+  comprovante?: {
+    quando: string;
+    telefone: string | null;
+    status: string;
+    erro: string | null;
+    modo: string | null;
+    auto: boolean;
+  } | null;
 }
 
 const brl = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -135,6 +147,7 @@ export function PixEnviados({ itens, podeMexer }: { itens: PixEnviado[]; podeMex
                   )}
                 </div>
               )}
+              {p.status === 'PAGO' && <ComprovanteZap p={p} podeMexer={podeMexer} />}
               {msg?.id === p.id && (
                 <div className={`mt-1 text-right text-xs ${msg.tipo === 'ok' ? 'text-emerald-700' : 'text-rose-700'}`}>{msg.texto}</div>
               )}
@@ -142,6 +155,139 @@ export function PixEnviados({ itens, podeMexer }: { itens: PixEnviado[]; podeMex
           );
         })}
       </ul>
+    </div>
+  );
+}
+
+const ROTULO_ZAP: Record<string, { txt: string; cls: string }> = {
+  ENVIADO: { txt: 'enviado', cls: 'text-sky-700' },
+  ENTREGUE: { txt: 'entregue ✓✓', cls: 'text-emerald-700' },
+  LIDA: { txt: 'lido ✓✓', cls: 'text-emerald-700 font-semibold' },
+  ERRO: { txt: 'não foi', cls: 'text-rose-700' },
+  SEM_NUMERO: { txt: 'sem celular no cadastro', cls: 'text-amber-700' },
+  SEM_TEMPLATE: { txt: 'não foi: sem conversa aberta e sem o modelo aprovado', cls: 'text-amber-700' },
+  NAO_ENVIAR: { txt: 'número na lista "não enviar mais"', cls: 'text-amber-700' },
+};
+
+const foneBonito = (f: string | null | undefined) =>
+  f && f.length === 11 ? `(${f.slice(0, 2)}) ${f.slice(2, 7)}-${f.slice(7)}` : (f ?? '');
+
+/** Comprovante no WhatsApp de quem recebeu: último envio, reenviar, wa.me e
+ *  o campo do WhatsApp do recebedor quando falta número. */
+function ComprovanteZap({ p, podeMexer }: { p: PixEnviado; podeMexer: boolean }) {
+  const router = useRouter();
+  const [ocupado, setOcupado] = useState(false);
+  const [aviso, setAviso] = useState<{ ok: boolean; texto: string } | null>(null);
+  const [fone, setFone] = useState('');
+  const c = p.comprovante;
+  const rot = c ? (ROTULO_ZAP[c.status] ?? { txt: c.status, cls: 'text-slate-600' }) : null;
+
+  async function chamar(acao: 'enviar' | 'wame') {
+    setOcupado(true);
+    setAviso(null);
+    const r = await fetch('/api/financeiro/pedidos-pix/comprovante-enviar', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ id: p.id, acao }),
+    }).catch(() => null);
+    const d = r ? ((await r.json().catch(() => ({}))) as { ok?: boolean; error?: string; mensagem?: string; link?: string }) : {};
+    setOcupado(false);
+    if (acao === 'wame') {
+      if (d.link) window.open(d.link, '_blank', 'noopener');
+      else setAviso({ ok: false, texto: d.error ?? 'não consegui montar o link' });
+      return;
+    }
+    setAviso({ ok: !!d.ok, texto: d.mensagem ?? d.error ?? (r ? 'falhou' : 'falha de rede') });
+    router.refresh();
+  }
+
+  async function salvarFone() {
+    if (!p.fornecedorId) return;
+    const dig = fone.replace(/\D/g, '');
+    if (dig.length < 10) {
+      setAviso({ ok: false, texto: 'Digite o celular com DDD.' });
+      return;
+    }
+    setOcupado(true);
+    const r = await fetch(`/api/fornecedores/${p.fornecedorId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ foneWhatsapp: dig }),
+    }).catch(() => null);
+    setOcupado(false);
+    if (!r?.ok) {
+      const d = r ? ((await r.json().catch(() => ({}))) as { error?: string }) : {};
+      setAviso({ ok: false, texto: d.error ?? 'não salvou' });
+      return;
+    }
+    setFone('');
+    setAviso({ ok: true, texto: 'WhatsApp salvo no cadastro. Agora é só reenviar.' });
+    router.refresh();
+  }
+
+  return (
+    <div className="mt-1 pl-[7.5rem] text-[11px] text-slate-600">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span>📲 Comprovante:</span>
+        {c && rot ? (
+          <span className={rot.cls}>
+            {rot.txt}
+            {c.telefone ? ` · ${foneBonito(c.telefone)}` : ''} · {c.quando}
+            {c.auto ? ' (automático)' : ''}
+            {c.erro && (c.status === 'ERRO' || c.status === 'NAO_ENVIAR') ? ` — ${c.erro}` : ''}
+          </span>
+        ) : (
+          <span className="text-slate-400">ainda não enviado</span>
+        )}
+        {p.foneDestino ? (
+          <span className="text-slate-400">
+            → {foneBonito(p.foneDestino)}
+            {p.origemFone ? ` (${p.origemFone})` : ''}
+          </span>
+        ) : null}
+        {podeMexer && p.foneDestino && (
+          <button
+            type="button"
+            disabled={ocupado}
+            onClick={() => void chamar('enviar')}
+            className="rounded-md border border-emerald-300 bg-white px-2 py-0.5 text-[11px] font-medium text-emerald-800 hover:bg-emerald-50 disabled:opacity-50"
+          >
+            {ocupado ? 'Enviando…' : c ? '📲 Reenviar comprovante' : '📲 Enviar comprovante'}
+          </button>
+        )}
+        {podeMexer && (
+          <button
+            type="button"
+            disabled={ocupado}
+            onClick={() => void chamar('wame')}
+            title="Abre o WhatsApp com o texto e o link do PDF do comprovante"
+            className="rounded-md border border-slate-300 bg-white px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+          >
+            wa.me
+          </button>
+        )}
+      </div>
+      {podeMexer && !p.foneDestino && p.fornecedorId && (
+        <div className="mt-1 flex flex-wrap items-center gap-2">
+          <span className="text-amber-700">Sem celular de quem recebe. WhatsApp pro comprovante:</span>
+          <input
+            value={fone}
+            onChange={(e) => setFone(e.target.value)}
+            placeholder="(79) 99999-9999"
+            inputMode="tel"
+            className="w-36 rounded border border-slate-300 px-2 py-0.5 text-[11px]"
+          />
+          <button
+            type="button"
+            disabled={ocupado}
+            onClick={() => void salvarFone()}
+            className="rounded-md border border-violet-300 bg-white px-2 py-0.5 text-[11px] font-medium text-violet-800 hover:bg-violet-50 disabled:opacity-50"
+          >
+            Salvar
+          </button>
+        </div>
+      )}
+      {aviso && <div className={`mt-0.5 ${aviso.ok ? 'text-emerald-700' : 'text-rose-700'}`}>{aviso.texto}</div>}
     </div>
   );
 }

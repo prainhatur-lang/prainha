@@ -25,6 +25,7 @@ import { tratarKids } from '@/lib/kids';
 import { registrarStatusConvite } from '@/lib/fidelidade/convite-status';
 import { tratarAtivarVip } from '@/lib/fidelidade/zap-ativar';
 import { textoErroStatus, type ErroStatusMeta } from '@/lib/whatsapp-erros';
+import { registrarStatusComprovante } from '@/lib/pix-comprovante-whatsapp';
 import {
   registrarStatusMarketing,
   registrarPreferenciaMarketing,
@@ -101,6 +102,8 @@ export async function POST(req: Request) {
           // recibo do convite de campanha + "não entregue"/"parou promoções"
           // tiram o número dos próximos envios de divulgação
           await registrarStatusMarketing(st.id, st.status, erro).catch(() => {});
+          // comprovante do Pix pago pelo sistema: entregue/lida/erro
+          await registrarStatusComprovante(st.id, st.status, erro).catch(() => {});
           // entregue/lida do relatório diário (aceitar ≠ chegar)
           await registrarStatusRelatorio(st.id, st.status).catch(() => {});
           // Relatório diário: texto que não entrou (janela de 24 h fechada sem

@@ -1,4 +1,4 @@
-import { index, jsonb, numeric, pgTable, text, timestamp, uuid, varchar } from 'drizzle-orm/pg-core';
+import { boolean, index, jsonb, numeric, pgTable, text, timestamp, uuid, varchar } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 /** Pix pago pelo sistema via API do Inter (tela Pedidos a pagar por Pix).
@@ -34,5 +34,33 @@ export const pixPagamento = pgTable(
   (t) => ({
     filialIdx: index('idx_pix_pagamento_filial').on(t.filialId, t.criadoEm),
     statusIdx: index('idx_pix_pagamento_status').on(t.status),
+  }),
+);
+
+/** Envio do comprovante do Pix pro WhatsApp de quem recebeu (28/10/2026).
+ *  Uma linha por tentativa. (migrate:pix-comprovante) */
+export const pixComprovanteEnvio = pgTable(
+  'pix_comprovante_envio',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    pixPagamentoId: uuid('pix_pagamento_id').notNull(),
+    filialId: uuid('filial_id').notNull(),
+    telefone: varchar('telefone', { length: 20 }),
+    /** fone_whatsapp | funcionario | vendedor | fone_principal */
+    origemFone: varchar('origem_fone', { length: 30 }),
+    /** janela | template | wame */
+    modo: varchar('modo', { length: 20 }),
+    /** ENVIADO | ENTREGUE | LIDA | ERRO | SEM_NUMERO | SEM_TEMPLATE | NAO_ENVIAR */
+    status: varchar('status', { length: 20 }).notNull(),
+    wamid: text('wamid'),
+    erro: text('erro'),
+    usuarioEmail: text('usuario_email'),
+    auto: boolean('auto').notNull().default(false),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pixIdx: index('idx_pix_comprovante_pix').on(t.pixPagamentoId, t.criadoEm),
+    wamidIdx: index('idx_pix_comprovante_wamid').on(t.wamid),
   }),
 );

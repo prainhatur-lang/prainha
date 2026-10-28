@@ -9,6 +9,8 @@ import { and, eq, sql } from 'drizzle-orm';
 import { podeUsuario } from '@/lib/permissoes-runtime';
 import { recalcularAgregado } from '@/lib/conta-pagar-baixa';
 import { dateToBrYmd, hojeBr } from '@/lib/datas';
+import { after } from 'next/server';
+import { enviarComprovantePixAuto } from '@/lib/pix-comprovante-whatsapp';
 import {
   classificarStatusPixInter,
   consultarPagamentoPixInter,
@@ -99,7 +101,8 @@ export async function lerSaldoParaPix(filialId: string, cred: InterCredenciais, 
  * tempo, não paga duas vezes no sistema.
  */
 export async function baixarContasDoPix(pixId: string, dataPagamento?: string | null) {
-  return db.transaction(async (tx) => {
+  let virouPago = false;
+  const r = await db.transaction(async (tx) => {
     const marcado = (await tx.execute(sql`
       UPDATE pix_pagamento SET baixado_em = now(), atualizado_em = now(), status = 'PAGO'
        WHERE id = ${pixId}::uuid AND baixado_em IS NULL
@@ -112,6 +115,7 @@ export async function baixarContasDoPix(pixId: string, dataPagamento?: string | 
     }>;
     const p = marcado[0];
     if (!p) return { baixadas: 0 };
+    virouPago = true;
     const data = dataPagamento && /^\d{4}-\d{2}-\d{2}$/.test(dataPagamento) ? dataPagamento : hojeBr();
     let baixadas = 0;
     for (const item of p.conta_ids) {
@@ -143,6 +147,22 @@ export async function baixarContasDoPix(pixId: string, dataPagamento?: string | 
     }
     return { baixadas };
   });
+  // Comprovante pro WhatsApp de quem recebeu (28/10/2026) — depois da
+  // resposta, uma vez só; falha aqui nunca mexe na baixa.
+  if (virouPago) agendarComprovantePix(pixId);
+  return r;
+}
+
+function agendarComprovantePix(pixId: string) {
+  const tarefa = () =>
+    enviarComprovantePixAuto(pixId).catch((e) =>
+      console.error('pix-comprovante: envio automático falhou', e instanceof Error ? e.message : e),
+    );
+  try {
+    after(tarefa);
+  } catch {
+    void tarefa();
+  }
 }
 
 /**
