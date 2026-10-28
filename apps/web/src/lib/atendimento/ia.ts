@@ -1273,10 +1273,25 @@ export async function gerarResposta(params: {
   // reserva de hoje com a casa a 27% — ela respondeu "só até 11h30" sem
   // consultar nada, porque a pergunta ("precisa reservar hoje?") não pareceu
   // um pedido de reserva. O dado ao vivo agora chega sempre e por último.
+  //
+  // DATA EXPLÍCITA (28/10/2026, caso Christiano): numa quarta o cliente pediu
+  // DOMINGO (véspera de Finados) às 13h; a Nina leu "casa com espaço agora"
+  // e respondeu "hoje a casa está com espaço, 13h está liberada" — pro
+  // domingo. Duas vezes, uma DEPOIS de já ter fechado 11h30. O bloco não
+  // dizia que dia é hoje e abria com "vale MAIS que qualquer corte". Agora
+  // nomeia a data de hoje e manda ignorar o bloco quando o assunto é outro dia.
   if (modo === 'cliente' && params.ocupacaoAgora) {
+    const hojeYmd = hojeBr();
+    const [ha, hm, hd] = hojeYmd.split('-').map(Number);
+    const diaSemanaHoje = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'][
+      new Date(Date.UTC(ha, hm - 1, hd)).getUTCDay()
+    ];
+    const hojeTexto = `${diaSemanaHoje}, ${String(hd).padStart(2, '0')}/${String(hm).padStart(2, '0')}`;
     mensagens.push({
       role: 'system',
-      content: `ESTADO DA CASA NESTE MOMENTO (dado ao vivo do PDV, vale MAIS que qualquer horário de corte escrito nos blocos): ${params.ocupacaoAgora}
+      content: `ESTADO DA CASA NESTE MOMENTO — HOJE (${hojeTexto}) e SÓ HOJE (dado ao vivo do PDV; pra reserva de HOJE vale mais que o horário de corte escrito nos blocos; pra QUALQUER OUTRO DIA não vale nada): ${params.ocupacaoAgora}
+
+🚫 OUTRO DIA: se o cliente está falando de uma data que NÃO é hoje (${hojeTexto}) — "domingo", "sábado", "amanhã", "feriado", uma data — IGNORE este bloco inteiro. É PROIBIDO responder sobre esse dia com "hoje a casa está com espaço", "a reserva está liberada", "13h/15h/17h está liberado" ou qualquer frase tirada daqui. O corte da tarde liberado pelo movimento só existe NO PRÓPRIO DIA. Pra outro dia, só vale o que consultar_disponibilidade_reserva/criar_reserva daquela data disserem; se ela disse "reserva até 11h30", a resposta é essa — e se a reserva já foi FEITA, NÃO ofereça outro horário depois dela.
 
 Como usar, SEM EXCEÇÃO:
 - Antes de dizer qualquer coisa sobre reserva de HOJE — inclusive responder "precisa reservar?", "ainda dá tempo?", "tem mesa?" — olhe a linha acima. Ela é a verdade do dia.
