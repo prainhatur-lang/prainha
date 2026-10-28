@@ -4,6 +4,11 @@
 //                                                  + o pedido já baixado
 //   POST ?f=&e=&s=  { feitos: [eventoId] }      → a loja processou estes
 //   POST ?f=&e=&s=  { orderId, acao, extra }    → repassa a ação pro iFood
+//   POST ?f=&e=&s=  { entregaEvento: { orderId, codigo } }
+//                    → evento do pedido externo criado pela Shipping (entregador
+//                      do pedido do site): atualiza o ifood_entrega
+//   acao 'entregador_cotar' | 'entregador_chamar' { quoteId } | 'entregador_cancelar'
+//                    → entregador do iFood pra pedido do iFood com entrega própria
 //
 // Mesma assinatura HMAC do /pagar-mesa, /ifood-config e /delivery-fila, que o
 // vendas-local já tem configurada. A filial vai ASSINADA: uma casa não lê nem
@@ -15,10 +20,11 @@
 import { NextResponse } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { db, schema } from '@concilia/db';
-import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { configIfood } from '@/lib/ifood-credenciais';
 import { ifoodApi, IFOOD_ACOES } from '@/lib/ifood-api';
 import { marcarEntregues } from '@/lib/ifood-puxador';
+import { cotarPedidoIfood, solicitarEntregador, cancelarEntregador, confirmarPedido, erroShipping } from '@/lib/ifood-shipping';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -42,6 +48,58 @@ function autorizar(request: Request): { filialId: string } | { erro: NextRespons
   if (e * 1000 < Date.now()) return { erro: NextResponse.json({ error: 'expirado' }, { status: 403 }) };
   if (!confere([f, String(e)], s)) return { erro: NextResponse.json({ error: 'assinatura' }, { status: 403 }) };
   return { filialId: f };
+}
+
+// Evento do pedido externo (Shipping) → status do entregador no pedido do site.
+// Aceita o código longo e o curto do polling.
+const STATUS_ENTREGA: Record<string, string> = {
+  CONFIRMED: 'CONFIRMADO', CFM: 'CONFIRMADO',
+  ASSIGNED_DRIVER: 'A_CAMINHO', ADR: 'A_CAMINHO',
+  GOING_TO_ORIGIN: 'A_CAMINHO', GTO: 'A_CAMINHO',
+  ARRIVED_AT_ORIGIN: 'A_CAMINHO', AAO: 'A_CAMINHO',
+  DISPATCHED: 'A_CAMINHO', DSP: 'A_CAMINHO',
+  ARRIVED_AT_DESTINATION: 'A_CAMINHO', AAD: 'A_CAMINHO',
+  DELIVERY_DROP_CODE_REQUESTED: 'CODIGO', DDCR: 'CODIGO',
+  CONCLUDED: 'ENTREGUE', CON: 'ENTREGUE',
+  CANCELLED: 'CANCELADO', CAN: 'CANCELADO',
+};
+const FINAIS = ['ENTREGUE', 'CANCELADO'];
+
+async function eventoDaEntrega(filialId: string, orderId: string, codigo: string) {
+  const [e] = await db
+    .select()
+    .from(schema.ifoodEntrega)
+    .where(and(eq(schema.ifoodEntrega.ifoodOrderId, orderId), eq(schema.ifoodEntrega.filialId, filialId)))
+    .limit(1);
+  if (!e) return NextResponse.json({ ok: true, achou: false });
+  const novo = STATUS_ENTREGA[codigo];
+  // Status final não volta atrás (evento atrasado depois do CONCLUDED).
+  const status = novo && !FINAIS.includes(e.status) ? novo : e.status;
+  await db
+    .update(schema.ifoodEntrega)
+    .set({
+      status,
+      statusIfood: codigo,
+      atualizadoEm: sql`now()`,
+      ...(status === 'CANCELADO' && !e.canceladoEm ? { canceladoEm: sql`now()` } : {}),
+    })
+    .where(eq(schema.ifoodEntrega.id, e.id));
+  // Chegou o PLACED e ainda não confirmamos: confirma agora (a confirmação
+  // logo depois de criar pode ter chegado antes do pedido existir no iFood).
+  if ((codigo === 'PLACED' || codigo === 'PLC') && e.status === 'SOLICITADO') {
+    const c = await configIfood(filialId);
+    if (c.clientId && c.clientSecret) {
+      try {
+        await confirmarPedido(c, orderId);
+        await db.update(schema.ifoodEntrega)
+          .set({ status: 'CONFIRMADO', atualizadoEm: sql`now()` })
+          .where(eq(schema.ifoodEntrega.id, e.id));
+      } catch (err) {
+        console.error('[ifood-shipping] confirmar pelo evento:', (err as Error).message);
+      }
+    }
+  }
+  return NextResponse.json({ ok: true, achou: true, status });
 }
 
 export async function GET(request: Request) {
@@ -97,6 +155,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, feitos: ids.length });
   }
 
+  // 1b) evento do pedido externo da Shipping (entregador do pedido do site)
+  const ev = b?.entregaEvento as { orderId?: unknown; codigo?: unknown } | undefined;
+  if (ev && typeof ev.orderId === 'string' && typeof ev.codigo === 'string') {
+    return eventoDaEntrega(auth.filialId, ev.orderId, ev.codigo);
+  }
+
   // 2) ação do caixa (aceitar, despachar, cancelar…) — quem fala com o iFood
   //    é a nuvem, porque a credencial mora só aqui.
   const orderId = typeof b?.orderId === 'string' ? b.orderId : '';
@@ -132,6 +196,27 @@ export async function POST(request: Request) {
         descricao: m.description || m.reason,
       })),
     });
+  }
+
+  // Entregador do iFood pra pedido do iFood com entrega própria (Shipping).
+  if (acao === 'entregador_cotar' || acao === 'entregador_chamar' || acao === 'entregador_cancelar') {
+    try {
+      if (acao === 'entregador_cotar') {
+        const q = await cotarPedidoIfood(cred, orderId);
+        return NextResponse.json({ ok: true, cotacao: { ...q, raw: undefined } });
+      }
+      if (acao === 'entregador_chamar') {
+        const quoteId = String((b?.extra as { quoteId?: unknown } | null)?.quoteId ?? '');
+        if (!quoteId) return NextResponse.json({ error: 'faltou a cotação (quoteId)' }, { status: 400 });
+        await solicitarEntregador(cred, orderId, quoteId);
+        return NextResponse.json({ ok: true });
+      }
+      await cancelarEntregador(cred, orderId);
+      return NextResponse.json({ ok: true });
+    } catch (e) {
+      const x = erroShipping(e);
+      return NextResponse.json({ error: x.mensagem, semModulo: x.semModulo }, { status: x.status });
+    }
   }
 
   const caminho = IFOOD_ACOES[acao];

@@ -15,7 +15,7 @@ import https from 'node:https';
 import tls from 'node:tls';
 import net from 'node:net';
 import dgram from 'node:dgram';
-import { createHmac, createHash, generateKeyPairSync, sign, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHmac, createHash, generateKeyPairSync, sign, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { readFileSync, mkdirSync, writeFileSync, existsSync, createReadStream, statSync,
   readdirSync, rmSync, openSync, renameSync } from 'node:fs';
 import path from 'node:path';
@@ -921,6 +921,19 @@ async function initSchema() {
   await addCol('ifood_pedido', 'chegou_em timestamptz');
   await addCol('ifood_pedido', 'entregador text');
   await addCol('ifood_pedido', 'pago_entrega_em timestamptz');
+  // CHAMAR ENTREGADOR DO iFOOD (módulo Shipping):
+  //  · pedido do SITE: a nuvem cria um pedido "externo" no iFood (salesChannel
+  //    POS) só pra ter o entregador. Ele chega no polling desta loja como se
+  //    fosse pedido novo — e NÃO é venda: a venda já existe (pedido do site).
+  //    Fica anotado aqui, fora do ifood_pedido, e os eventos dele só sobem pra
+  //    nuvem (status do entregador no /delivery-admin).
+  //  · pedido do iFood com entrega PRÓPRIA (MERCHANT): o caixa pede entregador
+  //    do iFood pro mesmo pedido (requestDriver). Carimbo nas colunas abaixo.
+  await sql`CREATE TABLE IF NOT EXISTS ifood_externo (
+    id text PRIMARY KEY, criado_em timestamptz DEFAULT now(), ultimo_evento text)`;
+  await addCol('ifood_pedido', 'entregador_ifood_em timestamptz');
+  await addCol('ifood_pedido', 'entregador_ifood_valor numeric');
+  await addCol('ifood_pedido', 'entregador_ifood_cancelado_em timestamptz');
   await sql`CREATE TABLE IF NOT EXISTS ifood_evento (
     id text PRIMARY KEY, code text, order_id text,
     recebido_em timestamptz DEFAULT now(), ack_em timestamptz, erro text)`;
@@ -1784,9 +1797,24 @@ async function ifoodReprocessar(c) {
   return ok;
 }
 
+/** Pedido externo (criado pela Shipping pra levar um pedido do site): não é
+ *  venda desta loja. Só repassa o evento pra nuvem, que mostra o status do
+ *  entregador no pedido do site. Melhor esforço: a nuvem também consulta o
+ *  iFood quando a tela abre. */
+async function ifoodEventoExterno(orderId, code) {
+  await sql`UPDATE ifood_externo SET ultimo_evento=${code} WHERE id=${orderId}`.catch(() => {});
+  await chamarNuvem('/api/loja/ifood-fila', { metodo: 'POST', corpo: { entregaEvento: { orderId, codigo: code } } })
+    .catch((e) => console.error('[ifood] evento do entregador pra nuvem:', e.message));
+}
+
 async function ifoodAplicarEvento(orderId, code, c, prontinho = null) {
   if (!orderId) return;
-  if (code === 'PLACED' || code === 'CONFIRMED') await ifoodBaixarPedido(orderId, prontinho);
+  const [ext] = await sql`SELECT 1 AS x FROM ifood_externo WHERE id=${orderId}`;
+  if (ext) return ifoodEventoExterno(orderId, code);
+  if (code === 'PLACED' || code === 'CONFIRMED') {
+    const r = await ifoodBaixarPedido(orderId, prontinho);
+    if (r && r.externo) return ifoodEventoExterno(orderId, code);
+  }
   // o lançamento financeiro segue o evento, não o comando: só o evento diz que
   // o iFood REALMENTE aceitou (o confirm responde 202 e pode não valer)
   if (code === 'CONFIRMED') await lancarReceberCanal(orderId, 'abrir').catch((e) => console.error('[ifood] receber-canal:', e.message));
@@ -1859,6 +1887,15 @@ async function ifoodBaixarPedido(orderId, prontinho = null) {
   // evento antigo), busca direto: GET de pedido NÃO mexe na fila de eventos,
   // então não briga com o puxador da nuvem.
   const o = prontinho || await ifoodApi('/order/v1.0/orders/' + encodeURIComponent(orderId));
+  // Criado pela Shipping (entregador pro pedido do site): não entra como venda.
+  // Pedido que JÁ existe aqui como venda nunca é reclassificado.
+  if (String(o.salesChannel || '').toUpperCase() === 'POS') {
+    const [ja] = await sql`SELECT 1 AS x FROM ifood_pedido WHERE id=${o.id || orderId}`;
+    if (!ja) {
+      await sql`INSERT INTO ifood_externo (id) VALUES (${o.id || orderId}) ON CONFLICT (id) DO NOTHING`;
+      return { externo: true };
+    }
+  }
   const ent = o.delivery || {};
   const end = ent.deliveryAddress || {};
   const endereco = [end.formattedAddress || [end.streetName, end.streetNumber].filter(Boolean).join(', '),
@@ -1926,6 +1963,85 @@ async function ifoodMotivosCancel(orderId) {
     codigo: String(m.cancelCodeId ?? m.code ?? m.cancellationCode ?? ''),
     descricao: m.description || m.reason || '',
   })).filter((m) => m.codigo) };
+}
+
+// ---- entregador do iFood pra pedido do iFood com entrega PRÓPRIA (Shipping) ----
+// O pedido continua o mesmo (mesmo id, mesma venda): o iFood só manda um
+// entregador dele no lugar do nosso motoboy. Cotar → chamar (quoteId vale
+// poucos minutos) → o resto vem pelos eventos de sempre no polling.
+const IFOOD_ERROS_SHIPPING = {
+  DeliveryDistanceTooHigh: 'endereço longe demais da loja — o iFood não entrega tão longe',
+  OffOpeningHours: 'fora do horário da entrega do iFood',
+  ServiceAreaMismatch: 'endereço fora da área de cobertura do iFood',
+  HighDemand: 'iFood sem entregador por alta demanda — tente em alguns minutos',
+  UnavailableFleet: 'frota do iFood indisponível agora — tente mais tarde',
+  NRELimitExceeded: 'limite de entregadores ao mesmo tempo atingido — espere uma entrega terminar',
+  MerchantEasyDeliveryDisabled: 'a entrega Sob Demanda não está ativada pra esta loja no iFood',
+  OriginNotFound: 'a loja não está cadastrada nas áreas de entrega do iFood',
+  BadRequestMerchant: 'a loja está indisponível no iFood (fechada ou pausada?)',
+  OrderNotFound: 'o iFood não achou este pedido',
+};
+function ifoodErroShipping(e) {
+  const m = String(e && e.message || e);
+  if (/→ 403/.test(m) || /semModulo/.test(m) || /not allowed|forbidden|access denied/i.test(m)) {
+    return 'módulo Shipping não liberado no app do iFood (adicionar no Portal do Desenvolvedor)';
+  }
+  for (const k of Object.keys(IFOOD_ERROS_SHIPPING)) if (m.includes(k)) return IFOOD_ERROS_SHIPPING[k];
+  return m.replace(/^.*?→ /, '').slice(0, 300);
+}
+async function ifoodEntregador(orderId, acao, quoteId = null, valor = null) {
+  const [p] = await sql`SELECT * FROM ifood_pedido WHERE id=${String(orderId || '')}`;
+  if (!p || p.origem === 'site') return { ok: false, erro: 'pedido do iFood não encontrado' };
+  if (String(p.modo_entrega || '').toUpperCase() !== 'MERCHANT') return { ok: false, erro: 'só pedido com entrega própria da loja' };
+  if (p.cancelado_em || p.concluido_em) return { ok: false, erro: 'pedido já encerrado' };
+  if (acao === 'chamar' && p.entregador_ifood_em && !p.entregador_ifood_cancelado_em) {
+    return { ok: false, erro: 'já tem entregador do iFood chamado pra este pedido' };
+  }
+  const conf = await ifoodConf();
+  const id = encodeURIComponent(p.id);
+  const idem = () => ({ 'idempotency-key': randomUUID() });
+  try {
+    if (acao === 'cotar') {
+      let q;
+      if (conf.puxador === 'nuvem') {
+        q = (await chamarNuvem('/api/loja/ifood-fila', { metodo: 'POST', corpo: { orderId: p.id, acao: 'entregador_cotar' } })).cotacao;
+      } else {
+        const j = await ifoodApi('/shipping/v1.0/orders/' + id + '/deliveryAvailabilities');
+        const v = j.quote || {};
+        const min = (x) => (typeof x === 'number' ? Math.round(x / 60) : null);
+        q = { quoteId: String(j.id || ''), valor: Number(v.netValue ?? v.grossValue ?? 0),
+          minMin: min(j.deliveryTime && j.deliveryTime.min), maxMin: min(j.deliveryTime && j.deliveryTime.max),
+          distanciaM: typeof j.distance === 'number' ? j.distance : null };
+      }
+      if (!q || !q.quoteId) return { ok: false, erro: 'o iFood não devolveu cotação' };
+      return { ok: true, cotacao: q };
+    }
+    if (acao === 'chamar') {
+      if (!quoteId) return { ok: false, erro: 'cote antes de chamar' };
+      if (conf.puxador === 'nuvem') {
+        await chamarNuvem('/api/loja/ifood-fila', { metodo: 'POST', corpo: { orderId: p.id, acao: 'entregador_chamar', extra: { quoteId } } });
+      } else {
+        await ifoodApi('/shipping/v1.0/orders/' + id + '/requestDriver', { metodo: 'POST', corpo: { quoteId }, headers: idem() });
+      }
+      const v = Number(valor);
+      await sql`UPDATE ifood_pedido SET entregador_ifood_em=now(), entregador_ifood_cancelado_em=NULL,
+        entregador_ifood_valor=${Number.isFinite(v) ? v : null} WHERE id=${p.id}`;
+      return { ok: true };
+    }
+    if (acao === 'cancelar') {
+      if (conf.puxador === 'nuvem') {
+        await chamarNuvem('/api/loja/ifood-fila', { metodo: 'POST', corpo: { orderId: p.id, acao: 'entregador_cancelar' } });
+      } else {
+        await ifoodApi('/shipping/v1.0/orders/' + id + '/cancelRequestDriver', { metodo: 'POST', headers: idem() });
+      }
+      await sql`UPDATE ifood_pedido SET entregador_ifood_cancelado_em=now() WHERE id=${p.id}`;
+      return { ok: true };
+    }
+    return { ok: false, erro: 'ação desconhecida' };
+  } catch (e) {
+    console.error('[ifood] entregador', acao, p.id, '—', e.message);
+    return { ok: false, erro: ifoodErroShipping(e) };
+  }
 }
 
 /** Avisa o Concilia o que o caixa fez com um pedido do SITE. Best-effort: o
@@ -2685,6 +2801,9 @@ async function apiIfood() {
       total: Number(p.total || 0), taxa: Number(p.taxa_entrega || 0), pago_online: p.pago_online,
       itens: p.itens, recebido_em: p.recebido_em, agendado_para: p.agendado_para,
       confirmado: !!p.confirmado_em, despachado: !!p.despachado_em,
+      entregador_ifood: !!p.entregador_ifood_em && !p.entregador_ifood_cancelado_em,
+      entregador_ifood_valor: p.entregador_ifood_valor == null ? null : Number(p.entregador_ifood_valor),
+      ultimo_evento: p.ultimo_evento || null,
       concluido: !!p.concluido_em, cancelado: !!p.cancelado_em, cancel_pedido: !!p.cancel_pedido_em,
       // Horários (14/10/2026): a Nina compara a hora que saiu com a hora que o
       // cliente reclamou — rota longa ou "cheguei" sem entrega vira humano.
@@ -8415,6 +8534,9 @@ async function contaIfoodCaixa(ped) {
       cliente: p.cliente_nome, fone: p.cliente_fone, endereco: p.endereco,
       pago_online: !!p.pago_online, modo_entrega: p.modo_entrega,
       confirmado: !!p.confirmado_em, despachado: !!p.despachado_em,
+      entregador_ifood: !!p.entregador_ifood_em && !p.entregador_ifood_cancelado_em,
+      entregador_ifood_valor: p.entregador_ifood_valor == null ? null : Number(p.entregador_ifood_valor),
+      ultimo_evento: p.ultimo_evento || null,
     },
     comandas_mesa: [], geral: null,
     itens: itens.map((i) => ({
@@ -27410,6 +27532,29 @@ async function ifoodCx(id,acao){
   if(!r.ok){alert(r.erro||'não deu');return}
   carregar(MESA,PEDALVO);
 }
+// Entregador do iFood pro pedido do iFood com entrega nossa (Shipping):
+// cota, mostra preço e tempo, e só chama depois do OK de quem está no caixa.
+var IFOOD_EV_ENTREGA={ASSIGNED_DRIVER:'entregador escolhido',ADR:'entregador escolhido',GOING_TO_ORIGIN:'vindo buscar',GTO:'vindo buscar',
+  ARRIVED_AT_ORIGIN:'chegou na loja',AAO:'chegou na loja',DISPATCHED:'saiu com o pedido',DSP:'saiu com o pedido',
+  ARRIVED_AT_DESTINATION:'chegou no cliente',AAD:'chegou no cliente',DELIVERY_DROP_CODE_REQUESTED:'pedindo o código do cliente',DDCR:'pedindo o código do cliente'};
+async function ifoodEntregadorCx(id){
+  var q=await jpost('/api/ifood/entregador',{id:id,acao:'cotar'});
+  if(!q.ok){alert(q.erro||'não deu');return}
+  var k=q.cotacao||{};
+  var t=(k.minMin!=null?'\\nChega em '+k.minMin+(k.maxMin&&k.maxMin!==k.minMin?' a '+k.maxMin:'')+' min':'')+
+    (k.distanciaM!=null?'\\nDistância: '+(k.distanciaM/1000).toFixed(1).replace('.',',')+' km':'');
+  if(!confirm('Chamar entregador do iFood?\\n\\nCorrida: R$ '+Number(k.valor||0).toFixed(2).replace('.',',')+t+'\\n\\nQuem paga a corrida é a loja (vem no repasse do iFood).'))return;
+  var r=await jpost('/api/ifood/entregador',{id:id,acao:'chamar',quoteId:k.quoteId,valor:k.valor});
+  if(!r.ok){alert(r.erro||'não deu');return}
+  alert('Entregador do iFood chamado. O andamento aparece aqui no pedido.');
+  carregar(MESA,PEDALVO);
+}
+async function ifoodEntregadorCancelarCx(id){
+  if(!confirm('Cancelar o entregador do iFood deste pedido?\\n\\nO pedido continua; a entrega volta a ser com o nosso motoboy.'))return;
+  var r=await jpost('/api/ifood/entregador',{id:id,acao:'cancelar'});
+  if(!r.ok){alert(r.erro||'não deu');return}
+  carregar(MESA,PEDALVO);
+}
 async function ifoodCxImprimir(id){
   var r=await jpost('/api/ifood/imprimir',{id:id});
   if(!r.ok)alert(r.erro||'não deu');
@@ -27618,6 +27763,16 @@ function pinta(el){
          (f.modo_entrega==='MERCHANT'?'🛵 Saiu para entrega':'✓ Pronto para retirada')+'</button>';
     }else{
       h+='<span class="mut" style="align-self:center">🛵 já saiu para entrega</span>';
+    }
+    if(c.canal==='ifood'&&f.modo_entrega==='MERCHANT'){
+      if(f.entregador_ifood){
+        h+='<span class="mut" style="align-self:center">🛵 entregador iFood chamado'+
+          (f.entregador_ifood_valor!=null?' · R$ '+Number(f.entregador_ifood_valor).toFixed(2).replace('.',','):'')+
+          (IFOOD_EV_ENTREGA[f.ultimo_evento]?' · '+IFOOD_EV_ENTREGA[f.ultimo_evento]:'')+'</span>'+
+          (f.despachado?'':'<button class="seg" style="color:#b91c1c" onclick="ifoodEntregadorCancelarCx(\\''+f.id+'\\')">✕ Cancelar entregador</button>');
+      }else if(!f.despachado){
+        h+='<button class="seg" style="background:#ea1d2c;color:#fff;border:0" onclick="ifoodEntregadorCx(\\''+f.id+'\\')">🛵 Chamar entregador iFood</button>';
+      }
     }
     h+='<button class="seg" onclick="ifoodCxImprimir(\\''+f.id+'\\')">🖨 Imprimir pedido</button>'+
        // pré-pago: a NFC-e sai aqui; a receber na entrega: sai na maquininha do entregador
@@ -32269,6 +32424,10 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/ifood/motivos') {
         try { return res.end(JSON.stringify(await ifoodMotivosCancel(u.searchParams.get('id') || ''))); }
         catch (e) { return res.end(JSON.stringify({ ok: false, erro: String(e.message).slice(0, 300) })); }
+      }
+      if (req.method === 'POST' && p === '/api/ifood/entregador') {
+        const b = await readBody(req);
+        return res.end(JSON.stringify(await ifoodEntregador(b.id, b.acao, b.quoteId || null, b.valor ?? null)));
       }
       if (req.method === 'POST' && p === '/api/ifood/comando') {
         const b = await readBody(req);
