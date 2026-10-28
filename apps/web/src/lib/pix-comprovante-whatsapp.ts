@@ -23,6 +23,16 @@ import { celular11, rotuloMotivoFora, telefonesForaDosEnvios } from '@/lib/whats
 
 const VALIDADE_LINK_MS = 60 * 24 * 3600 * 1000; // 60 dias
 
+// DESLIGADO (28/10/2026). O dono: "o comprovante não pode ser fake" — só vale
+// o comprovante OFICIAL do banco. Conferido na doc do Inter (developers.inter.co,
+// API Banking v2 e API Pix): não há endpoint de comprovante; o Pix só tem
+// GET /banking/v2/pix/{codigoSolicitacao} (JSON) e o único PDF oficial é o
+// extrato do período (GET /banking/v2/extrato/exportar), que traz a conta toda.
+// Enquanto não houver o oficial, NADA sai: nem o PDF montado aqui, nem wa.me.
+export const COMPROVANTE_BANCO_DISPONIVEL = false;
+export const MOTIVO_COMPROVANTE_INDISPONIVEL =
+  'a API do Inter não fornece o comprovante oficial do Pix (só os dados da transação e o extrato do período)';
+
 function versao(): string {
   return process.env.WHATSAPP_API_VERSION || 'v21.0';
 }
@@ -305,7 +315,7 @@ export function textoComprovante(d: DadosComprovantePix): string {
 }
 
 export type ResultadoEnvioComprovante = {
-  status: 'ENVIADO' | 'ERRO' | 'SEM_NUMERO' | 'SEM_TEMPLATE' | 'NAO_ENVIAR';
+  status: 'ENVIADO' | 'ERRO' | 'SEM_NUMERO' | 'SEM_TEMPLATE' | 'NAO_ENVIAR' | 'INDISPONIVEL';
   telefone: string | null;
   modo: 'janela' | 'template' | null;
   mensagem: string;
@@ -348,6 +358,14 @@ export async function enviarComprovantePix(
     if (p.status !== 'PAGO') {
       const r: ResultadoEnvioComprovante = { status: 'ERRO', telefone: null, modo: null, mensagem: 'O Pix ainda não está pago.' };
       return r;
+    }
+    if (!COMPROVANTE_BANCO_DISPONIVEL) {
+      return {
+        status: 'INDISPONIVEL',
+        telefone: null,
+        modo: null,
+        mensagem: `Comprovante do banco indisponível: ${MOTIVO_COMPROVANTE_INDISPONIVEL}. Nada foi enviado.`,
+      };
     }
     const dest = await destinatarioDoPix(p.fornecedorId);
     if (!dest) {
@@ -491,6 +509,7 @@ export async function ultimosEnviosComprovante(pixIds: string[]) {
 
 /** Link wa.me com o texto e o link do PDF (fallback de 1 toque). */
 export async function linkWaMeComprovante(pixId: string, telefone: string | null): Promise<string | null> {
+  if (!COMPROVANTE_BANCO_DISPONIVEL) return null;
   const d = await dadosComprovantePix(pixId);
   if (!d) return null;
   const texto = `${textoComprovante(d)}\n\nComprovante: ${linkComprovantePdf(pixId)}`;

@@ -4,6 +4,7 @@
 
 import { NextResponse } from 'next/server';
 import {
+  COMPROVANTE_BANCO_DISPONIVEL,
   conferirLinkComprovante,
   dadosComprovantePix,
   nomeArquivoComprovante,
@@ -13,6 +14,10 @@ import {
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: Request) {
+  // PDF montado pelo app não é comprovante do banco → fora do ar (28/10/2026).
+  if (!COMPROVANTE_BANCO_DISPONIVEL) {
+    return NextResponse.json({ error: 'comprovante do banco indisponível' }, { status: 410 });
+  }
   const u = new URL(req.url);
   const id = u.searchParams.get('id') ?? '';
   if (!/^[0-9a-f-]{36}$/i.test(id) || !conferirLinkComprovante(id, u.searchParams.get('x') ?? '', u.searchParams.get('s') ?? '')) {

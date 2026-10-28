@@ -30,6 +30,8 @@ export interface PixEnviado {
   fornecedorId?: string | null;
   foneDestino?: string | null;
   origemFone?: string | null;
+  /** Motivo quando não há comprovante oficial do banco pra mandar (nada sai). */
+  comprovanteIndisponivel?: string | null;
   comprovante?: {
     quando: string;
     telefone: string | null;
@@ -223,6 +225,14 @@ function ComprovanteZap({ p, podeMexer }: { p: PixEnviado; podeMexer: boolean })
     setFone('');
     setAviso({ ok: true, texto: 'WhatsApp salvo no cadastro. Agora é só reenviar.' });
     router.refresh();
+  }
+
+  if (p.comprovanteIndisponivel) {
+    return (
+      <div className="mt-1 pl-[7.5rem] text-[11px] text-amber-700">
+        📲 Comprovante do banco indisponível — {p.comprovanteIndisponivel}. Nada é enviado ao recebedor.
+      </div>
+    );
   }
 
   return (

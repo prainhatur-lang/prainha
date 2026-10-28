@@ -8,7 +8,13 @@ import { and, eq } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { podePagarPix } from '@/lib/pix-pagamento';
-import { destinatarioDoPix, enviarComprovantePix, linkWaMeComprovante } from '@/lib/pix-comprovante-whatsapp';
+import {
+  COMPROVANTE_BANCO_DISPONIVEL,
+  MOTIVO_COMPROVANTE_INDISPONIVEL,
+  destinatarioDoPix,
+  enviarComprovantePix,
+  linkWaMeComprovante,
+} from '@/lib/pix-comprovante-whatsapp';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,6 +40,12 @@ export async function POST(req: Request) {
     .limit(1);
   if (!acesso) return NextResponse.json({ error: 'sem acesso à casa' }, { status: 403 });
   if (p.status !== 'PAGO') return NextResponse.json({ error: 'O Pix ainda não está pago.' }, { status: 400 });
+  if (!COMPROVANTE_BANCO_DISPONIVEL) {
+    return NextResponse.json(
+      { ok: false, status: 'INDISPONIVEL', error: `Comprovante do banco indisponível: ${MOTIVO_COMPROVANTE_INDISPONIVEL}.` },
+      { status: 409 },
+    );
+  }
 
   if (parsed.data.acao === 'wame') {
     const dest = await destinatarioDoPix(p.fornecedorId);
