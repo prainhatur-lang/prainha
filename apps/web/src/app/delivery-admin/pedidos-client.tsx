@@ -533,6 +533,251 @@ function CardPedido({
           </button>
         ) : null}
       </div>
+      {p.tipo === 'entrega' && podeAtualizar && ABERTO_ENTREGADOR.includes(p.status) ? (
+        <EntregadorIfood p={p} />
+      ) : null}
     </article>
+  );
+}
+
+const ABERTO_ENTREGADOR = ['pago', 'em_preparo', 'pronto', 'saiu_entrega', 'chegou'];
+
+interface EntregaIfood {
+  id: string;
+  status: string;
+  trackingUrl: string | null;
+  valor: string | null;
+  erro: string | null;
+  criadoEm: string;
+}
+
+interface Cotacao {
+  quoteId: string;
+  valor: number;
+  minMin: number | null;
+  maxMin: number | null;
+  distanciaM: number | null;
+}
+
+const ENTREGA_TXT: Record<string, string> = {
+  SOLICITADO: 'Chamado — aguardando o iFood confirmar',
+  CONFIRMADO: 'Chamado — iFood procurando entregador',
+  CODIGO: 'Entregador pediu o código',
+  A_CAMINHO: 'Entregador a caminho',
+  ENTREGUE: 'Entregue pelo iFood',
+  CANCELADO: 'Entregador cancelado',
+  ERRO: 'Erro no iFood',
+};
+const ENTREGA_ATIVA = ['SOLICITADO', 'CONFIRMADO', 'CODIGO', 'A_CAMINHO'];
+
+/** "🛵 Chamar entregador iFood": cota, mostra preço/tempo, chama e cancela.
+ *  Fica abaixo dos botões de sempre — não troca nenhum deles. */
+function EntregadorIfood({ p }: { p: Pedido }) {
+  const [entrega, setEntrega] = useState<EntregaIfood | null>(null);
+  const [cot, setCot] = useState<Cotacao | null>(null);
+  const [erro, setErro] = useState<string | null>(null);
+  const [ocupado, setOcupado] = useState(false);
+  const [preparo, setPreparo] = useState(p.status === 'pronto' ? 0 : 15);
+  const [metodo, setMetodo] = useState('');
+  const [troco, setTroco] = useState('');
+  const url = `/api/delivery-admin/pedido/${p.id}/entregador-ifood`;
+  const naEntrega = p.pagamentoMetodo === 'na_entrega';
+
+  async function ler() {
+    const r = await fetch(url, { cache: 'no-store' });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) setEntrega(j.entrega ?? null);
+  }
+  useEffect(() => {
+    ler();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p.id]);
+  const ativa = !!entrega && ENTREGA_ATIVA.includes(entrega.status);
+  useEffect(() => {
+    if (!ativa) return;
+    const t = setInterval(ler, 30000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ativa]);
+
+  async function post(corpo: Record<string, unknown>) {
+    setOcupado(true);
+    setErro(null);
+    try {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(corpo),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setErro(j.error ?? `erro ${r.status}`);
+        return null;
+      }
+      return j;
+    } finally {
+      setOcupado(false);
+    }
+  }
+
+  async function cotar() {
+    const j = await post({ acao: 'cotar' });
+    if (j?.cotacao) setCot(j.cotacao);
+  }
+  async function chamar() {
+    if (naEntrega && !metodo) {
+      setErro('pedido pago na entrega: escolha crédito, débito ou dinheiro');
+      return;
+    }
+    const j = await post({
+      acao: 'chamar',
+      quoteId: cot?.quoteId,
+      valorCotado: cot?.valor,
+      preparoMin: preparo,
+      metodoNaEntrega: metodo || undefined,
+      trocoPara: troco ? Number(troco.replace(',', '.')) : undefined,
+    });
+    if (j?.entrega) {
+      setEntrega(j.entrega);
+      setCot(null);
+    }
+  }
+  async function cancelar() {
+    const j = await post({ acao: 'motivos' });
+    if (!j) return;
+    const motivos: Array<{ codigo: number; descricao: string }> = j.motivos ?? [];
+    if (!motivos.length) {
+      setErro('o iFood não aceita mais cancelar este entregador');
+      return;
+    }
+    const lista = motivos.map((m, i) => `${i + 1}. ${m.descricao}`).join('\n');
+    const esc = window.prompt(`Cancelar o entregador do iFood. Número do motivo:\n${lista}`, '1');
+    if (esc === null) return;
+    const m = motivos[Number(esc) - 1];
+    if (!m) {
+      setErro('motivo inválido');
+      return;
+    }
+    const ok = await post({ acao: 'cancelar', codigo: m.codigo, motivo: m.descricao });
+    if (ok) await ler();
+  }
+
+  return (
+    <div className="mt-3 rounded-xl border border-rose-100 bg-rose-50/40 p-3 text-sm">
+      {entrega && entrega.status !== 'CANCELADO' && entrega.status !== 'ERRO' ? (
+        <div className="space-y-1.5">
+          <p className="font-semibold text-rose-800">
+            🛵 iFood: {ENTREGA_TXT[entrega.status] ?? entrega.status}
+            {entrega.valor ? ` · ${brl(entrega.valor)}` : ''}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {entrega.trackingUrl ? (
+              <a
+                href={entrega.trackingUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-md border border-rose-200 bg-white px-3 py-1.5 text-rose-700 hover:bg-rose-50"
+              >
+                Acompanhar
+              </a>
+            ) : null}
+            {entrega.trackingUrl ? (
+              <a
+                href={`https://wa.me/${p.clienteTelefone}?text=${encodeURIComponent(`Seu pedido #${p.numero} vai com entregador do iFood. Acompanhe: ${entrega.trackingUrl} — o código de entrega são os 4 últimos dígitos do seu telefone.`)}`}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-md border border-rose-200 bg-white px-3 py-1.5 text-rose-700 hover:bg-rose-50"
+              >
+                Mandar link pro cliente
+              </a>
+            ) : null}
+            {ENTREGA_ATIVA.includes(entrega.status) ? (
+              <button
+                disabled={ocupado}
+                onClick={cancelar}
+                className="rounded-md border border-rose-200 bg-white px-3 py-1.5 text-rose-600 hover:bg-rose-50 disabled:opacity-50"
+              >
+                Cancelar entregador
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : cot ? (
+        <div className="space-y-2">
+          <p className="font-semibold text-rose-800">
+            🛵 Corrida iFood: {brl(cot.valor)}
+            {cot.minMin != null ? ` · ${cot.minMin}–${cot.maxMin ?? cot.minMin} min` : ''}
+            {cot.distanciaM != null ? ` · ${(cot.distanciaM / 1000).toFixed(1).replace('.', ',')} km` : ''}
+          </p>
+          <label className="flex items-center gap-2 text-xs text-slate-600">
+            Fica pronto em
+            <select
+              value={preparo}
+              onChange={(e) => setPreparo(Number(e.target.value))}
+              className="rounded border border-slate-300 px-1.5 py-1"
+            >
+              {[0, 5, 10, 15, 20, 30, 45].map((m) => (
+                <option key={m} value={m}>
+                  {m === 0 ? 'já está pronto' : `${m} min`}
+                </option>
+              ))}
+            </select>
+          </label>
+          {naEntrega ? (
+            <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+              Entregador cobra no
+              <select
+                value={metodo}
+                onChange={(e) => setMetodo(e.target.value)}
+                className="rounded border border-slate-300 px-1.5 py-1"
+              >
+                <option value="">escolha…</option>
+                <option value="CREDIT">crédito</option>
+                <option value="DEBIT">débito</option>
+                <option value="CASH">dinheiro</option>
+              </select>
+              {metodo === 'CASH' ? (
+                <input
+                  value={troco}
+                  onChange={(e) => setTroco(e.target.value)}
+                  placeholder="troco pra (R$)"
+                  className="w-28 rounded border border-slate-300 px-1.5 py-1"
+                />
+              ) : null}
+            </div>
+          ) : null}
+          <div className="flex gap-2">
+            <button
+              disabled={ocupado}
+              onClick={chamar}
+              className="rounded-md bg-rose-600 px-3 py-1.5 font-medium text-white hover:bg-rose-700 disabled:opacity-50"
+            >
+              {ocupado ? 'Chamando…' : 'Confirmar e chamar'}
+            </button>
+            <button
+              disabled={ocupado}
+              onClick={() => setCot(null)}
+              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-slate-600"
+            >
+              Voltar
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            disabled={ocupado}
+            onClick={cotar}
+            className="rounded-md bg-rose-600 px-3 py-1.5 font-medium text-white hover:bg-rose-700 disabled:opacity-50"
+          >
+            {ocupado ? 'Consultando o iFood…' : '🛵 Chamar entregador iFood'}
+          </button>
+          {entrega?.status === 'CANCELADO' ? (
+            <span className="text-xs text-slate-500">o anterior foi cancelado</span>
+          ) : null}
+        </div>
+      )}
+      {erro ? <p className="mt-2 text-xs text-rose-700">⚠ {erro}</p> : null}
+    </div>
   );
 }

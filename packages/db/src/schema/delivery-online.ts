@@ -278,3 +278,44 @@ export const deliveryComplemento = pgTable(
     filialIdx: index('delivery_complemento_filial_idx').on(t.filialId),
   }),
 );
+
+/** Entregador do iFood chamado pela loja (módulo Shipping / "Sob Demanda").
+ *  Um registro por chamada: se cancelar e chamar de novo, nasce outro.
+ *  origem 'site' = pedido do site/WhatsApp (delivery_pedido) virou pedido
+ *  externo no iFood; origem 'ifood' = pedido do próprio iFood com entrega da
+ *  loja que pediu o entregador deles (requestDriver). */
+export const ifoodEntrega = pgTable(
+  'ifood_entrega',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id')
+      .notNull()
+      .references(() => filial.id, { onDelete: 'cascade' }),
+    /** site | ifood */
+    origem: varchar('origem', { length: 10 }).notNull(),
+    deliveryPedidoId: uuid('delivery_pedido_id').references(() => deliveryPedido.id, { onDelete: 'set null' }),
+    /** Id do pedido no iFood (o que a Shipping devolveu, ou o pedido do iFood). */
+    ifoodOrderId: text('ifood_order_id'),
+    trackingUrl: text('tracking_url'),
+    /** SOLICITADO | CONFIRMADO | CODIGO | A_CAMINHO | ENTREGUE | CANCELADO | ERRO */
+    status: varchar('status', { length: 20 }).notNull().default('SOLICITADO'),
+    /** Último status cru do iFood (orderStatus / evento). */
+    statusIfood: text('status_ifood'),
+    quoteId: text('quote_id'),
+    /** Valor cobrado pelo iFood pela corrida (netValue da cotação). */
+    valor: numeric('valor', { precision: 10, scale: 2 }),
+    cotacao: jsonb('cotacao'),
+    entregador: jsonb('entregador'),
+    erro: text('erro'),
+    canceladoMotivo: text('cancelado_motivo'),
+    criadoPor: uuid('criado_por'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
+    canceladoEm: timestamp('cancelado_em', { withTimezone: true }),
+  },
+  (t) => ({
+    pedidoIdx: index('ifood_entrega_pedido_idx').on(t.deliveryPedidoId),
+    orderIdx: index('ifood_entrega_order_idx').on(t.ifoodOrderId),
+    filialIdx: index('ifood_entrega_filial_idx').on(t.filialId, t.criadoEm),
+  }),
+);

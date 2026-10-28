@@ -242,7 +242,8 @@
     "migrate:relatorio-ponto-aberto": "tsx scripts/migrate-relatorio-ponto-aberto.ts",
     "migrate:cardapio-destaque": "tsx scripts/migrate-cardapio-destaque.ts",
     "migrate:cardapio-destaque-feriado": "tsx scripts/migrate-cardapio-destaque-feriado.ts",
-    "migrate:fiado-pix-vinculo": "tsx scripts/migrate-fiado-pix-vinculo.ts"
+    "migrate:fiado-pix-vinculo": "tsx scripts/migrate-fiado-pix-vinculo.ts",
+    "migrate:ifood-entrega": "tsx scripts/migrate-ifood-entrega.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",
