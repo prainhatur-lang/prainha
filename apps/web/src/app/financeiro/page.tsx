@@ -285,6 +285,14 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
               ? sql`(
                 extensions.unaccent(${schema.fornecedor.nome}) ILIKE extensions.unaccent(${`%${nomeBusca}%`})
                 OR extensions.unaccent(${schema.contaPagar.descricao}) ILIKE extensions.unaccent(${`%${nomeBusca}%`})
+                OR (${schema.fornecedor.grupoEconomicoId} IS NOT NULL AND EXISTS (
+                  -- Mesma pessoa/empresa com outro cadastro (grupo econômico):
+                  -- caso Graziella 28/10, contas no "maria mistao( ... Bonfim)"
+                  -- e busca digitada pelo cadastro "GRAZIELLA ... BOMFIM".
+                  SELECT 1 FROM fornecedor f_irmao
+                  WHERE f_irmao.grupo_economico_id = ${schema.fornecedor.grupoEconomicoId}
+                    AND extensions.unaccent(f_irmao.nome) ILIKE extensions.unaccent(${`%${nomeBusca}%`})
+                ))
               )`
               : undefined;
 
