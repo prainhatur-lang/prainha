@@ -24,6 +24,7 @@ import { exigirPermApi } from '@/lib/exigir-perm';
 import { consultarPagamentoPixInter, incluirPagamentoPixInter, InterPixRecusado, InterSaldoErro, resolverCredenciaisInterPagamentos } from '@/lib/inter';
 import { conferirChavePix, recebedorBate } from '@/lib/pix-titular';
 import { rescisoesDasContas } from '@/lib/rh/rescisao-pix';
+import { consumerParado } from '@/lib/consumer-contas';
 import { baixarContasDoPix, lerSaldoParaPix, podePagarPix, sincronizarPixAbertos, type SaldoParaPix } from '@/lib/pix-pagamento';
 
 export const dynamic = 'force-dynamic';
@@ -111,7 +112,11 @@ export async function POST(req: Request) {
   if (contas.length !== contaIds.length) {
     return NextResponse.json({ error: 'Alguma conta já foi paga, excluída, está num borderô da folha ou não é desta casa. Recarregue a tela.' }, { status: 409 });
   }
-  if (contas.some((x) => x.fornecedorId !== fornecedorId || (ORIGENS_FORA.includes(x.origem ?? '') && !rescisoes.has(x.id)))) {
+  // Conta do Consumer entra quando o Consumer da casa parou (28/10/2026): a
+  // baixa dela é aqui, como na rota de baixas (lib/consumer-contas).
+  const consumerLiberado = contas.some((x) => x.origem === 'CONSUMER') && (await consumerParado(filialId).catch(() => false));
+  const foraDaqui = (o: string | null) => ORIGENS_FORA.includes(o ?? '') && !(o === 'CONSUMER' && consumerLiberado);
+  if (contas.some((x) => x.fornecedorId !== fornecedorId || (foraDaqui(x.origem) && !rescisoes.has(x.id)))) {
     return NextResponse.json({ error: 'Conta de outro fornecedor ou que não se paga por aqui.' }, { status: 400 });
   }
   const itens = contas.map((x) => ({ id: x.id, valor: Math.round((Number(x.valor) - Number(x.jaPago)) * 100) / 100 }));
