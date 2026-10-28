@@ -30,13 +30,7 @@ import { hojeBr, diasAtrasBr } from '@/lib/datas';
 import { GrupoPix, type GrupoPedidos } from './grupo-pix';
 import { conferirPixAbertosNoInter, situacaoPixDasContas } from '@/lib/pix-conferir-auto';
 import { PixEnviados, type PixEnviado } from './pix-enviados';
-import {
-  COMPROVANTE_BANCO_DISPONIVEL,
-  MOTIVO_COMPROVANTE_INDISPONIVEL,
-  destinatarioDoPix,
-  ROTULO_ORIGEM,
-  ultimosEnviosComprovante,
-} from '@/lib/pix-comprovante-whatsapp';
+import { destinatarioDoPix, ROTULO_ORIGEM, ultimosEnviosComprovante } from '@/lib/pix-comprovante-whatsapp';
 import { SaldoInterFaixa } from './saldo-inter';
 import { contasEmPixAberto, podePagarPix } from '@/lib/pix-pagamento';
 import { resolverCredenciaisInterPagamentos, buscarPagamentosInter } from '@/lib/inter';
@@ -201,7 +195,6 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
         const dest = await destinatarioDoPix(p.fornecedorId ?? null).catch(() => null);
         p.foneDestino = dest?.telefone ?? null;
         p.origemFone = dest ? (ROTULO_ORIGEM[dest.origem] ?? dest.origem) : null;
-        p.comprovanteIndisponivel = COMPROVANTE_BANCO_DISPONIVEL ? null : MOTIVO_COMPROVANTE_INDISPONIVEL;
         const u = ultimos.get(p.id);
         p.comprovante = u
           ? {

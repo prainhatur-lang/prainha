@@ -9,8 +9,6 @@ import { db, schema } from '@concilia/db';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { podePagarPix } from '@/lib/pix-pagamento';
 import {
-  COMPROVANTE_BANCO_DISPONIVEL,
-  MOTIVO_COMPROVANTE_INDISPONIVEL,
   destinatarioDoPix,
   enviarComprovantePix,
   linkWaMeComprovante,
@@ -40,17 +38,12 @@ export async function POST(req: Request) {
     .limit(1);
   if (!acesso) return NextResponse.json({ error: 'sem acesso à casa' }, { status: 403 });
   if (p.status !== 'PAGO') return NextResponse.json({ error: 'O Pix ainda não está pago.' }, { status: 400 });
-  if (!COMPROVANTE_BANCO_DISPONIVEL) {
-    return NextResponse.json(
-      { ok: false, status: 'INDISPONIVEL', error: `Comprovante do banco indisponível: ${MOTIVO_COMPROVANTE_INDISPONIVEL}.` },
-      { status: 409 },
-    );
-  }
 
   if (parsed.data.acao === 'wame') {
     const dest = await destinatarioDoPix(p.fornecedorId);
-    const link = await linkWaMeComprovante(p.id, dest?.telefone ?? null);
-    return NextResponse.json({ ok: !!link, link });
+    const r = await linkWaMeComprovante(p.id, dest?.telefone ?? null);
+    if (!r.ok) return NextResponse.json({ ok: false, status: 'INDISPONIVEL', error: `${r.motivo} Nada foi enviado.` });
+    return NextResponse.json({ ok: true, link: r.link });
   }
   const r = await enviarComprovantePix(p.id, { auto: false, usuarioEmail: user.email ?? null });
   return NextResponse.json({ ok: r.status === 'ENVIADO', ...r });

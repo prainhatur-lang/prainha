@@ -30,8 +30,6 @@ export interface PixEnviado {
   fornecedorId?: string | null;
   foneDestino?: string | null;
   origemFone?: string | null;
-  /** Motivo quando não há comprovante oficial do banco pra mandar (nada sai). */
-  comprovanteIndisponivel?: string | null;
   comprovante?: {
     quando: string;
     telefone: string | null;
@@ -169,6 +167,7 @@ const ROTULO_ZAP: Record<string, { txt: string; cls: string }> = {
   SEM_NUMERO: { txt: 'sem celular no cadastro', cls: 'text-amber-700' },
   SEM_TEMPLATE: { txt: 'não foi: sem conversa aberta e sem o modelo aprovado', cls: 'text-amber-700' },
   NAO_ENVIAR: { txt: 'número na lista "não enviar mais"', cls: 'text-amber-700' },
+  INDISPONIVEL: { txt: 'não foi: o Inter não confirmou o Pix', cls: 'text-amber-700' },
 };
 
 const foneBonito = (f: string | null | undefined) =>
@@ -227,14 +226,6 @@ function ComprovanteZap({ p, podeMexer }: { p: PixEnviado; podeMexer: boolean })
     router.refresh();
   }
 
-  if (p.comprovanteIndisponivel) {
-    return (
-      <div className="mt-1 pl-[7.5rem] text-[11px] text-amber-700">
-        📲 Comprovante do banco indisponível — {p.comprovanteIndisponivel}. Nada é enviado ao recebedor.
-      </div>
-    );
-  }
-
   return (
     <div className="mt-1 pl-[7.5rem] text-[11px] text-slate-600">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -244,7 +235,7 @@ function ComprovanteZap({ p, podeMexer }: { p: PixEnviado; podeMexer: boolean })
             {rot.txt}
             {c.telefone ? ` · ${foneBonito(c.telefone)}` : ''} · {c.quando}
             {c.auto ? ' (automático)' : ''}
-            {c.erro && (c.status === 'ERRO' || c.status === 'NAO_ENVIAR') ? ` — ${c.erro}` : ''}
+            {c.erro && (c.status === 'ERRO' || c.status === 'NAO_ENVIAR' || c.status === 'INDISPONIVEL') ? ` — ${c.erro}` : ''}
           </span>
         ) : (
           <span className="text-slate-400">ainda não enviado</span>

@@ -6,7 +6,7 @@
 // que pagou:
 //   · conversa aberta nas últimas 24 h → documento livre;
 //   · fora da janela → template UTILIDADE `WHATSAPP_COMPROVANTE_TEMPLATE`
-//     (cabeçalho DOCUMENTO; corpo {{1}} favorecido, {{2}} casa, {{3}} valor,
+//     (cabeçalho DOCUMENTO; corpo {{1}} recebedor (nome do Inter), {{2}} casa, {{3}} valor,
 //     {{4}} data);
 //   · sem template configurado → fica SEM_TEMPLATE e a tela oferece o wa.me
 //     com o texto + link do PDF.
@@ -23,15 +23,14 @@ import { celular11, rotuloMotivoFora, telefonesForaDosEnvios } from '@/lib/whats
 
 const VALIDADE_LINK_MS = 60 * 24 * 3600 * 1000; // 60 dias
 
-// DESLIGADO (28/10/2026). O dono: "o comprovante não pode ser fake" — só vale
-// o comprovante OFICIAL do banco. Conferido na doc do Inter (developers.inter.co,
-// API Banking v2 e API Pix): não há endpoint de comprovante; o Pix só tem
-// GET /banking/v2/pix/{codigoSolicitacao} (JSON) e o único PDF oficial é o
-// extrato do período (GET /banking/v2/extrato/exportar), que traz a conta toda.
-// Enquanto não houver o oficial, NADA sai: nem o PDF montado aqui, nem wa.me.
-export const COMPROVANTE_BANCO_DISPONIVEL = false;
-export const MOTIVO_COMPROVANTE_INDISPONIVEL =
-  'a API do Inter não fornece o comprovante oficial do Pix (só os dados da transação e o extrato do período)';
+// Regra do dono (28/10/2026): "faz um comprovante com as informações corretas,
+// o que não pode é enviar uma informação que não existe". O Inter não tem
+// endpoint de comprovante, então o PDF é montado aqui — mas CADA campo sai da
+// consulta ao vivo GET /banking/v2/pix/{codigoSolicitacao}. Nada do nosso
+// cadastro (nome, chave, descrição, casa) entra como dado do comprovante, e o
+// que o Inter não devolve (nome/CPF do pagador, banco do recebedor) fica fora.
+// Só gera com o Pix efetivado no Inter (status PAGO/PIX_PAGO ou PIX_PAGO no
+// histórico); pendente ou consulta falhou → não envia e a tela mostra o motivo.
 
 function versao(): string {
   return process.env.WHATSAPP_API_VERSION || 'v21.0';
@@ -63,78 +62,141 @@ export function conferirLinkComprovante(id: string, x: string, s: string): boole
   return Number(x) > Date.now();
 }
 
-// ── Dados do comprovante ───────────────────────────────────────────────────
+// ── Dados do comprovante (só o que o Inter respondeu) ─────────────────────
 
 export type DadosComprovantePix = {
   pixId: string;
   filialId: string;
+  /** Nome da casa: só remetente da mensagem, nunca campo do comprovante. */
   casa: string;
-  favorecido: string;
+  /** Nome do recebedor como o Inter devolveu (null se não veio). */
+  recebedor: string | null;
   valor: number;
-  dataHora: string | null; // texto pronto (dd/mm/aaaa hh:mm)
-  dataCurta: string; // dd/mm/aaaa
+  dataHora: string | null; // dd/mm/aaaa hh:mm:ss (BRT)
+  dataCurta: string; // dd/mm/aaaa (BRT)
+  endToEnd: string | null;
+  /** Linhas do PDF, na ordem: só campos que vieram do Inter. */
   campos: Array<[string, string]>;
+  /** Campos pedidos que o Inter não devolveu (ficam fora do PDF). */
+  ausentes: string[];
 };
+
+export type ResultadoDadosComprovante = { ok: true; dados: DadosComprovantePix } | { ok: false; motivo: string };
 
 const brl = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
-function dataBr(iso: string | null | undefined): { longa: string | null; curta: string | null } {
-  if (!iso) return { longa: null, curta: null };
-  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/.exec(iso);
-  if (!m) return { longa: iso, curta: null };
-  const curta = `${m[3]}/${m[2]}/${m[1]}`;
-  return { longa: m[4] ? `${curta} ${m[4]}:${m[5]}` : curta, curta };
+/** ISO do Inter (UTC, "Z") → horário de Brasília. */
+function dataBrt(iso: string | null | undefined): { longa: string; curta: string } | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const partes = Object.fromEntries(
+    new Intl.DateTimeFormat('pt-BR', {
+      timeZone: 'America/Sao_Paulo',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    })
+      .formatToParts(d)
+      .map((x) => [x.type, x.value]),
+  ) as Record<string, string>;
+  const curta = `${partes.day}/${partes.month}/${partes.year}`;
+  return { curta, longa: `${curta} ${partes.hour}:${partes.minute}:${partes.second}` };
 }
 
-function docFormatado(d: string): string {
+/** CPF/CNPJ como veio: se veio mascarado (com *), mostra mascarado. */
+function docComoVeio(d: string): string {
+  if (/[^\d]/.test(d.replace(/[.\-/]/g, ''))) return d; // tem máscara/asterisco → intocado
   const s = d.replace(/\D/g, '');
   if (s.length === 11) return `${s.slice(0, 3)}.${s.slice(3, 6)}.${s.slice(6, 9)}-${s.slice(9)}`;
   if (s.length === 14) return `${s.slice(0, 2)}.${s.slice(2, 5)}.${s.slice(5, 8)}/${s.slice(8, 12)}-${s.slice(12)}`;
   return d;
 }
 
-export async function dadosComprovantePix(pixId: string): Promise<DadosComprovantePix | null> {
-  const [p] = await db.select().from(schema.pixPagamento).where(eq(schema.pixPagamento.id, pixId)).limit(1);
-  if (!p) return null;
-  const [f] = await db.select({ nome: schema.filial.nome }).from(schema.filial).where(eq(schema.filial.id, p.filialId)).limit(1);
-  let t: InterPixConsulta['transacaoPix'] =
-    ((p.retorno as InterPixConsulta | null)?.transacaoPix as InterPixConsulta['transacaoPix']) ?? undefined;
-  if ((!t || !t.dataHoraMovimento) && p.codigoSolicitacao) {
-    const cred = resolverCredenciaisInterPagamentos(p.filialId);
-    if (cred) {
-      try {
-        t = (await consultarPagamentoPixInter(cred, p.codigoSolicitacao)).transacaoPix ?? t;
-      } catch {
-        /* fica com o que tem */
-      }
-    }
+const STATUS_EFETIVADO = ['PAGO', 'PIX_PAGO'];
+
+function texto(v: unknown): string | null {
+  if (v == null) return null;
+  const s = String(v).trim();
+  return s ? s : null;
+}
+
+/**
+ * Consulta o Pix no Inter AGORA e monta o comprovante só com a resposta.
+ * Nunca lança: falha vira { ok:false, motivo }.
+ */
+export async function dadosComprovantePix(pixId: string): Promise<ResultadoDadosComprovante> {
+  const [p] = await db
+    .select({ id: schema.pixPagamento.id, filialId: schema.pixPagamento.filialId, codigo: schema.pixPagamento.codigoSolicitacao })
+    .from(schema.pixPagamento)
+    .where(eq(schema.pixPagamento.id, pixId))
+    .limit(1);
+  if (!p) return { ok: false, motivo: 'Pix não encontrado.' };
+  if (!p.codigo) return { ok: false, motivo: 'Pix sem código de solicitação do Inter — não dá pra consultar o banco.' };
+  const cred = resolverCredenciaisInterPagamentos(p.filialId);
+  if (!cred) return { ok: false, motivo: 'Casa sem credencial de pagamentos do Inter — não dá pra consultar o banco.' };
+  let resp: InterPixConsulta;
+  try {
+    resp = await consultarPagamentoPixInter(cred, p.codigo);
+  } catch (e) {
+    return { ok: false, motivo: `Consulta ao Inter falhou: ${e instanceof Error ? e.message : String(e)}`.slice(0, 400) };
   }
-  t = t ?? {};
-  const quando = dataBr(t.dataHoraMovimento ?? (p.baixadoEm ? p.baixadoEm.toISOString() : null));
-  const favorecido = t.recebedor?.nome || p.favorecido || '—';
-  const valor = t.valor != null ? Number(t.valor) : Number(p.valor);
+  const t = resp.transacaoPix ?? {};
+  const hist = (Array.isArray(resp.historico) ? resp.historico : []) as Array<{ status?: string; dataHoraEvento?: string }>;
+  const evPago = hist.find((h) => String(h?.status ?? '').toUpperCase() === 'PIX_PAGO');
+  const status = texto(t.status)?.toUpperCase() ?? null;
+  if (!(status && STATUS_EFETIVADO.includes(status)) && !evPago) {
+    return {
+      ok: false,
+      motivo: `O Inter ainda não deu o Pix como efetivado (status ${status ?? 'não informado'}). Comprovante não gerado.`,
+    };
+  }
+  const valorNum = t.valor != null && t.valor !== '' ? Number(t.valor) : NaN;
+  if (!Number.isFinite(valorNum)) return { ok: false, motivo: 'O Inter não devolveu o valor do Pix. Comprovante não gerado.' };
+
+  const [f] = await db.select({ nome: schema.filial.nome }).from(schema.filial).where(eq(schema.filial.id, p.filialId)).limit(1);
+  const quando = dataBrt(texto(t.dataHoraMovimento) ?? texto(evPago?.dataHoraEvento));
+  const recNome = texto(t.recebedor?.nome);
+  const recDoc = texto(t.recebedor?.cpfCnpj);
+  const e2e = texto(t.endToEnd);
+  const chave = texto(t.chave);
+  const codigo = texto(t.codigoSolicitacao);
+  const conta = texto((t as Record<string, unknown>).contaCorrente);
+  const instRec = texto((t.recebedor as Record<string, unknown> | undefined)?.instituicaoFinanceira)
+    ?? texto((t.recebedor as Record<string, unknown> | undefined)?.banco);
+
   const campos: Array<[string, string]> = [];
-  campos.push(['Valor', brl(valor)]);
-  campos.push(['Recebedor', favorecido]);
-  if (t.recebedor?.cpfCnpj) campos.push(['CPF/CNPJ', docFormatado(String(t.recebedor.cpfCnpj))]);
-  const inst = (t.recebedor as Record<string, unknown> | undefined)?.instituicaoFinanceira;
-  if (typeof inst === 'string' && inst) campos.push(['Instituição', inst]);
-  campos.push(['Chave Pix', t.chave ?? p.chave]);
-  if (quando.longa) campos.push(['Data/hora', quando.longa]);
-  campos.push(['Pagador', f?.nome ?? '—']);
-  if (p.descricao) campos.push(['Descrição', p.descricao]);
-  const e2e = t.endToEnd ?? p.endToEndId;
-  if (e2e) campos.push(['ID da transação', e2e]);
-  if (p.codigoSolicitacao) campos.push(['Código no Inter', p.codigoSolicitacao]);
+  const ausentes: string[] = [];
+  const add = (rotulo: string, v: string | null) => (v ? campos.push([rotulo, v]) : ausentes.push(rotulo));
+  add('Data/hora (Brasília)', quando?.longa ?? null);
+  add('Status no Inter', status ?? (evPago ? 'PIX_PAGO' : null));
+  add('Recebedor', recNome);
+  add('CPF/CNPJ do recebedor', recDoc ? docComoVeio(recDoc) : null);
+  add('Instituição do recebedor', instRec);
+  add('Chave Pix', chave);
+  add('Conta pagadora (Inter)', conta);
+  add('Código da solicitação', codigo);
+  // Nome e CPF/CNPJ do pagador: a consulta do Inter não devolve.
+  ausentes.push('Nome do pagador', 'CPF/CNPJ do pagador');
+
   return {
-    pixId,
-    filialId: p.filialId,
-    casa: f?.nome ?? 'Prainha',
-    favorecido,
-    valor,
-    dataHora: quando.longa,
-    dataCurta: quando.curta ?? '',
-    campos,
+    ok: true,
+    dados: {
+      pixId,
+      filialId: p.filialId,
+      casa: f?.nome ?? 'Prainha',
+      recebedor: recNome,
+      valor: valorNum,
+      dataHora: quando?.longa ?? null,
+      dataCurta: quando?.curta ?? '',
+      endToEnd: e2e,
+      campos,
+      ausentes: e2e ? ausentes : [...ausentes, 'E2E'],
+    },
   };
 }
 
@@ -142,7 +204,8 @@ export async function dadosComprovantePix(pixId: string): Promise<DadosComprovan
 
 function pdfTexto(s: string): string {
   // WinAnsi ≈ latin1 pra acentos do português; fora disso vira '?'
-  const limpo = s.replace(/[—–]/g, '-').replace(/[^\x20-\x7e\xa0-\xff]/g, '?');
+  // travessão = 0x97 e meia-risca = 0x96 no WinAnsi
+  const limpo = s.replace(/—/g, '\x97').replace(/–/g, '\x96').replace(/[^\x20-\x7e\x96\x97\xa0-\xff]/g, '?');
   return limpo.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
 }
 
@@ -164,28 +227,34 @@ export function pdfComprovantePix(d: DadosComprovantePix): Buffer {
   const txt = (x: number, y: number, tam: number, negrito: boolean, s: string) =>
     ops.push(`BT /${negrito ? 'F2' : 'F1'} ${tam} Tf ${x} ${y} Td (${pdfTexto(s)}) Tj ET`);
   let y = 790;
-  txt(50, y, 18, true, 'Comprovante de Pix');
-  y -= 22;
-  txt(50, y, 11, false, `${d.casa} - pago pelo Banco Inter`);
+  txt(50, y, 17, true, 'Comprovante de Pix \u2014 dados do Banco Inter');
+  y -= 20;
+  txt(50, y, 9, false, 'Cada campo abaixo veio da consulta do Pix na API do Banco Inter. O que o banco não informa não aparece.');
   y -= 34;
   txt(50, y, 26, true, brl(d.valor));
-  y -= 18;
+  y -= 24;
+  if (d.endToEnd) {
+    ops.push(`0.95 g 50 ${y - 34} 495 46 re f 0 g`);
+    txt(60, y - 2, 9, true, 'ID da transação (E2E)');
+    txt(60, y - 20, 13, true, d.endToEnd);
+    y -= 44;
+    txt(50, y, 9, false, 'O E2E pode ser conferido no extrato de quem recebeu.');
+    y -= 14;
+  }
   ops.push(`0.8 G 50 ${y} m 545 ${y} l S`);
-  y -= 26;
+  y -= 24;
   for (const [k, v] of d.campos) {
-    if (k === 'Valor') continue;
     txt(50, y, 10, true, k);
-    const linhas = quebrar(v, 60);
-    for (const l of linhas) {
-      txt(190, y, 10, false, l);
+    for (const l of quebrar(v, 55)) {
+      txt(210, y, 10, false, l);
       y -= 15;
     }
     y -= 7;
   }
-  y -= 10;
+  y -= 8;
   ops.push(`0.8 G 50 ${y} m 545 ${y} l S`);
-  y -= 18;
-  txt(50, y, 8, false, 'Dados devolvidos pelo Banco Inter na consulta do Pix. Enviado pelo sistema do Prainha.');
+  y -= 16;
+  txt(50, y, 8, false, `Pago pela conta Inter da ${d.casa}. Gerado pelo sistema do Prainha com a resposta do Inter.`);
 
   const conteudo = Buffer.from(ops.join('\n'), 'latin1');
   const objs: Buffer[] = [
@@ -309,7 +378,7 @@ async function postar(phoneId: string, corpo: unknown): Promise<{ wamid: string 
 
 export function textoComprovante(d: DadosComprovantePix): string {
   return (
-    `Olá, ${d.favorecido}! Segue o comprovante do Pix de ${brl(d.valor)} pago pela ${d.casa}` +
+    `Olá${d.recebedor ? `, ${d.recebedor}` : ''}! Segue o comprovante do Pix de ${brl(d.valor)} pago pela ${d.casa}` +
     `${d.dataHora ? ` em ${d.dataHora}` : ''}.`
   );
 }
@@ -359,14 +428,14 @@ export async function enviarComprovantePix(
       const r: ResultadoEnvioComprovante = { status: 'ERRO', telefone: null, modo: null, mensagem: 'O Pix ainda não está pago.' };
       return r;
     }
-    if (!COMPROVANTE_BANCO_DISPONIVEL) {
-      return {
-        status: 'INDISPONIVEL',
-        telefone: null,
-        modo: null,
-        mensagem: `Comprovante do banco indisponível: ${MOTIVO_COMPROVANTE_INDISPONIVEL}. Nada foi enviado.`,
-      };
+    // Só com o Pix efetivado no Inter e a consulta respondendo.
+    const dd = await dadosComprovantePix(pixId);
+    if (!dd.ok) {
+      const r: ResultadoEnvioComprovante = { status: 'INDISPONIVEL', telefone: null, modo: null, mensagem: `${dd.motivo} Nada foi enviado.` };
+      await gravar(r, null, dd.motivo);
+      return r;
     }
+    const d = dd.dados;
     const dest = await destinatarioDoPix(p.fornecedorId);
     if (!dest) {
       const r: ResultadoEnvioComprovante = {
@@ -392,8 +461,6 @@ export async function enviarComprovantePix(
       await gravar(r, null, motivo);
       return r;
     }
-    const d = await dadosComprovantePix(pixId);
-    if (!d) return { status: 'ERRO', telefone, modo: null, mensagem: 'Pix não encontrado.' };
     const phoneId = await remetenteDaCasa(p.filialId);
     if (!token() || !phoneId) {
       const r: ResultadoEnvioComprovante = { status: 'ERRO', telefone, modo: null, mensagem: 'WhatsApp não configurado.' };
@@ -446,7 +513,7 @@ export async function enviarComprovantePix(
           { type: 'header', parameters: [{ type: 'document', document: { link, filename: arquivo } }] },
           {
             type: 'body',
-            parameters: [d.favorecido, d.casa, brl(d.valor), d.dataCurta || d.dataHora || '—'].map((t) => ({
+            parameters: [d.recebedor || 'tudo bem', d.casa, brl(d.valor), d.dataCurta || 'hoje'].map((t) => ({
               type: 'text',
               text: t,
             })),
@@ -478,6 +545,14 @@ export async function enviarComprovantePixAuto(pixId: string): Promise<void> {
     .where(sql`${schema.pixComprovanteEnvio.pixPagamentoId} = ${pixId}::uuid AND ${schema.pixComprovanteEnvio.auto}`)
     .limit(1);
   if (ja) return;
+  // O Pix pode virar PAGO aqui (ENVIADO) um instante antes do PIX_PAGO no
+  // Inter: espera até ~30 s pelo efetivado antes de tentar.
+  for (let i = 0; i < 6; i++) {
+    const dd = await dadosComprovantePix(pixId);
+    if (dd.ok) break;
+    if (!/ainda não deu o Pix como efetivado/.test(dd.motivo)) break;
+    await new Promise((r) => setTimeout(r, 5000));
+  }
   await enviarComprovantePix(pixId, { auto: true });
 }
 
@@ -508,10 +583,12 @@ export async function ultimosEnviosComprovante(pixIds: string[]) {
 }
 
 /** Link wa.me com o texto e o link do PDF (fallback de 1 toque). */
-export async function linkWaMeComprovante(pixId: string, telefone: string | null): Promise<string | null> {
-  if (!COMPROVANTE_BANCO_DISPONIVEL) return null;
-  const d = await dadosComprovantePix(pixId);
-  if (!d) return null;
-  const texto = `${textoComprovante(d)}\n\nComprovante: ${linkComprovantePdf(pixId)}`;
-  return `https://wa.me/${telefone ? `55${telefone}` : ''}?text=${encodeURIComponent(texto)}`;
+export async function linkWaMeComprovante(
+  pixId: string,
+  telefone: string | null,
+): Promise<{ ok: true; link: string } | { ok: false; motivo: string }> {
+  const dd = await dadosComprovantePix(pixId);
+  if (!dd.ok) return dd;
+  const texto = `${textoComprovante(dd.dados)}\n\nComprovante: ${linkComprovantePdf(pixId)}`;
+  return { ok: true, link: `https://wa.me/${telefone ? `55${telefone}` : ''}?text=${encodeURIComponent(texto)}` };
 }
