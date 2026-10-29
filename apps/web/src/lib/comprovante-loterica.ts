@@ -251,8 +251,11 @@ export function contaDoCadastroBate(
   const df = digitosConta(cadastro.conta);
   if (dc.length < 6 || df.length < 6) return false;
   if (!(dc === df || dc.endsWith(df) || df.endsWith(dc))) return false;
-  const ac = String(lido?.agencia ?? '').replace(/\D/g, '').replace(/^0+/, '');
-  const af = String(cadastro.agencia ?? '').replace(/\D/g, '').replace(/^0+/, '');
+  // Agência: só o primeiro número. Cadastro da Caixa vem "3880 op 1288"
+  // (agência + operação) e o comprovante lê só "3880".
+  const numAgencia = (s: unknown) => ((String(s ?? '').match(/\d+/) ?? [''])[0]).replace(/^0+/, '');
+  const ac = numAgencia(lido?.agencia);
+  const af = numAgencia(cadastro.agencia);
   return !ac || !af || ac === af;
 }
 
