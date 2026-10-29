@@ -324,6 +324,12 @@ async function initSchemaNativo() {
   // sai depois como item de R$ 0 apontando pro de origem (vale_de).
   await addCol('comanda_item', 'dobrado_vale boolean DEFAULT false');
   await addCol('comanda_item', 'vale_de bigint');
+  // COMBO (Almoço executivo): cada escolha vai pro KDS da praça DELA (a coca
+  // no bar, o pudim na sobremesa) em vez de herdar a praça do prato.
+  // praca_propria = filho tipo 2 que o KDS trata como item de verdade.
+  // espera_pai = sobremesa do combo: só aparece na praça depois da baixa do prato.
+  await addCol('comanda_item', 'praca_propria boolean DEFAULT false');
+  await addCol('comanda_item', 'espera_pai boolean DEFAULT false');
   await sql`CREATE TABLE IF NOT EXISTS pagamento_local (codigo bigint PRIMARY KEY, pedido bigint, forma_codigo integer,
     valor numeric, caixa_codigo bigint, nsu text, autorizacao text, bandeira text, observacao text,
     conta_corrente bigint, quando timestamptz DEFAULT now(), cancelado_em timestamptz)`;
@@ -3086,9 +3092,15 @@ async function pgInserirItem(ped, it) {
   // produto que não cobra os 10% (cadastro da nuvem): a marca vai no item
   let semServico = !!pl && pl.sem_servico === true;
   // complemento vai na praça do item-pai, sempre (ver herdarPracaDoPai)
+  let pracaPropria = false, esperaPai = false;
   if (Number(it.tipo) === 2 && it.codigo_pai != null) {
-    const [pai] = await sql`SELECT area_codigo, sem_servico FROM comanda_item WHERE item_codigo=${Number(it.codigo_pai)} LIMIT 1`;
-    if (pai) area = pai.area_codigo == null ? null : Number(pai.area_codigo);
+    const [pai] = await sql`SELECT area_codigo, sem_servico, nome FROM comanda_item WHERE item_codigo=${Number(it.codigo_pai)} LIMIT 1`;
+    // EXCEÇÃO: escolha de COMBO (Almoço executivo) com praça própria diferente
+    // da do prato vai pro KDS dela — ver comboDaPraca.
+    const propria = pai ? await comboDaPraca(pai, it, area) : null;
+    if (propria) {
+      area = propria.area; pracaPropria = true; esperaPai = propria.espera;
+    } else if (pai) area = pai.area_codigo == null ? null : Number(pai.area_codigo);
     // complemento de item sem serviço também fica fora dos 10%
     if (pai && pai.sem_servico === true) semServico = true;
   }
@@ -3100,12 +3112,46 @@ async function pgInserirItem(ped, it) {
   const agora = new Date();
   await sql`INSERT INTO comanda_item (item_codigo, codigo_pai, comanda_codigo, codigo_pdv, produto_codigo,
       nome, quantidade, valor_unitario, valor_total, tipo, detalhes, area_codigo, criado, produzido, entregue, criado_por, sem_servico,
-      dobrado_vale, vale_de)
+      dobrado_vale, vale_de, praca_propria, espera_pai)
     VALUES (${cod}, ${it.codigo_pai ?? null}, ${Number(ped)}, ${pdvCod}, ${it.produto_codigo ?? null},
       ${nomeItem}, ${Number(it.qtd)}, ${Number(it.preco)}, ${vt}, ${it.tipo ?? 1}, ${detalhes}, ${area},
       ${agora}, ${baixado ? agora : null}, ${baixado ? agora : null}, ${it.login ?? null}, ${semServico},
-      ${dobrado}, ${valeDe})`;
+      ${dobrado}, ${valeDe}, ${pracaPropria}, ${esperaPai})`;
   return cod;
+}
+// ---- COMBO: CADA ESCOLHA NA PRAÇA DELA (Prainha Mar, 29/10/2026) ----
+// No Almoço executivo o cliente escolhe prato + bebida + sobremesa, e as três
+// entravam como complemento do prato — tudo no KDS PRINCIPAL, a coca e o pudim
+// junto. Combo listado em cfg 'combos_por_praca' (termos no nome do pai) é a
+// exceção à regra "complemento vai com o pai": a escolha cuja praça própria
+// (cadastro do produto ligado à opção, ou o produto de mesmo nome) é OUTRA vai
+// pra lá como item com botão. Sem praça própria, ou na mesma praça, nada muda.
+// Sobremesa (pergunta "Sobremesa" ou nome em cfg 'combo_espera_prato') espera:
+// só aparece no KDS dela depois da baixa do prato.
+const COMBOS_POR_PRACA_PADRAO = 'executivo';
+const COMBO_ESPERA_PADRAO = 'sobremesa, pudim, mousse, sorvete, petit gateau, brownie, cocada, torta, pave, bolo, doce, acai';
+async function comboDaPraca(pai, it, areaPropria) {
+  const termos = String(await cfgGet('combos_por_praca', COMBOS_POR_PRACA_PADRAO))
+    .split(',').map((x) => semAcento(x.trim())).filter(Boolean);
+  if (!termos.length) return null;
+  const nmPai = semAcento(pai.nome || '');
+  if (!termos.some((t) => nmPai.includes(t))) return null;
+  let area = areaPropria;
+  if (area == null && it.nome) {
+    // opção sem produto ligado: acha pelo nome no cardápio
+    const [pl] = await sql`SELECT area_codigo FROM produto_local
+      WHERE area_codigo IS NOT NULL AND (lower(nome) = lower(${String(it.nome).trim()}) OR nome_busca = ${semAcento(String(it.nome).trim())})
+      LIMIT 1`.catch(() => []);
+    if (pl) area = await pgAreaDoItem(it.nome, Number(pl.area_codigo));
+  }
+  if (area == null) return null;
+  const areaPai = pai.area_codigo == null ? null : Number(pai.area_codigo);
+  if (Number(area) === areaPai) return null;
+  const esp = String(await cfgGet('combo_espera_prato', COMBO_ESPERA_PADRAO))
+    .split(',').map((x) => semAcento(x.trim())).filter(Boolean);
+  const nm = semAcento(it.nome || '');
+  const espera = semAcento(it.pergunta || '').includes('sobremesa') || esp.some((t) => nm.includes(t));
+  return { area: Number(area), espera };
 }
 /** Quanto do pedido é de produto que NÃO cobra taxa de serviço (couvert,
  *  recreação — marcado no cadastro da nuvem). Sai da base dos 10%; o item
@@ -3672,8 +3718,9 @@ async function apiComandaBaixa(body) {
  *  só a primeira entrava.
  *  O preço da opção fica no FILHO; o pai continua com o preço do prato. */
 async function fbGravarRespostas(ped, itemPai, it) {
-  const ops = await sql`SELECT codigo, nome, preco, produto_pdv FROM wizard_opcao
-    WHERE codigo = ANY(${it.respostas})`;
+  const ops = await sql`SELECT o.codigo, o.nome, o.preco, o.produto_pdv, wp.texto AS pergunta_texto
+    FROM wizard_opcao o LEFT JOIN wizard_pergunta wp ON wp.codigo = o.pergunta
+    WHERE o.codigo = ANY(${it.respostas})`;
   const porCodigo = new Map(ops.map((x) => [Number(x.codigo), x]));
   for (const r of it.respostas) {                 // na ordem em que foram escolhidas
     const op = porCodigo.get(Number(r));
@@ -3685,7 +3732,7 @@ async function fbGravarRespostas(ped, itemPai, it) {
       await pgInserirItem(ped, {
         codigo_pdv: op.produto_pdv ? Number(op.produto_pdv) : null,
         nome: op.nome, qtd: it.qtd, preco: Number(op.preco || 0),
-        tipo: 2, codigo_pai: itemPai, login: it.login,
+        tipo: 2, codigo_pai: itemPai, login: it.login, pergunta: op.pergunta_texto || null,
       }).catch((e) => console.error('[resposta] ' + op.nome + ': ' + e.message));
       continue;
     }
@@ -15142,6 +15189,7 @@ async function alinharComplementosAbertos() {
       FROM comanda_item p, comanda c
       WHERE f.tipo = 2 AND f.codigo_pai = p.item_codigo AND c.codigo = f.comanda_codigo
         AND c.fechada_em IS NULL AND c.cancelada_em IS NULL
+        AND f.praca_propria IS NOT TRUE
         AND f.area_codigo IS DISTINCT FROM p.area_codigo`;
     if (!r.count) break;
     total += r.count;
@@ -15159,6 +15207,7 @@ async function alinharComplementosAbertos() {
       LEFT JOIN marca mp ON mp.item_codigo = p.item_codigo
       LEFT JOIN marca mf ON mf.item_codigo = f.item_codigo
      WHERE f.tipo = 2 AND f.item_codigo IS NOT NULL AND f.cancelado_em IS NULL
+       AND f.praca_propria IS NOT TRUE
        AND c.fechada_em IS NULL AND c.cancelada_em IS NULL
        AND COALESCE(p.produzido, mp.pronto_em) IS NOT NULL
        AND COALESCE(f.produzido, mf.pronto_em) IS NULL
@@ -15285,7 +15334,7 @@ async function podarPracas(vivas) {
     FROM praca_mudou pm, comanda c
     WHERE ci.area_codigo = pm.de AND c.codigo = ci.comanda_codigo
       AND ci.cancelado_em IS NULL AND ci.entregue IS NULL
-      AND NOT (ci.tipo = 2 AND ci.codigo_pai IS NOT NULL)
+      AND NOT (ci.tipo = 2 AND ci.codigo_pai IS NOT NULL AND ci.praca_propria IS NOT TRUE)
       AND NOT EXISTS (SELECT 1 FROM marca m WHERE m.item_codigo = ci.item_codigo AND m.entregue_em IS NOT NULL)
       AND ${contaNoKds()}`;
   // 2) complemento acompanha o item-pai, sempre
@@ -15294,6 +15343,7 @@ async function podarPracas(vivas) {
     const r = await sql`UPDATE comanda_item ci SET area_codigo = p.area_codigo
       FROM comanda_item p, comanda c
       WHERE ci.tipo = 2 AND ci.codigo_pai = p.item_codigo AND c.codigo = ci.comanda_codigo
+        AND ci.praca_propria IS NOT TRUE
         AND ci.area_codigo IN (SELECT de FROM praca_mudou)
         AND ci.area_codigo IS DISTINCT FROM p.area_codigo
         AND ci.cancelado_em IS NULL AND ${contaNoKds()}`;
@@ -15306,18 +15356,24 @@ async function podarPracas(vivas) {
   if (m1.count || m2) console.log(`[pracas] ${m1.count} item(ns) e ${m2} complemento(s) abertos mudaram de praça`);
 }
 
+/** Sobremesa do combo (espera_pai): fica fora do KDS até o prato ter baixa. */
+function sobremesaLiberada() {
+  return sql`(ci.espera_pai IS NOT TRUE OR EXISTS (SELECT 1 FROM comanda_item pp
+    LEFT JOIN marca mpp ON mpp.item_codigo = pp.item_codigo
+    WHERE pp.item_codigo = ci.codigo_pai AND (pp.cancelado_em IS NOT NULL OR COALESCE(pp.produzido, mpp.pronto_em) IS NOT NULL)))`;
+}
 async function apiAreas() {
   const ocultas = await pracasOcultas();
   const rows = await sql`
     SELECT a.codigo, a.nome,
-      COUNT(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2 AND COALESCE(ci.produzido, m.pronto_em) IS NULL) AS a_produzir,
-      COUNT(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2) AS total,
+      COUNT(ci.id) FILTER (WHERE (ci.tipo IS DISTINCT FROM 2 OR ci.praca_propria IS TRUE) AND COALESCE(ci.produzido, m.pronto_em) IS NULL) AS a_produzir,
+      COUNT(ci.id) FILTER (WHERE (ci.tipo IS DISTINCT FROM 2 OR ci.praca_propria IS TRUE)) AS total,
       -- pronto e ainda não entregue NESTA praça: é o que o runner dela tem na mão
-      COUNT(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2
+      COUNT(ci.id) FILTER (WHERE (ci.tipo IS DISTINCT FROM 2 OR ci.praca_propria IS TRUE)
         AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL
         AND COALESCE(ci.entregue, m.entregue_em) IS NULL) AS a_entregar
     FROM area a
-    LEFT JOIN comanda_item ci ON ci.area_codigo = a.codigo AND ci.cancelado_em IS NULL
+    LEFT JOIN comanda_item ci ON ci.area_codigo = a.codigo AND ci.cancelado_em IS NULL AND ${sobremesaLiberada()}
       AND EXISTS (SELECT 1 FROM comanda c WHERE c.codigo = ci.comanda_codigo AND ${contaNoKds()})
     LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
     WHERE a.codigo <> ALL(${ocultas})
@@ -15330,14 +15386,14 @@ async function apiAreas() {
   // aparecer em cozinha nenhuma.
   // apiKds(0)/apiEntrega(0) já sabem ler essa faixa; faltava a tela oferecer.
   const semArea = (await sql`
-    SELECT COUNT(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2 AND COALESCE(ci.produzido, m.pronto_em) IS NULL) AS a_produzir,
-           COUNT(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2) AS total,
-           COUNT(ci.id) FILTER (WHERE ci.tipo IS DISTINCT FROM 2
+    SELECT COUNT(ci.id) FILTER (WHERE (ci.tipo IS DISTINCT FROM 2 OR ci.praca_propria IS TRUE) AND COALESCE(ci.produzido, m.pronto_em) IS NULL) AS a_produzir,
+           COUNT(ci.id) FILTER (WHERE (ci.tipo IS DISTINCT FROM 2 OR ci.praca_propria IS TRUE)) AS total,
+           COUNT(ci.id) FILTER (WHERE (ci.tipo IS DISTINCT FROM 2 OR ci.praca_propria IS TRUE)
              AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL
              AND COALESCE(ci.entregue, m.entregue_em) IS NULL) AS a_entregar
       FROM comanda_item ci LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
      JOIN comanda c ON c.codigo = ci.comanda_codigo AND ${contaNoKds()}
-     WHERE ci.cancelado_em IS NULL AND (ci.area_codigo IS NULL OR ci.area_codigo = ANY(${ocultas}))`)[0];
+     WHERE ci.cancelado_em IS NULL AND ${sobremesaLiberada()} AND (ci.area_codigo IS NULL OR ci.area_codigo = ANY(${ocultas}))`)[0];
   if (Number(semArea?.total ?? 0) > 0) {
     rows.unshift({ codigo: 0, nome: 'Sem praça definida', orfa: true,
       a_produzir: Number(semArea.a_produzir), total: Number(semArea.total),
@@ -15346,7 +15402,7 @@ async function apiAreas() {
   const ent = (await sql`
     SELECT COUNT(*) AS n FROM comanda_item ci LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
     JOIN comanda c ON c.codigo = ci.comanda_codigo AND ${contaNoKds()}
-    WHERE ci.cancelado_em IS NULL AND ci.tipo IS DISTINCT FROM 2 AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL AND COALESCE(ci.entregue, m.entregue_em) IS NULL`)[0];
+    WHERE ci.cancelado_em IS NULL AND (ci.tipo IS DISTINCT FROM 2 OR ci.praca_propria IS TRUE) AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL AND COALESCE(ci.entregue, m.entregue_em) IS NULL`)[0];
   const est = (await sql`SELECT * FROM sync_estado WHERE id=1`)[0] || null;
   return { areas: rows, entrega_n: Number(ent?.n ?? 0), online: ultimoStatus.ok, sync: est,
     tem_entrega: await kdsTem('entrega') };
@@ -15374,13 +15430,18 @@ async function apiKds(areaCod) {
   const itens = await sql`
     SELECT ci.*, COALESCE(ci.produzido, m.pronto_em) AS pronto_em,
            c.numero, c.origem, c.nome AS comanda_nome, c.qtd_pessoas,
-           c.fechada_em AS comanda_fechada_em, c.valor_total AS comanda_total, c.subtotal_pago AS comanda_pago
+           c.fechada_em AS comanda_fechada_em, c.valor_total AS comanda_total, c.subtotal_pago AS comanda_pago,
+           CASE WHEN ci.espera_pai IS TRUE THEN (SELECT COALESCE(pp.produzido, mpp.pronto_em) FROM comanda_item pp
+             LEFT JOIN marca mpp ON mpp.item_codigo = pp.item_codigo WHERE pp.item_codigo = ci.codigo_pai LIMIT 1) END AS pai_pronto_em
     FROM comanda_item ci
     JOIN comanda c ON c.codigo = ci.comanda_codigo
     LEFT JOIN marca m ON m.item_codigo = ci.item_codigo
     WHERE ${cond} AND COALESCE(ci.produzido, m.pronto_em) IS NULL
-      AND ci.cancelado_em IS NULL AND ${contaNoKds()}
-    ORDER BY ci.criado NULLS LAST, ci.id`;
+      AND ci.cancelado_em IS NULL AND ${contaNoKds()} AND ${sobremesaLiberada()}
+    ORDER BY COALESCE(CASE WHEN ci.espera_pai IS TRUE THEN (SELECT COALESCE(pp.produzido, mpp.pronto_em) FROM comanda_item pp
+             LEFT JOIN marca mpp ON mpp.item_codigo = pp.item_codigo WHERE pp.item_codigo = ci.codigo_pai LIMIT 1) END, ci.criado) NULLS LAST, ci.id`;
+  // sobremesa do combo: o relógio dela começa na baixa do prato, não no lançamento
+  for (const i of itens) if (i.espera_pai && i.pai_pronto_em) i.criado = i.pai_pronto_em;
   const r = agrupar(itens, 'chegada');
   await rotularComandas(r.comandas);
   // Prazo desta praça + o extra do prato mais demorado da comanda.
@@ -15580,13 +15641,13 @@ function agrupar(itens, ordem) {
     // acima. Pior: "NENHUM" (o texto de 'sem observação') virava item.
     // Some do KDS quando é vazio/NENHUM ou quando já está na observação do
     // prato; complemento de verdade (o que a cozinha precisa fazer) continua.
-    if (Number(i.tipo) === 2) {
+    if (Number(i.tipo) === 2 && !i.praca_propria) {
       const nm = semAcento(i.nome || '').trim();
       if (!nm || nm === 'nenhum' || nm === 'n/a') continue;
       const pai = [...c.itens].reverse().find((x) => Number(x.tipo) !== 2);
       if (pai && temMod(pai.detalhes) && semAcento(pai.detalhes).includes(nm)) continue;
     }
-    c.itens.push({ item_codigo: i.item_codigo, codigo_pdv: i.codigo_pdv, nome: i.nome, quantidade: i.quantidade, tipo: i.tipo, detalhes: i.detalhes, area_nome: i.area_nome, criado: i.criado, pronto_em: i.pronto_em, modificado: temMod(i.detalhes), pareado: false, esperando_par: null });
+    c.itens.push({ item_codigo: i.item_codigo, codigo_pdv: i.codigo_pdv, nome: i.nome, quantidade: i.quantidade, tipo: i.praca_propria ? 1 : i.tipo, detalhes: i.detalhes, area_nome: i.area_nome, criado: i.criado, pronto_em: i.pronto_em, modificado: temMod(i.detalhes), pareado: false, esperando_par: null });
     if (i.criado && (!c.chegada || new Date(i.criado) < new Date(c.chegada))) c.chegada = i.criado;
     if (i.pronto_em && (!c.pronta_desde || new Date(i.pronto_em) < new Date(c.pronta_desde))) c.pronta_desde = i.pronto_em;
   }
@@ -15601,7 +15662,7 @@ function agrupar(itens, ordem) {
     const tb = b[chave] ? new Date(b[chave]).getTime() : Infinity;
     return ta - tb;
   });
-  const nItens = itens.filter((i) => i.tipo !== 2).length;
+  const nItens = itens.filter((i) => i.tipo !== 2 || i.praca_propria).length;
   return { comandas, nComandas: comandas.length, nItens };
 }
 
@@ -15632,12 +15693,12 @@ async function marcar(body) {
   if (Array.isArray(body.item_codigos) && body.item_codigos.length) {
     codigos = body.item_codigos.map(Number).filter(Boolean);
     const filhos = await sql`SELECT item_codigo AS ic FROM comanda_item
-      WHERE codigo_pai = ANY(${codigos}) AND item_codigo IS NOT NULL`;
+      WHERE codigo_pai = ANY(${codigos}) AND item_codigo IS NOT NULL AND praca_propria IS NOT TRUE`;
     for (const f of filhos) codigos.push(Number(f.ic));
   } else if (body.item_codigo != null) {
     codigos = [Number(body.item_codigo)];
     // marca junto os complementos-filhos (molho, acompanhamento) do prato
-    const filhos = await sql`SELECT item_codigo AS ic FROM comanda_item WHERE codigo_pai=${Number(body.item_codigo)} AND item_codigo IS NOT NULL`;
+    const filhos = await sql`SELECT item_codigo AS ic FROM comanda_item WHERE codigo_pai=${Number(body.item_codigo)} AND item_codigo IS NOT NULL AND praca_propria IS NOT TRUE`;
     for (const f of filhos) codigos.push(Number(f.ic));
   } else if (body.comanda_codigo != null) {
     const cc = Number(body.comanda_codigo);
@@ -15646,7 +15707,9 @@ async function marcar(body) {
         WHERE ci.comanda_codigo=${cc} AND ci.item_codigo IS NOT NULL AND COALESCE(ci.produzido, m.pronto_em) IS NOT NULL`;
       codigos = r.map((x) => Number(x.ic));
     } else if (body.area_codigo != null) {
-      const r = await sql`SELECT item_codigo AS ic FROM comanda_item WHERE comanda_codigo=${cc} AND item_codigo IS NOT NULL AND area_codigo=${Number(body.area_codigo)}`;
+      // sobremesa do combo que ainda espera o prato não está na tela: não baixa junto
+      const r = await sql`SELECT ci.item_codigo AS ic FROM comanda_item ci WHERE ci.comanda_codigo=${cc} AND ci.item_codigo IS NOT NULL
+        AND ci.area_codigo=${Number(body.area_codigo)} AND ${sobremesaLiberada()}`;
       codigos = r.map((x) => Number(x.ic));
     } else {
       const r = await sql`SELECT item_codigo AS ic FROM comanda_item WHERE comanda_codigo=${cc} AND item_codigo IS NOT NULL`;
