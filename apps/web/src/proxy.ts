@@ -214,6 +214,9 @@ export async function proxy(request: NextRequest) {
     path === '/jipeshow' ||
     // Termos e Privacidade públicos (exigidos pelo cadastro do app no TikTok)
     // + arquivo de verificação de URL do TikTok (tiktokXXXX.txt na raiz).
+    // /marcas: logos das 3 casas pra baixar (quem tem o link). Arquivos em public/marcas.
+    path === '/marcas' ||
+    path.startsWith('/marcas/') ||
     path === '/termos' ||
     path === '/privacidade' ||
     /^\/tiktok[A-Za-z0-9_-]*\.txt$/.test(path) ||
