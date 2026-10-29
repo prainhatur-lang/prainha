@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
 import { createAdminClient } from '@/lib/supabase/server';
-import { exigirPermApi } from '@/lib/exigir-perm';
+import { exigirAlgumaPermApi } from '@/lib/exigir-perm';
 import { BUCKET_ATESTADO } from '@/lib/rh/atestado';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { confirmarLeitura, descartarLeitura, leiturasDoLink, pessoasDaCasa } from '@/lib/rh/atestado-ler';
@@ -36,7 +36,7 @@ async function temCasa(userId: string, filialId: string) {
 }
 
 export async function GET(req: Request) {
-  const auth = await exigirPermApi('ponto.corrigir');
+  const auth = await exigirAlgumaPermApi(['ponto.corrigir', 'ponto.atestado']);
   if (auth.error) return auth.error;
   const sp = new URL(req.url).searchParams;
   const filialId = sp.get('filialId') ?? '';
@@ -65,7 +65,7 @@ export async function GET(req: Request) {
 }
 
 export async function POST(req: Request) {
-  const auth = await exigirPermApi('ponto.corrigir');
+  const auth = await exigirAlgumaPermApi(['ponto.corrigir', 'ponto.atestado']);
   if (auth.error) return auth.error;
   const parsed = Body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: 'dados inválidos' }, { status: 400 });

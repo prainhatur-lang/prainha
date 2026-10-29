@@ -107,6 +107,7 @@ export const PERMISSOES: PermissaoDef[] = [
   ]),
   ...crud('ponto', 'ponto (batidas e horas)', [
     { acao: 'corrigir', descricao: 'Corrigir batida de ponto com justificativa' },
+    { acao: 'atestado', descricao: 'Lançar atestado médico (sem mexer nas batidas)' },
   ]),
   // Sem create/update/delete — respostas são anônimas via link público, o
   // painel interno só lê (e triagem, no caso da ouvidoria).

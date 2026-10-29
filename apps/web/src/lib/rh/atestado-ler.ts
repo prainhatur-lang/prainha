@@ -389,8 +389,12 @@ export async function podeLancarNaCasa(usuarioId: string, filialId: string): Pro
     import('@/lib/filiais'),
     import('@/lib/permissoes-runtime'),
   ]);
-  const [filiais, pode] = await Promise.all([filiaisDoUsuario(usuarioId), podeUsuario(usuarioId, 'ponto.corrigir')]);
-  return pode && filiais.some((f) => f.id === filialId);
+  const [filiais, pode, podeAtestado] = await Promise.all([
+    filiaisDoUsuario(usuarioId),
+    podeUsuario(usuarioId, 'ponto.corrigir'),
+    podeUsuario(usuarioId, 'ponto.atestado'),
+  ]);
+  return (pode || podeAtestado) && filiais.some((f) => f.id === filialId);
 }
 
 /** Leituras do QR (mesmo link) — o painel do computador acompanha por aqui. */

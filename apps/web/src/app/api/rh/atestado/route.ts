@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { db, schema } from '@concilia/db';
 import { and, eq, isNull } from 'drizzle-orm';
 import { createAdminClient } from '@/lib/supabase/server';
-import { exigirPermApi } from '@/lib/exigir-perm';
+import { exigirAlgumaPermApi, exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { hojeBr } from '@/lib/datas';
 import { somarDias } from '@/lib/rh/dia-operacional';
@@ -70,7 +70,7 @@ async function casaDaPessoa(userId: string, funcionarioId: string): Promise<stri
 }
 
 export async function POST(req: Request) {
-  const auth = await exigirPermApi('ponto.corrigir');
+  const auth = await exigirAlgumaPermApi(['ponto.corrigir', 'ponto.atestado']);
   if (auth.error) return auth.error;
   const user = auth.user;
 

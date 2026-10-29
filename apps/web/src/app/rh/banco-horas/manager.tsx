@@ -66,6 +66,8 @@ interface Props {
   filialId?: string;
   hoje: string;
   podeLancar: boolean;
+  /** lança/cancela atestado ('ponto.corrigir' ou 'ponto.atestado'); sem isso vale podeLancar */
+  podeAtestado?: boolean;
   linhas: LinhaPessoa[];
   jornadas: Jornada[];
 }
@@ -106,7 +108,8 @@ async function enviar(body: unknown): Promise<string | null> {
   return j?.error ?? 'Não deu pra salvar';
 }
 
-export function BancoHorasManager({ filialId, hoje, podeLancar, linhas, jornadas }: Props) {
+export function BancoHorasManager({ filialId, hoje, podeLancar, podeAtestado: podeAtestadoProp, linhas, jornadas }: Props) {
+  const podeAtestado = podeAtestadoProp ?? podeLancar;
   const router = useRouter();
   const [aberta, setAberta] = useState<string | null>(null);
   const [acerto, setAcerto] = useState<LinhaPessoa | null>(null);
@@ -165,7 +168,7 @@ export function BancoHorasManager({ filialId, hoje, podeLancar, linhas, jornadas
               Dia de atestado conta como cumprido no banco de horas e aparece no ponto e na escala do mês.
             </p>
           </div>
-          {podeLancar && (
+          {podeAtestado && (
             <div className="flex flex-wrap items-center gap-2">
               {filialId && (
                 <button
@@ -216,7 +219,7 @@ export function BancoHorasManager({ filialId, hoje, podeLancar, linhas, jornadas
                   ) : (
                     <span className="text-amber-700">sem foto</span>
                   )}
-                  {podeLancar && (
+                  {podeAtestado && (
                     <button
                       type="button"
                       disabled={cancelando === a.id}

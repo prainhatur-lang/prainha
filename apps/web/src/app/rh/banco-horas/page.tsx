@@ -47,6 +47,7 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
   }
   const filial = filialSelecionada;
   const podeLancar = await podeUsuario(user.id, 'ponto.corrigir');
+  const podeAtestado = podeLancar || (await podeUsuario(user.id, 'ponto.atestado'));
 
   const hoje = hojeBr();
   const virada = pontoProprioDesde(filial.id);
@@ -314,6 +315,7 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
           filialId={filial.id}
           hoje={hoje}
           podeLancar={podeLancar}
+          podeAtestado={podeAtestado}
           linhas={linhas}
           jornadas={jornadas.map((j) => ({
             id: j.id,

@@ -2,7 +2,7 @@
 // (/atestado-celular?f&u&e&s). Quem lança atestado ('ponto.corrigir') na casa.
 
 import { NextResponse } from 'next/server';
-import { exigirPermApi } from '@/lib/exigir-perm';
+import { exigirAlgumaPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { gerarLinkAtestado } from '@/lib/rh/atestado-link';
 
@@ -10,7 +10,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 export async function POST(req: Request) {
-  const auth = await exigirPermApi('ponto.corrigir');
+  const auth = await exigirAlgumaPermApi(['ponto.corrigir', 'ponto.atestado']);
   if (auth.error) return auth.error;
   const { filialId } = (await req.json().catch(() => ({}))) as { filialId?: string };
   if (!filialId || !/^[0-9a-f-]{36}$/i.test(filialId)) {
