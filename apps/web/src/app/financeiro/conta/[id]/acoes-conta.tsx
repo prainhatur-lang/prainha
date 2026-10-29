@@ -8,12 +8,25 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { perguntarMotivo } from '@/lib/perguntar-motivo';
 
-export function AcoesConta({ contaId, descricao }: { contaId: string; descricao: string }) {
+export function AcoesConta({
+  contaId,
+  descricao,
+  soExcluir = false,
+}: {
+  contaId: string;
+  descricao: string;
+  /** previsão do Consumer (casa fora do Consumer): só o Excluir, sem Alterar */
+  soExcluir?: boolean;
+}) {
   const router = useRouter();
   const [ocupado, setOcupado] = useState(false);
 
   async function excluir() {
-    if (!confirm(`Excluir a conta "${descricao}"?\n\nEla some das listas e dos totais (o histórico fica guardado pra auditoria, com seu usuário e o motivo).`)) {
+    if (
+      !confirm(
+        `Excluir a conta "${descricao}"?\n\nEla some das listas e dos totais (o histórico fica guardado pra auditoria, com seu usuário e o motivo).`,
+      )
+    ) {
       return;
     }
     const motivo = perguntarMotivo(`"${descricao}"`);
@@ -38,12 +51,14 @@ export function AcoesConta({ contaId, descricao }: { contaId: string; descricao:
 
   return (
     <div className="flex items-center gap-2">
-      <Link
-        href={`/financeiro/conta/${contaId}/editar`}
-        className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-      >
-        ✎ Alterar
-      </Link>
+      {!soExcluir && (
+        <Link
+          href={`/financeiro/conta/${contaId}/editar`}
+          className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+        >
+          ✎ Alterar
+        </Link>
+      )}
       <button
         type="button"
         onClick={excluir}

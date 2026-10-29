@@ -13,6 +13,7 @@ import { db, schema } from '@concilia/db';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { lerMotivo, registrarExclusao, resumoConta } from '@/lib/registro-exclusao';
 import { garantirFornecedorNaFilial } from '@/lib/fornecedor-unico';
+import { consumerParado } from '@/lib/consumer-contas';
 
 export const dynamic = 'force-dynamic';
 
@@ -27,12 +28,13 @@ const Body = z.object({
   observacao: z.string().trim().max(1000).nullable().optional(),
 });
 
-async function carregarContaManual(id: string, userId: string) {
+async function carregarContaManual(id: string, userId: string, paraExcluir = false) {
   const [conta] = await db
     .select({
       id: schema.contaPagar.id,
       filialId: schema.contaPagar.filialId,
       origem: schema.contaPagar.origem,
+      dataPagamento: schema.contaPagar.dataPagamento,
       dataDelete: schema.contaPagar.dataDelete,
     })
     .from(schema.contaPagar)
@@ -41,7 +43,29 @@ async function carregarContaManual(id: string, userId: string) {
   if (!conta || conta.dataDelete) {
     return { erro: NextResponse.json({ error: 'conta não encontrada' }, { status: 404 }) };
   }
-  if (conta.origem !== 'MANUAL') {
+  // Previsão do Consumer em casa que saiu do Consumer (29/10/2026): o sync não
+  // volta mais, então a conta ainda em aberto pode ser excluída aqui (ex.: foi
+  // paga por outro lançamento). Só excluir — alterar continua bloqueado.
+  const consumerExcluivel =
+    paraExcluir &&
+    conta.origem === 'CONSUMER' &&
+    !conta.dataPagamento &&
+    (await consumerParado(conta.filialId));
+  if (consumerExcluivel) {
+    const [baixa] = await db
+      .select({ id: schema.contaPagarBaixa.id })
+      .from(schema.contaPagarBaixa)
+      .where(eq(schema.contaPagarBaixa.contaPagarId, conta.id))
+      .limit(1);
+    if (baixa) {
+      return {
+        erro: NextResponse.json(
+          { error: 'conta com pagamento registrado: estorne o pagamento antes de excluir' },
+          { status: 409 },
+        ),
+      };
+    }
+  } else if (conta.origem !== 'MANUAL') {
     const motivo =
       conta.origem === 'CONSUMER'
         ? 'conta do Consumer: altere no PDV da loja (o sync sobrescreveria)'
@@ -157,7 +181,7 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }
   if (error) return error;
   const { id } = await ctx.params;
 
-  const r = await carregarContaManual(id, user.id);
+  const r = await carregarContaManual(id, user.id, true);
   if (r.erro) return r.erro;
 
   // Borderô da folha (22/10/2026): conta que está num borderô não sai sozinha,

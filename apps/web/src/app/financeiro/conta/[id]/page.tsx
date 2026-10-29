@@ -221,6 +221,14 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
             </span>
             {conta.origem === 'MANUAL' ? (
               <AcoesConta contaId={conta.id} descricao={conta.descricao ?? 'sem histórico'} />
+            ) : consumerAqui && !conta.dataPagamento && baixas.length === 0 ? (
+              <>
+                <AcoesConta contaId={conta.id} descricao={conta.descricao ?? 'sem histórico'} soExcluir />
+                <span className="max-w-56 text-right text-[10px] leading-4 text-slate-400">
+                  Previsão do Consumer (a loja não usa mais o Consumer). Já foi paga em outro
+                  lançamento? Exclua com o motivo. Pagou esta mesma? Registre o pagamento abaixo.
+                </span>
+              </>
             ) : (
               <span
                 className="max-w-48 text-right text-[10px] leading-4 text-slate-400"
