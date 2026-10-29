@@ -226,6 +226,12 @@ export default async function FolhaContadorPage(props: { searchParams: Promise<S
           <p className="mt-0.5 text-xs text-slate-500">
             {filial.nome} · {nomeComp(comp)} · registro em carteira, o que cada um recebeu no mês e os encargos
           </p>
+          <a
+            href={`/rh/folha-contador/imprimir?filialId=${filial.id}&comp=${comp}`}
+            className="mt-2 inline-block rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
+            🖨️ Imprimir folha (contracheques, borderô, resumo)
+          </a>
         </div>
 
         <div className="mb-5 space-y-2">
