@@ -231,6 +231,12 @@ export default async function FolhaContadorPage(props: { searchParams: Promise<S
             className="mt-2 inline-block rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
           >
             🖨️ Imprimir folha (contracheques, borderô, resumo)
+          </a>{' '}
+          <a
+            href={`/rh/folha-contador/comparar?filialId=${filial.id}&comp=${comp}`}
+            className="mt-2 inline-block rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
+            🧮 Nossa folha × contador
           </a>
         </div>
 
