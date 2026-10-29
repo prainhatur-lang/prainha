@@ -65,12 +65,15 @@ export function BaixaForm({
   async function registrar(e: React.FormEvent) {
     e.preventDefault();
     setErro(null);
-    const v = parseValorBr(valor);
-    if (v == null || v <= 0) return setErro('Valor inválido — digite como 1.250,00 ou 1250.');
     const j = juros.trim() ? parseValorBr(juros) : 0;
     if (j == null || j < 0) return setErro('Juros inválido — digite como 12,50 (ou deixe vazio).');
     const dsc = desconto.trim() ? parseValorBr(desconto) : 0;
     if (dsc == null || dsc < 0) return setErro('Desconto inválido — digite como 12,50 (ou deixe vazio).');
+    // só desconto (abatimento sem dinheiro): valor vazio ou 0 vale quando há desconto
+    const v = !valor.trim() && dsc > 0 ? 0 : parseValorBr(valor);
+    if (v == null || v < 0 || (v === 0 && dsc <= 0)) {
+      return setErro('Valor inválido — digite como 1.250,00 ou 1250.');
+    }
     if (saldo != null && v + dsc > saldo + 0.005) {
       return setErro(`Valor + desconto passa do saldo (${saldo.toFixed(2).replace('.', ',')}).`);
     }

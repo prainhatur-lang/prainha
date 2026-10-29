@@ -27,7 +27,7 @@ const Body = z.object({
   data: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   /** principal amortizado — abate o saldo; a conta quita quando o principal
    *  cobre o valor original */
-  valor: z.number().positive(),
+  valor: z.number().min(0), // 0 = só desconto (abatimento sem dinheiro)
   /** juros/multa pagos junto (atraso) — vão por fora do saldo */
   juros: z.number().min(0).optional(),
   /** desconto obtido (26/10/2026) — abate o saldo junto com `valor`, mas não
@@ -111,6 +111,9 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const saldo = valorConta - jaPago;
   const desconto = parsed.data.desconto && parsed.data.desconto > 0 ? parsed.data.desconto : 0;
   const principal = parsed.data.valor + desconto;
+  if (principal <= 0) {
+    return NextResponse.json({ error: 'valor ou desconto tem que ser maior que zero' }, { status: 400 });
+  }
   if (principal > saldo + 0.005) {
     if (desconto > 0) {
       return NextResponse.json(
