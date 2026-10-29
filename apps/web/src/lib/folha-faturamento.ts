@@ -25,6 +25,11 @@
 //      não estão no faturamento) — aparecem só como informação.
 //   3. Vale-transporte quinzenal pago (vt_quinzena_item.valor_pago).
 //
+// % GERAL (ao lado do %, não no lugar): junta tudo — faturamento COM os 10%
+// e folha COM o que sai dos 10% (comissão + pró-labore dos 10%). No Bar muita
+// gente ganha por diária/comissão e parte da diária sai dos 10%; sem juntar,
+// o % sem os 10% não mostra o custo real de gente sobre tudo o que entrou.
+//
 // Mês corrente: vai até o último dia com folha semanal fechada (ou ontem, o
 // que vier antes), e faturamento e folha usam o MESMO período. Salário mensal
 // e contracheque entram proporcionais aos dias.
@@ -93,6 +98,8 @@ export interface FolhaFaturamentoMes {
   pagoCom10: { comissao: number; proLabore10: number; total: number };
   pct: number | null;
   faixa: Faixa | null;
+  /** Tudo junto: faturamento com os 10% e folha com o que é pago dos 10%. */
+  geral: { faturamento: number; folha: number; pct: number | null; faixa: Faixa | null };
   semMovimento: boolean;
   /** Período sem nenhuma semana da folha semanal lançada: diária/comissão
    *  ainda não passavam pelo sistema, então o % sairia baixo demais. */
@@ -218,6 +225,7 @@ export async function calcularFolhaFaturamento(
     pagoCom10: { comissao: 0, proLabore10: 0, total: 0 },
     pct: null,
     faixa: null,
+    geral: { faturamento: 0, folha: 0, pct: null, faixa: null },
     semMovimento: true,
     semFolhaSemanal: true,
   };
@@ -378,6 +386,10 @@ export async function calcularFolhaFaturamento(
     !semMovimento && !semFolhaSemanal && faturamento.total > 0
       ? (folhaTotal / faturamento.total) * 100
       : null;
+  const geralFat = faturamento.total + faturamento.servico10;
+  const geralFolha = folhaTotal + pagoCom10.total;
+  const geralPct =
+    !semMovimento && !semFolhaSemanal && geralFat > 0 ? (geralFolha / geralFat) * 100 : null;
 
   return {
     ...vazio,
@@ -386,6 +398,7 @@ export async function calcularFolhaFaturamento(
     pagoCom10,
     pct,
     faixa: faixaDoPct(pct),
+    geral: { faturamento: geralFat, folha: geralFolha, pct: geralPct, faixa: faixaDoPct(geralPct) },
     semMovimento,
     semFolhaSemanal,
   };
@@ -398,6 +411,7 @@ export function somarCasas(linhas: FolhaFaturamentoMes[]): {
   pagoCom10: number;
   pct: number | null;
   faixa: Faixa | null;
+  geral: { faturamento: number; folha: number; pct: number | null; faixa: Faixa | null };
 } {
   const faturamento = linhas.reduce((a, l) => a + l.faturamento.total, 0);
   const folha = linhas.reduce((a, l) => a + l.folha.total, 0);
@@ -405,5 +419,15 @@ export function somarCasas(linhas: FolhaFaturamentoMes[]): {
   // casa sem folha semanal lançada derruba o total (deixaria o % baixo demais)
   const incompleto = linhas.some((l) => l.semFolhaSemanal && !l.semMovimento);
   const pct = !incompleto && faturamento >= FATURAMENTO_MINIMO ? (folha / faturamento) * 100 : null;
-  return { faturamento, folha, pagoCom10, pct, faixa: faixaDoPct(pct) };
+  const gFat = linhas.reduce((a, l) => a + l.geral.faturamento, 0);
+  const gFolha = linhas.reduce((a, l) => a + l.geral.folha, 0);
+  const gPct = !incompleto && faturamento >= FATURAMENTO_MINIMO && gFat > 0 ? (gFolha / gFat) * 100 : null;
+  return {
+    faturamento,
+    folha,
+    pagoCom10,
+    pct,
+    faixa: faixaDoPct(pct),
+    geral: { faturamento: gFat, folha: gFolha, pct: gPct, faixa: faixaDoPct(gPct) },
+  };
 }

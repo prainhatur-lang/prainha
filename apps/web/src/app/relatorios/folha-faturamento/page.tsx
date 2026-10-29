@@ -126,6 +126,10 @@ export default async function FolhaFaturamentoPage(props: { searchParams: Promis
             Quanto da venda da casa vai pra gente (salário, encargos, diárias, VT). Os 10% de serviço ficam fora
             dos dois lados.
           </p>
+          <p className="mt-1 text-sm text-slate-600">
+            <b>Geral</b> (embaixo de cada %): junta tudo — faturamento <b>com</b> os 10% e folha <b>com</b> o que é pago
+            dos 10% (comissão e pró-labore dos 10%). Mostra o custo de gente sobre tudo o que entrou.
+          </p>
           <div className="mt-2 flex flex-wrap gap-2 text-xs">
             <span className={`rounded border px-2 py-0.5 ${COR.verde}`}>abaixo de {FAIXA_VERDE_ATE}% — ideal</span>
             <span className={`rounded border px-2 py-0.5 ${COR.amarelo}`}>
@@ -175,6 +179,14 @@ export default async function FolhaFaturamentoPage(props: { searchParams: Promis
                         <div className="mt-0.5 text-xs text-slate-500 tabular-nums">
                           {brl(l.folha.total)} / {brl(l.faturamento.total)}
                         </div>
+                        {l.geral.pct != null && (
+                          <div className="mt-1 text-xs text-slate-600 tabular-nums">
+                            geral{' '}
+                            <span className={`rounded border px-1 font-semibold ${corDe(l.geral.faixa)}`}>
+                              {fmtPct(l.geral.pct)}
+                            </span>
+                          </div>
+                        )}
                         {l.parcial && casas.length > 1 && l.fim !== l0?.fim && (
                           <div className="text-xs text-slate-400">até {fmtData(l.fim)}</div>
                         )}
@@ -188,6 +200,14 @@ export default async function FolhaFaturamentoPage(props: { searchParams: Promis
                         <div className="mt-0.5 text-xs text-slate-500 tabular-nums">
                           {brl(t.folha)} / {brl(t.faturamento)}
                         </div>
+                        {t.geral.pct != null && (
+                          <div className="mt-1 text-xs text-slate-600 tabular-nums">
+                            geral{' '}
+                            <span className={`rounded border px-1 font-semibold ${corDe(t.geral.faixa)}`}>
+                              {fmtPct(t.geral.pct)}
+                            </span>
+                          </div>
+                        )}
                       </td>
                     )}
                   </tr>
@@ -295,6 +315,20 @@ export default async function FolhaFaturamentoPage(props: { searchParams: Promis
                 </p>
                 <Linha rotulo="Comissão" valor={detAtiva.pagoCom10.comissao} />
                 <Linha rotulo="Pró-labore dos 10%" valor={detAtiva.pagoCom10.proLabore10} />
+                {detAtiva.geral.pct != null && (
+                  <>
+                    <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Geral (tudo junto, com os 10%)
+                    </p>
+                    <div
+                      className={`mt-1 rounded-lg border px-3 py-1.5 text-xl font-semibold tabular-nums ${corDe(detAtiva.geral.faixa)}`}
+                    >
+                      {fmtPct(detAtiva.geral.pct)}
+                    </div>
+                    <Linha rotulo="Folha + pago com os 10%" valor={detAtiva.geral.folha} />
+                    <Linha rotulo="Faturamento + 10%" valor={detAtiva.geral.faturamento} />
+                  </>
+                )}
                 <p className="mt-2 text-xs text-slate-500">
                   Folha semanal lançada até {fmtData(detAtiva.folhaSemanalAte)}.
                 </p>
@@ -325,6 +359,11 @@ export default async function FolhaFaturamentoPage(props: { searchParams: Promis
               adicional noturno e pró-labore fixo por dia. Semana que cruza a virada do mês entra pelos dias que caem
               no mês. <b>Comissão</b> e pró-labore “dos 10%” saem dos 10%, que já não estão no faturamento, então
               ficam fora e aparecem só como informação.
+            </li>
+            <li>
+              <b>Geral</b> = a mesma conta com tudo junto: faturamento + 10% de serviço, e folha + comissão +
+              pró-labore dos 10%. Serve pra comparar a casa que paga muita diária/comissão (como o Bar) com a que
+              paga mais por contracheque — sem juntar, parte do custo de gente fica escondida dentro dos 10%.
             </li>
             <li>
               <b>Vale-transporte</b> = VT quinzenal pago, pelos dias da quinzena que caem no mês.

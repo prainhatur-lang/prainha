@@ -326,6 +326,14 @@ function FolhaDoMes({ ff }: { ff: FolhaFaturamentoMes }) {
         {ff.pct.toFixed(1).replace('.', ',')}%
       </span>{' '}
       — {brl(ff.folha.total)} de {brl(ff.faturamento.total)}.{' '}
+      {ff.geral?.pct != null && (
+        <>
+          Geral (com os 10%):{' '}
+          <span className={`rounded border px-1.5 py-0.5 font-semibold ${ff.geral.faixa ? COR_FF[ff.geral.faixa] : ''}`}>
+            {ff.geral.pct.toFixed(1).replace('.', ',')}%
+          </span>{' '}
+        </>
+      )}
       <Link href={`/relatorios/folha-faturamento?mes=${ff.mes}&filialId=${ff.filialId}`} className="underline">
         detalhe
       </Link>
