@@ -315,7 +315,9 @@ export default async function FolhaFaturamentoPage(props: { searchParams: Promis
               <b>Contracheques</b> = quem é registrado. Com a folha do contador da competência importada (RH → Folha
               do contador): proventos + FGTS + INSS da empresa (RAT e terceiros). Sem ela: estimativa pelo cadastro,
               mesma conta do “Custo de pessoal (CLT)” do Fechamento — mensal = salário pelos dias trabalhados no mês,
-              intermitente = valor/hora × horas da folha semanal, mais encargos e FGTS 8%. Nos dois casos soma a
+              intermitente = valor/hora × horas da folha semanal, mais FGTS 8% e o INSS da empresa (o % de encargos
+              da casa) — quem é registrado pela E.B. Serviços leva só o FGTS, porque ela é do Simples e o INSS
+              patronal vai no DAS (a folha do contador já mostra assim). Nos dois casos soma a
               provisão de 13º e férias (salário × 1/12 + 1/9; na folha do contador, só dos celetistas mensais).
             </li>
             <li>

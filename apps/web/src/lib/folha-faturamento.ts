@@ -16,6 +16,8 @@
 //      "Custo de pessoal (CLT)" do fechamento (lib/rh/custo-clt.ts), só pra
 //      quem é registrado: mensal = salário; intermitente = R$/hora × horas da
 //      folha semanal; + encargos de folha_config + FGTS 8% + 13º + férias.
+//      Quem é registrado pela E.B. Serviços (Simples Nacional) leva só FGTS 8%:
+//      o INSS patronal dela vai no DAS — igual ao que a folha do contador mostra.
 //   2. Folha semanal (conta_pagar das semanas fechadas): diária, gratificação,
 //      premiação, transporte, adicional noturno e pró-labore fixo por dia.
 //      Semana que cruza a virada do mês entra pelos dias que caem no mês.
@@ -37,6 +39,8 @@ export const FAIXA_AMARELO_ATE = 20;
 export const FATURAMENTO_MINIMO = 10_000;
 
 const FGTS_PCT = 0.08;
+/** E.B. Serviços — Simples Nacional: sem INSS patronal na folha (vai no DAS). */
+const CNPJ_EB_SIMPLES = '05486249000172';
 
 export type Faixa = 'verde' | 'amarelo' | 'vermelho';
 
@@ -300,8 +304,11 @@ export async function calcularFolhaFaturamento(
       admissao: string | null;
       desligamento: string | null;
       minutos: string;
+      simples: boolean;
     }>(sql`
       SELECT fu.regime_salarial AS regime, fu.salario_base::text AS salario,
+             (regexp_replace(coalesce(fu.cnpj_registro, ''), '[^0-9]', '', 'g') = ${CNPJ_EB_SIMPLES}
+              OR coalesce(fu.empresa_registro, '') ~* '^\\s*e\\.?\\s*b\\.?\\s*serv') AS simples,
              fu.data_admissao::text AS admissao, fu.data_desligamento::text AS desligamento,
              coalesce((SELECT sum(h.total_min)
                          FROM folha_horas h
@@ -319,18 +326,23 @@ export async function calcularFolhaFaturamento(
               OR fu.matricula_folha IS NOT NULL
               OR EXISTS (SELECT 1 FROM folha_contador c WHERE c.funcionario_id = fu.id))`);
     let base = 0;
+    let encargos = 0;
     for (const r of regs) {
-      if (r.regime === 'intermitente_hora') base += n(r.salario) * (n(r.minutos) / 60);
+      let valor = 0;
+      if (r.regime === 'intermitente_hora') valor = n(r.salario) * (n(r.minutos) / 60);
       else {
         // mensal: proporcional aos dias em que estava na casa dentro do período
         const de = r.admissao && r.admissao > ini ? r.admissao : ini;
         const ate = r.desligamento && r.desligamento < fim ? r.desligamento : fim;
-        base += diasNoMes > 0 ? n(r.salario) * (diasEntre(de, ate) / diasNoMes) : 0;
+        valor = diasNoMes > 0 ? n(r.salario) * (diasEntre(de, ate) / diasNoMes) : 0;
       }
+      base += valor;
+      // E.B. (Simples): só FGTS. Prainha Turismo / Lelis: INSS patronal + FGTS.
+      encargos += valor * ((r.simples ? 0 : pctEncargos) + FGTS_PCT);
     }
     if (regs.length) contracheque.fonte = 'estimado';
     contracheque.proventos = base;
-    contracheque.encargos = base * (pctEncargos + FGTS_PCT);
+    contracheque.encargos = encargos;
     contracheque.provisao = base * provisaoPct;
     contracheque.pessoas = regs.length;
   }
