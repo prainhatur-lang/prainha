@@ -45,6 +45,23 @@ export default async function EncontroPage(props: { searchParams: Promise<{ comp
     .from(schema.encontroContas)
     .where(eq(schema.encontroContas.competencia, comp))
     .orderBy(desc(schema.encontroContas.criadoEm));
+  // situação da conta da diferença (29/10/2026): já paga ou ainda em aberto
+  const idsConta = feitos.map((e) => e.contaPagarId).filter((x): x is string => !!x);
+  const contasDif = new Map(
+    (idsConta.length
+      ? await db
+          .select({
+            id: schema.contaPagar.id,
+            valor: schema.contaPagar.valor,
+            valorPago: schema.contaPagar.valorPago,
+            dataPagamento: schema.contaPagar.dataPagamento,
+            dataDelete: schema.contaPagar.dataDelete,
+          })
+          .from(schema.contaPagar)
+          .where(inArray(schema.contaPagar.id, idsConta))
+      : []
+    ).map((c) => [c.id, c]),
+  );
   // boletos pagos por uma casa pra conta da outra que entram nesse encontro
   const idsPag = pares.flatMap((p) => p.pagamentos);
   const boletos = idsPag.length
@@ -275,6 +292,26 @@ export default async function EncontroPage(props: { searchParams: Promise<{ comp
                       </td>
                       <td className="px-3 py-2 text-xs text-slate-500">
                         recebeu {brl(e.valorDevedora)} · enviou {brl(e.valorCredora)}
+                      </td>
+                      <td className="px-3 py-2 text-xs whitespace-nowrap">
+                        {(() => {
+                          const c = e.contaPagarId ? contasDif.get(e.contaPagarId) : undefined;
+                          if (!c || c.dataDelete) return null;
+                          const pago = Number(c.valorPago ?? 0);
+                          if (pago >= Number(c.valor) - 0.005) {
+                            const d = c.dataPagamento ? String(c.dataPagamento).slice(0, 10).split('-').reverse().join('/') : '';
+                            return (
+                              <Link href={`/financeiro/conta/${c.id}`} className="font-medium text-emerald-700 hover:underline">
+                                ✓ paga{d ? ` em ${d}` : ''}
+                              </Link>
+                            );
+                          }
+                          return (
+                            <Link href={`/financeiro/conta/${c.id}`} className="font-medium text-amber-700 hover:underline">
+                              {pago > 0 ? `parcial: ${brl(pago)}` : 'em aberto'}
+                            </Link>
+                          );
+                        })()}
                       </td>
                       <td className="px-3 py-2 text-right">
                         {e.contaPagarId && (
