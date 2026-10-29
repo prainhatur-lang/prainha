@@ -366,7 +366,17 @@ export async function baterPontoCelular(p: PessoaToken, req: PedidoBatida): Prom
 
   if (tipo === 'entrada' && doDia.length === 0) {
     // Trava de dias por semana (pontoTravaSemana).
-    const lim = Number(p.limiteDiasSemana) || 0;
+    let lim = Number(p.limiteDiasSemana) || 0;
+    if (lim > 0 && String(p.limiteLiberadoDia ?? '') !== dia) {
+      // Registrado ou com escala hoje fica fora (lib/rh/trava-semana, 29/10).
+      try {
+        const { isencoesTravaSemana } = await import('@/lib/rh/trava-semana');
+        const x = await isencoesTravaSemana([p.id], dia);
+        if (x.registrados.has(p.id) || x.escalaNoDia.has(p.id)) lim = 0;
+      } catch {
+        /* erro aqui mantém a trava como está gravada */
+      }
+    }
     if (lim > 0 && String(p.limiteLiberadoDia ?? '') !== dia) {
       const segunda = segundaDa(dia);
       const dias = await db

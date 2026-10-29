@@ -138,6 +138,26 @@ export async function GET(request: Request) {
   }
   const corrigidas = recentes.filter((x) => !x.excluidaEm);
 
+  // Fora da trava (29/10/2026, lib/rh/trava-semana): registrado desce SEM
+  // limite; quem tem escala salva trabalhando hoje desce com o dia de hoje
+  // liberado (a loja já entende limite_liberado_dia). Erro aqui não derruba o
+  // roster: desce o limite como está gravado.
+  const sem = new Set<string>();
+  const liberaHoje = new Set<string>();
+  const { PONTO_VIRADA_HORA } = await import('@/lib/rh/dia-operacional');
+  const { dateToBrYmd } = await import('@/lib/datas');
+  const diaPonto = dateToBrYmd(new Date(Date.now() - PONTO_VIRADA_HORA * 3600 * 1000));
+  if (comLimite.length) {
+    try {
+      const { isencoesTravaSemana } = await import('@/lib/rh/trava-semana');
+      const x = await isencoesTravaSemana(comLimite, diaPonto);
+      for (const id of x.registrados) sem.add(id);
+      for (const id of x.escalaNoDia) liberaHoje.add(id);
+    } catch (err) {
+      console.warn('[ponto] isenção da trava falhou:', err instanceof Error ? err.message : err);
+    }
+  }
+
   return NextResponse.json({
     ok: true,
     excluidas: excluidas.map((x) => ({
@@ -162,8 +182,8 @@ export async function GET(request: Request) {
       cargo: p.cargo,
       login_local: p.loginLocal,
       gemeo_de: p.gemeoDeId,
-      limite_dias_semana: p.limiteDiasSemana ?? null,
-      limite_liberado_dia: p.limiteLiberadoDia ?? null,
+      limite_dias_semana: sem.has(p.funcionarioId) ? null : (p.limiteDiasSemana ?? null),
+      limite_liberado_dia: liberaHoje.has(p.funcionarioId) ? diaPonto : (p.limiteLiberadoDia ?? null),
       dias_semana: diasPorPessoa.get(p.funcionarioId) ?? [],
       hora_entrada: p.pontoHoraEntrada ?? null,
       cedo_liberado_dia: p.pontoCedoLiberadoDia ?? null,

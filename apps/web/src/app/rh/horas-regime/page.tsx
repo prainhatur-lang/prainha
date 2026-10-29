@@ -212,12 +212,13 @@ export default async function HorasRegimePage(props: { searchParams: Promise<SP>
                   <span>
                     Trava no ponto facial: com limite, o tablet recusa a entrada de um dia novo quando a pessoa já bateu
                     ponto nesse número de dias da semana (seg a dom, somando as casas). O gerente libera um dia por vez em
-                    &ldquo;liberar hoje&rdquo;.
+                    &ldquo;liberar hoje&rdquo;. Não vale pra quem tem empresa/CNPJ/matrícula de registro no cadastro, nem
+                    no dia em que a escala salva (Escala do mês) diz que a pessoa trabalha.
                   </span>
                   {podeTravar && (
                     <TravarTodos
-                      ids={lista.map((p) => p.id)}
-                      jaTravados={lista.filter((p) => p.limiteDiasSemana === 2).length}
+                      ids={lista.filter((p) => !p.registradoCadastro).map((p) => p.id)}
+                      jaTravados={lista.filter((p) => !p.registradoCadastro && p.limiteDiasSemana === 2).length}
                       dias={2}
                     />
                   )}
@@ -293,6 +294,9 @@ export default async function HorasRegimePage(props: { searchParams: Promise<SP>
                                 diasSemanaAtual={diasAgora.get(p.id) ?? 0}
                                 podeEditar={podeTravar}
                               />
+                              {p.registradoCadastro && (
+                                <div className="mt-1 text-[11px] text-emerald-700">registrado no cadastro · trava não vale</div>
+                              )}
                             </td>
                           )}
                         </tr>
