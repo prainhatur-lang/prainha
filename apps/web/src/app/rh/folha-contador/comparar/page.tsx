@@ -77,7 +77,7 @@ export default async function CompararFolhaPage(props: { searchParams: Promise<S
   const [aa, mm] = mesAtual.split('-').map(Number);
   const mesPassado = `${mm === 1 ? aa - 1 : aa}-${String(mm === 1 ? 12 : mm - 1).padStart(2, '0')}`;
   const comps = [...new Set([mesAtual, mesPassado, ...compsContador])].sort().reverse();
-  const comp = sp.comp && /^\d{4}-\d{2}$/.test(sp.comp) ? sp.comp : compsContador[0] ?? mesPassado;
+  const comp = sp.comp && /^\d{4}-\d{2}$/.test(sp.comp) ? sp.comp : mesAtual;
   const ini = `${comp}-01`;
   const fim = ultimoDiaComp(comp);
 
@@ -193,7 +193,7 @@ export default async function CompararFolhaPage(props: { searchParams: Promise<S
         <Link href={`/rh/folha-contador?filialId=${filial.id}`} className="text-sm text-blue-600 hover:underline">
           ← Folha do contador
         </Link>
-        <h1 className="mt-2 text-xl font-semibold text-slate-900">Nossa folha × contador</h1>
+        <h1 className="mt-2 text-xl font-semibold text-slate-900">{compsContador.includes(comp) ? 'Nossa folha × contador' : `Nossa folha de ${nomeComp(comp)}`}</h1>
         <p className="mt-0.5 text-xs text-slate-500">
           {filial.nome} · {nomeComp(comp)} · calculada pelo ponto (Stelanto antes do ponto próprio) e pelo salário do cadastro
         </p>
@@ -238,6 +238,7 @@ export default async function CompararFolhaPage(props: { searchParams: Promise<S
         {!compsContador.includes(comp) && (
           <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
             A folha do contador de {nomeComp(comp)} ainda não foi importada — só a nossa aparece. Importe o PDF dele pra comparar.
+            {comp === mesAtual && <> O mês ainda não fechou: as horas vão até a última batida de hoje.</>}
           </p>
         )}
         {(soNosso.length > 0 || soCont.length > 0) && compsContador.includes(comp) && (
