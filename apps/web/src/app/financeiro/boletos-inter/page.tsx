@@ -29,6 +29,7 @@ import {
   notasSemContaDosBoletos,
   pagamentoAgendado,
   pagamentoCancelado,
+  soDigitos,
 } from '@/lib/boletos-inter';
 import { compLabel } from '@/lib/transferencia';
 import { BLOQUEIO_ENTRE_CASAS_DESDE, entreCasasBloqueado } from '@/lib/pagamento-entre-casas';
@@ -244,7 +245,23 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
       !!conta &&
       centavos(conta.valor) !== centavos(p.valorNominal) &&
       centavos(conta.valor) !== centavos(p.valorPago);
-    if (valorDiferente && baixa) conferir = true;
+    // Diferença pequena (até 1%) com mesmo CNPJ e mesmo vencimento: é a mesma
+    // conta, o boleto só veio com uns reais a mais/menos que a nota (Ambev/CRBS
+    // todo mês, 29/10/2026: boleto 3.310,43 × nota 3.308,88). Entra no lote; o
+    // que o banco pagou acima do saldo vai como juros, igual às outras.
+    const cnpjBoleto = soDigitos(p.cpfCnpjBeneficiario);
+    const cnpjConta = soDigitos(conta?.fornecedorCnpj);
+    const difPequena =
+      valorDiferente &&
+      !!conta &&
+      !!cnpjBoleto &&
+      (cnpjConta === cnpjBoleto ||
+        (cnpjBoleto.length === 14 && cnpjConta.slice(0, 8) === cnpjBoleto.slice(0, 8))) &&
+      (conta.dataVencimento === p.dataVencimentoTitulo ||
+        conta.dataVencimento === p.dataVencimentoDigitada) &&
+      Math.abs(centavos(conta.valor) - centavos(p.valorNominal)) <=
+        Math.round(centavos(p.valorNominal) * 0.01);
+    if (valorDiferente && baixa && !difPequena) conferir = true;
     // juros/multa: o que o banco pagou acima do valor do título
     const jurosBanco = Math.max(0, centavos(p.valorPago) - centavos(p.valorNominal)) / 100;
     // conta de outra casa paga por este Inter: vai pro encontro de contas
@@ -263,7 +280,7 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
         : null;
     const emDobro =
       conta && !outraCasa ? (emDobroEncontro.get(p.codigoTransacao) ?? null) : null;
-    return { p, conta, situacao, baixa, conferir, valorDiferente, jurosBanco, outraCasa, encontro, paraEncontro, emDobro, bloqueada };
+    return { p, conta, situacao, baixa, conferir, valorDiferente, difPequena, jurosBanco, outraCasa, encontro, paraEncontro, emDobro, bloqueada };
   });
   const podeBaixar = await podeUsuario(user.id, 'conta_pagar.marcar_pago');
   const lote = podeBaixar
@@ -552,7 +569,7 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                           </td>
                         </tr>
                       ) : (
-                        visiveis.map(({ p, conta, situacao, baixa, conferir, valorDiferente, jurosBanco, outraCasa, encontro, paraEncontro, emDobro, bloqueada }) => (
+                        visiveis.map(({ p, conta, situacao, baixa, conferir, valorDiferente, difPequena, jurosBanco, outraCasa, encontro, paraEncontro, emDobro, bloqueada }) => (
                           <tr key={p.codigoTransacao} className="border-t border-slate-100">
                             <td className="px-4 py-2 font-mono text-xs text-slate-700">
                               {p.dataPagamento ? formatDate(p.dataPagamento) : '—'}
@@ -678,9 +695,15 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                                   vencimento diferente, confira
                                 </span>
                               )}
-                              {baixa && valorDiferente && conta && (
+                              {baixa && valorDiferente && !difPequena && conta && (
                                 <span className="ml-1.5 text-[10px] text-amber-700">
                                   valor diferente (conta {brl(Number(conta.valor))}), confira
+                                </span>
+                              )}
+                              {baixa && difPequena && conta && (
+                                <span className="ml-1.5 text-[10px] text-slate-500">
+                                  conta {brl(Number(conta.valor))}; diferença pequena, entra no
+                                  baixar todas
                                 </span>
                               )}
                               {situacao === 'aberta' && baixaNoPdv(conta) && (
