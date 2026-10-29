@@ -12,7 +12,7 @@ import { brl } from '@/lib/format';
 import { hojeBr } from '@/lib/datas';
 import { AppHeader } from '@/components/app-header';
 import { calcularFolhaMensal, type FolhaCalc, type RegimeFolha } from '@/lib/rh/folha-mensal';
-import { horasDoMesPorCpf } from '@/lib/rh/folha-mensal-dados';
+import { horasDoMesPorCpf, salarioFamiliaPorCpf } from '@/lib/rh/folha-mensal-dados';
 import { proximosFeriados } from '@/lib/reservas/feriados';
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm';
@@ -109,9 +109,10 @@ export default async function CompararFolhaPage(props: { searchParams: Promise<S
   for (const f of [...deFora, ...nossosNoMes]) if (f.cpf) cadastroPorCpf.set(f.cpf, f);
 
   const cpfs = [...new Set([...nossosNoMes.map((f) => f.cpf).filter((c): c is string => !!c), ...cpfsContador])];
-  const [horas, feriados] = await Promise.all([
+  const [horas, feriados, salFamilia] = await Promise.all([
     horasDoMesPorCpf(cpfs, ini, fim),
     proximosFeriados(ini, 31).then((l) => l.map((f) => f.data)),
+    salarioFamiliaPorCpf(cpfs, comp),
   ]);
 
   interface Linha {
@@ -142,6 +143,7 @@ export default async function CompararFolhaPage(props: { searchParams: Promise<S
             desligamento: f.dataDesligamento,
             dias,
             feriados,
+            salarioFamilia: cpf ? salFamilia.get(cpf) : null,
           })
         : null;
     return {
@@ -192,6 +194,9 @@ export default async function CompararFolhaPage(props: { searchParams: Promise<S
       <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6">
         <Link href={`/rh/folha-contador?filialId=${filial.id}`} className="text-sm text-blue-600 hover:underline">
           ← Folha do contador
+        </Link>
+        <Link href={`/rh/folha-contador/nossa/imprimir?filialId=${filial.id}&comp=${comp}`} className="ml-4 text-sm text-blue-600 hover:underline">
+          🖨 Imprimir nossa folha (resumo, borderô, contracheques)
         </Link>
         <h1 className="mt-2 text-xl font-semibold text-slate-900">{compsContador.includes(comp) ? 'Nossa folha × contador' : `Nossa folha de ${nomeComp(comp)}`}</h1>
         <p className="mt-0.5 text-xs text-slate-500">
@@ -342,7 +347,7 @@ export default async function CompararFolhaPage(props: { searchParams: Promise<S
         </div>
         <p className="mt-3 text-[11px] text-slate-500">
           Diferença positiva = a nossa paga mais que o contador. A última coluna tira da conta os itens que só o contador tem
-          (salário-família, rescisão etc.) — o que sobra ali é hora ou regra diferente. O sistema não calcula salário-família, plano de saúde, ajuda de custo,
+          (salário-família, rescisão etc.) — o que sobra ali é hora ou regra diferente. O salário-família vem das cotas da última folha do contador. O sistema não calcula plano de saúde, ajuda de custo,
           quebra de caixa, afastamento, rescisão nem IRRF — esses itens aparecem em amarelo no detalhe do contador.
         </p>
       </div>

@@ -95,6 +95,8 @@ export function calcularFolhaMensal(input: {
   desligamento: string | null;
   dias: DiaHoras[];
   feriados: string[];
+  /** Cotas de salário-família (copiadas da última folha do contador). Não entra no INSS nem no FGTS. */
+  salarioFamilia?: { cotas: number; valorCota: number } | null;
 }): FolhaCalc {
   const { regime, salario, comp } = input;
   const n = ultimoDia(comp);
@@ -163,6 +165,14 @@ export function calcularFolhaMensal(input: {
     fgts = r2(tr2(semDec * 0.08) + tr2(dec * 0.08));
     if (horasNoturnas > 0) avisos.push(`${horasNoturnas.toLocaleString('pt-BR')} h noturnas no ponto — o contador não paga noturno no intermitente.`);
     if (dias.length === 0) avisos.push('Sem ponto no mês: intermitente sem horas não recebe.');
+  }
+
+  if (ini <= fim && input.salarioFamilia && input.salarioFamilia.cotas > 0) {
+    const sf = input.salarioFamilia;
+    P('995', 'SALARIO FAMILIA', sf.cotas, sf.cotas * sf.valorCota);
+  }
+  if (input.desligamento && input.desligamento >= inicioMes && input.desligamento <= fimMes) {
+    avisos.push(`Desligado em ${input.desligamento.split('-').reverse().join('/')}: o contador paga o mês pela rescisão.`);
   }
 
   const proventos = r2(rub.filter((x) => x.tipo === 'P').reduce((s, x) => s + x.valor, 0));

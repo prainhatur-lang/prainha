@@ -7,7 +7,7 @@
 // de uma casa).
 
 import { db, schema } from '@concilia/db';
-import { and, eq, gte, inArray, isNull, lte } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, lt, lte } from 'drizzle-orm';
 import { calcularDia, minutosNoturnos, type Batida } from './calcular-ponto';
 import type { DiaHoras } from './folha-mensal';
 
@@ -100,5 +100,30 @@ export async function horasDoMesPorCpf(cpfs: string[], ini: string, fim: string)
     saida.set(cpf, lista);
   }
   for (const lista of saida.values()) lista.sort((a, b) => a.dia.localeCompare(b.dia));
+  return saida;
+}
+
+/**
+ * Salário-família por CPF: cotas e valor da cota da folha do contador mais
+ * recente antes da competência (rubrica 995). O sistema não sabe quantos
+ * filhos cada um tem; o contador sabe.
+ */
+export async function salarioFamiliaPorCpf(cpfs: string[], comp: string): Promise<Map<string, { cotas: number; valorCota: number }>> {
+  const saida = new Map<string, { cotas: number; valorCota: number }>();
+  if (cpfs.length === 0) return saida;
+  const linhas = await db
+    .select({ cpf: schema.folhaContador.cpf, competencia: schema.folhaContador.competencia, rubricas: schema.folhaContador.rubricas })
+    .from(schema.folhaContador)
+    .where(and(lt(schema.folhaContador.competencia, comp), inArray(schema.folhaContador.cpf, cpfs)))
+    .orderBy(desc(schema.folhaContador.competencia));
+  const vistos = new Set<string>();
+  const alvo = new Set(cpfs);
+  for (const l of linhas) {
+    const cpf = String(l.cpf ?? '').replace(/\D/g, '');
+    if (!alvo.has(cpf) || vistos.has(cpf)) continue;
+    vistos.add(cpf);
+    const r = ((l.rubricas as { codigo: string; referencia: number; valor: number }[] | null) ?? []).find((x) => x.codigo === '995');
+    if (r && r.referencia > 0 && r.valor > 0) saida.set(cpf, { cotas: r.referencia, valorCota: Math.round((r.valor / r.referencia) * 100) / 100 });
+  }
   return saida;
 }
