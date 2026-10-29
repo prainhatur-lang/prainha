@@ -35,6 +35,7 @@ import {
   ultimosEnvios,
 } from '@/lib/relatorio-diario-envio';
 import { EnvioCard } from './envio-card';
+import { calcularFolhaFaturamento, type FolhaFaturamentoMes } from '@/lib/folha-faturamento';
 import { DestinosCasaCard } from './destinos-casa-card';
 import { DestinosReservasCard } from './destinos-reservas-card';
 import { destinosReservas } from '@/lib/reservas-do-dia-envio';
@@ -308,7 +309,31 @@ function CaixaDoDia({ cx }: { cx: CaixaDia }) {
   );
 }
 
-function Casa({ c }: { c: RelatorioCasa }) {
+const COR_FF = {
+  verde: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+  amarelo: 'border-amber-200 bg-amber-50 text-amber-800',
+  vermelho: 'border-rose-200 bg-rose-50 text-rose-800',
+} as const;
+
+/** Folha ÷ faturamento do mês até agora (lib/folha-faturamento). */
+function FolhaDoMes({ ff }: { ff: FolhaFaturamentoMes }) {
+  if (ff.pct == null) return null;
+  const d = (ymd: string) => `${ymd.slice(8, 10)}/${ymd.slice(5, 7)}`;
+  return (
+    <p className="mt-2 text-xs text-slate-600">
+      Folha ÷ faturamento do mês ({d(ff.ini)} a {d(ff.fim)}):{' '}
+      <span className={`rounded border px-1.5 py-0.5 font-semibold ${ff.faixa ? COR_FF[ff.faixa] : ''}`}>
+        {ff.pct.toFixed(1).replace('.', ',')}%
+      </span>{' '}
+      — {brl(ff.folha.total)} de {brl(ff.faturamento.total)}.{' '}
+      <Link href={`/relatorios/folha-faturamento?mes=${ff.mes}&filialId=${ff.filialId}`} className="underline">
+        detalhe
+      </Link>
+    </p>
+  );
+}
+
+function Casa({ c, ff }: { c: RelatorioCasa; ff?: FolhaFaturamentoMes | null }) {
   if (!c.temMovimento) {
     return (
       <section className="rounded-xl border border-slate-200 bg-white p-5">
@@ -342,6 +367,7 @@ function Casa({ c }: { c: RelatorioCasa }) {
           {c.movimento.permanenciaMedianaMin != null ? ` · permanência ${horas(c.movimento.permanenciaMedianaMin)}` : ''}
         </p>
       </div>
+      {ff && <FolhaDoMes ff={ff} />}
 
       {(c.eventos ?? []).map((e) => (
         <div key={e.id} className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
@@ -679,13 +705,16 @@ export default async function RelatorioDiarioPage(props: { searchParams: Promise
     : [];
   const urlPorId = new Map(comUrl.map((f) => [f.id, f.caixaUrl]));
 
-  const [casas, orgsDono] = await Promise.all([
+  const [casas, orgsDono, folhaMes] = await Promise.all([
     montarRelatorioFiliais(
       filiais.map((f) => ({ id: f.id, nome: f.nome, caixa_url: urlPorId.get(f.id) ?? null })),
       dia,
     ),
     organizacoesDoDono(user.id),
+    // folha ÷ faturamento do mês do dia; se falhar, a linha só não aparece
+    Promise.all(filiais.map((f) => calcularFolhaFaturamento(f.id, dia.slice(0, 7)).catch(() => null))),
   ]);
+  const folhaPorCasa = new Map(folhaMes.filter((x) => x != null).map((x) => [x.filialId, x]));
   const orgDono = orgsDono[0] ?? null;
   const [config, envios, modelo, destinosCasa] = orgDono
     ? await Promise.all([
@@ -804,7 +833,7 @@ export default async function RelatorioDiarioPage(props: { searchParams: Promise
             <Dez comServico={total} semServico={total - servicoTotal} servico={servicoTotal} sem={semServicoTotal} />
 
             {casas.map((c) => (
-              <Casa key={c.filialId} c={c} />
+              <Casa key={c.filialId} c={c} ff={folhaPorCasa.get(c.filialId) ?? null} />
             ))}
           </>
         )}
