@@ -9,22 +9,26 @@
 //  - registrado: empresa/CNPJ/matrícula de registro preenchidos no cadastro,
 //    ou com contracheque na folha do contador;
 //  - quem tem escala salva em /rh/escala-mensal dizendo que TRABALHA no dia
-//    (só naquele dia).
+//    (só naquele dia);
+//  - quem NÃO é diarista na folha (fornecedor_folha.papel = funcionario/gerente).
+//    Regra do dono 29/10: "temos intermitente e diarista. o diarista só pode
+//    trabalhar 2 dias na semana". Sem papel na folha continua travado.
 // O limite gravado em funcionario.limite_dias_semana não é apagado — quem não
 // cai em nenhum dos dois continua travado igual.
 import { db, schema } from '@concilia/db';
-import { and, eq, inArray, isNotNull, or } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, ne, or } from 'drizzle-orm';
 
 export async function isencoesTravaSemana(
   funcionarioIds: string[],
   dia: string,
-): Promise<{ registrados: Set<string>; escalaNoDia: Set<string> }> {
+): Promise<{ registrados: Set<string>; escalaNoDia: Set<string>; naoDiaristas: Set<string> }> {
   const registrados = new Set<string>();
   const escalaNoDia = new Set<string>();
+  const naoDiaristas = new Set<string>();
   const ids = [...new Set(funcionarioIds)];
-  if (!ids.length) return { registrados, escalaNoDia };
+  if (!ids.length) return { registrados, escalaNoDia, naoDiaristas };
 
-  const [cad, folha, escala] = await Promise.all([
+  const [cad, folha, escala, papel] = await Promise.all([
     db
       .select({ id: schema.funcionario.id })
       .from(schema.funcionario)
@@ -52,9 +56,23 @@ export async function isencoesTravaSemana(
           eq(schema.rhEscalaDia.folga, false),
         ),
       ),
+    db
+      .select({ id: schema.funcionario.id })
+      .from(schema.funcionario)
+      .innerJoin(
+        schema.fornecedorFolha,
+        eq(schema.fornecedorFolha.fornecedorId, schema.funcionario.fornecedorId),
+      )
+      .where(
+        and(
+          inArray(schema.funcionario.id, ids),
+          ne(schema.fornecedorFolha.papel, 'diarista'),
+        ),
+      ),
   ]);
   for (const r of cad) registrados.add(r.id);
   for (const r of folha) if (r.id) registrados.add(r.id);
   for (const r of escala) escalaNoDia.add(r.id);
-  return { registrados, escalaNoDia };
+  for (const r of papel) naoDiaristas.add(r.id);
+  return { registrados, escalaNoDia, naoDiaristas };
 }

@@ -60,6 +60,8 @@ export interface PessoaHoras {
   limiteLiberadoDia: string | null;
   /** Empresa/CNPJ/matrícula de registro no cadastro: a trava não vale (29/10). */
   registradoCadastro?: boolean;
+  /** Papel na folha não é diarista (funcionario/gerente): a trava não vale (29/10). */
+  naoDiarista?: boolean;
   /** por semana: min batidos NESTA casa, min em todas, dias, previsto (CLT). */
   semanas: { minCasa: number; minTotal: number; dias: number; previstoMin: number }[];
 }
@@ -122,10 +124,11 @@ export async function montarHorasRegime(filialId: string, hoje: string, numSeman
         FROM folha_contador
        WHERE funcionario_id IS NOT NULL AND (demitido_em IS NULL)
        ORDER BY funcionario_id, competencia DESC`),
-    q<{ id: string; nome: string; cargo: string | null; filial_id: string; regime: string | null; salario_base: string | null; ativo: boolean; data_admissao: string | null; limite_dias_semana: number | null; limite_liberado_dia: string | null; registrado: boolean }>(sql`
+    q<{ id: string; nome: string; cargo: string | null; filial_id: string; regime: string | null; salario_base: string | null; ativo: boolean; data_admissao: string | null; limite_dias_semana: number | null; limite_liberado_dia: string | null; registrado: boolean; nao_diarista: boolean }>(sql`
       SELECT id, nome, cargo, filial_id, regime_salarial AS regime, salario_base, ativo, data_admissao::text AS data_admissao,
              limite_dias_semana, limite_liberado_dia::text AS limite_liberado_dia,
-             (empresa_registro IS NOT NULL OR cnpj_registro IS NOT NULL OR matricula_folha IS NOT NULL) AS registrado
+             (empresa_registro IS NOT NULL OR cnpj_registro IS NOT NULL OR matricula_folha IS NOT NULL) AS registrado,
+             EXISTS (SELECT 1 FROM fornecedor_folha ff WHERE ff.fornecedor_id = funcionario.fornecedor_id AND ff.papel <> 'diarista') AS nao_diarista
         FROM funcionario`),
     // Dia operacional da venda: conta aberta de madrugada é do dia anterior (virada 05:00).
     q<{ dia: string; total: number }>(sql`
@@ -249,6 +252,7 @@ export async function montarHorasRegime(filialId: string, hoje: string, numSeman
       limiteDiasSemana: f.limite_dias_semana != null ? num(f.limite_dias_semana) : null,
       limiteLiberadoDia: f.limite_liberado_dia,
       registradoCadastro: !!f.registrado,
+      naoDiarista: !!f.nao_diarista,
       semanas: sem,
     });
   }

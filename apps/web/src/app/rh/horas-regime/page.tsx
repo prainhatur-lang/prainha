@@ -217,8 +217,8 @@ export default async function HorasRegimePage(props: { searchParams: Promise<SP>
                   </span>
                   {podeTravar && (
                     <TravarTodos
-                      ids={lista.filter((p) => !p.registradoCadastro).map((p) => p.id)}
-                      jaTravados={lista.filter((p) => !p.registradoCadastro && p.limiteDiasSemana === 2).length}
+                      ids={lista.filter((p) => !p.registradoCadastro && !p.naoDiarista).map((p) => p.id)}
+                      jaTravados={lista.filter((p) => !p.registradoCadastro && !p.naoDiarista && p.limiteDiasSemana === 2).length}
                       dias={2}
                     />
                   )}
@@ -296,6 +296,9 @@ export default async function HorasRegimePage(props: { searchParams: Promise<SP>
                               />
                               {p.registradoCadastro && (
                                 <div className="mt-1 text-[11px] text-emerald-700">registrado no cadastro · trava não vale</div>
+                              )}
+                              {!p.registradoCadastro && p.naoDiarista && (
+                                <div className="mt-1 text-[11px] text-emerald-700">não é diarista na folha · trava não vale</div>
                               )}
                             </td>
                           )}

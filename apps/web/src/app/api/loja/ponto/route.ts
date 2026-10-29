@@ -152,6 +152,7 @@ export async function GET(request: Request) {
       const { isencoesTravaSemana } = await import('@/lib/rh/trava-semana');
       const x = await isencoesTravaSemana(comLimite, diaPonto);
       for (const id of x.registrados) sem.add(id);
+      for (const id of x.naoDiaristas) sem.add(id);
       for (const id of x.escalaNoDia) liberaHoje.add(id);
     } catch (err) {
       console.warn('[ponto] isenção da trava falhou:', err instanceof Error ? err.message : err);

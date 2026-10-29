@@ -372,7 +372,7 @@ export async function baterPontoCelular(p: PessoaToken, req: PedidoBatida): Prom
       try {
         const { isencoesTravaSemana } = await import('@/lib/rh/trava-semana');
         const x = await isencoesTravaSemana([p.id], dia);
-        if (x.registrados.has(p.id) || x.escalaNoDia.has(p.id)) lim = 0;
+        if (x.registrados.has(p.id) || x.escalaNoDia.has(p.id) || x.naoDiaristas.has(p.id)) lim = 0;
       } catch {
         /* erro aqui mantém a trava como está gravada */
       }
