@@ -169,6 +169,7 @@
     "migrate:atestado": "tsx scripts/migrate-atestado.ts",
     "migrate:funcionario-documento": "tsx scripts/migrate-funcionario-documento.ts",
     "migrate:contabilidade-rh": "tsx scripts/migrate-contabilidade-rh.ts",
+    "migrate:funcionario-assinatura": "tsx scripts/migrate-funcionario-assinatura.ts",
     "migrate:empresa-documento": "tsx scripts/migrate-empresa-documento.ts",
     "migrate:atestado-celular": "tsx scripts/migrate-atestado-celular.ts",
     "migrate:imposto-guia": "tsx scripts/migrate-imposto-guia.ts",

@@ -275,6 +275,27 @@ export default async function FichaFuncionarioPage(props: { params: Promise<{ id
     .from(schema.funcionarioDocumento)
     .where(and(eq(schema.funcionarioDocumento.funcionarioId, f.id), isNull(schema.funcionarioDocumento.canceladoEm)))
     .orderBy(asc(schema.funcionarioDocumento.criadoEm));
+  // Último pedido de assinatura eletrônica (não cancelado) de cada documento (29/10/2026).
+  const assinaturaPorDoc = new Map<string, { id: string; status: string; assinadoEm: string | null; expiraEm: string }>();
+  if (docsVinculo.length) {
+    const A = schema.funcionarioAssinatura;
+    const pedidosAss = await db
+      .select({ id: A.id, documentoId: A.documentoId, status: A.status, assinadoEm: A.assinadoEm, expiraEm: A.expiraEm })
+      .from(A)
+      .where(and(inArray(A.documentoId, docsVinculo.map((d) => d.id)), ne(A.status, 'cancelado')))
+      .orderBy(desc(A.enviadoEm));
+    for (const p of pedidosAss) {
+      const atual = assinaturaPorDoc.get(p.documentoId);
+      // Assinado vale mais que um pedido novo aguardando.
+      if (atual && (atual.status === 'assinado' || p.status !== 'assinado')) continue;
+      assinaturaPorDoc.set(p.documentoId, {
+        id: p.id,
+        status: p.status,
+        assinadoEm: p.assinadoEm?.toISOString() ?? null,
+        expiraEm: p.expiraEm.toISOString(),
+      });
+    }
+  }
 
   const hoje = hojeBr();
 
@@ -671,7 +692,11 @@ export default async function FichaFuncionarioPage(props: { params: Promise<{ id
             ativo={f.ativo}
             carteira={temCarteira(f)}
             dataDesligamento={f.dataDesligamento}
-            docs={docsVinculo.map((d) => ({ ...d, criadoEm: d.criadoEm.toISOString() }))}
+            docs={docsVinculo.map((d) => ({
+              ...d,
+              criadoEm: d.criadoEm.toISOString(),
+              assinatura: assinaturaPorDoc.get(d.id) ?? null,
+            }))}
             podeAdmissao={podeAdmissaoDoc}
             podeDesligar={podeDesligarDoc}
           />

@@ -275,3 +275,44 @@ export const funcionarioDocumento = pgTable(
     porCasa: index('idx_funcionario_documento_filial').on(t.filialId, t.criadoEm),
   }),
 );
+
+/** Assinatura eletrônica de documento pelo funcionário (pedido do dono
+ *  29/10/2026: "a empresa manda assinado pra ele, ele dá o aceite
+ *  eletronicamente, tira a foto dele e faz o aceite"). A empresa (ou a
+ *  contabilidade) sobe o documento já assinado em funcionario_documento e
+ *  gera um link /op/assinar/<token>. A pessoa abre no celular, confere o
+ *  CPF, lê, tira a selfie e aceita. Fica guardado: hash SHA-256 do arquivo
+ *  no envio e no aceite (prova que não mudou), data/hora, IP, aparelho,
+ *  selfie e, se a pessoa tem rosto cadastrado no ponto, a distância facial.
+ *  status: pendente | assinado | cancelado. */
+export const funcionarioAssinatura = pgTable(
+  'funcionario_assinatura',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    funcionarioId: uuid('funcionario_id').notNull().references(() => funcionario.id, { onDelete: 'cascade' }),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    documentoId: uuid('documento_id').notNull().references(() => funcionarioDocumento.id, { onDelete: 'cascade' }),
+    token: varchar('token', { length: 64 }).notNull().unique(),
+    status: varchar('status', { length: 20 }).notNull().default('pendente'),
+    hashDocumento: varchar('hash_documento', { length: 64 }).notNull(),
+    enviadoPor: uuid('enviado_por'),
+    enviadoEm: timestamp('enviado_em', { withTimezone: true }).notNull().defaultNow(),
+    expiraEm: timestamp('expira_em', { withTimezone: true }).notNull(),
+    abertoEm: timestamp('aberto_em', { withTimezone: true }),
+    assinadoEm: timestamp('assinado_em', { withTimezone: true }),
+    assinadoIp: varchar('assinado_ip', { length: 80 }),
+    assinadoAparelho: text('assinado_aparelho'),
+    cpfInformado: varchar('cpf_informado', { length: 11 }),
+    hashNoAceite: varchar('hash_no_aceite', { length: 64 }),
+    selfiePath: text('selfie_path'),
+    /** distância do rosto da selfie pro rosto do ponto (menor = mais parecido); null = sem rosto cadastrado */
+    faceDistancia: varchar('face_distancia', { length: 12 }),
+    textoAceite: text('texto_aceite'),
+    canceladoEm: timestamp('cancelado_em', { withTimezone: true }),
+    canceladoPor: uuid('cancelado_por'),
+  },
+  (t) => ({
+    porDocumento: index('idx_funcionario_assinatura_doc').on(t.documentoId),
+    porPessoa: index('idx_funcionario_assinatura_pessoa').on(t.funcionarioId, t.enviadoEm),
+  }),
+);

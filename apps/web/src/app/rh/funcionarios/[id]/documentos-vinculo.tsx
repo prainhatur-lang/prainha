@@ -30,6 +30,13 @@ export interface DocVinculo {
   criadoEm: string;
   /** Conta a pagar da rescisão lançada a partir deste termo (26/10/2026). */
   contaPagarId?: string | null;
+  /** Último pedido de assinatura eletrônica deste arquivo (29/10/2026). */
+  assinatura?: {
+    id: string;
+    status: string;
+    assinadoEm: string | null;
+    expiraEm: string;
+  } | null;
 }
 
 async function chamar(body: Record<string, unknown>) {
@@ -330,6 +337,7 @@ function LinhaTipo(props: {
               ) : (
                 props.pode && <LancarRescisao documentoId={a.id} />
               ))}
+            <AssinaturaDoc documentoId={a.id} assinatura={a.assinatura ?? null} pode={props.pode} />
           </p>
         ))}
       </div>
@@ -357,6 +365,109 @@ function LinhaTipo(props: {
         </>
       )}
     </li>
+  );
+}
+
+// Assinatura eletrônica do funcionário (29/10/2026, lib/rh/assinatura.ts):
+// "✍️ Pedir assinatura" gera o link /op/assinar/<token>; a pessoa abre no
+// celular, confere o CPF, tira a selfie e aceita. Assinado → comprovante.
+function AssinaturaDoc(props: { documentoId: string; assinatura: DocVinculo['assinatura'] | null; pode: boolean }) {
+  const router = useRouter();
+  const [link, setLink] = useState<{ id: string; link: string; whatsapp: string; semCpf: boolean } | null>(null);
+  const [ocupado, setOcupado] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  const [copiado, setCopiado] = useState(false);
+  const a = props.assinatura;
+  const aguardando = a?.status === 'pendente' && new Date(a.expiraEm).getTime() > Date.now();
+
+  async function chamarAssinatura(body: Record<string, unknown>) {
+    setOcupado(true);
+    setErro(null);
+    try {
+      const r = await fetch('/api/rh/assinatura', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error ?? `erro ${r.status}`);
+      return j;
+    } catch (e) {
+      setErro(e instanceof Error ? e.message : 'erro');
+      return null;
+    } finally {
+      setOcupado(false);
+    }
+  }
+
+  async function pedir() {
+    const j = await chamarAssinatura({ acao: 'criar', documentoId: props.documentoId });
+    if (j) {
+      setLink(j);
+      router.refresh();
+    }
+  }
+
+  async function cancelar() {
+    if (!a || !window.confirm('Cancelar o pedido de assinatura? O link para de funcionar.')) return;
+    const j = await chamarAssinatura({ acao: 'cancelar', id: a.id });
+    if (j) {
+      setLink(null);
+      router.refresh();
+    }
+  }
+
+  async function copiar(texto: string) {
+    try {
+      await navigator.clipboard.writeText(texto);
+      setCopiado(true);
+      setTimeout(() => setCopiado(false), 2000);
+    } catch {
+      window.prompt('Copie o link:', texto);
+    }
+  }
+
+  if (a?.status === 'assinado') {
+    return (
+      <a href={`/rh/assinatura/${a.id}`} className="ml-2 text-emerald-700 hover:underline">
+        ✅ assinado pelo funcionário{a.assinadoEm ? ` em ${dataCurta(a.assinadoEm)}` : ''} · comprovante
+      </a>
+    );
+  }
+  if (!props.pode) {
+    return aguardando ? <span className="ml-2 text-amber-700">✍️ aguardando assinatura</span> : null;
+  }
+  return (
+    <span className="ml-2 inline-flex flex-wrap items-center gap-x-2">
+      {aguardando || link ? (
+        <>
+          <span className="text-amber-700">✍️ aguardando assinatura</span>
+          {link ? (
+            <>
+              <button type="button" onClick={() => copiar(link.link)} className="text-blue-700 hover:underline">
+                {copiado ? 'copiado ✓' : 'copiar link'}
+              </button>
+              <a href={link.whatsapp} target="_blank" rel="noreferrer" className="text-emerald-700 hover:underline">
+                mandar no WhatsApp
+              </a>
+              {link.semCpf && <span className="text-[11px] text-slate-400">(sem CPF no cadastro — a pessoa digita o dela)</span>}
+            </>
+          ) : (
+            <button type="button" disabled={ocupado} onClick={pedir} className="text-blue-700 hover:underline disabled:opacity-50">
+              ver link
+            </button>
+          )}
+          <button type="button" disabled={ocupado} onClick={cancelar} className="text-red-600 hover:underline disabled:opacity-50">
+            cancelar pedido
+          </button>
+        </>
+      ) : (
+        <button type="button" disabled={ocupado} onClick={pedir} className="text-blue-700 hover:underline disabled:opacity-50">
+          {ocupado ? 'gerando…' : '✍️ Pedir assinatura'}
+        </button>
+      )}
+      {erro && <span className="text-red-600">{erro}</span>}
+    </span>
   );
 }
 
