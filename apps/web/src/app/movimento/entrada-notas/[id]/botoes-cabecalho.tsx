@@ -60,6 +60,13 @@ const NOME_TPAG: Record<string, string> = {
   '99': 'Outros',
 };
 // Formas que já saíram pagas na entrega (não geram conta a pagar).
+/** Soma dos boletos (tPag 15) que o XML informa em <pag>; 0 se não informa. */
+function valorBoletoXmlDe(pag: PagamentoXml | null): number {
+  return (pag?.formas ?? [])
+    .filter((f) => f.tPag === '15' && f.vPag > 0)
+    .reduce((s, f) => s + f.vPag, 0);
+}
+
 const TPAG_PAGO = new Set(['01', '03', '04', '10', '11', '12', '13', '16', '17', '18', '19', '90']);
 
 interface BoletoPendente {
@@ -84,6 +91,8 @@ export function BotoesCabecalho({
   categoriaSugerida = null,
   pagamentoXml = null,
   lerPagamentoXml = false,
+  valorTotalNota = null,
+  dataEmissao = null,
 }: {
   notaId: string;
   totalItens: number;
@@ -97,6 +106,10 @@ export function BotoesCabecalho({
   pagamentoXml?: PagamentoXml | null;
   /** Nota da SEFAZ sem parcelas gravadas: ao abrir o modal lê o XML pela chave. */
   lerPagamentoXml?: boolean;
+  /** Total da nota: a parcela do boleto parte dele, a foto não muda o valor. */
+  valorTotalNota?: number | null;
+  /** Emissão da nota (YYYY-MM-DD BRT): vencimento lido antes dela é leitura errada. */
+  dataEmissao?: string | null;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -228,6 +241,8 @@ export function BotoesCabecalho({
           categoriaSugerida={categoriaSugerida}
           pagamentoXml={pagamentoXml}
           lerPagamentoXml={lerPagamentoXml}
+          valorTotalNota={valorTotalNota}
+          dataEmissao={dataEmissao}
           onXmlLido={() => start(() => router.refresh())}
           onSuccess={(texto) => {
             setMsg({ tipo: 'ok', texto });
@@ -258,6 +273,8 @@ function ModalLancar({
   categoriaSugerida,
   pagamentoXml,
   lerPagamentoXml,
+  valorTotalNota,
+  dataEmissao,
   onXmlLido,
   onSuccess,
   onFechar,
@@ -271,6 +288,8 @@ function ModalLancar({
   categoriaSugerida: CategoriaSugerida | null;
   pagamentoXml: PagamentoXml | null;
   lerPagamentoXml: boolean;
+  valorTotalNota: number | null;
+  dataEmissao: string | null;
   onXmlLido: () => void;
   onSuccess: (texto: string) => void;
   onFechar: () => void;
@@ -282,6 +301,8 @@ function ModalLancar({
   const [pagXml, setPagXml] = useState<PagamentoXml | null>(pagamentoXml);
   const [lendoXml, setLendoXml] = useState(lerPagamentoXml);
   const [avisoXml, setAvisoXml] = useState<string | null>(null);
+  // Aviso quando a foto do boleto leu outro valor/vencimento (não manda na parcela).
+  const [avisoBoleto, setAvisoBoleto] = useState<string | null>(null);
   const duplicatasPendentes = dupsLidas ?? duplicatasIniciais;
   const temDuplicatasXml = duplicatasPendentes.length > 0;
   const totalDuplicatas = duplicatasPendentes.reduce((s, d) => s + Number(d.valor || 0), 0);
@@ -393,9 +414,31 @@ function ModalLancar({
         valor: String(b.valor ?? '').replace('.', ','),
       }));
     if (novasPar.length > 0) {
+      // Um boleto só = a conta toda: valor da nota manda (mesma regra do anexo).
+      if (novasPar.length === 1) {
+        const b = boletosCelular.find((x) => x.dataVencimento && x.valor != null)!;
+        const { parcela, avisos } = aplicarLeitura(novasPar[0]!, { dataVencimento: b.dataVencimento, valor: b.valor }, true);
+        setAvisoBoleto(avisos.length ? `⚠ ${avisos.join('; ')}.` : null);
+        setParcelas([parcela]);
+        return;
+      }
       setParcelas(novasPar);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boletosCelular]);
+
+  // Escolheu boleto e a nota já diz o valor: a parcela já nasce com ele —
+  // falta só o vencimento.
+  useEffect(() => {
+    if (modoSemDup === 'avista' || temDuplicatasXml) return;
+    const ref = valorBoletoXmlDe(pagXml) || (valorTotalNota ?? 0);
+    if (!(ref > 0)) return;
+    setParcelas((arr) =>
+      arr.length === 1 && !arr[0]!.valor.trim()
+        ? [{ ...arr[0]!, valor: ref.toFixed(2).replace('.', ',') }]
+        : arr,
+    );
+  }, [modoSemDup, temDuplicatasXml, pagXml, valorTotalNota]);
 
   const opcoesCategoria = useMemo(
     // Aceita varios formatos de tipo: 'DESPESA' (esperado), 'P' (Pagar — vem
@@ -433,6 +476,48 @@ function ModalLancar({
   // Forma de pagamento que o XML informa (<pag>), quando não há parcelas.
   const formasXml = pagXml?.formas ?? [];
   const xmlDizPago = formasXml.length > 0 && formasXml.every((f) => TPAG_PAGO.has(f.tPag));
+  // Quanto a conta vale, pelo que a nota já diz: boleto informado no XML
+  // (tPag 15) ou, sem ele, o total da nota. A foto do boleto não muda isso —
+  // a SOLAR (1.674,00) virou conta de 3.617,69 pela foto borrada (29/10/2026).
+  const valorBoletoXml = valorBoletoXmlDe(pagXml);
+  const valorReferencia = valorBoletoXml > 0 ? valorBoletoXml : (valorTotalNota ?? 0) > 0 ? valorTotalNota : null;
+  const valorRefTexto = valorReferencia != null ? valorReferencia.toFixed(2).replace('.', ',') : '';
+  const fonteRef = valorBoletoXml > 0 ? 'o boleto do XML da nota' : 'o total da nota';
+  const somaParcelas = parcelas.reduce((s, p) => s + (Number(p.valor.replace(',', '.')) || 0), 0);
+  const parcelasDivergem =
+    valorReferencia != null && !temDuplicatasXml && modoSemDup !== 'avista' && somaParcelas > 0 &&
+    Math.abs(somaParcelas - valorReferencia) > Math.max(0.05, valorReferencia * 0.01);
+
+  /** Aplica o que a foto leu numa parcela: vencimento só se não for antes da
+   *  emissão; valor da foto só quando não há referência ou quando bate com ela. */
+  function aplicarLeitura(
+    p0: ParcelaForm,
+    lido: { dataVencimento: string | null; valor: number | null },
+    unica: boolean,
+  ): { parcela: ParcelaForm; avisos: string[] } {
+    const avisos: string[] = [];
+    let venc = p0.dataVencimento;
+    if (lido.dataVencimento) {
+      if (dataEmissao && lido.dataVencimento < dataEmissao) {
+        avisos.push(
+          `a foto leu vencimento ${lido.dataVencimento.split('-').reverse().join('/')}, antes da emissão da nota — confira e digite`,
+        );
+      } else venc = lido.dataVencimento;
+    }
+    let valor = p0.valor;
+    if (unica && valorReferencia != null) {
+      valor = valorRefTexto;
+      if (lido.valor != null && Math.abs(lido.valor - valorReferencia) > Math.max(0.05, valorReferencia * 0.01)) {
+        avisos.push(
+          `a foto leu ${brl(lido.valor)}, mas ${fonteRef} diz ${brl(valorReferencia)} — ficou o da nota`,
+        );
+      }
+    } else if (lido.valor != null) {
+      valor = String(lido.valor).replace('.', ',');
+    }
+    return { parcela: { dataVencimento: venc, valor }, avisos };
+  }
+
   const textoFormasXml = formasXml
     .map((f) => `${NOME_TPAG[f.tPag] ?? `forma ${f.tPag}`}${f.vPag > 0 ? ` ${brl(f.vPag)}` : ''}${f.indPag === '1' ? ' (a prazo)' : ''}`)
     .join(' + ');
@@ -470,14 +555,15 @@ function ModalLancar({
       // Anexou o boleto justamente pra nao digitar: o que a IA leu manda na
       // primeira parcela. Refotografar substitui pela leitura nova, e o campo
       // continua editavel na mao.
+      // Exceção: o valor que a nota já diz (boleto do XML ou total) manda —
+      // a foto só confirma; divergiu, fica o da nota e aparece o aviso.
       if (ocr && ocr.confianca !== 'erro') {
+        const p0 = parcelas[0] ?? { dataVencimento: '', valor: '' };
+        const { parcela, avisos } = aplicarLeitura(p0, ocr, parcelas.length <= 1);
+        setAvisoBoleto(avisos.length ? `⚠ ${avisos.join('; ')}.` : null);
         setParcelas((arr) => {
           const nova = [...arr];
-          const p0 = nova[0] ?? { dataVencimento: '', valor: '' };
-          nova[0] = {
-            dataVencimento: ocr.dataVencimento ?? p0.dataVencimento,
-            valor: ocr.valor != null ? String(ocr.valor).replace('.', ',') : p0.valor,
-          };
+          nova[0] = parcela;
           return nova;
         });
       }
@@ -492,6 +578,7 @@ function ModalLancar({
   function limparBoleto() {
     setBoletoStoragePath(null);
     setBoletoOcr(null);
+    setAvisoBoleto(null);
     setBoletoInputKey((k) => k + 1);
   }
 
@@ -511,6 +598,15 @@ function ModalLancar({
   }
 
   async function confirmar() {
+    if (
+      parcelasDivergem &&
+      valorReferencia != null &&
+      !confirm(
+        `As parcelas somam ${brl(somaParcelas)}, mas ${fonteRef} diz ${brl(valorReferencia)}.\n\nLançar assim mesmo?`,
+      )
+    ) {
+      return;
+    }
     // flushSync forca pintar "Lançando..." e desabilitar o botao
     // imediatamente, em vez de esperar o fetch voltar (3-5s).
     flushSync(() => {
@@ -688,6 +784,21 @@ function ModalLancar({
                 boletoInputKey={boletoInputKey}
                 limparBoleto={limparBoleto}
               />
+            )}
+
+            {(modoSemDup === 'manual' || modoSemDup === 'celular') && valorReferencia != null && (
+              <p className="text-[10px] text-amber-900">
+                Valor da conta = {fonteRef}: <span className="font-mono font-semibold">{brl(valorReferencia)}</span>.
+                {' '}A foto do boleto serve pro vencimento; o valor só muda se você digitar.
+              </p>
+            )}
+            {avisoBoleto && (modoSemDup === 'manual' || modoSemDup === 'celular') && (
+              <p className="rounded bg-rose-50 px-2 py-1 text-[11px] font-medium text-rose-800">{avisoBoleto}</p>
+            )}
+            {parcelasDivergem && valorReferencia != null && (
+              <p className="rounded bg-rose-50 px-2 py-1 text-[11px] font-medium text-rose-800">
+                ⚠ As parcelas somam {brl(somaParcelas)}, mas {fonteRef} diz {brl(valorReferencia)}.
+              </p>
             )}
           </div>
         )}

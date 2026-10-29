@@ -1,3 +1,4 @@
+import { dateToBrYmd } from '@/lib/datas';
 import { notFound, redirect } from 'next/navigation';
 import { exigirPerm } from '@/lib/exigir-perm';
 import Link from 'next/link';
@@ -602,6 +603,8 @@ export default async function NotaDetalhePage(props: {
             temFornecedor={nota.fornecedorId != null}
             categoriaSugerida={categoriaSugerida}
             pagamentoXml={(nota.pagamentoXml as PagamentoXml | null) ?? null}
+            valorTotalNota={valorTotalNota > 0 ? valorTotalNota : null}
+            dataEmissao={nota.dataEmissao ? dateToBrYmd(new Date(nota.dataEmissao)) : null}
             lerPagamentoXml={
               nota.origemImportacao === 'SEFAZ_DFE' &&
               nota.pagamentoXml == null &&
