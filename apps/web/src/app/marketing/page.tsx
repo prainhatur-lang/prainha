@@ -254,6 +254,9 @@ export default async function MarketingPage(props: {
           <div>
             <h1 className="text-xl font-semibold text-slate-900">Marketing</h1>
             <p className="text-sm text-slate-500">Instagram e TikTok de cada casa, lidos ao vivo.</p>
+            <a href={`/marketing/anuncios?filialId=${filial.id}`} className="mt-1 inline-block text-sm font-medium text-blue-700 hover:underline">
+              📈 Anúncios da Meta (saldo, resultado, impulsionar) →
+            </a>
           </div>
           <nav className="flex flex-wrap gap-1">
             {filiais.map((f) => (
