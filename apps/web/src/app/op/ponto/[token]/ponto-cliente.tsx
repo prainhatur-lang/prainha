@@ -115,6 +115,24 @@ export function PontoCelularCliente({ token }: { token: string }) {
     return () => stream.current?.getTracks().forEach((t) => t.stop());
   }, [carregar]);
 
+  // Tela aberta há tempo fica velha: o gerente pode ter lançado uma batida à
+  // mão (correção) e o botão continuava "Bater entrada" (Roberto, 29/10).
+  // Recarrega ao voltar pra aba e a cada 30 s. O tipo gravado quem decide é
+  // o servidor; isto só deixa o botão igual ao que vai ser gravado.
+  useEffect(() => {
+    const aoVoltar = () => {
+      if (document.visibilityState === 'visible') carregar().catch(() => {});
+    };
+    document.addEventListener('visibilitychange', aoVoltar);
+    window.addEventListener('focus', aoVoltar);
+    const t = window.setInterval(aoVoltar, 30_000);
+    return () => {
+      document.removeEventListener('visibilitychange', aoVoltar);
+      window.removeEventListener('focus', aoVoltar);
+      window.clearInterval(t);
+    };
+  }, [carregar]);
+
   function pararCamera() {
     stream.current?.getTracks().forEach((t) => t.stop());
     stream.current = null;
@@ -122,6 +140,7 @@ export function PontoCelularCliente({ token }: { token: string }) {
 
   async function abrirCamera() {
     setAviso(null);
+    carregar().catch(() => {});
     setStatus('Pegando a localização…');
     gps.current = pegarGps();
     gps.current.catch(() => {});
