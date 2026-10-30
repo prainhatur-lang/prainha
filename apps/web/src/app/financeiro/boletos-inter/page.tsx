@@ -12,7 +12,7 @@ import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
-import { and, eq, inArray, ne } from 'drizzle-orm';
+import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDate, int } from '@/lib/format';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
@@ -35,7 +35,7 @@ import { compLabel } from '@/lib/transferencia';
 import { BLOQUEIO_ENTRE_CASAS_DESDE, entreCasasBloqueado } from '@/lib/pagamento-entre-casas';
 import { ehAdmin } from '@/lib/usuario-admin';
 import { casasComConsumerParado } from '@/lib/consumer-contas';
-import { BaixarBoleto, BaixarBoletosLote, type BoletoBaixa } from './baixar-boletos';
+import { BaixarBoleto, BaixarBoletosLote, LancarContaBoleto, type BoletoBaixa } from './baixar-boletos';
 import {
   DesfazerEncontro,
   LancarEncontro,
@@ -133,6 +133,47 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
         )
       : new Map();
   // Conta do Consumer só fica sem botão (baixa no PDV) enquanto o Consumer da
+  // Boleto sem conta e sem nota: o fornecedor desta casa pelo CNPJ do
+  // beneficiário (exato, senão a raiz) — pro "Lançar conta e baixar" (CRBS
+  // 434,02 da Tabuará, 30/10/2026: boleto sem NF-e em lugar nenhum).
+  const cnpjsSem = [
+    ...new Set(
+      semConta
+        .filter((p) => !notasSemConta.get(p.codigoTransacao))
+        .map((p) => soDigitos(p.cpfCnpjBeneficiario))
+        .filter((c) => c.length === 14),
+    ),
+  ];
+  const fornsCasa =
+    escolhida && cnpjsSem.length > 0
+      ? await db
+          .select({ id: schema.fornecedor.id, nome: schema.fornecedor.nome, cnpj: schema.fornecedor.cnpjOuCpf })
+          .from(schema.fornecedor)
+          // dois cadastros com o mesmo CNPJ (Tabuará: "AMBEV- CRBS SA" e "CDD
+          // Aracaju"): fica o que tem mais contas
+          .orderBy(
+            sql`(select count(*) from conta_pagar cp where cp.fornecedor_id = ${schema.fornecedor.id} and cp.data_delete is null) desc`,
+          )
+          .where(
+            and(
+              eq(schema.fornecedor.filialId, escolhida.id),
+              inArray(
+                sql`left(regexp_replace(coalesce(${schema.fornecedor.cnpjOuCpf}, ''), '\\D', '', 'g'), 8)`,
+                cnpjsSem.map((c) => c.slice(0, 8)),
+              ),
+            ),
+          )
+      : [];
+  const fornecedorDoBoleto = (p: InterPagamento) => {
+    const cnpj = soDigitos(p.cpfCnpjBeneficiario);
+    if (cnpj.length !== 14) return null;
+    return (
+      fornsCasa.find((f) => soDigitos(f.cnpj) === cnpj) ??
+      fornsCasa.find((f) => soDigitos(f.cnpj).slice(0, 8) === cnpj.slice(0, 8)) ??
+      null
+    );
+  };
+  const podeLancar = await podeUsuario(user.id, 'conta_pagar.create');
   // casa manda conta; casa que saiu dele baixa aqui (lib/consumer-contas).
   const consumerParado = await casasComConsumerParado(
     casadas.filter((c) => c?.origem === 'CONSUMER').map((c) => c!.filialId),
@@ -643,6 +684,36 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                                   📄 nota não chegou da SEFAZ — trazer pela chave
                                 </Link>
                               )}
+                              {!conta &&
+                                !notasSemConta.get(p.codigoTransacao) &&
+                                escolhida &&
+                                podeLancar &&
+                                podeBaixar &&
+                                p.dataPagamento &&
+                                !pagamentoAgendado(p) &&
+                                (() => {
+                                  const f = fornecedorDoBoleto(p);
+                                  if (!f) return null;
+                                  const nominal = Number(p.valorNominal ?? p.valorPago ?? 0);
+                                  const pago = Number(p.valorPago ?? p.valorNominal ?? 0);
+                                  if (!(nominal > 0)) return null;
+                                  const venc = p.dataVencimentoTitulo || p.dataVencimentoDigitada || p.dataPagamento!.slice(0, 10);
+                                  return (
+                                    <LancarContaBoleto
+                                      boleto={{
+                                        filialId: escolhida.id,
+                                        fornecedorId: f.id,
+                                        fornecedorNome: f.nome ?? p.nomeBeneficiario ?? 'fornecedor',
+                                        valor: nominal,
+                                        juros: Math.max(0, Math.round((pago - nominal) * 100) / 100),
+                                        vencimento: venc.slice(0, 10),
+                                        data: p.dataPagamento!.slice(0, 10),
+                                        codigo: p.codigoTransacao,
+                                        codigoBarras: p.codigoBarra ?? null,
+                                      }}
+                                    />
+                                  );
+                                })()}
                               {outraCasa && (
                                 <span className="ml-1.5 rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-800">
                                   conta da {outraCasa}

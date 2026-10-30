@@ -128,3 +128,97 @@ export function BaixarBoletosLote({ boletos }: { boletos: BoletoBaixa[] }) {
     </div>
   );
 }
+
+// Boleto pago no Inter sem conta e sem nota em lugar nenhum (CRBS 434,02 da
+// Tabuará, 30/10/2026): lança a conta do fornecedor com o valor e o vencimento
+// do boleto e já dá a baixa — o texto da baixa cita o código do Inter, então
+// o boleto fica casado com ela (passada 0). Se a NF-e aparecer depois, a
+// trava de conta em dobro da tela da nota avisa.
+export interface BoletoSemConta {
+  filialId: string;
+  fornecedorId: string;
+  fornecedorNome: string;
+  valor: number;
+  juros: number;
+  vencimento: string;
+  data: string;
+  codigo: string;
+  codigoBarras: string | null;
+}
+
+export function LancarContaBoleto({ boleto }: { boleto: BoletoSemConta }) {
+  const router = useRouter();
+  const [ocupado, setOcupado] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  const dm = (ymd: string) => ymd.split('-').reverse().join('/');
+
+  async function criar(forcar: boolean, forcarDuplicada: boolean): Promise<string | null> {
+    const r = await fetch('/api/financeiro/contas', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        filialId: boleto.filialId,
+        fornecedorId: boleto.fornecedorId,
+        descricao: `Boleto ${boleto.fornecedorNome} pago no Inter (sem NF-e)`,
+        valor: boleto.valor,
+        dataVencimento: boleto.vencimento,
+        observacao: `Lançada pela tela Boletos pagos no Inter — transação ${boleto.codigo}${boleto.codigoBarras ? `, código de barras ${boleto.codigoBarras}` : ''}`,
+        forcar,
+        forcarDuplicada,
+      }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) return j.id as string;
+    if (r.status === 409 && (j.casaErrada || j.podeForcar)) {
+      if (!confirm(`${j.error}\n\nLançar mesmo assim?`)) throw new Error('cancelado');
+      return criar(forcar || !!j.casaErrada, forcarDuplicada || !!j.podeForcar);
+    }
+    throw new Error(j.error ?? `HTTP ${r.status}`);
+  }
+
+  async function clicar() {
+    const juros = boleto.juros > 0 ? ` + ${brl(boleto.juros)} de juros` : '';
+    if (
+      !confirm(
+        `Nenhuma conta e nenhuma nota de ${boleto.fornecedorNome} batem com este boleto.\n\nLançar conta de ${brl(boleto.valor)} (venc. ${dm(boleto.vencimento)}) e já baixar como paga em ${dm(boleto.data)}${juros}?\n\nSe a NF-e chegar depois, NÃO lance outra conta pra ela.`,
+      )
+    )
+      return;
+    setOcupado(true);
+    setErro(null);
+    try {
+      const id = await criar(false, false);
+      if (!id) throw new Error('conta não criada');
+      const e = await baixar({
+        contaId: id,
+        data: boleto.data,
+        valor: boleto.valor,
+        juros: boleto.juros,
+        observacao: `Boleto pago no Inter (${boleto.codigo})`,
+        rotulo: boleto.fornecedorNome,
+      });
+      if (e) throw new Error(`conta lançada, mas a baixa falhou: ${e}`);
+      router.refresh();
+    } catch (e) {
+      const m = (e as Error).message;
+      if (m !== 'cancelado') setErro(m);
+    } finally {
+      setOcupado(false);
+    }
+  }
+
+  return (
+    <span className="mt-1 inline-flex items-center gap-1.5">
+      <button
+        type="button"
+        onClick={clicar}
+        disabled={ocupado}
+        title="Lança a conta deste fornecedor com o valor do boleto e já baixa com a data e os juros que o Inter pagou"
+        className="rounded-md bg-emerald-700 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-emerald-800 disabled:opacity-50"
+      >
+        {ocupado ? 'Lançando…' : 'Lançar conta e baixar'}
+      </button>
+      {erro && <span className="text-[10px] text-rose-700">{erro}</span>}
+    </span>
+  );
+}
