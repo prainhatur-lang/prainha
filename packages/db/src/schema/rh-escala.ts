@@ -267,6 +267,9 @@ export const funcionarioDocumento = pgTable(
     canceladoMotivo: text('cancelado_motivo'),
     /** Conta a pagar da rescisão lançada a partir deste documento (TRCT). */
     contaPagarId: uuid('conta_pagar_id'),
+    /** Empregado da E.B. (30/10/2026): conta na filial da E.B. que paga a
+     *  pessoa. Aí contaPagarId é o "Repasse E.B." da casa, não o funcionário. */
+    contaPagarEmpregadorId: uuid('conta_pagar_empregador_id'),
     /** O que a IA leu do termo (líquido, datas…). */
     dados: jsonb('dados'),
   },

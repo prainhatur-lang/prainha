@@ -11,6 +11,7 @@ import { and, eq, ilike, isNull } from 'drizzle-orm';
 import { exigirPermApi, negarSemPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { lerRescisao, vencimentoRescisao, TIPOS_DOC_RESCISAO, type RescisaoLida } from '@/lib/rh/rescisao';
+import { empregadorEbDoFuncionario, lancarRepasseEb, prepararRepasseEb } from '@/lib/rh/rescisao-empregador';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -85,7 +86,12 @@ export async function POST(req: Request) {
     if (lida.cpf && doc.cpf && lida.cpf !== doc.cpf) avisos.push(`CPF do termo (${lida.cpf}) é diferente do cadastro (${doc.cpf}).`);
     if (!lida.liquido) avisos.push('Não li o valor líquido — digite.');
     if (!lida.dataLimite) avisos.push('O termo não traz data de pagamento: vencimento = afastamento + 10 dias (CLT art. 477).');
-    if (!doc.fornecedorId) avisos.push('Funcionário sem cadastro de quem recebe (fornecedor) — a conta sai sem favorecido.');
+    const eb = await empregadorEbDoFuncionario(doc.funcionarioId, doc.cpf).catch(() => null);
+    if (eb) {
+      avisos.push(
+        `Empregado da E.B. Serviços (folha do contador ${eb.competencia}): a casa NÃO paga o funcionário — lança "Repasse E.B." na casa (Pix pra E.B.) e a conta da rescisão pra pessoa fica na E.B.`,
+      );
+    } else if (!doc.fornecedorId) avisos.push('Funcionário sem cadastro de quem recebe (fornecedor) — a conta sai sem favorecido.');
     return NextResponse.json({
       lida,
       proposta: {
@@ -122,6 +128,40 @@ export async function POST(req: Request) {
   ]
     .filter(Boolean)
     .join(' · ');
+
+  // Empregado da E.B. (30/10/2026): casa repassa pra E.B., E.B. paga a pessoa.
+  const eb = await empregadorEbDoFuncionario(doc.funcionarioId, doc.cpf);
+  if (eb) {
+    try {
+      const prep = await prepararRepasseEb(doc.filialId);
+      const [casa] = await db.select({ nome: schema.filial.nome }).from(schema.filial).where(eq(schema.filial.id, doc.filialId)).limit(1);
+      const r = await db.transaction((tx) =>
+        lancarRepasseEb(
+          tx,
+          {
+            documentoId: doc.id,
+            casaFilialId: doc.filialId,
+            casaNome: casa?.nome ?? 'casa',
+            funcionarioNome: doc.nome,
+            cpf: doc.cpf,
+            fornecedorFuncionarioId: doc.fornecedorId,
+            valor: d.valor,
+            vencimento: d.vencimento,
+            competencia,
+            observacao: obs,
+            usuarioId: user.id,
+          },
+          prep,
+        ),
+      );
+      return NextResponse.json({ ok: true, contaPagarId: r.contaCasaId, contaEmpregadorId: r.contaEbId, empregador: 'E.B.' });
+    } catch (e) {
+      if ((e as Error).message === 'JA_LANCADA') {
+        return NextResponse.json({ error: 'esse documento já virou conta a pagar' }, { status: 409 });
+      }
+      throw e;
+    }
+  }
 
   try {
     const contaId = await db.transaction(async (tx) => {

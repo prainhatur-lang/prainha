@@ -17,14 +17,25 @@ export interface RescisaoPix {
 export async function rescisoesDasContas(contaIds: string[]): Promise<Map<string, RescisaoPix>> {
   const out = new Map<string, RescisaoPix>();
   if (contaIds.length === 0) return out;
+  const lista = sql.join(
+    contaIds.map((id) => sql`${id}::uuid`),
+    sql`, `,
+  );
+  // Empregado da E.B. (30/10/2026): a conta da casa é o repasse pra E.B. —
+  // nunca cai no CPF do funcionário; quem paga a pessoa é a conta da E.B.
   const rows = (await db.execute(sql`
-    SELECT d.conta_pagar_id::text AS conta_id, regexp_replace(coalesce(f.cpf, ''), '[^0-9]', '', 'g') AS cpf
+    SELECT d.conta_pagar_id::text AS conta_id,
+           CASE WHEN d.conta_pagar_empregador_id IS NULL
+                THEN regexp_replace(coalesce(f.cpf, ''), '[^0-9]', '', 'g') ELSE '' END AS cpf
       FROM funcionario_documento d
       JOIN funcionario f ON f.id = d.funcionario_id
-     WHERE d.conta_pagar_id IN (${sql.join(
-       contaIds.map((id) => sql`${id}::uuid`),
-       sql`, `,
-     )})
+     WHERE d.conta_pagar_id IN (${lista})
+       AND d.cancelado_em IS NULL
+    UNION ALL
+    SELECT d.conta_pagar_empregador_id::text, regexp_replace(coalesce(f.cpf, ''), '[^0-9]', '', 'g')
+      FROM funcionario_documento d
+      JOIN funcionario f ON f.id = d.funcionario_id
+     WHERE d.conta_pagar_empregador_id IN (${lista})
        AND d.cancelado_em IS NULL
   `)) as unknown as Array<{ conta_id: string; cpf: string }>;
   for (const r of rows) {
@@ -35,4 +46,4 @@ export async function rescisoesDasContas(contaIds: string[]): Promise<Map<string
 
 /** Condição SQL: a conta é de rescisão (ligada a um termo na ficha). */
 export const sqlEhRescisao = (contaIdCol: unknown) =>
-  sql`exists (select 1 from funcionario_documento rd where rd.conta_pagar_id = ${contaIdCol} and rd.cancelado_em is null)`;
+  sql`exists (select 1 from funcionario_documento rd where (rd.conta_pagar_id = ${contaIdCol} or rd.conta_pagar_empregador_id = ${contaIdCol}) and rd.cancelado_em is null)`;

@@ -175,6 +175,7 @@
     "migrate:imposto-guia": "tsx scripts/migrate-imposto-guia.ts",
     "migrate:imposto-rateio-contador": "tsx scripts/migrate-imposto-rateio-contador.ts",
     "migrate:funcionario-documento-conta": "tsx scripts/migrate-funcionario-documento-conta.ts",
+    "migrate:funcionario-documento-empregador": "tsx scripts/migrate-funcionario-documento-empregador.ts",
     "migrate:bordero": "tsx scripts/migrate-bordero.ts",
     "migrate:eb-faturas": "tsx scripts/migrate-eb-faturas.ts",
     "migrate:fatura-servico-dividir": "tsx scripts/migrate-fatura-servico-dividir.ts",
