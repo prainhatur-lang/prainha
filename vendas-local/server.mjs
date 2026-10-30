@@ -3088,7 +3088,10 @@ async function pgInserirItem(ped, it) {
   const avisoDobrado = dobrado
     ? 'PROMO DOBRADO: SERVIR ' + Number(it.qtd) + ' AGORA, O 2º FICA DE VALE' : '';
   const detalhes = [it.obs, aviso, avisoDobrado].filter(Boolean).join(' | ') || 'NENHUM';
-  let area = await pgAreaDoItem(nomeItem, pl ? pl.area_codigo : null);
+  // produto fora do cardápio (PAUSADO, 30/10/2026: pausaram a Caneca e o 2º do
+  // dobrado caiu em "Sem área"): usa a praça que quem lançou mandou junto
+  const areaSemCadastro = !pl && it.area_codigo != null ? Number(it.area_codigo) : null;
+  let area = await pgAreaDoItem(nomeItem, pl ? pl.area_codigo : areaSemCadastro);
   // produto que não cobra os 10% (cadastro da nuvem): a marca vai no item
   let semServico = !!pl && pl.sem_servico === true;
   // complemento vai na praça do item-pai, sempre (ver herdarPracaDoPai)
@@ -5761,19 +5764,21 @@ async function apiValeSoltar(body) {
     const v = vales.find((x) => x.item === item);
     if (!v) return { ok: false, erro: 'esse vale não é desta conta' };
     if (v.pendente < qtd) return { ok: false, erro: v.pendente ? 'só falta soltar ' + v.pendente : 'esse vale já foi usado' };
-    const [o] = await sql`SELECT codigo_pdv, produto_codigo, nome FROM comanda_item WHERE item_codigo=${item}`;
+    const [o] = await sql`SELECT codigo_pdv, produto_codigo, nome, area_codigo FROM comanda_item WHERE item_codigo=${item}`;
     const quem = { login: body._garcom ? String(body._garcom) : null,
       nome_usuario: body._garcom_nome || (body._garcom ? String(body._garcom) : null) };
     // COMBO dobrado: o que vai pro bar é o que foi ESCOLHIDO dentro dele (o
     // chope), não o combo. O 1º escolhido sai como item com o vale_de (é ele
     // que conta o vale como usado); se o combo tiver mais coisa dentro, vai
     // pendurada nele como filho, igual ao combo original.
-    const filhos = await sql`SELECT codigo_pdv, produto_codigo, nome FROM comanda_item
+    const filhos = await sql`SELECT codigo_pdv, produto_codigo, nome, area_codigo FROM comanda_item
       WHERE codigo_pai=${item} AND tipo=2 AND cancelado_em IS NULL AND codigo_pdv IS NOT NULL
       ORDER BY item_codigo`;
     const base = filhos.length ? filhos[0] : o;
     const it = { codigo_pdv: base.codigo_pdv, produto_codigo: base.produto_codigo, nome: base.nome, tamanho: null,
-      preco: 0, qtd, tipo: 1, obs: '2º DO DOBRADO (VALE)', vale_de: item, ...quem };
+      preco: 0, qtd, tipo: 1, obs: '2º DO DOBRADO (VALE)', vale_de: item, ...quem,
+      // se o chope estiver pausado (fora do cardápio), sai na praça do dobrado
+      area_codigo: base.area_codigo ?? o.area_codigo ?? null };
     const cod = await fbInserirItem(ped, it);
     for (const f of filhos.slice(1)) {
       await pgInserirItem(ped, { codigo_pdv: f.codigo_pdv, produto_codigo: f.produto_codigo, nome: f.nome,
