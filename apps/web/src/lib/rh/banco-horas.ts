@@ -32,6 +32,10 @@ export function diaDaSemana(ymd: string): number {
   return new Date(Date.UTC(a, m - 1, d)).getUTCDay();
 }
 
+/** Previsto do dia de trabalho na escala do mês, pra quem não tem jornada
+ *  (30/10/2026): CLT 44 h em 6 dias = 7h20. Folga da escala = 0. */
+export const MIN_DIA_ESCALA_MES = 440;
+
 /** Minutos previstos da jornada no dia; intermitente não tem previsto. */
 export function minutosPrevistos(j: JornadaSemana, ymd: string): number {
   if (j.tipo !== 'fixa') return 0;

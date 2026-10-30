@@ -15,6 +15,8 @@ export interface LinhaPessoa {
   jornadaNome: string | null;
   jornadaTipo: string | null;
   jornadaDesde: string | null;
+  /** Sem jornada: o banco usa a escala do mês (7h20 por dia de trabalho). */
+  escalaMes?: { desde: string; ate: string; diasTrabalho: number; folgas: number } | null;
   /** Saldo que veio do Stelanto na virada; null = não veio saldo. */
   inicialMin: number | null;
   inicialDia: string | null;
@@ -144,7 +146,7 @@ export function BancoHorasManager({ filialId, hoje, podeLancar, podeAtestado: po
 
   const mensalistas = linhas.filter((l) => l.jornadaTipo === 'fixa');
   const intermitentes = linhas.filter((l) => l.jornadaTipo === 'intermitente');
-  const semEscala = linhas.filter((l) => !l.jornadaId);
+  const semEscala = linhas.filter((l) => !l.jornadaId && !l.escalaMes);
   const somaSaldo = mensalistas.reduce((s, l) => s + l.saldoMin, 0);
 
   function feito() {
@@ -288,6 +290,11 @@ export function BancoHorasManager({ filialId, hoje, podeLancar, podeAtestado: po
                               {fmtHoras(minutosSemana(j))}/semana · {folgasDaJornada(j)}
                             </div>
                           )}
+                          {!j && l.escalaMes && (
+                            <div>
+                              7h20 por dia de trabalho · {dmy(l.escalaMes.desde)} a {dmy(l.escalaMes.ate)}
+                            </div>
+                          )}
                         </td>
                         <td className="px-3 py-2 text-right tabular-nums">
                           {l.inicialMin === null ? (
@@ -407,7 +414,8 @@ export function BancoHorasManager({ filialId, hoje, podeLancar, podeAtestado: po
               Sem escala definida <span className="font-normal">({semEscala.length})</span>
             </h2>
             <p className="mt-0.5 text-xs text-amber-800">
-              Enquanto não tiver escala, o banco de horas dessa pessoa não é contado.
+              Enquanto não tiver escala, o banco de horas dessa pessoa não é contado. Quem tem
+              a escala do mês salva em RH → Escala do mês já sai desta lista.
             </p>
           </div>
           <ul className="divide-y divide-amber-100">

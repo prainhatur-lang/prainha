@@ -17,7 +17,7 @@ import { hojeBr } from '@/lib/datas';
 import { calcularDia } from '@/lib/rh/calcular-ponto';
 import { pontoProprioDesde } from '@/lib/rh/ponto-vigencia';
 import { somarDias } from '@/lib/rh/dia-operacional';
-import { jornadaNoDia, minutosPrevistos, type VigenciaJornada } from '@/lib/rh/banco-horas';
+import { MIN_DIA_ESCALA_MES, jornadaNoDia, minutosPrevistos, type VigenciaJornada } from '@/lib/rh/banco-horas';
 import { atestadosNoPeriodo, diasDeAtestado } from '@/lib/rh/atestado';
 import { BancoHorasManager, type LinhaPessoa } from './manager';
 
@@ -91,6 +91,26 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
     .where(eq(schema.rhJornada.ativo, true))
     .orderBy(asc(schema.rhJornada.tipo), asc(schema.rhJornada.nome));
   const jornadaPorId = new Map(jornadas.map((j) => [j.id, j]));
+
+  // Escala do mês (/rh/escala-mensal): dia → folga. Quem não tem jornada usa
+  // ela (30/10/2026, pedido do dono): CLT mensal conta 7h20 por dia de trabalho;
+  // intermitente só passa a aparecer na lista dos intermitentes.
+  const escalaRows = ids.length
+    ? await db
+        .select({
+          funcionarioId: schema.rhEscalaDia.funcionarioId,
+          dia: schema.rhEscalaDia.dia,
+          folga: schema.rhEscalaDia.folga,
+        })
+        .from(schema.rhEscalaDia)
+        .where(inArray(schema.rhEscalaDia.funcionarioId, ids))
+    : [];
+  const escalaPorPessoa = new Map<string, Map<string, boolean>>();
+  for (const e of escalaRows) {
+    const m = escalaPorPessoa.get(e.funcionarioId) ?? new Map<string, boolean>();
+    m.set(e.dia, e.folga);
+    escalaPorPessoa.set(e.funcionarioId, m);
+  }
 
   const [vigRows, lancRows, batidas] = ids.length
     ? await Promise.all([
@@ -168,6 +188,12 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
         return j ? [{ ...j, jornadaId: j.id, vigenteDesde: v.vigenteDesde }] : [];
       });
     const atual = jornadaNoDia(vigencias, hoje);
+    // Sem jornada nenhuma + escala do mês salva → a escala do mês faz o papel dela.
+    const escalaMes = vigencias.length === 0 ? (escalaPorPessoa.get(f.id) ?? null) : null;
+    const diasEscala = escalaMes ? [...escalaMes.keys()].sort() : [];
+    const usaEscalaMes =
+      escalaMes != null && diasEscala.length > 0 && (f.regime === 'clt_mensal' || f.regime === 'intermitente_hora');
+    const escalaFixa = usaEscalaMes && f.regime === 'clt_mensal';
     const lancamentos = lancRows.filter((l) => l.funcionarioId === f.id);
     const inicial = lancamentos.find((l) => l.tipo === 'saldo_inicial') ?? null;
     const acertosMin = lancamentos.filter((l) => l.tipo !== 'saldo_inicial').reduce((s, l) => s + l.minutos, 0);
@@ -176,6 +202,7 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
     const primeiraVigencia = vigencias.map((v) => v.vigenteDesde).sort()[0] ?? null;
     let inicio = virada;
     if (primeiraVigencia && primeiraVigencia > inicio) inicio = primeiraVigencia;
+    if (usaEscalaMes && diasEscala[0] > inicio) inicio = diasEscala[0];
     if (f.dataAdmissao && f.dataAdmissao > inicio) inicio = f.dataAdmissao;
 
     let previstoMin = 0;
@@ -197,7 +224,11 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
       if (dia < inicio) continue;
       if (t) trabalhadoNaContaMin += t.min;
       const j = jornadaNoDia(vigencias, dia);
-      const prev = j ? minutosPrevistos(j, dia) : 0;
+      const prev = j
+        ? minutosPrevistos(j, dia)
+        : escalaFixa && escalaMes!.get(dia) === false
+          ? MIN_DIA_ESCALA_MES
+          : 0;
       previstoMin += prev;
       // atestado guardado "sem abonar" (abona=false) segue a conta normal do dia
       const atest = diaAtestado.get(`${f.id}|${dia}`);
@@ -212,7 +243,8 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
       }
     }
 
-    const temBanco = atual?.tipo === 'fixa';
+    const temBanco = atual?.tipo === 'fixa' || escalaFixa;
+    const diasTrabEscala = usaEscalaMes ? diasEscala.filter((d) => escalaMes!.get(d) === false).length : 0;
     const movimentoMin = temBanco ? trabalhadoNaContaMin + abonadoMin - previstoMin : 0;
     return {
       id: f.id,
@@ -220,9 +252,12 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
       cargo: f.cargo,
       regime: f.regime,
       jornadaId: atual?.jornadaId ?? null,
-      jornadaNome: atual?.nome ?? null,
-      jornadaTipo: atual?.tipo ?? null,
-      jornadaDesde: atual?.vigenteDesde ?? null,
+      jornadaNome: atual?.nome ?? (usaEscalaMes ? 'Escala do mês' : null),
+      jornadaTipo: atual?.tipo ?? (usaEscalaMes ? (escalaFixa ? 'fixa' : 'intermitente') : null),
+      jornadaDesde: atual?.vigenteDesde ?? (usaEscalaMes ? diasEscala[0] : null),
+      escalaMes: usaEscalaMes
+        ? { desde: diasEscala[0], ate: diasEscala[diasEscala.length - 1], diasTrabalho: diasTrabEscala, folgas: diasEscala.length - diasTrabEscala }
+        : null,
       inicialMin: inicial?.minutos ?? null,
       inicialDia: inicial?.dia ?? null,
       inicialDescricao: inicial?.descricao ?? null,
