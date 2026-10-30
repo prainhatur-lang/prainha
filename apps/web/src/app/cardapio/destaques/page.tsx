@@ -29,9 +29,14 @@ export default async function DestaquesPage(props: { searchParams: Promise<{ fil
       <div className="mx-auto max-w-4xl px-4 py-6">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h1 className="text-xl font-semibold text-slate-900">Destaques do cardápio do QR</h1>
-          <a href={`/cardapio?filialId=${filial.id}`} className="text-sm text-blue-600 hover:underline">
-            ← Cardápio
-          </a>
+          <span className="flex gap-3">
+            <a href={`/cardapio/preco-horario?filialId=${filial.id}`} className="text-sm text-blue-600 hover:underline">
+              🕔 Preço por horário
+            </a>
+            <a href={`/cardapio?filialId=${filial.id}`} className="text-sm text-blue-600 hover:underline">
+              ← Cardápio
+            </a>
+          </span>
         </div>
         <p className="mt-1 text-xs text-slate-500">
           Card que aparece no topo do cardápio do QR da mesa explicando os dias e o horário (almoço executivo,

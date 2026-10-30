@@ -319,3 +319,31 @@ export const comboRegra = pgTable(
     pk: primaryKey({ columns: [t.filialId, t.codigoVarianteExterno] }),
   }),
 );
+
+/**
+ * PREÇO POR HORÁRIO (30/10/2026): o mesmo tamanho muda de preço numa faixa
+ * de dias/hora (happy hour: R$ 60 → R$ 49 seg–sex 12h–20h, exceto feriados).
+ * Na virada o cron /api/cron/combo-horario enfileira preco_venda na fila
+ * produto_alteracao: dentro = precoHorario, fora = precoNormal.
+ */
+export const precoHorario = pgTable(
+  'preco_horario',
+  {
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    codigoVarianteExterno: integer('codigo_variante_externo').notNull(),
+    ativa: boolean('ativa').notNull().default(true),
+    precoNormal: numeric('preco_normal', { precision: 12, scale: 2 }).notNull(),
+    precoHorario: numeric('preco_horario', { precision: 12, scale: 2 }).notNull(),
+    diasSemana: smallint('dias_semana').array().notNull().default(sql`'{}'`),
+    horaInicio: time('hora_inicio'),
+    horaFim: time('hora_fim'),
+    excetoFeriados: boolean('exceto_feriados').notNull().default(true),
+    estadoAplicado: text('estado_aplicado'),
+    aplicadoEm: timestamp('aplicado_em', { withTimezone: true }),
+    atualizadoPor: text('atualizado_por'),
+    atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.filialId, t.codigoVarianteExterno] }),
+  }),
+);

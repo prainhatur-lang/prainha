@@ -77,6 +77,12 @@ export default async function CardapioPage(props: {
         >
           🍽️ Destaques do QR (almoço executivo, happy hour) →
         </a>
+        <a
+          href={`/cardapio/preco-horario?filialId=${filialId}`}
+          className="ml-2 mt-2 inline-block rounded-md border border-blue-300 bg-blue-50 px-3 py-1.5 text-sm font-medium text-blue-800 hover:bg-blue-100"
+        >
+          🕔 Preço por horário (happy hour) →
+        </a>
         {filiais.length > 1 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {filiais.map((f) => (
