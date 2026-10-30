@@ -220,7 +220,37 @@ export function casarBoletos(
     const lista = daCasa.length ? daCasa : perto;
     if (lista.length === 1) usar(i, lista[0]);
   });
+  // 4ª passada: mesmo CNPJ (ou raiz), valor até R$ 10 diferente e vencimento
+  // até 10 dias de distância. A CRBS (Ambev) cobra R$ 1,55 de tarifa no boleto
+  // (nota 3.308,88 × boleto 3.310,43) e o vencimento do boleto nem sempre é o
+  // da duplicata — por isso nunca conciliava (dono, 30/10/2026). Só com UMA
+  // candidata (a mais perto em valor se houver empate de casa); a tela marca
+  // "valor diferente, confira".
+  pagamentos.forEach((p, i) => {
+    if (res[i]) return;
+    const r = regras[i]!;
+    const alvo = centavos(p.valorNominal) || centavos(p.valorPago);
+    if (!alvo) return;
+    const venc = p.dataVencimentoTitulo || p.dataVencimentoDigitada;
+    const perto = contas.filter(
+      (c) =>
+        !usadas.has(c.id) &&
+        (r.mesmoCnpj(c) || r.mesmaRaiz(c)) &&
+        Math.abs(centavos(c.valor) - alvo) <= 1000 &&
+        (!venc || !c.dataVencimento || Math.abs(diasEntre(c.dataVencimento, venc)) <= 10),
+    );
+    const daCasa = perto.filter((c) => c.filialId === filialId);
+    const lista = daCasa.length ? daCasa : perto;
+    if (lista.length === 1) usar(i, lista[0]);
+  });
   return res;
+}
+
+function diasEntre(a: string, b: string): number {
+  const ta = Date.parse(`${String(a).slice(0, 10)}T12:00:00Z`);
+  const tb = Date.parse(`${String(b).slice(0, 10)}T12:00:00Z`);
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return 0;
+  return Math.round((ta - tb) / 86400000);
 }
 
 /** Boleto sem conta: a nota de compra do mesmo fornecedor (raiz do CNPJ) e
@@ -261,7 +291,18 @@ export async function notasSemContaDosBoletos(
     const cand = notas.filter(
       (n) => !usadas.has(n.id) && soDigitos(n.emitCnpj).slice(0, 8) === raiz && centavos(n.valorTotal) === valor,
     );
-    const n = cand.find((x) => x.filialId === filialId) ?? cand[0];
+    let n = cand.find((x) => x.filialId === filialId) ?? cand[0];
+    if (!n) {
+      // valor perto (até R$ 10): a CRBS põe R$ 1,55 de tarifa no boleto —
+      // a nota 475005 (Tabuará, 1.251,86) foi paga como 1.253,41 e ninguém via.
+      // Só com uma candidata (da casa primeiro).
+      const perto = notas.filter(
+        (x) => !usadas.has(x.id) && soDigitos(x.emitCnpj).slice(0, 8) === raiz && Math.abs(centavos(x.valorTotal) - valor) <= 1000,
+      );
+      const daCasa = perto.filter((x) => x.filialId === filialId);
+      const lista = daCasa.length ? daCasa : perto;
+      if (lista.length === 1) n = lista[0];
+    }
     if (!n) continue;
     usadas.add(n.id);
     res.set(p.codigoTransacao, n);
