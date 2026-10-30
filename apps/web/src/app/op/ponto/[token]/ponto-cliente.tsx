@@ -12,7 +12,7 @@ interface Estado {
   nome: string;
   temRosto: boolean;
   casas: { nome: string; raioM: number }[];
-  batidas: { quando: string; tipo: string; casa: string | null }[];
+  batidas: { quando: string; tipo: string; casa: string | null; intervalo?: boolean }[];
 }
 
 type Geo = { lat: number; lng: number; precisao: number };
@@ -97,6 +97,8 @@ export function PontoCelularCliente({ token }: { token: string }) {
   const video = useRef<HTMLVideoElement>(null);
   const stream = useRef<MediaStream | null>(null);
   const gps = useRef<Promise<Geo> | null>(null);
+  // Intervalo (descanso) não cobra a área; entrada/saída do dia continuam cobrando.
+  const modo = useRef<'sair' | 'voltar' | null>(null);
 
   const carregar = useCallback(async () => {
     const r = await fetch(`/api/ponto-celular?token=${encodeURIComponent(token)}`, { cache: 'no-store' });
@@ -138,7 +140,8 @@ export function PontoCelularCliente({ token }: { token: string }) {
     stream.current = null;
   }
 
-  async function abrirCamera() {
+  async function abrirCamera(m: 'sair' | 'voltar' | null = null) {
+    modo.current = m;
     setAviso(null);
     carregar().catch(() => {});
     setStatus('Pegando a localização…');
@@ -213,14 +216,16 @@ export function PontoCelularCliente({ token }: { token: string }) {
       const r = await fetch('/api/ponto-celular', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ token, lat: g.lat, lng: g.lng, precisao: g.precisao, descriptor: Array.from(det.descriptor as Float32Array), selfie }),
+        body: JSON.stringify({ token, lat: g.lat, lng: g.lng, precisao: g.precisao, descriptor: Array.from(det.descriptor as Float32Array), selfie, ...(modo.current ? { intervalo: modo.current } : {}) }),
       });
       const j = await r.json().catch(() => ({}));
       pararCamera();
       setFase('inicio');
       setStatus('');
       if (j.ok) {
-        setAviso({ ok: true, texto: `${j.tipo === 'entrada' ? 'Entrada' : 'Saída'} registrada às ${hora(j.quando)} — ${j.casa}.` });
+        const rot =
+          j.intervalo === 'sair' ? 'Saída pro intervalo' : j.intervalo === 'voltar' ? 'Volta do intervalo' : j.tipo === 'entrada' ? 'Entrada' : 'Saída';
+        setAviso({ ok: true, texto: `${rot} registrada às ${hora(j.quando)} — ${j.casa}.` });
         carregar();
       } else {
         setAviso({ ok: false, texto: j.erro ?? 'Não deu certo. Tente de novo ou bata no tablet.' });
@@ -250,6 +255,7 @@ export function PontoCelularCliente({ token }: { token: string }) {
 
   const ultima = estado.batidas[estado.batidas.length - 1];
   const dentro = ultima?.tipo === 'entrada';
+  const noIntervalo = ultima?.tipo === 'saida' && ultima.intervalo === true;
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6">
@@ -257,8 +263,8 @@ export function PontoCelularCliente({ token }: { token: string }) {
         <div>
           <h1 className="text-xl font-bold text-slate-900">Olá, {estado.nome}</h1>
           <p className="text-sm text-slate-600">
-            Ponto pelo celular — só vale dentro da casa
-            {estado.casas.length > 0 && ` (${estado.casas.map((c) => c.nome).join(', ')})`}.
+            Ponto pelo celular — entrada e saída só valem dentro da casa
+            {estado.casas.length > 0 && ` (${estado.casas.map((c) => c.nome).join(', ')})`}. O intervalo vale de qualquer lugar.
           </p>
         </div>
 
@@ -281,7 +287,15 @@ export function PontoCelularCliente({ token }: { token: string }) {
             <ul className="mt-1 space-y-0.5">
               {estado.batidas.map((b, i) => (
                 <li key={i} className="flex justify-between">
-                  <span>{b.tipo === 'entrada' ? 'Entrada' : 'Saída'}</span>
+                  <span>
+                    {b.intervalo
+                      ? b.tipo === 'entrada'
+                        ? 'Volta do intervalo'
+                        : 'Saída p/ intervalo'
+                      : b.tipo === 'entrada'
+                        ? 'Entrada'
+                        : 'Saída'}
+                  </span>
                   <span className="font-mono">
                     {hora(b.quando)}
                     {b.casa ? ` · ${b.casa}` : ''}
@@ -305,13 +319,31 @@ export function PontoCelularCliente({ token }: { token: string }) {
         )}
         {status && <p className="text-center text-sm text-slate-600">{status}</p>}
 
+        {fase === 'inicio' && noIntervalo && (
+          <button
+            type="button"
+            onClick={() => abrirCamera('voltar')}
+            className="w-full rounded-lg bg-emerald-600 py-4 text-lg font-semibold text-white active:bg-emerald-700"
+          >
+            Voltar do intervalo
+          </button>
+        )}
         {fase === 'inicio' && (
           <button
             type="button"
-            onClick={abrirCamera}
+            onClick={() => abrirCamera(null)}
             className="w-full rounded-lg bg-blue-600 py-4 text-lg font-semibold text-white active:bg-blue-700"
           >
             {dentro ? 'Bater saída' : 'Bater entrada'}
+          </button>
+        )}
+        {fase === 'inicio' && dentro && (
+          <button
+            type="button"
+            onClick={() => abrirCamera('sair')}
+            className="w-full rounded-lg border border-amber-400 bg-amber-50 py-3 text-base font-semibold text-amber-800 active:bg-amber-100"
+          >
+            Sair pro intervalo
           </button>
         )}
         {fase === 'camera' && (

@@ -4,7 +4,7 @@
 // Regras e motivo de recusar (e não deixar pendente) em lib/rh/ponto-celular.ts.
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { baterPontoCelular, batidasDoDia, diaOperacionalDe, pessoaDoToken } from '@/lib/rh/ponto-celular';
+import { DISPOSITIVO_INTERVALO, baterPontoCelular, batidasDoDia, diaOperacionalDe, pessoaDoToken } from '@/lib/rh/ponto-celular';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -23,7 +23,7 @@ export async function GET(req: Request) {
     temRosto: p.temRosto,
     casas: p.casas.map((c) => ({ nome: c.nome, raioM: c.raioM })),
     dia,
-    batidas: doDia.map((b) => ({ quando: b.quando.toISOString(), tipo: b.tipo, casa: nomes.get(b.filialId) ?? null })),
+    batidas: doDia.map((b) => ({ quando: b.quando.toISOString(), tipo: b.tipo, casa: nomes.get(b.filialId) ?? null, intervalo: b.dispositivo === DISPOSITIVO_INTERVALO })),
   });
 }
 
@@ -35,6 +35,7 @@ const Body = z.object({
   descriptor: z.array(z.number()).length(128),
   /** Selfie JPEG em data URL (25/10/2026). Opcional: versão velha da página não manda. */
   selfie: z.string().max(450_000).optional(),
+  intervalo: z.enum(['sair', 'voltar']).optional(),
 });
 
 export async function POST(req: Request) {
