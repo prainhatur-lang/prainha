@@ -163,6 +163,7 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
       dataAdmissao: schema.funcionario.dataAdmissao,
       dataDesligamento: schema.funcionario.dataDesligamento,
       salarioBase: schema.funcionario.salarioBase,
+      filialCadastro: schema.funcionario.filialId,
     })
     .from(schema.funcionario)
     .where(
@@ -286,7 +287,12 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
     let origemPrevisao: OrigemPrevisao = 'nenhuma';
     const temFixa = diasQ.some((d) => jornadaNoDia(vigencias, d)?.tipo === 'fixa');
     const esc = escalaMes.get(f.id);
-    if (esc && esc.comLinha > 0) {
+    // Mudou de casa (cadastro em outra filial): aqui só acerta a sobra da
+    // quinzena anterior; os dias novos quem prevê é a casa nova.
+    const transferido = f.filialCadastro !== filialId && !f.dataDesligamento;
+    if (transferido) {
+      diasPrevistos = 0;
+    } else if (esc && esc.comLinha > 0) {
       diasPrevistos = diasQ.filter((d) => naCasa(d) && esc.trabalho.has(d)).length;
       origemPrevisao = 'escala_mes';
     } else if (temFixa) {
