@@ -62,8 +62,9 @@ export function TrazerPorChaveForm({ filialId }: { filialId: string }) {
 
   return (
     <form
+      id="trazer-por-chave"
       onSubmit={trazer}
-      className="mt-4 rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-700"
+      className="mt-4 scroll-mt-24 rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-700"
     >
       <p className="font-semibold text-slate-900">Nota no papel que não apareceu aqui?</p>
       <p className="mt-0.5 text-slate-500">

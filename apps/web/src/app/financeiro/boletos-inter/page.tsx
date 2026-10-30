@@ -634,6 +634,15 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                                   </Link>
                                 );
                               })()}
+                              {!conta && !notasSemConta.get(p.codigoTransacao) && escolhida && (
+                                <Link
+                                  href={`/movimento/entrada-notas?filialId=${escolhida.id}#trazer-por-chave`}
+                                  className="mt-1 block text-[10px] text-sky-800 hover:underline"
+                                  title="Nenhuma conta e nenhuma nota deste fornecedor com este valor — a NF-e não veio da SEFAZ. Traga pela chave do DANFE e lance."
+                                >
+                                  📄 nota não chegou da SEFAZ — trazer pela chave
+                                </Link>
+                              )}
                               {outraCasa && (
                                 <span className="ml-1.5 rounded bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-800">
                                   conta da {outraCasa}
