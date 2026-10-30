@@ -7,6 +7,7 @@
 // mudar o valor recalcula se a conta está quitada.
 
 import { NextResponse } from 'next/server';
+import { ebLiberadaNoFinanceiro } from '@/lib/eb/acesso-financeiro';
 import { z } from 'zod';
 import { and, asc, eq } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
@@ -84,7 +85,7 @@ async function carregarContaManual(id: string, userId: string, paraExcluir = fal
       ),
     )
     .limit(1);
-  if (!acesso) return { erro: NextResponse.json({ error: 'sem acesso à filial' }, { status: 403 }) };
+  if (!acesso && !(await ebLiberadaNoFinanceiro(userId, conta.filialId))) return { erro: NextResponse.json({ error: 'sem acesso à filial' }, { status: 403 }) };
   return { conta };
 }
 

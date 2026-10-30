@@ -3,6 +3,8 @@ import { exigirPerm } from '@/lib/exigir-perm';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { filiaisDoFinanceiro } from '@/lib/eb/acesso-financeiro';
+import { EB_CNPJ } from '@/lib/eb/faturas';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
 import { and, asc, count, desc, eq, gte, inArray, isNotNull, isNull, lte, sql, sum } from 'drizzle-orm';
@@ -42,16 +44,18 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
    await exigirPerm(user.id, 'conta_pagar.read');
 
   const sp = await props.searchParams;
-  const filiais = await filiaisDoUsuario(user.id);
+  const filiais = await filiaisDoFinanceiro(user.id);
   const filialSelecionada =
     await escolherFilial(filiais, sp.filialId);
   // "Todas as filiais": só pela URL (?filialId=todas) e só as casas que o
   // usuário já acessa. Não mexe na filial ativa do menu.
-  const todasFiliais = sp.filialId === 'todas' && filiais.length > 1;
+  // A E.B. (só no financeiro) fica fora do "Todas": o total segue sendo o das casas.
+  const casas = filiais.filter((f) => f.cnpj !== EB_CNPJ);
+  const todasFiliais = sp.filialId === 'todas' && casas.length > 1;
   const filtroFilial = todasFiliais
     ? inArray(
         schema.contaPagar.filialId,
-        filiais.map((f) => f.id),
+        casas.map((f) => f.id),
       )
     : eq(schema.contaPagar.filialId, filialSelecionada?.id ?? '');
   const nomeFilial = new Map(filiais.map((f) => [f.id, f.nome]));
@@ -359,6 +363,25 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
   }
   const algumFiltroExtra = !!(categoriaId || nomeBusca || origemFiltro !== 'todas');
 
+  // E.B. escolhida: o "a receber" dela é o que as casas devem pra E.B.
+  // (repasse de rescisão, fatura de serviço): conta em aberto na casa com a
+  // E.B. de favorecida. Só leitura; a baixa continua na conta da casa.
+  const ebReceber =
+    filialSelecionada && !todasFiliais && filialSelecionada.cnpj === EB_CNPJ
+      ? ((await db.execute(sql`
+          SELECT c.id, f2.nome AS casa, c.descricao, c.data_vencimento::text AS venc,
+                 (c.valor - COALESCE((SELECT SUM(b.valor) FROM conta_pagar_baixa b WHERE b.conta_pagar_id = c.id), 0))::text AS saldo
+            FROM conta_pagar c
+            JOIN fornecedor fo ON fo.id = c.fornecedor_id
+            JOIN filial f2 ON f2.id = c.filial_id
+           WHERE c.data_pagamento IS NULL
+             AND c.filial_id <> ${filialSelecionada.id}::uuid
+             AND regexp_replace(coalesce(fo.cnpj_ou_cpf, ''), '\\D', '', 'g') = ${EB_CNPJ}
+           ORDER BY c.data_vencimento, f2.nome
+           LIMIT 200
+        `)) as unknown as Array<{ id: string; casa: string; descricao: string | null; venc: string; saldo: string }>)
+      : null;
+
   return (
     <main className="min-h-screen bg-slate-50">
       <AppHeader userEmail={user.email} />
@@ -437,6 +460,49 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
           <p className="mt-10 text-sm text-slate-500">Nenhuma filial disponível.</p>
         ) : (
           <>
+            {ebReceber && (
+              <div className="mt-6 rounded-lg border border-emerald-200 bg-emerald-50/50 p-4">
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <h2 className="text-sm font-semibold text-emerald-900">A receber das casas</h2>
+                  <span className="text-xs text-emerald-800">
+                    {int(ebReceber.length)} em aberto ·{' '}
+                    <span className="font-mono">{brl(ebReceber.reduce((a, r) => a + Number(r.saldo), 0))}</span>
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-slate-600">
+                  Contas das casas com a E.B. de favorecida (repasse de rescisão, fatura). A baixa é feita na conta da casa quando o Pix sai.
+                </p>
+                {ebReceber.length === 0 ? (
+                  <p className="mt-3 text-xs text-slate-500">Nada em aberto.</p>
+                ) : (
+                  <table className="mt-3 w-full text-xs">
+                    <thead>
+                      <tr className="text-left text-slate-500">
+                        <th className="py-1 pr-2">Vencimento</th>
+                        <th className="py-1 pr-2">Casa</th>
+                        <th className="py-1 pr-2">Descrição</th>
+                        <th className="py-1 text-right">Saldo</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ebReceber.map((r) => (
+                        <tr key={r.id} className="border-t border-emerald-100">
+                          <td className="py-1 pr-2">{formatDate(r.venc)}</td>
+                          <td className="py-1 pr-2">{r.casa}</td>
+                          <td className="py-1 pr-2">
+                            <Link href={`/financeiro/conta/${r.id}`} className="text-slate-800 hover:underline">
+                              {r.descricao ?? '—'}
+                            </Link>
+                          </td>
+                          <td className="py-1 text-right font-mono">{brl(Number(r.saldo))}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            )}
+
             {/* KPIs */}
             <div className="mt-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
               <KpiCard

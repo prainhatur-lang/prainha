@@ -13,6 +13,7 @@
 //    NULL enquanto houver saldo (parcial fica "em aberto" nos filtros).
 
 import { NextResponse } from 'next/server';
+import { ebLiberadaNoFinanceiro } from '@/lib/eb/acesso-financeiro';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
@@ -80,7 +81,7 @@ async function carregarConta(id: string, userId: string) {
       ),
     )
     .limit(1);
-  if (!acesso) return { erro: NextResponse.json({ error: 'sem acesso à filial' }, { status: 403 }) };
+  if (!acesso && !(await ebLiberadaNoFinanceiro(userId, conta.filialId))) return { erro: NextResponse.json({ error: 'sem acesso à filial' }, { status: 403 }) };
   return { conta };
 }
 

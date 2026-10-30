@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { exigirPerm } from '@/lib/exigir-perm';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { filiaisDoFinanceiro } from '@/lib/eb/acesso-financeiro';
 import { db, schema } from '@concilia/db';
 import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import { fornecedoresParaLancar } from '@/lib/fornecedor-unico';
@@ -30,7 +31,7 @@ export default async function EditarContaPage(props: { params: Promise<{ id: str
     .limit(1);
   if (!conta || conta.dataDelete) notFound();
 
-  const filiais = await filiaisDoUsuario(user.id);
+  const filiais = await filiaisDoFinanceiro(user.id);
   const filial = filiais.find((f) => f.id === conta.filialId);
   if (!filial) redirect('/financeiro');
 

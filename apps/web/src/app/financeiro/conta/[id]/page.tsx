@@ -2,6 +2,7 @@
 // (pagamentos, inclusive parciais) + registrar novo pagamento.
 
 import { notFound, redirect } from 'next/navigation';
+import { ebLiberadaNoFinanceiro } from '@/lib/eb/acesso-financeiro';
 import Link from 'next/link';
 import { exigirPerm } from '@/lib/exigir-perm';
 import { createClient } from '@/lib/supabase/server';
@@ -74,7 +75,7 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
       ),
     )
     .limit(1);
-  if (!acesso) redirect('/financeiro');
+  if (!acesso && !(await ebLiberadaNoFinanceiro(user.id, conta.filialId))) redirect('/financeiro');
 
   // Nome da categoria pai (quando o lançamento aponta pra uma subcategoria)
   let categoriaPaiNome: string | null = null;

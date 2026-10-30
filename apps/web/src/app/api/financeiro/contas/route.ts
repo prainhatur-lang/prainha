@@ -21,6 +21,7 @@
 // origem='MANUAL'; codigo_externo fica NULL (não existe no Consumer).
 
 import { NextResponse } from 'next/server';
+import { ebLiberadaNoFinanceiro } from '@/lib/eb/acesso-financeiro';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
@@ -70,7 +71,7 @@ export async function POST(req: Request) {
       ),
     )
     .limit(1);
-  if (!acesso) return NextResponse.json({ error: 'sem acesso à filial' }, { status: 403 });
+  if (!acesso && !(await ebLiberadaNoFinanceiro(user.id, b.filialId))) return NextResponse.json({ error: 'sem acesso à filial' }, { status: 403 });
 
   if (b.categoriaId) {
     const [cat] = await db

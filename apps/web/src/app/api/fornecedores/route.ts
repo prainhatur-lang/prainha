@@ -1,6 +1,7 @@
 // POST /api/fornecedores — cria fornecedor manualmente (origem nuvem).
 
 import { NextResponse } from 'next/server';
+import { ebLiberadaNoFinanceiro } from '@/lib/eb/acesso-financeiro';
 import { negarSemPerm } from '@/lib/exigir-perm';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
@@ -67,7 +68,7 @@ export async function POST(req: Request) {
       ),
     )
     .limit(1);
-  if (!link) return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
+  if (!link && !(await ebLiberadaNoFinanceiro(user.id, d.filialId))) return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
 
   // Se ja existe fornecedor com mesmo CNPJ na filial, retorna ele em vez de
   // duplicar (idempotente). Sem documento: mesmo nome na filial.

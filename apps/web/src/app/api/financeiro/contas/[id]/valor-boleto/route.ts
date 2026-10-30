@@ -8,6 +8,7 @@
 // Só origem='NFE'. O PATCH da conta MANUAL continua igual em ../route.ts.
 
 import { NextResponse } from 'next/server';
+import { ebLiberadaNoFinanceiro } from '@/lib/eb/acesso-financeiro';
 import { z } from 'zod';
 import { and, asc, eq } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
@@ -61,7 +62,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
       ),
     )
     .limit(1);
-  if (!acesso) return NextResponse.json({ error: 'sem acesso à filial' }, { status: 403 });
+  if (!acesso && !(await ebLiberadaNoFinanceiro(user.id, conta.filialId))) return NextResponse.json({ error: 'sem acesso à filial' }, { status: 403 });
 
   const valorNota = Number(conta.valorNota ?? conta.valor);
   // Boleto não costuma ficar longe da nota: trava erro de digitação grosseiro
