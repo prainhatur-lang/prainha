@@ -26,6 +26,7 @@ import {
   centavos,
   contasBaixadasPorBoleto,
   contasDaJanela,
+  notasLancadasDosBoletos,
   notasSemContaDosBoletos,
   pagamentoAgendado,
   pagamentoCancelado,
@@ -132,6 +133,17 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
           escolhida.id,
         )
       : new Map();
+  // Boleto sem conta casada cuja nota JÁ virou conta a pagar: nada de
+  // "Lançar conta e baixar" (lançaria a nota de novo) — mostra a conta.
+  const notasLancadas =
+    escolhida && semConta.length > 0
+      ? await notasLancadasDosBoletos(
+          filiais.map((f) => f.id),
+          semConta.filter((p) => !notasSemConta.get(p.codigoTransacao)),
+          escolhida.id,
+          new Set(casadas.filter(Boolean).map((c) => c!.id)),
+        )
+      : new Map<string, { notaId: string; filialId: string; numero: number | null; contaId: string; paga: boolean }>();
   // Conta do Consumer só fica sem botão (baixa no PDV) enquanto o Consumer da
   // Boleto sem conta e sem nota: o fornecedor desta casa pelo CNPJ do
   // beneficiário (exato, senão a raiz) — pro "Lançar conta e baixar" (CRBS
@@ -675,7 +687,20 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                                   </Link>
                                 );
                               })()}
-                              {!conta && !notasSemConta.get(p.codigoTransacao) && escolhida && (
+                              {!conta && notasLancadas.get(p.codigoTransacao) && (() => {
+                                const n = notasLancadas.get(p.codigoTransacao)!;
+                                return (
+                                  <Link
+                                    href={`/financeiro/conta/${n.contaId}`}
+                                    className="ml-1.5 inline-flex rounded-md bg-amber-100 px-2 py-0.5 text-[11px] text-amber-900 hover:underline"
+                                    title="A nota deste boleto já foi lançada como conta a pagar — abra a conta e dê a baixa nela (não lance de novo)"
+                                  >
+                                    📄 NF-e {n.numero ?? '?'} já lançada{n.filialId !== escolhida?.id ? ` na ${nomeFilial.get(n.filialId) ?? 'outra casa'}` : ''}
+                                    {n.paga ? ' (conta já paga)' : ' — baixar na conta'}
+                                  </Link>
+                                );
+                              })()}
+                              {!conta && !notasSemConta.get(p.codigoTransacao) && !notasLancadas.get(p.codigoTransacao) && escolhida && (
                                 <Link
                                   href={`/movimento/entrada-notas?filialId=${escolhida.id}#trazer-por-chave`}
                                   className="mt-1 block text-[10px] text-sky-800 hover:underline"
@@ -686,6 +711,7 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                               )}
                               {!conta &&
                                 !notasSemConta.get(p.codigoTransacao) &&
+                                !notasLancadas.get(p.codigoTransacao) &&
                                 escolhida &&
                                 podeLancar &&
                                 podeBaixar &&

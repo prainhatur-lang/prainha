@@ -309,3 +309,74 @@ export async function notasSemContaDosBoletos(
   }
   return res;
 }
+
+/** Boleto sem conta casada, mas a nota do mesmo fornecedor (raiz do CNPJ) e
+ *  mesmo valor (ou até R$ 10 de diferença, só uma candidata) JÁ VIROU conta a
+ *  pagar. Aí o "Lançar conta e baixar" não pode aparecer — lançaria a mesma
+ *  nota duas vezes (regra do dono, 31/10/2026). A tela mostra o link da conta.
+ *  Ignora as contas que já casaram com outro boleto da tela. */
+export async function notasLancadasDosBoletos(
+  filialIds: string[],
+  pagamentos: InterPagamento[],
+  filialId: string | null | undefined,
+  contasJaCasadas: Set<string>,
+): Promise<Map<string, { notaId: string; filialId: string; numero: number | null; contaId: string; paga: boolean }>> {
+  const res = new Map<string, { notaId: string; filialId: string; numero: number | null; contaId: string; paga: boolean }>();
+  const raizes = [...new Set(pagamentos.map((p) => soDigitos(p.cpfCnpjBeneficiario)).filter((c) => c.length === 14).map((c) => c.slice(0, 8)))];
+  if (!filialIds.length || !raizes.length) return res;
+  const linhas = await db
+    .select({
+      notaId: schema.notaCompra.id,
+      filialId: schema.notaCompra.filialId,
+      numero: schema.notaCompra.numero,
+      valorTotal: schema.notaCompra.valorTotal,
+      emissao: sql<string>`(${schema.notaCompra.dataEmissao} at time zone 'America/Sao_Paulo')::date::text`,
+      emitCnpj: schema.notaCompra.emitCnpj,
+      contaId: schema.contaPagar.id,
+      contaPaga: schema.contaPagar.dataPagamento,
+    })
+    .from(schema.notaCompra)
+    .innerJoin(
+      schema.contaPagar,
+      and(eq(schema.contaPagar.notaCompraId, schema.notaCompra.id), isNull(schema.contaPagar.dataDelete)),
+    )
+    .where(
+      and(
+        inArray(schema.notaCompra.filialId, filialIds),
+        inArray(sql`left(${schema.notaCompra.emitCnpj}, 8)`, raizes),
+        gte(schema.notaCompra.dataEmissao, new Date(Date.now() - 180 * 86400000)),
+      ),
+    );
+  // uma linha por nota (nota parcelada tem várias contas: fica a primeira em aberto)
+  const porNota = new Map<string, (typeof linhas)[number]>();
+  for (const l of linhas) {
+    if (contasJaCasadas.has(l.contaId)) continue;
+    const atual = porNota.get(l.notaId);
+    if (!atual || (atual.contaPaga && !l.contaPaga)) porNota.set(l.notaId, l);
+  }
+  const notas = [...porNota.values()];
+  const usadas = new Set<string>();
+  for (const p of pagamentos) {
+    const raiz = soDigitos(p.cpfCnpjBeneficiario).slice(0, 8);
+    const valor = centavos(p.valorNominal);
+    if (raiz.length !== 8 || !valor) continue;
+    const pagoEm = (p.dataPagamento ?? '').slice(0, 10);
+    const venc = (p.dataVencimentoTitulo || p.dataVencimentoDigitada || pagoEm).slice(0, 10);
+    // nota emitida antes do pagamento e no máximo 60 dias antes do vencimento
+    const naJanela = (n: (typeof notas)[number]) =>
+      !n.emissao || ((!pagoEm || n.emissao <= pagoEm) && (!venc || diasEntre(venc, n.emissao) <= 60));
+    const base = notas.filter((n) => !usadas.has(n.notaId) && soDigitos(n.emitCnpj).slice(0, 8) === raiz && naJanela(n));
+    const exatas = base.filter((n) => centavos(n.valorTotal) === valor);
+    let n = exatas.find((x) => x.filialId === filialId) ?? exatas[0];
+    if (!n) {
+      const perto = base.filter((x) => Math.abs(centavos(x.valorTotal) - valor) <= 1000);
+      const daCasa = perto.filter((x) => x.filialId === filialId);
+      const lista = daCasa.length ? daCasa : perto;
+      if (lista.length === 1) n = lista[0];
+    }
+    if (!n) continue;
+    usadas.add(n.notaId);
+    res.set(p.codigoTransacao, { notaId: n.notaId, filialId: n.filialId, numero: n.numero, contaId: n.contaId, paga: !!n.contaPaga });
+  }
+  return res;
+}
