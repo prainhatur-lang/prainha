@@ -12,13 +12,36 @@ import { db, schema } from '@concilia/db';
 import { and, eq, gte, inArray, isNotNull } from 'drizzle-orm';
 import { createPixPayment, queryPayment } from '@/lib/pagamento-online';
 import { marcarReservaPaga } from '@/lib/reservas/pagamento';
-import { hojeBr } from '@/lib/datas';
-import { valorTaxaLounge } from '@/lib/reservas/taxa-lounge';
+import { hojeBr, horaAgoraBr } from '@/lib/datas';
+import { valorTaxaLounge, HORA_ULTIMA_HORA_LOUNGE } from '@/lib/reservas/taxa-lounge';
+import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
 import { ehFeriadoOuProlongado } from '@/lib/reservas/feriados';
 
-/** Valor da taxa da área nessa data/hora (mesma conta do site, lib/reservas/taxa-lounge:
- *  sáb/dom/feriado = sabDom, a partir das 15h com desconto). null = área sem taxa. */
-export async function taxaDaReserva(filialId: string, area: string | null, data: string, hora?: string | null): Promise<number | null> {
+/** Mesas do espaço VAZIAS DE ÚLTIMA HORA: a data é hoje, já deu 15h, sem
+ *  reserva ativa no dia e sem conta aberta na mesa (mesasOcupadas já soma
+ *  as duas coisas pra hoje). Fora disso, conjunto vazio. */
+export async function loungesVaziosAgora(
+  filialId: string,
+  area: string,
+  data: string,
+  excluirReservaId?: string,
+): Promise<Set<string>> {
+  if (data !== hojeBr() || horaAgoraBr() < HORA_ULTIMA_HORA_LOUNGE) return new Set();
+  const [f] = await db
+    .select({ cfg: schema.filial.reservaConfig })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, filialId))
+    .limit(1);
+  const a = f?.cfg?.areas?.find((x) => x.nome.toLowerCase() === area.trim().toLowerCase());
+  const mesas = ((a?.mesas ?? []) as Array<{ numero: string | number }>).map((m) => String(m.numero));
+  if (!a?.taxaReserva || mesas.length === 0) return new Set();
+  const ocupadas = await mesasOcupadas({ filialId, data, area: a.nome, excluirReservaId, mesasValidas: mesas });
+  return new Set(mesas.filter((m) => !ocupadas.has(m)));
+}
+
+/** Valor da taxa da área nessa data (mesma conta do site, lib/reservas/taxa-lounge:
+ *  sáb/dom/feriado = sabDom; última hora com lounge vazio = desconto). null = área sem taxa. */
+export async function taxaDaReserva(filialId: string, area: string | null, data: string, ultimaHora = false): Promise<number | null> {
   if (!area) return null;
   const [f] = await db
     .select({ cfg: schema.filial.reservaConfig })
@@ -28,7 +51,7 @@ export async function taxaDaReserva(filialId: string, area: string | null, data:
   const a = f?.cfg?.areas?.find((x) => x.nome.toLowerCase() === area.trim().toLowerCase());
   if (!a?.taxaReserva) return null;
   const feriado = await ehFeriadoOuProlongado(data).catch(() => false);
-  return valorTaxaLounge(a.taxaReserva, data, hora, feriado);
+  return valorTaxaLounge(a.taxaReserva, data, feriado, ultimaHora);
 }
 
 export type CobrancaTaxa =
@@ -42,7 +65,13 @@ export async function cobrarTaxaReserva(reservaId: string, opts?: { valor?: numb
   if (r.status === 'cancelada' || r.status === 'no_show') return { ok: false, erro: 'reserva cancelada' };
   if (r.pagamentoStatus === 'pago') return { ok: false, erro: 'taxa já está paga' };
 
-  const taxa = opts?.valor ?? (await taxaDaReserva(r.filialId, r.area, r.data, r.hora));
+  // Última hora: reserva feita HOJE depois das 15h numa mesa de lounge que
+  // estava vazia (sem outra reserva no dia e sem conta aberta).
+  let ultimaHora = false;
+  if (r.area && r.mesa && r.data === hojeBr() && r.criadoEm >= new Date(`${r.data}T${HORA_ULTIMA_HORA_LOUNGE}:00-03:00`)) {
+    ultimaHora = (await loungesVaziosAgora(r.filialId, r.area, r.data, r.id).catch(() => new Set<string>())).has(String(r.mesa));
+  }
+  const taxa = opts?.valor ?? (await taxaDaReserva(r.filialId, r.area, r.data, ultimaHora));
   if (taxa == null || !(taxa > 0)) return { ok: false, erro: `a área ${r.area ?? '?'} não tem taxa configurada` };
 
   // Já tem Pix gerado com o mesmo valor e ainda em aberto: reaproveita.

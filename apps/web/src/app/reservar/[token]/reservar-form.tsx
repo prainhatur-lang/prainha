@@ -241,7 +241,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
   // Disponibilidade de MESAS por espaço na data escolhida (a mesa é a
   // unidade) — declarado aqui (antes de horariosDisponiveis usar diaFechado)
   // porque const/let não hoisteia; o efeito que popula isso fica mais abaixo.
-  const [dispon, setDispon] = useState<Record<string, { total: number; livres: number }>>({});
+  const [dispon, setDispon] = useState<Record<string, { total: number; livres: number; ultimaHora?: boolean }>>({});
   const [diaFechado, setDiaFechado] = useState(false);
   const [motivoFechado, setMotivoFechado] = useState<string | null>(null);
   // Até que hora ESTA data aceita reserva (vem do servidor: em sábado, domingo
@@ -310,9 +310,10 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
     return dia === 0 || dia === 6;
   }
   const taxaEspaco = areaSel?.taxaReserva ?? null;
-  // Regra única (lib/reservas/taxa-lounge): sáb/dom/feriado = sabDom, a partir das 15h com desconto.
+  // Regra única (lib/reservas/taxa-lounge): sáb/dom/feriado = sabDom; hoje depois
+  // das 15h com lounge vazio = desconto de última hora (o servidor diz em dispon).
   const ehFeriado = feriados.includes(data);
-  const taxaValor = taxaEspaco ? valorTaxaLounge(taxaEspaco, data, hora, ehFeriado) : null;
+  const taxaValor = taxaEspaco ? valorTaxaLounge(taxaEspaco, data, ehFeriado, !!dispon[espaco]?.ultimaHora) : null;
 
   useEffect(() => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return;
@@ -328,8 +329,8 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
         setMotivoFechado(typeof d?.motivo === 'string' ? d.motivo : null);
         setHoraMaxDia(typeof d?.horaMax === 'string' ? d.horaMax : (atendimento?.fim ?? null));
         if (!Array.isArray(d?.areas)) return;
-        const m: Record<string, { total: number; livres: number }> = {};
-        for (const a of d.areas) m[a.nome] = { total: a.total, livres: a.livres };
+        const m: Record<string, { total: number; livres: number; ultimaHora?: boolean }> = {};
+        for (const a of d.areas) m[a.nome] = { total: a.total, livres: a.livres, ultimaHora: !!a.ultimaHora };
         setDispon(m);
       } catch {
         /* ignora */
@@ -697,7 +698,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
                 // Espaço com taxa (ex: Lounge): mostra o valor JÁ na opção do
                 // dropdown, antes de selecionar — não espera o cliente clicar
                 // pra descobrir que é pago.
-                const taxaOpcao = a.taxaReserva ? valorTaxaLounge(a.taxaReserva, data, hora, ehFeriado) : null;
+                const taxaOpcao = a.taxaReserva ? valorTaxaLounge(a.taxaReserva, data, ehFeriado, !!d?.ultimaHora) : null;
                 const pago = taxaOpcao ? ` · pago (${brl(taxaOpcao)})` : '';
                 return (
                   <option key={a.nome} value={a.nome} disabled={d?.livres === 0}>

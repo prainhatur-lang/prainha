@@ -12,12 +12,13 @@ import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
 import { medirOcupacaoHoje } from '@/lib/atendimento/ocupacao';
 import { hojeBr, horaAgoraBr } from '@/lib/datas';
 import { membroPorTelefone } from '@/lib/fidelidade/membro';
+import { loungesVaziosAgora } from '@/lib/reservas/cobrar-taxa';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 interface MesaCfg { numero: string | number; lugares: number }
-interface AreaCfg { nome: string; ativo?: boolean; somenteEventos?: boolean; mesas?: MesaCfg[]; percentualReserva?: number }
+interface AreaCfg { nome: string; ativo?: boolean; somenteEventos?: boolean; mesas?: MesaCfg[]; percentualReserva?: number; taxaReserva?: unknown }
 
 export async function GET(request: Request, { params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
@@ -76,7 +77,11 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
       const total = a.mesas!.length;
       const ocupadas = (await mesasOcupadas({ filialId: filial.id, data, area: a.nome, mesasValidas: a.mesas!.map((m) => String(m.numero)) })).size;
       const limite = typeof a.percentualReserva === 'number' && !prioridade ? Math.floor((total * a.percentualReserva) / 100) : total;
-      return { nome: a.nome, total, livres: Math.max(0, limite - ocupadas) };
+      // Lounge vazio hoje depois das 15h: o site mostra o valor de última hora.
+      const ultimaHora = a.taxaReserva
+        ? (await loungesVaziosAgora(filial.id, a.nome, data).catch(() => new Set<string>())).size > 0
+        : false;
+      return { nome: a.nome, total, livres: Math.max(0, limite - ocupadas), ultimaHora };
     }),
   );
 

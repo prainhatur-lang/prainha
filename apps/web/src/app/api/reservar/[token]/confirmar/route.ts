@@ -3,6 +3,7 @@
 
 import { valorTaxaLounge } from '@/lib/reservas/taxa-lounge';
 import { ehFeriadoOuProlongado } from '@/lib/reservas/feriados';
+import { loungesVaziosAgora } from '@/lib/reservas/cobrar-taxa';
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
@@ -241,10 +242,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
   // "aguardando pagamento" e só vira de fato válida quando o Pix cair —
   // recepção enxerga esse estado (não confunde com reserva confirmada).
   const taxaEspaco = areaCfg.taxaReserva;
-  // Regra única (lib/reservas/taxa-lounge): sáb/dom/feriado = sabDom; a partir
-  // das 15h, desconto de R$ 100 (dono, 31/10/2026).
+  // Regra única (lib/reservas/taxa-lounge): sáb/dom/feriado = sabDom; hoje
+  // depois das 15h com o lounge vazio, desconto de última hora (dono, 31/10/2026).
   const valorTaxa = taxaEspaco
-    ? valorTaxaLounge(taxaEspaco, data, hora, await ehFeriadoOuProlongado(data).catch(() => false))
+    ? valorTaxaLounge(
+        taxaEspaco,
+        data,
+        await ehFeriadoOuProlongado(data).catch(() => false),
+        !!mesaAlocada && (await loungesVaziosAgora(filial.id, areaCfg.nome, data).catch(() => new Set<string>())).has(String(mesaAlocada)),
+      )
     : null;
 
   // CPF informado na reserva fica NA RESERVA e completa o nome (dono,
