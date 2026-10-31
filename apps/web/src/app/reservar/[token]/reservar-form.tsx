@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { CreditCardForm } from './credit-card-form';
+import { valorTaxaLounge } from '@/lib/reservas/taxa-lounge';
 import { MapaMesasPublico, MapaDeckLoungesPublico, MapaAreiaPublico, MapaTabuaraPublico, MapaMarPublico, type MesaPublica } from './mapa-mesas-publico';
 
 export interface AreaPub {
@@ -11,6 +12,8 @@ export interface AreaPub {
 }
 
 interface Props {
+  /** Feriados (YYYY-MM-DD) dos próximos meses — feriado paga o valor de fim de semana do Lounge. */
+  feriados?: string[];
   token: string;
   nomeFilial: string;
   areas: AreaPub[];
@@ -50,7 +53,7 @@ function formatCPF(value: string): string {
 
 const serif = { fontFamily: 'var(--rsv-display)' } as const;
 
-export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual, hoje, semOtp, bebidas, atendimento, convite, emoji, layoutMesas, pedirCpf, pedirPlaca, pedirBebida }: Props) {
+export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual, hoje, semOtp, bebidas, atendimento, convite, emoji, layoutMesas, pedirCpf, pedirPlaca, pedirBebida, feriados = [] }: Props) {
   const [fase, setFase] = useState<Fase>(pedirCpf ? 'cpf' : 'dados');
   const [espaco, setEspaco] = useState(areas[0]?.nome ?? '');
   const [data, setData] = useState(hoje);
@@ -307,7 +310,9 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
     return dia === 0 || dia === 6;
   }
   const taxaEspaco = areaSel?.taxaReserva ?? null;
-  const taxaValor = taxaEspaco ? (ehFimDeSemana(data) ? taxaEspaco.sabDom : taxaEspaco.diasUteis) : null;
+  // Regra única (lib/reservas/taxa-lounge): sáb/dom/feriado = sabDom, a partir das 15h com desconto.
+  const ehFeriado = feriados.includes(data);
+  const taxaValor = taxaEspaco ? valorTaxaLounge(taxaEspaco, data, hora, ehFeriado) : null;
 
   useEffect(() => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return;
@@ -692,7 +697,7 @@ export function ReservarForm({ token, nomeFilial, areas, valorCheio, valorAtual,
                 // Espaço com taxa (ex: Lounge): mostra o valor JÁ na opção do
                 // dropdown, antes de selecionar — não espera o cliente clicar
                 // pra descobrir que é pago.
-                const taxaOpcao = a.taxaReserva ? (ehFimDeSemana(data) ? a.taxaReserva.sabDom : a.taxaReserva.diasUteis) : null;
+                const taxaOpcao = a.taxaReserva ? valorTaxaLounge(a.taxaReserva, data, hora, ehFeriado) : null;
                 const pago = taxaOpcao ? ` · pago (${brl(taxaOpcao)})` : '';
                 return (
                   <option key={a.nome} value={a.nome} disabled={d?.livres === 0}>

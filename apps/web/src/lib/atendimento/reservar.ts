@@ -26,6 +26,8 @@ import { registrarAlteracoesReserva } from '@/lib/reservas/alteracoes';
 import { medirOcupacaoHoje } from './ocupacao';
 import { estornarReservaSePago } from '@/lib/reservas/estorno';
 import { cobrarTaxaReserva } from '@/lib/reservas/cobrar-taxa';
+import { valorTaxaLounge, HORA_DESCONTO_LOUNGE, DESCONTO_LOUNGE_TARDE } from '@/lib/reservas/taxa-lounge';
+import { ehFeriadoOuProlongado } from '@/lib/reservas/feriados';
 import { queryPayment } from '@/lib/pagamento-online';
 import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
 import { textoMesas } from '@/lib/reservas/mesas-juntadas';
@@ -183,6 +185,9 @@ export async function consultarDisponibilidade(filialId: string, data: string, t
         `MAS o Lounge (com taxa e garçom exclusivo) ainda pode ser reservado AQUI: se o cliente quer chegar mais tarde e topa a taxa, ofereça o Lounge com o valor desse dia e, se ele aceitar, use criar_reserva com a área do Lounge — o sistema gera o Pix na hora.`,
     );
   }
+  // Feriado pela MESMA fonte da cobrança (lib/reservas/feriados) — o valor
+  // que a Nina fala tem que ser o que o Pix cobra.
+  const feriadoDia = await ehFeriadoOuProlongado(data).catch(() => false);
   for (const area of cfg.areas) {
     if (!area.ativo || area.somenteEventos) continue;
     if (soLounge && !area.taxaReserva) continue;
@@ -209,14 +214,22 @@ export async function consultarDisponibilidade(filialId: string, data: string, t
     } else {
       livres = 'disponível';
     }
-    // O valor DESSA data sai pronto (mesma conta do site: sábado e domingo
-    // pagam sabDom, o resto diasUteis — feriado em dia de semana é dia útil).
-    // Só com a tabela, a Nina cobrou "R$ 250 por ser sábado" num feriado de
-    // sexta (caso Rafa, 05/10/2026) — o site cobraria R$ 100.
-    const taxa = area.taxaReserva
-      ? ` — TEM TAXA (R$ ${area.taxaReserva.diasUteis} dia útil / R$ ${area.taxaReserva.sabDom} sáb-dom): dá pra fechar AQUI com criar_reserva (o sistema gera o Pix e manda na conversa; vale também depois do corte do dia, pra quem quer chegar mais tarde) ou o cliente faz pelo site reservas.prainhabar.com` +
-        `. VALOR NESSA DATA (${diaDaSemana(data)}): R$ ${ehFimDeSemana(data) ? area.taxaReserva.sabDom : area.taxaReserva.diasUteis}${feriadoEmDiaDeSemana(data) ? ' — feriado em dia de semana paga o valor de dia útil' : ''} — é o que o site cobra; informe ESSE valor, não o outro`
-      : '';
+    // O valor DESSA data sai pronto (mesma conta do site, lib/reservas/
+    // taxa-lounge). Regra do dono 31/10/2026: sáb, dom E FERIADO pagam sabDom
+    // (antes feriado em dia de semana pagava dia útil — caso Rafa, 05/10), e
+    // nesses dias reserva a partir das 15h tem R$ 100 de desconto.
+    let taxa = '';
+    if (area.taxaReserva) {
+      const t = area.taxaReserva;
+      const manha = valorTaxaLounge(t, data, '00:00', feriadoDia);
+      const tarde = valorTaxaLounge(t, data, HORA_DESCONTO_LOUNGE, feriadoDia);
+      const valorDia = manha === tarde
+        ? `R$ ${manha}`
+        : `R$ ${manha} pra chegar antes das ${HORA_DESCONTO_LOUNGE.slice(0, 2)}h e R$ ${tarde} a partir das ${HORA_DESCONTO_LOUNGE.slice(0, 2)}h`;
+      taxa =
+        ` — TEM TAXA (R$ ${t.diasUteis} dia útil / R$ ${t.sabDom} sáb, dom e feriado, com R$ ${Math.max(0, t.sabDom - DESCONTO_LOUNGE_TARDE)} a partir das 15h nesses dias): dá pra fechar AQUI com criar_reserva (o sistema gera o Pix e manda na conversa; vale também depois do corte do dia, pra quem quer chegar mais tarde) ou o cliente faz pelo site reservas.prainhabar.com` +
+        `. VALOR NESSA DATA (${diaDaSemana(data)}${feriadoDia ? ', feriado' : ''}): ${valorDia} — é o que o site cobra; informe ESSE valor, não o outro`;
+    }
     const limiteHora = area.horaLimite ? ` (reserva só até ${area.horaLimite})` : '';
     linhas.push(`- ${area.nome}: ${livres}${limiteHora}${taxa}`);
   }
@@ -732,7 +745,7 @@ async function validarSlotEAlocarMesa(p: {
     return `Área "${p.area}" indisponível. Áreas válidas: ${validas}.`;
   }
   if (areaCfg.taxaReserva && !p.permitirTaxa) {
-    const valor = ehFimDeSemana(p.data) ? areaCfg.taxaReserva.sabDom : areaCfg.taxaReserva.diasUteis;
+    const valor = valorTaxaLounge(areaCfg.taxaReserva, p.data, p.hora, await ehFeriadoOuProlongado(p.data).catch(() => false));
     return `${areaCfg.nome} tem taxa de R$ ${valor} paga por Pix — NÃO dá pra fechar por aqui. Explique a taxa e mande o cliente concluir em reservas.prainhabar.com.`;
   }
   if (areaCfg.horaLimite && p.hora > areaCfg.horaLimite) {

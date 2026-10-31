@@ -7,6 +7,7 @@ import { headers } from 'next/headers';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { hojeBr } from '@/lib/datas';
+import { proximosFeriados } from '@/lib/reservas/feriados';
 import { ReservarForm, type AreaPub } from './reservar-form';
 import { temaDaFilial } from './tema';
 
@@ -46,6 +47,15 @@ export default async function ReservarPage(props: { params: Promise<{ token: str
     .map((a) => ({ nome: a.nome, horaLimite: a.horaLimite ?? null, taxaReserva: a.taxaReserva ?? null }));
 
   const tema = temaDaFilial(filial.nome);
+  // Feriado paga o valor de fim de semana do Lounge (dono, 31/10/2026).
+  const listaFeriados = await proximosFeriados(hojeBr(), 400).catch(() => []);
+  const feriadosLounge = listaFeriados.map((f) => f.data);
+  // Segunda de Carnaval conta como feriado na cobrança (ehFeriadoOuProlongado).
+  for (const f of listaFeriados) {
+    if (f.nome !== 'Carnaval') continue;
+    const [y, m, d] = f.data.split('-').map(Number);
+    feriadosLounge.push(new Date(Date.UTC(y, m - 1, d - 1)).toISOString().slice(0, 10));
+  }
 
   // Aberta pelo domínio próprio da casa? Então a reserva é uma seção do site,
   // e não uma página solta em outro endereço: mostra o caminho de volta.
@@ -132,6 +142,7 @@ export default async function ReservarPage(props: { params: Promise<{ token: str
               pedirCpf={!!cfg?.pedirCpf}
               pedirPlaca={cfg?.pedirPlaca !== false}
               pedirBebida={cfg?.pedirBebida !== false}
+              feriados={feriadosLounge}
             />
           </div>
         </div>

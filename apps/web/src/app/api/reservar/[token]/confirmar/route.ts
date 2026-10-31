@@ -1,6 +1,8 @@
 // POST /api/reservar/[token]/confirmar — valida o OTP e cria a reserva.
 // Publico. Body: { telefone, codigo, nome, espaco, data, hora, pessoas, observacao }
 
+import { valorTaxaLounge } from '@/lib/reservas/taxa-lounge';
+import { ehFeriadoOuProlongado } from '@/lib/reservas/feriados';
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
@@ -239,7 +241,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
   // "aguardando pagamento" e só vira de fato válida quando o Pix cair —
   // recepção enxerga esse estado (não confunde com reserva confirmada).
   const taxaEspaco = areaCfg.taxaReserva;
-  const valorTaxa = taxaEspaco ? (ehFimDeSemana(data) ? taxaEspaco.sabDom : taxaEspaco.diasUteis) : null;
+  // Regra única (lib/reservas/taxa-lounge): sáb/dom/feriado = sabDom; a partir
+  // das 15h, desconto de R$ 100 (dono, 31/10/2026).
+  const valorTaxa = taxaEspaco
+    ? valorTaxaLounge(taxaEspaco, data, hora, await ehFeriadoOuProlongado(data).catch(() => false))
+    : null;
 
   // CPF informado na reserva fica NA RESERVA e completa o nome (dono,
   // 10/10/2026: "pega o cpf e completa o cadastro sempre"). O site já pedia o

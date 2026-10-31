@@ -13,15 +13,12 @@ import { and, eq, gte, inArray, isNotNull } from 'drizzle-orm';
 import { createPixPayment, queryPayment } from '@/lib/pagamento-online';
 import { marcarReservaPaga } from '@/lib/reservas/pagamento';
 import { hojeBr } from '@/lib/datas';
+import { valorTaxaLounge } from '@/lib/reservas/taxa-lounge';
+import { ehFeriadoOuProlongado } from '@/lib/reservas/feriados';
 
-function ehFimDeSemana(ymd: string): boolean {
-  const [y, m, d] = ymd.split('-').map(Number);
-  const dia = new Date(y, m - 1, d).getDay();
-  return dia === 0 || dia === 6;
-}
-
-/** Valor da taxa da área nessa data (mesma conta do site). null = área sem taxa. */
-export async function taxaDaReserva(filialId: string, area: string | null, data: string): Promise<number | null> {
+/** Valor da taxa da área nessa data/hora (mesma conta do site, lib/reservas/taxa-lounge:
+ *  sáb/dom/feriado = sabDom, a partir das 15h com desconto). null = área sem taxa. */
+export async function taxaDaReserva(filialId: string, area: string | null, data: string, hora?: string | null): Promise<number | null> {
   if (!area) return null;
   const [f] = await db
     .select({ cfg: schema.filial.reservaConfig })
@@ -30,7 +27,8 @@ export async function taxaDaReserva(filialId: string, area: string | null, data:
     .limit(1);
   const a = f?.cfg?.areas?.find((x) => x.nome.toLowerCase() === area.trim().toLowerCase());
   if (!a?.taxaReserva) return null;
-  return ehFimDeSemana(data) ? a.taxaReserva.sabDom : a.taxaReserva.diasUteis;
+  const feriado = await ehFeriadoOuProlongado(data).catch(() => false);
+  return valorTaxaLounge(a.taxaReserva, data, hora, feriado);
 }
 
 export type CobrancaTaxa =
@@ -44,7 +42,7 @@ export async function cobrarTaxaReserva(reservaId: string, opts?: { valor?: numb
   if (r.status === 'cancelada' || r.status === 'no_show') return { ok: false, erro: 'reserva cancelada' };
   if (r.pagamentoStatus === 'pago') return { ok: false, erro: 'taxa já está paga' };
 
-  const taxa = opts?.valor ?? (await taxaDaReserva(r.filialId, r.area, r.data));
+  const taxa = opts?.valor ?? (await taxaDaReserva(r.filialId, r.area, r.data, r.hora));
   if (taxa == null || !(taxa > 0)) return { ok: false, erro: `a área ${r.area ?? '?'} não tem taxa configurada` };
 
   // Já tem Pix gerado com o mesmo valor e ainda em aberto: reaproveita.

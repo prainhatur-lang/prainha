@@ -1639,7 +1639,7 @@ function FilialEspacos({ filial, onSalvou }: { filial: FilialOpt; onSalvou: () =
                     placeholder="sáb/dom"
                     title="Valor em sábados e domingos"
                   />
-                  <span className="text-xs text-slate-500">sáb/dom · R$</span>
+                  <span className="text-xs text-slate-500" title="Sábado, domingo e feriado. Reserva a partir das 15h tem R$ 100 de desconto.">sáb/dom/feriado (−100 após 15h) · R$</span>
                   <input
                     type="number"
                     min={0}
