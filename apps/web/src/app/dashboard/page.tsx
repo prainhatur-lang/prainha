@@ -9,6 +9,7 @@ import { and, desc, eq, gte, inArray, isNull, lte, ne, notInArray, sql } from 'd
 import { TAXAS_DEFAULT } from '@/lib/conciliacao-banco';
 import { brl, formatDateTime, int, relativeTime, statusFromPing } from '@/lib/format';
 import { AppHeader } from '@/components/app-header';
+import { brDateEnd, brDateStart, hojeBr } from '@/lib/datas';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,14 +18,15 @@ interface SP {
   periodo?: string;
 }
 
-type Periodo = '1m' | '3m' | '6m';
-const PERIODOS: Periodo[] = ['1m', '3m', '6m'];
+type Periodo = 'atual' | '1m' | '3m' | '6m';
+const PERIODOS: Periodo[] = ['atual', '1m', '3m', '6m'];
 const PERIODO_LABEL: Record<Periodo, string> = {
+  atual: 'Mês atual',
   '1m': 'Mês anterior',
   '3m': 'Últimos 3 meses',
   '6m': 'Últimos 6 meses',
 };
-const PERIODO_MESES: Record<Periodo, number> = { '1m': 1, '3m': 3, '6m': 6 };
+const PERIODO_MESES: Record<Exclude<Periodo, 'atual'>, number> = { '1m': 1, '3m': 3, '6m': 6 };
 
 function rangeDoPeriodo(p: Periodo): {
   dataInicio: string;
@@ -32,6 +34,17 @@ function rangeDoPeriodo(p: Periodo): {
   dtIni: Date;
   dtFim: Date;
 } {
+  // "Mes atual": do dia 1 do mes corrente ate hoje (BRT), mes em andamento.
+  if (p === 'atual') {
+    const hoje = hojeBr();
+    const ini = hoje.slice(0, 8) + '01';
+    return {
+      dataInicio: ini,
+      dataFim: hoje,
+      dtIni: brDateStart(ini),
+      dtFim: brDateEnd(hoje),
+    };
+  }
   // Calendario BRT (UTC-3). Retorna meses FECHADOS: se hoje e' abril,
   // "1m" = marco (1/3-31/3), "3m" = jan-mar, "6m" = out-mar.
   const agora = new Date();
@@ -116,7 +129,7 @@ export default async function DashboardPage(props: { searchParams: Promise<SP> }
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Visão geral</h1>
             <p className="mt-1 text-sm text-slate-600">
-              Últimos {PERIODO_LABEL[periodo]} — {range.dataInicio.split('-').reverse().join('/')} a{' '}
+              {PERIODO_LABEL[periodo]} — {range.dataInicio.split('-').reverse().join('/')} a{' '}
               {range.dataFim.split('-').reverse().join('/')}
             </p>
           </div>
