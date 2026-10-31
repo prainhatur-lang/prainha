@@ -554,6 +554,9 @@ export async function processarEntrada(params: {
       }
     }
     let passouPara: { casa: OutraCasa; link: string } | null = null;
+    // Pix da taxa do Lounge criado pela Nina (31/10/2026): sai numa mensagem
+    // SÓ com o código, depois da resposta — o cliente copia e cola inteiro.
+    let pixLounge: string | null = null;
 
     let audioEnviado = false;
     const executores = {
@@ -599,8 +602,8 @@ export async function processarEntrada(params: {
         return 'Lead registrado. Confirme ao cliente que a equipe vai entrar em contato pra fechar os detalhes.';
       },
       consultarDisponibilidade: (data: string) => consultarDisponibilidade(entrada.filialId, data, entrada.telefone),
-      criarReserva: (dados: import('./ia').DadosReservaMesa) =>
-        criarReservaWhatsApp({
+      criarReserva: async (dados: import('./ia').DadosReservaMesa) => {
+        const r = await criarReservaWhatsApp({
           filialId: entrada.filialId,
           filialNome,
           telefone: entrada.telefone,
@@ -612,7 +615,20 @@ export async function processarEntrada(params: {
           nome: dados.nome,
           nomePerfil: conversa.nomeCliente,
           observacao: dados.observacao,
-        }),
+        });
+        // Lounge: o código do Pix não passa pelo modelo (ele encurta/quebra).
+        const mPix = /\nPIX_LOUNGE: (\S+)\s*$/.exec(r);
+        if (!mPix) return r;
+        pixLounge = mPix[1];
+        const [a, m, d] = String(dados.data ?? '').split('-');
+        void avisarEquipe(numerosEquipe, {
+          motivo: `Lounge reservado pela Nina — ${d}/${m}/${a} ${dados.hora}, ${dados.pessoas} pessoas. Pix da taxa enviado (aguardando pagamento)`,
+          nomeCliente: dados.nome || conversa.nomeCliente || '-',
+          telefone: entrada.telefone,
+          filial: filialNome,
+        }).catch(() => {});
+        return r.slice(0, mPix.index);
+      },
       consultarCardapio: (termo: string, casa?: string) => {
         // casa = outra casa que este número atende (Prainha Mar); não achou ou
         // sem casa = cardápio daqui, como sempre foi.
@@ -1145,7 +1161,9 @@ export async function processarEntrada(params: {
       /lounge/i.test([...historico.filter((m) => m.direcao === 'entrada').slice(-2).map((m) => m.corpo ?? ''), entrada.corpo ?? ''].join(' ')) &&
       !/reservas\.prainhabar\.com/i.test(texto) &&
       // Lounge já pago (remarcar/estorno) não é reserva nova.
-      !/\b(pag[oa]|remarq|alterad|ajustad|estorno|reembols)/i.test(texto)
+      !/\b(pag[oa]|remarq|alterad|ajustad|estorno|reembols)/i.test(texto) &&
+      // Lounge fechado aqui com Pix (31/10/2026): não manda pro site.
+      !pixLounge
     ) {
       texto = `${texto.trimEnd()}\n\nO Lounge tem taxa e é reservado pelo site, com o pagamento na hora: https://reservas.prainhabar.com`;
     }
@@ -1228,6 +1246,22 @@ export async function processarEntrada(params: {
           filial: filialNome,
         });
       }
+    }
+    // Pix do Lounge: mensagem só com o código, pra copiar e colar inteiro.
+    // Sai mesmo se a resposta do modelo foi descartada (a reserva existe).
+    const pixParaEnviar = pixLounge as string | null;
+    if (pixParaEnviar) {
+      const envioPix = await enviarTexto(entrada.phoneNumberId, entrada.telefone, pixParaEnviar);
+      await db.insert(schema.atendimentoMensagem).values({
+        conversaId: registro.conversaId,
+        waMessageId: envioPix.waMessageId,
+        direcao: 'saida',
+        autor: 'bot',
+        tipo: 'texto',
+        corpo: pixParaEnviar,
+        statusEnvio: envioPix.erro ? 'erro' : 'enviada',
+        erro: envioPix.erro ?? null,
+      });
     }
     await db
       .update(schema.atendimentoConversa)

@@ -8,6 +8,9 @@
 // Diferenças deliberadas:
 //  - Área com taxaReserva (Lounge, paga por Pix) NÃO é criada por aqui — a
 //    Nina explica a taxa e manda o link do site (pagamento não rola no chat).
+//    → desde 31/10/2026 a CRIAÇÃO aceita o Lounge: a Nina fecha a reserva e o
+//    Pix da taxa ('cobrado') sai numa mensagem separada (motor). O site
+//    continua valendo como alternativa.
 //  - Telefone é o do próprio WhatsApp da conversa (semOtp por natureza).
 //  - canal: 'whatsapp'.
 
@@ -22,6 +25,7 @@ import { identificarPorCpf } from '@/lib/identificar-cpf';
 import { registrarAlteracoesReserva } from '@/lib/reservas/alteracoes';
 import { medirOcupacaoHoje } from './ocupacao';
 import { estornarReservaSePago } from '@/lib/reservas/estorno';
+import { cobrarTaxaReserva } from '@/lib/reservas/cobrar-taxa';
 import { queryPayment } from '@/lib/pagamento-online';
 import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
 import { textoMesas } from '@/lib/reservas/mesas-juntadas';
@@ -153,7 +157,11 @@ export async function consultarDisponibilidade(filialId: string, data: string, t
     return `Sem vagas pra ${dataBr(data)} (data fechada pra reservas). Sugira outro dia.`;
   }
   const janela = await foraDaJanelaAtendimento(cfg, data);
-  if (janela.bloqueado) return `Não dá pra reservar pra ${dataBr(data)}: ${janela.motivo}`;
+  // Corte do dia passou mas a casa tem Lounge (área com taxa): a Nina ainda
+  // pode vender o Lounge a quem quer chegar mais tarde (dono, 31/10/2026).
+  const temLounge = cfg.areas.some((a) => a.ativo && !a.somenteEventos && a.taxaReserva);
+  if (janela.bloqueado && !temLounge) return `Não dá pra reservar pra ${dataBr(data)}: ${janela.motivo}`;
+  const soLounge = janela.bloqueado;
 
   const linhas: string[] = [];
   // Cliente VIP com prioridade: vê as mesas acima do teto de cada área
@@ -169,8 +177,15 @@ export async function consultarDisponibilidade(filialId: string, data: string, t
     const oc = await medirOcupacaoHoje(filialId, cfg);
     if (oc) linhas.push(`OCUPAÇÃO AGORA: ${oc.resumo}`);
   }
+  if (soLounge) {
+    linhas.push(
+      `RESERVA GRATUITA FECHADA pra ${dataBr(data)}: ${janela.motivo} As áreas comuns são por ordem de chegada. ` +
+        `MAS o Lounge (com taxa e garçom exclusivo) ainda pode ser reservado AQUI: se o cliente quer chegar mais tarde e topa a taxa, ofereça o Lounge com o valor desse dia e, se ele aceitar, use criar_reserva com a área do Lounge — o sistema gera o Pix na hora.`,
+    );
+  }
   for (const area of cfg.areas) {
     if (!area.ativo || area.somenteEventos) continue;
+    if (soLounge && !area.taxaReserva) continue;
     const mesas = (area.mesas ?? []) as Array<{ numero: string | number; lugares: number }>;
     let livres = '';
     if (mesas.length > 0) {
@@ -199,7 +214,7 @@ export async function consultarDisponibilidade(filialId: string, data: string, t
     // Só com a tabela, a Nina cobrou "R$ 250 por ser sábado" num feriado de
     // sexta (caso Rafa, 05/10/2026) — o site cobraria R$ 100.
     const taxa = area.taxaReserva
-      ? ` — TEM TAXA (R$ ${area.taxaReserva.diasUteis} dia útil / R$ ${area.taxaReserva.sabDom} sáb-dom): NÃO criar por aqui, mandar o link do site` +
+      ? ` — TEM TAXA (R$ ${area.taxaReserva.diasUteis} dia útil / R$ ${area.taxaReserva.sabDom} sáb-dom): dá pra fechar AQUI com criar_reserva (o sistema gera o Pix e manda na conversa; vale também depois do corte do dia, pra quem quer chegar mais tarde) ou o cliente faz pelo site reservas.prainhabar.com` +
         `. VALOR NESSA DATA (${diaDaSemana(data)}): R$ ${ehFimDeSemana(data) ? area.taxaReserva.sabDom : area.taxaReserva.diasUteis}${feriadoEmDiaDeSemana(data) ? ' — feriado em dia de semana paga o valor de dia útil' : ''} — é o que o site cobra; informe ESSE valor, não o outro`
       : '';
     const limiteHora = area.horaLimite ? ` (reserva só até ${area.horaLimite})` : '';
@@ -213,7 +228,7 @@ export async function consultarDisponibilidade(filialId: string, data: string, t
   if (cfg.atendimento && maxDoDia) {
     jan = `Horários aceitos NESSE DIA: ${cfg.atendimento.inicio} às ${maxDoDia}. `;
     if (maxDoDia !== cfg.atendimento.fim) {
-      jan += `(sábado, domingo e feriado a reserva vai só até ${maxDoDia} — depois disso é por ordem de chegada, convide a pessoa a vir direto). `;
+      jan += `(sábado, domingo e feriado a reserva vai só até ${maxDoDia} — depois disso é por ordem de chegada, convide a pessoa a vir direto${temLounge ? '; quem quer garantir lugar mais tarde e topa a taxa pode reservar o Lounge, que não tem esse corte' : ''}). `;
     }
   }
 
@@ -643,6 +658,10 @@ async function validarSlotEAlocarMesa(p: {
   excluirReservaId?: string;
   /** telefone do cliente — membro do Cliente VIP com prioridade passa do teto */
   telefone?: string;
+  /** Só a CRIAÇÃO pela Nina (31/10/2026): área com taxa (Lounge) pode ser
+   *  fechada aqui — a Nina cobra o Pix na conversa — e o Lounge não segue o
+   *  corte do dia (é justamente pra quem quer chegar mais tarde). */
+  permitirTaxa?: boolean;
 }): Promise<string | SlotAlocado> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(p.data)) return 'Data inválida (use YYYY-MM-DD).';
   if (!/^\d{2}:\d{2}$/.test(p.hora)) return 'Hora inválida (use HH:MM).';
@@ -676,7 +695,16 @@ async function validarSlotEAlocarMesa(p: {
   if (p.cfg.excecoes?.some((e) => e.data === p.data && e.fechado)) {
     return `Sem vagas pra ${dataBr(p.data)} (data fechada). Ofereça outro dia.`;
   }
-  const janela = await foraDaJanelaAtendimento(p.cfg, p.data, p.hora);
+  // Lounge pago pela Nina: o corte do dia (sáb/dom/feriado) não vale — a
+  // regra do dono é oferecer o Lounge a quem quer chegar depois do corte.
+  // Ainda respeita o horário de abertura e o horaLimite da área (abaixo).
+  const areaComTaxa = p.permitirTaxa
+    ? p.cfg.areas.find((a) => a.nome.toLowerCase() === p.area.trim().toLowerCase() && a.ativo && !a.somenteEventos && a.taxaReserva)
+    : undefined;
+  if (areaComTaxa && p.cfg.atendimento?.inicio && p.hora < p.cfg.atendimento.inicio) {
+    return `${areaComTaxa.nome}: a casa só recebe a partir das ${p.cfg.atendimento.inicio}. Sugira um horário a partir daí.`;
+  }
+  const janela = areaComTaxa ? { bloqueado: false as const, motivo: '' } : await foraDaJanelaAtendimento(p.cfg, p.data, p.hora);
   if (janela.bloqueado) {
     // CORTE DINÂMICO (regra do Elison): pedido pra HOJE barrado pelo corte
     // padrão, mas a casa está com espaço agora → libera até o corte
@@ -703,7 +731,7 @@ async function validarSlotEAlocarMesa(p: {
     const validas = p.cfg.areas.filter((a) => a.ativo && !a.somenteEventos).map((a) => a.nome).join(', ');
     return `Área "${p.area}" indisponível. Áreas válidas: ${validas}.`;
   }
-  if (areaCfg.taxaReserva) {
+  if (areaCfg.taxaReserva && !p.permitirTaxa) {
     const valor = ehFimDeSemana(p.data) ? areaCfg.taxaReserva.sabDom : areaCfg.taxaReserva.diasUteis;
     return `${areaCfg.nome} tem taxa de R$ ${valor} paga por Pix — NÃO dá pra fechar por aqui. Explique a taxa e mande o cliente concluir em reservas.prainhabar.com.`;
   }
@@ -919,6 +947,7 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
     pessoas,
     area: p.area,
     telefone: p.telefone,
+    permitirTaxa: true,
   });
   if (typeof slot === 'string') return slot;
   const { areaCfg, mesa: mesaAlocada, mesaJuntada: mesaJuntadaAlocada } = slot;
@@ -937,7 +966,7 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
   const atendente = cfgAtend?.nome?.trim() || 'Nina';
   const pelaAtendente = `${/o$/i.test(atendente) ? 'pelo' : 'pela'} ${atendente}`; // Otávio → "pelo"
 
-  await db.insert(schema.reserva).values({
+  const [criada] = await db.insert(schema.reserva).values({
     filialId: p.filialId,
     clienteNome: nome,
     clienteTelefone: p.telefone,
@@ -954,7 +983,34 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
     observacao: p.observacao?.trim() ? `${p.observacao.trim().slice(0, 1900)} (via ${atendente})` : `Reserva feita ${pelaAtendente} (WhatsApp)`,
     valor: String(valorAtual.toFixed(2)),
     cancelToken,
-  });
+  }).returning({ id: schema.reserva.id });
+
+  // LOUNGE PELA NINA (dono, 31/10/2026: "se a pessoa já quer chegar mais
+  // tarde e não está preocupada com o valor, oferece o lounge e cobra"): a
+  // reserva fica de pé e o Pix sai 'cobrado' (não expira, não derruba a
+  // mesa). A confirmação vai quando o Pix cair (marcarReservaPaga). Lounge
+  // não tem tolerância de no-show, então sem aviso de 15 min.
+  if (areaCfg.taxaReserva && criada) {
+    const mesaTxtL = mesaAlocada ? ` (mesa ${textoMesas(mesaAlocada, mesaJuntadaAlocada, ' + ')})` : '';
+    const nomeL = nomeVeioDoCpf ? nome.split(' ')[0] : nome;
+    try {
+      const cob = await cobrarTaxaReserva(criada.id);
+      if (cob.ok) {
+        return (
+          `RESERVA DO LOUNGE CRIADA: ${dataBr(p.data)} às ${p.hora}, ${pessoas} pessoa(s), ${areaCfg.nome}${mesaTxtL}, em nome de ${nomeL}. ` +
+          `Taxa de R$ ${cob.valor.toFixed(2).replace('.', ',')} (valor desse dia), com garçom exclusivo. ` +
+          `O Pix copia e cola SAI AUTOMATICAMENTE numa mensagem separada logo depois da sua — NÃO escreva o código do Pix nem link de site. ` +
+          `Na sua mensagem: confirme os dados da reserva em uma frase, diga o valor da taxa e peça pra copiar a mensagem seguinte e colar no app do banco; ` +
+          `a reserva fica confirmada quando o Pix cair (a confirmação chega aqui sozinha). No Lounge não tem os 15 minutos de tolerância.\n` +
+          `PIX_LOUNGE: ${cob.pixCopiaECola}`
+        );
+      }
+      console.warn('[nina] Pix do Lounge não saiu:', cob.erro);
+    } catch (e) {
+      console.error('[nina] Pix do Lounge falhou:', e instanceof Error ? e.message : e);
+    }
+    return `RESERVA DO LOUNGE CRIADA (${dataBr(p.data)} às ${p.hora}, ${areaCfg.nome}${mesaTxtL}, em nome de ${nomeL}), mas o Pix da taxa NÃO saiu agora. Diga ao cliente que a mesa está separada e que a equipe manda o Pix da taxa aqui em instantes, e TRANSFIRA pra equipe (motivo: gerar o Pix da taxa do Lounge pelo botão "Cobrar taxa" na agenda).`;
+  }
 
   // Mesmos disparos do site: confirmação rica + tolerância; se for pra HOJE,
   // o lembrete com botões de confirmar/cancelar (cron da véspera não alcança).
