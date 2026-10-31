@@ -876,6 +876,7 @@ export default async function NotaDetalhePage(props: {
             )}
             <ConferirNota
               notaId={id}
+              jaConferida={conferencia.conferidaEm != null}
               obsAtual={conferencia.obs}
               itens={itens.map((i) => ({
                 id: i.id,

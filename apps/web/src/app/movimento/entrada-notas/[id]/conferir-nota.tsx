@@ -19,7 +19,13 @@ function brl(n: number): string {
   return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
-export function ConferirNota(props: { notaId: string; itens: ItemNota[]; obsAtual: string | null }) {
+export function ConferirNota(props: {
+  notaId: string;
+  itens: ItemNota[];
+  obsAtual: string | null;
+  /** Já conferida: mostra o selo em vez do botão; refazer só com confirmação. */
+  jaConferida?: boolean;
+}) {
   const router = useRouter();
   const [aberto, setAberto] = useState(false);
   const [salvando, setSalvando] = useState(false);
@@ -74,6 +80,24 @@ export function ConferirNota(props: { notaId: string; itens: ItemNota[]; obsAtua
     } finally {
       setSalvando(false);
     }
+  }
+
+  if (!aberto && props.jaConferida) {
+    return (
+      <div className="flex items-center gap-2">
+        <span className="cursor-default rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-800">
+          ✓ Entrega conferida
+        </span>
+        <button
+          onClick={() => {
+            if (confirm('Esta entrega já foi conferida. Refazer a conferência?')) setAberto(true);
+          }}
+          className="text-[11px] text-slate-400 underline hover:text-slate-600"
+        >
+          refazer
+        </button>
+      </div>
+    );
   }
 
   if (!aberto) {
