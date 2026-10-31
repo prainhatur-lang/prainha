@@ -65,6 +65,10 @@ function palavras(...textos: Array<string | null | undefined>): Set<string> {
       .normalize('NFD')
       .replace(/[̀-ͯ]/g, '')
       .toUpperCase()
+      // E.B. Serviços é intermediária: o Pix sai pra "E B SERVICOS LTDA" e a
+      // conta é do recebedor final com "EB serviços" na descrição. "E", "B",
+      // SERVICOS e LTDA não pontuam, então vira uma palavra só que pontua.
+      .replace(/\bE\W{0,3}B\W{0,3}SERVIC/g, ' EBSERVICOS SERVIC')
       .split(/[^A-Z0-9]+/)) {
       if (p.length >= 3 && !VAZIAS.has(p) && !/^\d+$/.test(p)) out.add(p);
     }
