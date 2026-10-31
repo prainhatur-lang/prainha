@@ -5,6 +5,7 @@
 
 import { NextResponse } from 'next/server';
 import { processarNoShowAutomatico } from '@/lib/reservas/no-show';
+import { conferirTaxasCobradas } from '@/lib/reservas/cobrar-taxa';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -18,5 +19,8 @@ export async function GET(req: Request) {
   }
 
   const r = await processarNoShowAutomatico();
-  return NextResponse.json({ ok: true, ...r });
+  // Taxa de lounge cobrada pelo painel/Nina: confere se o Pix caiu (o
+  // webhook da Cielo é só aceleração). Best-effort.
+  const taxasPagas = await conferirTaxasCobradas().catch(() => 0);
+  return NextResponse.json({ ok: true, ...r, taxasPagas });
 }
