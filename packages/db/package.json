@@ -249,7 +249,8 @@
     "migrate:fiado-pix-vinculo": "tsx scripts/migrate-fiado-pix-vinculo.ts",
     "migrate:ifood-entrega": "tsx scripts/migrate-ifood-entrega.ts",
     "migrate:preco-horario": "tsx scripts/migrate-preco-horario.ts",
-    "migrate:promo-leve2": "tsx scripts/migrate-promo-leve2.ts"
+    "migrate:promo-leve2": "tsx scripts/migrate-promo-leve2.ts",
+    "migrate:permuta": "tsx scripts/migrate-permuta.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",
