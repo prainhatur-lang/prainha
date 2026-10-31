@@ -10,6 +10,7 @@ import { and, asc, desc, eq, gte, isNotNull, lte, sql } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { escolherFilial } from '@/lib/filial-ativa';
 import { exigirPerm } from '@/lib/exigir-perm';
 import { AppHeader } from '@/components/app-header';
 import { brDateEnd, brDateStart, hojeBr } from '@/lib/datas';
@@ -22,6 +23,7 @@ export const dynamic = 'force-dynamic';
 
 interface SP {
   dia?: string;
+  filialId?: string;
 }
 
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
@@ -165,7 +167,12 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
   const hoje = hojeBr();
   const dia = sp.dia && YMD.test(sp.dia) && sp.dia <= hoje ? sp.dia : hoje;
   const ehHoje = dia === hoje;
-  const filiais = await filiaisDoUsuario(user.id);
+  const todasFiliais = await filiaisDoUsuario(user.id);
+  // Segue a casa do seletor do menu (ou ?filialId=); ?filialId=todas = as casas empilhadas, como era.
+  const verTodas = sp.filialId === 'todas';
+  const ativa = verTodas ? null : await escolherFilial(todasFiliais, sp.filialId);
+  const filiais = verTodas || !ativa ? todasFiliais : [ativa];
+  const filtroFilial = verTodas ? 'todas' : ativa?.id ?? '';
 
   const b = schema.balancoLoja;
   const casas = await Promise.all(
@@ -274,7 +281,8 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
     }),
   );
 
-  const hrefDia = (d: string) => `/balanco?dia=${d}`;
+  const hrefDia = (d: string) => `/balanco?dia=${d}${filtroFilial ? `&filialId=${filtroFilial}` : ''}`;
+  const hrefCasa = (id: string) => `/balanco?dia=${dia}&filialId=${id}`;
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -295,6 +303,7 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
               ‹
             </Link>
             <form className="flex items-center gap-2" action="/balanco" method="get">
+              {filtroFilial && <input type="hidden" name="filialId" value={filtroFilial} />}
               <input type="date" name="dia" defaultValue={dia} max={hoje} className="rounded-md border border-slate-300 px-2 py-1.5 text-sm" />
               <button type="submit" className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-800">
                 Ver
@@ -308,13 +317,33 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
               </Link>
             )}
             {!ehHoje && (
-              <Link href="/balanco" className="text-sm text-sky-700 hover:underline">
+              <Link href={filtroFilial ? `/balanco?filialId=${filtroFilial}` : '/balanco'} className="text-sm text-sky-700 hover:underline">
                 hoje
               </Link>
             )}
             {ehHoje && <BotaoAtualizar />}
           </div>
         </div>
+
+        {todasFiliais.length > 1 && (
+          <div className="mt-4 flex flex-wrap gap-2">
+            {todasFiliais.map((f) => (
+              <Link
+                key={f.id}
+                href={hrefCasa(f.id)}
+                className={`rounded-full border px-3 py-1 text-sm ${!verTodas && ativa?.id === f.id ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'}`}
+              >
+                {f.nome}
+              </Link>
+            ))}
+            <Link
+              href={hrefCasa('todas')}
+              className={`rounded-full border px-3 py-1 text-sm ${verTodas ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'}`}
+            >
+              Todas
+            </Link>
+          </div>
+        )}
 
         {casas.length === 0 && <p className="mt-10 text-sm text-slate-500">Nenhuma filial disponível.</p>}
 
