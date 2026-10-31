@@ -74,6 +74,8 @@ export interface DadosReservaMesa {
   cpf: string | null;
   nome: string | null;
   observacao: string | null;
+  /** Pediu mesa perto da passarela (só Prainha Bar, Areia). */
+  pertoPassarela?: boolean;
 }
 
 export interface DadosRemarcarReserva {
@@ -85,6 +87,8 @@ export interface DadosRemarcarReserva {
   /** Reserva feita por OUTRO telefone / CPF (após localizar_reserva). */
   telefoneReserva: string | null;
   cpfReserva: string | null;
+  /** Quer mesa perto da passarela (só Prainha Bar, Areia). */
+  pertoPassarela?: boolean;
 }
 
 export interface DadosLocalizarReserva {
@@ -453,6 +457,7 @@ ${ehTabuara
 - UMA reserva por pessoa por dia: antes de criar de novo pro mesmo dia, lembre do que você já fez nesta conversa. Se a ferramenta disser que o telefone já tem reserva, NÃO insista — a mesa dele já está garantida (confirme isso) e, se ele quiser outro horário, remarque.
 ${duasCasas
     ? `- Ofereça as áreas pelo clima, como quem convida: mesa na areia de frente pro rio e pertinho do parque (Areia), vista do alto no Deck Superior, ou o lounge exclusivo com garçom só do grupo (esse tem taxa: você fecha aqui com criar_reserva e o Pix vai na conversa, ou o cliente faz pelo site).
+- PASSARELA (Prainha Bar, Areia — dono 31/10/2026): a passarela fica do lado ESQUERDO, onde começa a mesa 01 — "perto da passarela", "na frente", "perto da água" = mesas de número BAIXO (1, 2, 3…). Cliente pediu isso → mande perto_passarela=true no criar_reserva (ou no remarcar_reserva, se já tem reserva e quer trocar de mesa). Diga o número da mesa que a ferramenta devolver; se ela avisar que as primeiras já estavam reservadas, seja honesta: é a mais perto que tinha livre. Nunca prometa mesa colada na passarela antes da ferramenta responder.
 - SÓ EXISTEM TRÊS ÁREAS DE RESERVA: Areia, Deck Superior e Lounges. É PROIBIDO oferecer, prometer ou citar qualquer outro espaço como reservável — em especial o TERRAÇO, que está fechado pro dia a dia e só recebe evento fechado (a ferramenta recusaria; se você prometer, o cliente aparece e não tem mesa). A área alta que recebe reserva chama DECK SUPERIOR: nunca a chame de "Terraço" nem de "área superior". Se o cliente pedir o Terraço pra uma mesa comum, explique com carinho que ele hoje é só pra eventos e ofereça o Deck Superior, que também é elevado, coberto e com vista do rio.
 - O "RESTAURANTE DE VIDRO" É O TERRAÇO: no alto do Prainha Bar ficam DOIS ambientes diferentes. O TERRAÇO é o restaurante FECHADO COM VIDRO, climatizado — é dele que o cliente fala quando diz "restaurante de vidro", "o envidraçado", "o de vidro lá em cima", "o restaurante climatizado / com ar" e, quase sempre, "restaurante de cima" ou "restaurante superior". O DECK SUPERIOR é um deck ABERTO, coberto com telhado e ventiladores — não é salão fechado nem climatizado. Cliente descreveu o de vidro → é PROIBIDO responder "você está falando do Deck Superior": diga que esse é o Terraço, que hoje só abre pra evento fechado, e ofereça o Deck Superior deixando claro que é OUTRO ambiente (aberto, coberto, com vista do rio). Só siga pra reserva depois que ele souber disso e topar. Disse só "restaurante de cima" sem falar de vidro → pergunte qual dos dois ele tem em mente antes de reservar (caso Ulisses, 06/10: pediu "o restaurante de vidro, na parte superior" e ouviu "você está falando do Deck Superior").`
     : `- As áreas reserváveis são SÓ as que consultar_disponibilidade_reserva devolver — é PROIBIDO oferecer ou prometer espaço que não esteja lá. Descreva cada área pelo que os blocos de conhecimento disserem.`}
@@ -552,6 +557,7 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           cpf: { type: 'string', description: 'CPF de quem reserva (11 dígitos) — preferido; o nome sai do cadastro' },
           nome: { type: 'string', description: 'o nome REAL escrito pelo cliente — só quando ele não quis dar CPF, ou quer a reserva em outro nome. Nunca mande texto de exemplo ("[Nome do cliente]", "Cliente"): se não souber o nome, omita o campo' },
           observacao: { type: 'string', description: 'pedido especial do cliente, se houver ("mesa na sombra", aniversário...)' },
+          perto_passarela: { type: 'boolean', description: 'Prainha Bar, Areia: true quando o cliente pede mesa perto da passarela / na frente / perto da água — o sistema pega a mesa livre de menor número (a passarela fica à esquerda, onde começa a mesa 01)' },
         },
         required: ['data', 'hora', 'pessoas', 'area'],
       },
@@ -728,6 +734,7 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           nova_area: { type: 'string', description: 'nova área (Areia ou Deck Superior), se mudou' },
           telefone_reserva: { type: 'string', description: 'telefone em que a reserva foi feita, SE for outro que não o desta conversa (veio de localizar_reserva). Reserva feita NESTA conversa/neste número: deixe VAZIO' },
           cpf_reserva: { type: 'string', description: 'CPF de quem fez a reserva, se foi localizada por CPF em localizar_reserva (reserva de OUTRO número). Reserva feita nesta conversa: deixe VAZIO, mesmo que o cliente tenha dado o CPF ao reservar' },
+          perto_passarela: { type: 'boolean', description: 'Prainha Bar, Areia: true quando o cliente quer TROCAR pra uma mesa mais perto da passarela / na frente — realoca pra mesa livre de menor número, mesmo sem mudar mais nada' },
         },
       },
     },
@@ -1516,6 +1523,7 @@ Como usar, SEM EXCEÇÃO:
                 cpf: String(args.cpf ?? '') || null,
                 nome: String(args.nome ?? '') || null,
                 observacao: String(args.observacao ?? '') || null,
+                pertoPassarela: params.filialId === FILIAL_PRAINHA_BAR && args.perto_passarela === true,
               })
             : `NÃO CRIEI A RESERVA AINDA — falta combinar o horário. O cliente não disse nem aceitou ${horaPedida} nesta conversa (você citou uma faixa ou escolheu sozinha). NÃO diga que a reserva está feita. Nesta resposta, pergunte a que horas ele pretende chegar OU proponha UM horário só ("posso marcar pras ${horaPedida.replace(':', 'h')}?") e espere a resposta dele; os outros dados você já tem, não peça de novo. Quando ele responder, chame criar_reserva com o horário que ELE confirmou.`;
         } else if (tc.function.name === 'listar_opcoes_orcamento_evento' && params.filialId !== FILIAL_PRAINHA_BAR) {
@@ -1594,6 +1602,7 @@ Como usar, SEM EXCEÇÃO:
             novaArea: String(args.nova_area ?? '') || null,
             telefoneReserva: String(args.telefone_reserva ?? '') || null,
             cpfReserva: String(args.cpf_reserva ?? '') || null,
+            pertoPassarela: params.filialId === FILIAL_PRAINHA_BAR && args.perto_passarela === true,
           });
         } else if (tc.function.name === 'localizar_reserva') {
           resultado = await params.executores.localizarReserva({

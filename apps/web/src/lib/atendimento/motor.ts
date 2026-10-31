@@ -615,6 +615,7 @@ export async function processarEntrada(params: {
           nome: dados.nome,
           nomePerfil: conversa.nomeCliente,
           observacao: dados.observacao,
+          pertoPassarela: dados.pertoPassarela,
         });
         // Lounge: o código do Pix não passa pelo modelo (ele encurta/quebra).
         const mPix = /\nPIX_LOUNGE: (\S+)\s*$/.exec(r);
@@ -744,6 +745,7 @@ export async function processarEntrada(params: {
           novaArea: dados.novaArea,
           telefoneReserva: dados.telefoneReserva,
           cpfReserva: dados.cpfReserva,
+          pertoPassarela: dados.pertoPassarela,
         }),
       cancelarReserva: (dados: { data: string | null; telefoneReserva: string | null; cpfReserva: string | null }) =>
         cancelarReservaWhatsApp({ filialId: entrada.filialId, telefone: entrada.telefone, ...dados }),

@@ -663,6 +663,24 @@ interface SlotAlocado {
  *  modelo falar; objeto = pode gravar.
  *  `excluirReservaId`: na remarcação, a própria reserva não briga com a mesa
  *  que ela já ocupa. */
+/** Texto pra Nina quando o cliente pediu perto da passarela (Prainha Bar,
+ *  Areia): a passarela fica à esquerda, onde começa a mesa 01. */
+function notaPassarela(
+  perto: boolean | undefined,
+  area: string,
+  mesa: string | null,
+  juntada: string | null,
+): string {
+  if (!perto || !/areia/i.test(area) || !mesa) return '';
+  const nums = [mesa, juntada].filter(Boolean).map((x) => parseInt(String(x), 10)).filter(Number.isFinite);
+  const menor = nums.length ? Math.min(...nums) : NaN;
+  const base = ' — PEDIU PERTO DA PASSARELA: peguei a mesa livre de MENOR número que cabe o grupo (a passarela fica do lado esquerdo, onde começa a mesa 01; quanto menor o número, mais perto)';
+  if (Number.isFinite(menor) && menor > 13) {
+    return `${base}. As primeiras mesas já estavam reservadas: seja honesta, diga que reservou a mais perto que tinha livre, sem prometer que fica colada na passarela`;
+  }
+  return base;
+}
+
 async function validarSlotEAlocarMesa(p: {
   filialId: string;
   cfg: ReservaConfig;
@@ -677,6 +695,10 @@ async function validarSlotEAlocarMesa(p: {
    *  fechada aqui — a Nina cobra o Pix na conversa — e o Lounge não segue o
    *  corte do dia (é justamente pra quem quer chegar mais tarde). */
   permitirTaxa?: boolean;
+  /** Cliente pediu mesa perto da passarela (Prainha Bar, Areia — dono
+   *  31/10/2026: a passarela fica do lado esquerdo, onde começa a mesa 01).
+   *  Em vez da menor mesa que cabe, pega a de MENOR NÚMERO que cabe. */
+  pertoPassarela?: boolean;
 }): Promise<string | SlotAlocado> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(p.data)) return 'Data inválida (use YYYY-MM-DD).';
   if (!/^\d{2}:\d{2}$/.test(p.hora)) return 'Hora inválida (use HH:MM).';
@@ -781,7 +803,14 @@ async function validarSlotEAlocarMesa(p: {
   }
   const ordenadas = mesas.slice().sort((a, b) => a.lugares - b.lugares);
   const livres = ordenadas.filter((m) => !ocupadas.has(String(m.numero)));
-  const unica = livres.find((m) => m.lugares >= p.pessoas);
+  const passarela = !!p.pertoPassarela && /areia/i.test(areaCfg.nome);
+  const numMesa = (m: { numero: string | number }) => {
+    const n = parseInt(String(m.numero), 10);
+    return Number.isFinite(n) ? n : 9999;
+  };
+  const unica = passarela
+    ? livres.filter((m) => m.lugares >= p.pessoas).sort((a, b) => numMesa(a) - numMesa(b))[0]
+    : livres.find((m) => m.lugares >= p.pessoas);
   if (unica) return { areaCfg, mesa: String(unica.numero), mesaJuntada: null };
 
   // Tenta juntar DUAS mesas livres (par de menor capacidade que atende).
@@ -801,6 +830,15 @@ async function validarSlotEAlocarMesa(p: {
         if (soma < p.pessoas) continue;
         if (!saoVizinhas(planta.vizinhas, String(livres[i].numero), String(livres[j].numero))) {
           parLonge = true;
+          continue;
+        }
+        if (passarela) {
+          // perto da passarela: o par que começa no menor número; empate → menor soma
+          const menor = Math.min(numMesa(livres[i]), numMesa(livres[j]));
+          const menorPar = par ? Math.min(numMesa(par[0]), numMesa(par[1])) : Infinity;
+          if (!par || menor < menorPar || (menor === menorPar && soma < par[0].lugares + par[1].lugares)) {
+            par = [livres[i], livres[j]];
+          }
           continue;
         }
         if (!par || soma < par[0].lugares + par[1].lugares) {
@@ -841,6 +879,8 @@ export interface DadosCriarReserva {
   /** Nome do perfil do WhatsApp (fallback de exibição). */
   nomePerfil?: string | null;
   observacao?: string | null;
+  /** Pediu mesa perto da passarela (ver validarSlotEAlocarMesa). */
+  pertoPassarela?: boolean;
 }
 
 /** Consultas PAGAS ao SPC que a Nina pode disparar por filial em 1 hora —
@@ -963,6 +1003,7 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
     area: p.area,
     telefone: p.telefone,
     permitirTaxa: true,
+    pertoPassarela: p.pertoPassarela,
   });
   if (typeof slot === 'string') return slot;
   const { areaCfg, mesa: mesaAlocada, mesaJuntada: mesaJuntadaAlocada } = slot;
@@ -1082,7 +1123,7 @@ export async function criarReservaWhatsApp(p: DadosCriarReserva): Promise<string
       ? ` (mesa ${mesaAlocada})`
       : '';
   const cpfTxt = clienteCpf ? ` (CPF final ${clienteCpf.slice(-3)})` : '';
-  return `RESERVA CRIADA: ${dataBr(p.data)} às ${p.hora}, ${pessoas} pessoa(s), ${areaCfg.nome}${mesaTxt}, em nome de ${nomeVeioDoCpf ? nome.split(' ')[0] : nome}${cpfTxt}. Gratuita. Confirme ao cliente em uma frase (cite o nome${nomeVeioDoCpf ? ' — só esse primeiro nome, que saiu do cadastro do CPF; não peça nem invente sobrenome' : ''}; do CPF, no máximo os 3 últimos dígitos) e avise que a mesa fica guardada por 15 minutos após o horário.`;
+  return `RESERVA CRIADA: ${dataBr(p.data)} às ${p.hora}, ${pessoas} pessoa(s), ${areaCfg.nome}${mesaTxt}${notaPassarela(p.pertoPassarela, areaCfg.nome, mesaAlocada, mesaJuntadaAlocada)}, em nome de ${nomeVeioDoCpf ? nome.split(' ')[0] : nome}${cpfTxt}. Gratuita. Confirme ao cliente em uma frase (cite o nome${nomeVeioDoCpf ? ' — só esse primeiro nome, que saiu do cadastro do CPF; não peça nem invente sobrenome' : ''}; do CPF, no máximo os 3 últimos dígitos) e avise que a mesa fica guardada por 15 minutos após o horário.`;
 }
 
 /** Remarca a reserva EXISTENTE (hora, dia, pessoas e/ou área) — a mesma
@@ -1106,6 +1147,8 @@ export async function remarcarReservaWhatsApp(p: {
   /** Reserva feita por OUTRO telefone / CPF (depois de localizar_reserva). */
   telefoneReserva?: string | null;
   cpfReserva?: string | null;
+  /** Quer mesa perto da passarela (realoca a mesa mesmo sem mudar o resto). */
+  pertoPassarela?: boolean;
 }): Promise<string> {
   const ident: IdentReserva = p.cpfReserva || p.telefoneReserva ? { telefone: p.telefoneReserva, cpf: p.cpfReserva } : { telefone: p.telefone };
   let ativas = await reservasAtivas(p.filialId, ident);
@@ -1138,7 +1181,7 @@ export async function remarcarReservaWhatsApp(p: {
   const area = p.novaArea?.trim() || alvo.area || '';
   if (!area) return 'Essa reserva está sem área definida no sistema — transfira pra equipe ajustar.';
   const horaAtual = String(alvo.hora).slice(0, 5);
-  if (data === String(alvo.data) && hora === horaAtual && pessoas === alvo.pessoas && area === alvo.area) {
+  if (!p.pertoPassarela && data === String(alvo.data) && hora === horaAtual && pessoas === alvo.pessoas && area === alvo.area) {
     // "Mudar pra X" quando a reserva JÁ está em X: é pedido ATENDIDO, não
     // erro. A resposta antiga ("confirme o que ele quer mudar") criava loop
     // infinito — a Nina re-perguntava, o cliente dizia SIM, e de novo
@@ -1164,6 +1207,7 @@ export async function remarcarReservaWhatsApp(p: {
     area,
     excluirReservaId: alvo.id,
     telefone: p.telefone,
+    pertoPassarela: p.pertoPassarela,
   });
   if (typeof slot === 'string') {
     // Nada foi alterado — a reserva antiga continua valendo.
@@ -1224,7 +1268,7 @@ export async function remarcarReservaWhatsApp(p: {
     alvo.pagamentoStatus === 'pago'
       ? 'Confirme ao cliente em uma frase; lounge pago NÃO tem tolerância — a mesa é dele o dia todo.'
       : 'Confirme ao cliente em uma frase e lembre que a mesa fica guardada por 15 minutos após o horário.';
-  return `RESERVA REMARCADA: era ${dataBr(String(alvo.data))} às ${horaAtual} (${alvo.area}), agora é ${dataBr(data)} às ${hora}, ${pessoas} pessoa(s), ${slot.areaCfg.nome}${mesaTxt}, em nome de ${nome}. É a MESMA reserva — não precisa criar outra. ${fecho}`;
+  return `RESERVA REMARCADA: era ${dataBr(String(alvo.data))} às ${horaAtual} (${alvo.area}), agora é ${dataBr(data)} às ${hora}, ${pessoas} pessoa(s), ${slot.areaCfg.nome}${mesaTxt}${notaPassarela(p.pertoPassarela, slot.areaCfg.nome, slot.mesa, slot.mesaJuntada)}, em nome de ${nome}. É a MESMA reserva — não precisa criar outra. ${fecho}`;
 }
 
 const LISTA_ESPERA_PELA_NINA: boolean = false;
