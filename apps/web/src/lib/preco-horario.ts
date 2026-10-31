@@ -79,7 +79,7 @@ const SELECT = sql.raw(`
     FROM preco_horario`);
 
 /** Feriados de ontem até daqui a 2 dias (ontem: faixa que vira a meia-noite). */
-async function feriadosPerto(): Promise<string[]> {
+export async function feriadosPerto(): Promise<string[]> {
   try {
     return (await proximosFeriados(diasAtrasBr(1), 3)).map((f) => f.data);
   } catch {
@@ -88,7 +88,11 @@ async function feriadosPerto(): Promise<string[]> {
 }
 
 /** A regra vale agora? Reaproveita a conta do horário dos combos. */
-export function precoHorarioValeAgora(r: RegraPreco, feriados: string[], ms = Date.now()): boolean {
+export function precoHorarioValeAgora(
+  r: Pick<RegraPreco, 'ativa' | 'dias' | 'horaInicio' | 'horaFim' | 'excetoFeriados'>,
+  feriados: string[],
+  ms = Date.now(),
+): boolean {
   if (!r.ativa) return false;
   const regra: RegraCombo = {
     ativa: true,

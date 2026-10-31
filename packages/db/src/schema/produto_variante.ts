@@ -347,3 +347,28 @@ export const precoHorario = pgTable(
     pk: primaryKey({ columns: [t.filialId, t.codigoVarianteExterno] }),
   }),
 );
+
+/**
+ * PAGA 1 LEVA 2 POR HORÁRIO (31/10/2026): liga produto.dobrado_vale só na
+ * faixa de dias/hora (happy hour do chope). Na virada o cron
+ * /api/cron/combo-horario liga/desliga a marca; a loja puxa pelo catálogo.
+ */
+export const promoLeve2Horario = pgTable(
+  'promo_leve2_horario',
+  {
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    produtoId: uuid('produto_id').notNull(),
+    ativa: boolean('ativa').notNull().default(true),
+    diasSemana: smallint('dias_semana').array().notNull().default(sql`'{}'`),
+    horaInicio: time('hora_inicio'),
+    horaFim: time('hora_fim'),
+    excetoFeriados: boolean('exceto_feriados').notNull().default(true),
+    estadoAplicado: text('estado_aplicado'),
+    aplicadoEm: timestamp('aplicado_em', { withTimezone: true }),
+    atualizadoPor: text('atualizado_por'),
+    atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.filialId, t.produtoId] }),
+  }),
+);

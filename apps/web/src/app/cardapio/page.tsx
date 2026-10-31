@@ -83,6 +83,12 @@ export default async function CardapioPage(props: {
         >
           🕔 Preço por horário (happy hour) →
         </a>
+        <a
+          href={`/cardapio/promocoes?filialId=${filialId}`}
+          className="ml-2 mt-2 inline-block rounded-md border border-amber-400 bg-amber-100 px-3 py-1.5 text-sm font-medium text-amber-900 hover:bg-amber-200"
+        >
+          🏷️ Promoções (preço no horário, paga 1 leva 2) →
+        </a>
         {filiais.length > 1 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {filiais.map((f) => (
