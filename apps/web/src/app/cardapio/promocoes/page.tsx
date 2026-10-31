@@ -11,6 +11,7 @@ import { escolherFilial } from '@/lib/filial-ativa';
 import { itensDaCasa } from '@/lib/cardapio-destaque';
 import { listarPrecosHorario } from '@/lib/preco-horario';
 import { listarLeve2, produtosParaLeve2 } from '@/lib/promo-leve2';
+import { carregarRegras, resumoRegra, valeAgora } from '@/lib/combo-horario';
 import { PrecoHorarioClient } from '../preco-horario/preco-horario-client';
 import { Leve2Client } from './leve2-client';
 
@@ -25,12 +26,22 @@ export default async function PromocoesPage(props: { searchParams: Promise<{ fil
   const escolhida = await escolherFilial(filiais, sp.filialId);
   if (!escolhida) redirect('/inicio');
   const filial = escolhida;
-  const [regras, itens, leve2, produtos] = await Promise.all([
+  const [regras, itens, leve2, produtos, combos] = await Promise.all([
     listarPrecosHorario(filial.id),
     itensDaCasa(filial.id),
     listarLeve2(filial.id),
     produtosParaLeve2(filial.id),
+    carregarRegras(filial.id),
   ]);
+  // Itens que só vendem no horário (combo_regra): já existiam antes desta aba,
+  // editados em Cadastros → Combos. Aqui só lista, pra ver tudo num lugar.
+  const nomePorCodigo = new Map(itens.map((i) => [i.codigo, i.nome]));
+  const soNoHorario = [...combos.entries()].map(([codigo, r]) => ({
+    codigo,
+    nome: nomePorCodigo.get(codigo) ?? `#${codigo}`,
+    r,
+    agora: r.ativa && valeAgora(r),
+  }));
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -81,6 +92,48 @@ export default async function PromocoesPage(props: { searchParams: Promise<{ fil
             (Prainha Bar e Prainha Mar); a loja recebe a mudança em até 10 minutos.
           </p>
           <Leve2Client key={`l-${filial.id}`} filialId={filial.id} regras={leve2} produtos={produtos} />
+        </section>
+
+        <section className="mt-10">
+          <h2 className="text-lg font-semibold text-slate-900">🕒 Itens que só vendem no horário</h2>
+          <p className="text-xs text-slate-500">
+            Produto que aparece no horário e some fora dele (ex.: executivo do almoço, item de happy hour). Pra mudar,
+            clique no item.
+          </p>
+          {soNoHorario.length === 0 ? (
+            <p className="mt-3 rounded-lg border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
+              Nenhum item com horário nesta casa.
+            </p>
+          ) : (
+            <ul className="mt-3 divide-y rounded-lg border border-slate-200 bg-white">
+              {soNoHorario.map((c) => (
+                <li key={c.codigo}>
+                  <a
+                    href={`/cadastros/produtos/combos/${c.codigo}?filial=${filial.id}`}
+                    className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 hover:bg-slate-50"
+                  >
+                    <span className="text-sm font-medium text-slate-900">
+                      {c.nome} <span className="text-xs font-normal text-slate-400">#{c.codigo}</span>
+                    </span>
+                    <span className="flex items-center gap-2 text-xs text-slate-600">
+                      {resumoRegra(c.r)}
+                      <span
+                        className={`rounded px-2 py-0.5 ${
+                          !c.r.ativa
+                            ? 'bg-slate-100 text-slate-500'
+                            : c.agora
+                              ? 'bg-emerald-100 text-emerald-700'
+                              : 'bg-amber-100 text-amber-800'
+                        }`}
+                      >
+                        {!c.r.ativa ? 'desligada' : c.agora ? 'à venda agora' : 'fora do horário'}
+                      </span>
+                    </span>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
       </div>
     </main>
