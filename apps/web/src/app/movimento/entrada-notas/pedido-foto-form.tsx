@@ -108,6 +108,8 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
   const [resultados, setResultados] = useState<Resultado[]>([]);
   // No computador o "Escanear pedido agora" mostra o QR pro celular tirar a foto
   const [qrCelular, setQrCelular] = useState(false);
+  // Mesmo QR, mas as fotos do celular entram na lista do "pedido em várias notas"
+  const [qrPaginas, setQrPaginas] = useState(false);
 
   async function enviarUm(f: File): Promise<Resultado> {
     return enviar([f]);
@@ -336,6 +338,7 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
             const noCelular = window.matchMedia('(pointer: coarse)').matches;
             if (!noCelular && !enviando) {
               ev.preventDefault();
+              setQrPaginas(false);
               setQrCelular(true);
             }
           }}
@@ -397,7 +400,18 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
             por um e envie tudo junto — vira UMA entrada com os itens de todos.
           </p>
           <div className="mt-2 flex flex-wrap gap-2">
-            <label className="cursor-pointer">
+            <label
+              className="cursor-pointer"
+              onClick={(ev) => {
+                // Celular/tablet: câmera direto (como sempre). Computador: QR pro celular.
+                const noCelular = window.matchMedia('(pointer: coarse)').matches;
+                if (!noCelular && !enviando) {
+                  ev.preventDefault();
+                  setQrCelular(false);
+                  setQrPaginas(true);
+                }
+              }}
+            >
               <input
                 ref={paginaScanRef}
                 type="file"
@@ -426,6 +440,17 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
               </span>
             </label>
           </div>
+          {qrPaginas && (
+            <div className="mt-2">
+              <PedidoPeloCelular
+                filialId={selecionada}
+                ocupado={enviando}
+                onFotos={async (fotos) => setPaginas((ant) => [...ant, ...fotos])}
+                onFechar={() => setQrPaginas(false)}
+                onArquivoAqui={() => paginaArqRef.current?.click()}
+              />
+            </div>
+          )}
           {paginas.length > 0 && (
             <>
               <ul className="mt-2 space-y-1">
