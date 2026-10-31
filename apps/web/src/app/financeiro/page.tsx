@@ -3,7 +3,7 @@ import { exigirPerm } from '@/lib/exigir-perm';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
-import { filiaisDoFinanceiro } from '@/lib/eb/acesso-financeiro';
+import { ehEmpresaSoAdmin, filiaisDoFinanceiro } from '@/lib/eb/acesso-financeiro';
 import { EB_CNPJ } from '@/lib/eb/faturas';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
@@ -50,7 +50,8 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
   // "Todas as filiais": só pela URL (?filialId=todas) e só as casas que o
   // usuário já acessa. Não mexe na filial ativa do menu.
   // A E.B. (só no financeiro) fica fora do "Todas": o total segue sendo o das casas.
-  const casas = filiais.filter((f) => f.cnpj !== EB_CNPJ);
+  // A Lelis (31/10) também fica fora.
+  const casas = filiais.filter((f) => f.cnpj !== EB_CNPJ && !ehEmpresaSoAdmin(f.cnpj));
   const todasFiliais = sp.filialId === 'todas' && casas.length > 1;
   const filtroFilial = todasFiliais
     ? inArray(

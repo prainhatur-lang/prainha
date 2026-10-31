@@ -178,6 +178,7 @@
     "migrate:funcionario-documento-empregador": "tsx scripts/migrate-funcionario-documento-empregador.ts",
     "migrate:bordero": "tsx scripts/migrate-bordero.ts",
     "migrate:eb-faturas": "tsx scripts/migrate-eb-faturas.ts",
+    "migrate:lelis-filial": "tsx scripts/migrate-lelis-filial.ts",
     "migrate:fatura-servico-dividir": "tsx scripts/migrate-fatura-servico-dividir.ts",
     "migrate:lista-compra": "tsx scripts/migrate-lista-compra.ts",
     "migrate:ifood-nuvem": "tsx scripts/migrate-ifood-nuvem.ts",
