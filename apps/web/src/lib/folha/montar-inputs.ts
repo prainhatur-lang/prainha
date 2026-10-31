@@ -6,7 +6,7 @@
 // outros recalculavam como `diasTrab`, mesmo resultado mas duplicado).
 
 import { db, schema } from '@concilia/db';
-import { and, eq, gt, gte, inArray, lt, lte } from 'drizzle-orm';
+import { and, eq, gt, gte, inArray, lt, lte, sql } from 'drizzle-orm';
 import { minutosNoturnos } from '@/lib/rh/calcular-ponto';
 import type { ConfigFolha, PessoaInput } from './calcular';
 import { contasPorCpf, temConta } from '@/lib/rh/conta-da-pessoa';
@@ -27,6 +27,7 @@ export interface InputsFolha {
     diaristaValorFixoDia: string | null;
     bonusFixoSemanal: string | null;
     bonusPorDia: string | null;
+    dezPctCasas?: number | null;
     nome: string | null;
     cpf?: string | null;
     bancoNome?: string | null;
@@ -71,6 +72,7 @@ export async function montarInputsFolha(folhaSemanaId: string, filialId: string)
       diaristaValorFixoDia: schema.fornecedorFolha.diaristaValorFixoDia,
       bonusFixoSemanal: schema.fornecedorFolha.bonusFixoSemanal,
       bonusPorDia: schema.fornecedorFolha.bonusPorDia,
+      dezPctCasas: schema.fornecedorFolha.dezPctCasas,
       nome: schema.fornecedor.nome,
       cpf: schema.fornecedor.cnpjOuCpf,
       bancoNome: schema.fornecedor.bancoNome,
@@ -190,6 +192,33 @@ export async function montarInputsFolha(folhaSemanaId: string, filialId: string)
     auxTransporteDias: (config.auxTransporteDias as Record<string, boolean> | null) ?? null,
   };
 
+  // Quem divide o 10% entre casas (funcionário da Lelis) bate o ponto numa
+  // casa só: o rateio de cada casa usa o ponto dele em TODAS as casas na
+  // mesma semana (folha_horas das folhas com a mesma data de início, pelo CPF).
+  const horasDezPctPorCpf = new Map<string, Record<string, number>>();
+  const cpfsDivide = Array.from(
+    new Set(
+      pessoasRows
+        .filter((p) => (p.dezPctCasas ?? 1) > 1 && p.cpf)
+        .map((p) => String(p.cpf).replace(/\D/g, ''))
+        .filter((c) => c.length === 11),
+    ),
+  );
+  if (cpfsDivide.length > 0 && folhaRow?.dataInicio) {
+    const cpfExpr = sql<string>`regexp_replace(${schema.fornecedor.cnpjOuCpf}, '[^0-9]', '', 'g')`;
+    const rows = await db
+      .select({ cpf: cpfExpr, dia: schema.folhaHoras.dia, min: schema.folhaHoras.totalMin })
+      .from(schema.folhaHoras)
+      .innerJoin(schema.folhaSemana, eq(schema.folhaSemana.id, schema.folhaHoras.folhaSemanaId))
+      .innerJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.folhaHoras.fornecedorId))
+      .where(and(eq(schema.folhaSemana.dataInicio, folhaRow.dataInicio), inArray(cpfExpr, cpfsDivide)));
+    for (const r of rows) {
+      const cur = horasDezPctPorCpf.get(r.cpf) ?? {};
+      cur[r.dia] = (cur[r.dia] ?? 0) + r.min;
+      horasDezPctPorCpf.set(r.cpf, cur);
+    }
+  }
+
   const pessoas: PessoaInput[] = pessoasRows.map((p) => ({
     fornecedorId: p.fornecedorId,
     nome: p.nome ?? '(sem nome)',
@@ -200,6 +229,11 @@ export async function montarInputsFolha(folhaSemanaId: string, filialId: string)
     diaristaTaxaHoraOverride: p.diaristaTaxaHoraOverride ? Number(p.diaristaTaxaHoraOverride) : null,
     diaristaModelo: p.diaristaModelo ?? 'por_hora',
     diaristaValorFixoDia: p.diaristaValorFixoDia ? Number(p.diaristaValorFixoDia) : null,
+    dezPctCasas: p.dezPctCasas && p.dezPctCasas > 1 ? p.dezPctCasas : null,
+    horasDezPct:
+      p.dezPctCasas && p.dezPctCasas > 1 && p.cpf
+        ? horasDezPctPorCpf.get(String(p.cpf).replace(/\D/g, '')) ?? null
+        : null,
   }));
 
   const noturno = folhaRow

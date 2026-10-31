@@ -16,6 +16,8 @@ interface Pagamento {
   diaristaValorFixoDia: string | null;
   bonusFixoSemanal: string | null;
   bonusPorDia: string | null;
+  /** Divide a parte do 10% por N casas (null/1 = inteira). */
+  dezPctCasas?: number | null;
   chavePix: string | null;
   bancoNome: string | null;
   bancoAgencia: string | null;
@@ -141,6 +143,7 @@ function resumoAcordo(pg: Pagamento): string {
   }
   if (pg.bonusPorDia && Number(pg.bonusPorDia) > 0) partes.push(`🗓 R$${fmtReais(pg.bonusPorDia)}/dia`);
   if (pg.bonusFixoSemanal && Number(pg.bonusFixoSemanal) > 0) partes.push(`💰 R$${fmtReais(pg.bonusFixoSemanal)}/sem`);
+  if (pg.dezPctCasas && pg.dezPctCasas > 1) partes.push(`🏠 1/${pg.dezPctCasas} do 10%`);
   return partes.join(' · ');
 }
 
@@ -524,6 +527,7 @@ function FuncionarioForm({
   const [gerenteValorDia, setGerenteValorDia] = useState(pg?.gerenteValorFixoDia ?? '');
   const [bonusSemanal, setBonusSemanal] = useState(pg?.bonusFixoSemanal ?? '');
   const [bonusDia, setBonusDia] = useState(pg?.bonusPorDia ?? '');
+  const [dezPctCasas, setDezPctCasas] = useState<number>(pg?.dezPctCasas ?? 1);
   const [chavePix, setChavePix] = useState(contaIni?.chavePix ?? '');
   const [bancoNome, setBancoNome] = useState(contaIni?.bancoNome ?? '');
   const [bancoAgencia, setBancoAgencia] = useState(contaIni?.bancoAgencia ?? '');
@@ -625,6 +629,8 @@ function FuncionarioForm({
                 papel === 'diarista' && diaristaModelo === 'fixo_por_dia' ? num(diaristaValorDia) : null,
               bonusFixoSemanal: num(bonusSemanal),
               bonusPorDia: num(bonusDia),
+              // Só manda quando mexeu ou já tinha: quem nunca usou segue igual.
+              ...(dezPctCasas > 1 || (pg?.dezPctCasas ?? 1) > 1 ? { dezPctCasas } : {}),
               tambemCliente,
               formaPagamento,
               chavePix: formaPagamento === 'pix' ? chavePix.trim() || null : null,
@@ -961,6 +967,21 @@ function FuncionarioForm({
                   placeholder="opcional"
                   className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono"
                 />
+              </label>
+              <label
+                className="text-xs text-slate-500"
+                title="Quem trabalha pra várias casas (ex.: funcionário da Lelis) recebe uma fração do 10% em cada casa, sobre as horas batidas em todas. O resto fica com a empresa desta casa."
+              >
+                10% desta casa
+                <select
+                  value={dezPctCasas}
+                  onChange={(e) => setDezPctCasas(Number(e.target.value))}
+                  className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                >
+                  <option value={1}>Parte inteira</option>
+                  <option value={2}>1/2 — trabalha pra 2 casas</option>
+                  <option value={3}>1/3 — trabalha pras 3 casas</option>
+                </select>
               </label>
               <label className="text-xs text-slate-500">
                 Como pagar

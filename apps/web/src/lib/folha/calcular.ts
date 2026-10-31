@@ -25,6 +25,16 @@ export interface PessoaInput {
   /** 'por_hora' (default) | 'fixo_por_dia' */
   diaristaModelo?: string | null;
   diaristaValorFixoDia?: number | null;
+  /** Divide a parte do 10% por N casas (quem trabalha pras três casas, ex.
+   *  funcionário da Lelis): recebe 1/N da fatia; o resto vai pra empresa.
+   *  As horas contam inteiras no rateio — os colegas não ganham a diferença.
+   *  null/1 = parte inteira. */
+  dezPctCasas?: number | null;
+  /** Horas do rateio do 10% de quem divide entre casas: o ponto dele em
+   *  TODAS as casas da semana ({ 'YYYY-MM-DD': minutos }). Ele bate o ponto
+   *  numa casa só, mas a parte de cada casa sai sobre as horas todas.
+   *  Diária, transporte e bônus seguem com as horas DESTA casa. */
+  horasDezPct?: Record<string, number> | null;
 }
 
 export interface HorasInput {
@@ -54,8 +64,11 @@ export interface Lancamento {
 export interface ResultadoCalculo {
   /** Lancamentos a serem gerados (vai virar N conta_pagar). */
   lancamentos: Lancamento[];
-  /** Soma do 10pp empresa (so info). */
+  /** Soma do 10pp empresa (so info). Inclui o que ficou da parte de quem
+   *  divide o 10% entre casas (ver dezPctRetidoEmpresa). */
   totalEmpresa: number;
+  /** Quanto da parte de quem divide o 10% entre casas ficou com a empresa. */
+  dezPctRetidoEmpresa?: number;
   /** Soma comissao + gerente. */
   totalEquipe: number;
   /** Soma de tudo a pagar (bruto, ja incluindo gratificacoes que vem dos
@@ -126,6 +139,10 @@ export function calcularFolha(args: {
     new Set([...Object.keys(dezPctPorDia), ...Object.keys(perdasPorDia)]),
   ).sort();
   const horasMap = new Map(horas.map((h) => [h.fornecedorId, h.porDia]));
+  // Minutos que entram no rateio do 10%: os desta casa, ou — pra quem divide
+  // o 10% entre casas — o ponto dele em todas as casas.
+  const minRateio = (p: PessoaInput, dia: string) =>
+    ((p.dezPctCasas ?? 1) > 1 && p.horasDezPct ? p.horasDezPct[dia] : horasMap.get(p.fornecedorId)?.[dia]) ?? 0;
 
   // Identifica gerente (papel='gerente') — pode ter zero ou um por filial.
   const gerentes = pessoas.filter((p) => p.papel === 'gerente' && true);
@@ -140,6 +157,9 @@ export function calcularFolha(args: {
   // funcao das horas trabalhadas.
   const comissaoPorPessoa = new Map<string, number>();
   for (const p of naoGerentes) comissaoPorPessoa.set(p.fornecedorId, 0);
+  // Parte de quem divide o 10% entre casas que ficou com a empresa.
+  let dezPctRetidoEmpresa = 0;
+  const retidoPorPessoa = new Map<string, number>();
 
   // Perda que nao coube no pote do dia e rola pro dia seguinte da semana.
   let perdaSobra = 0;
@@ -164,14 +184,22 @@ export function calcularFolha(args: {
     // gerente nao rateia).
     let totalMinDia = 0;
     for (const p of naoGerentes) {
-      totalMinDia += horasMap.get(p.fornecedorId)?.[dia] ?? 0;
+      totalMinDia += minRateio(p, dia);
     }
     if (totalMinDia === 0) continue;
 
     for (const p of naoGerentes) {
-      const minPessoa = horasMap.get(p.fornecedorId)?.[dia] ?? 0;
+      const minPessoa = minRateio(p, dia);
       if (minPessoa === 0) continue;
-      const fatia = (minPessoa / totalMinDia) * funcionariosDia;
+      let fatia = (minPessoa / totalMinDia) * funcionariosDia;
+      const n = p.dezPctCasas ?? 1;
+      if (n > 1) {
+        const retido = fatia - fatia / n;
+        fatia = fatia / n;
+        totalEmpresa += retido;
+        dezPctRetidoEmpresa += retido;
+        retidoPorPessoa.set(p.fornecedorId, (retidoPorPessoa.get(p.fornecedorId) ?? 0) + retido);
+      }
       comissaoPorPessoa.set(
         p.fornecedorId,
         (comissaoPorPessoa.get(p.fornecedorId) ?? 0) + fatia,
@@ -220,7 +248,15 @@ export function calcularFolha(args: {
         descricao: `Comissão semana — ${p.nome}`,
         detalhe: `${minutosToHM(minTotal)} de horas; rateio do ${
           config.ppFuncionarios
-        }pp do 10%${totalPerdasAplicadas > 0 ? ' (ja liquido das perdas do dia)' : ''}`,
+        }pp do 10%${totalPerdasAplicadas > 0 ? ' (ja liquido das perdas do dia)' : ''}${
+          (p.dezPctCasas ?? 1) > 1
+            ? `; 1/${p.dezPctCasas} da parte sobre ${minutosToHM(
+                sumMin(p.horasDezPct ?? horasMap.get(p.fornecedorId) ?? {}),
+              )} em todas as casas (trabalha pra ${p.dezPctCasas} casas) — ${brl(
+                retidoPorPessoa.get(p.fornecedorId) ?? 0,
+              )} ficou com a empresa`
+            : ''
+        }`,
       });
     } else if (descontoComissao > 0) {
       // Pessoa sem comissão mas com fiado — fica em aberto (não vira débito).
@@ -468,6 +504,7 @@ export function calcularFolha(args: {
   return {
     lancamentos,
     totalEmpresa: round2(totalEmpresa),
+    dezPctRetidoEmpresa: round2(dezPctRetidoEmpresa),
     totalEquipe: round2(totalLiquido),
     totalBruto: round2(totalBruto),
     totalLiquido: round2(totalLiquido),

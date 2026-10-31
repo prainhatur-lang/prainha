@@ -34,6 +34,8 @@ const Body = z.object({
   diaristaValorFixoDia: z.number().positive().nullable().optional(),
   bonusFixoSemanal: z.number().positive().nullable().optional(),
   bonusPorDia: z.number().positive().nullable().optional(),
+  /** Divide a parte do 10% por N casas (1 = inteira). Ausente = não mexe. */
+  dezPctCasas: z.number().int().min(1).max(3).optional(),
   /** false = sai da folha semanal DESTA loja (mantém histórico/ajustes). */
   ativo: z.boolean().optional(),
   /** marcar a pessoa também como cliente (consumo/fiado) — escolha de quem cadastra */
@@ -175,6 +177,7 @@ export async function PUT(req: Request, ctx: { params: Promise<{ id: string }> }
     diaristaValorFixoDia: b.diaristaValorFixoDia != null ? String(b.diaristaValorFixoDia) : null,
     bonusFixoSemanal: b.bonusFixoSemanal != null ? String(b.bonusFixoSemanal) : null,
     bonusPorDia: b.bonusPorDia != null ? String(b.bonusPorDia) : null,
+    ...(b.dezPctCasas != null ? { dezPctCasas: b.dezPctCasas > 1 ? b.dezPctCasas : null } : {}),
     ativo,
   };
 

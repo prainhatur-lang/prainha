@@ -75,6 +75,10 @@ export const fornecedorFolha = pgTable(
      *  acréscimo = dias_com_horas_>_0 × valor. Diferente do bonus_fixo_semanal
      *  porque escala com os dias batidos no espelho. */
     bonusPorDia: numeric('bonus_por_dia', { precision: 10, scale: 2 }),
+    /** Divide a parte do 10% por N casas (31/10/2026): quem trabalha pras
+     *  três casas (funcionário da Lelis) recebe 1/N da fatia dele em cada uma;
+     *  o resto fica com a empresa desta casa. NULL/1 = parte inteira. */
+    dezPctCasas: integer('dez_pct_casas'),
     /** Codigo do colaborador no Consumer (PEDIDOS.CODIGOCOLABORADOR) — pra
      *  vincular automaticamente a comissao gerada via PDV (Consumer ja
      *  atribui o garcom ao pedido). */
