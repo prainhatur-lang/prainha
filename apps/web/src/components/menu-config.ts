@@ -220,6 +220,9 @@ export const MENU_AREAS: MenuArea[] = [
         label: 'Catálogo',
         links: [
           { label: 'Produtos', href: '/cadastros/produtos', perm: 'produto.read' },
+          { label: 'Promoções (happy hour, paga 1 leva 2)', href: '/cardapio/promocoes', perm: 'produto.read' },
+          { label: 'Preço por horário', href: '/cardapio/preco-horario', perm: 'produto.read' },
+          { label: 'Cardápio do QR (restrições e destaques)', href: '/cardapio', perm: 'produto.read' },
           {
             label: 'O que esta loja vende',
             href: '/cadastros/produtos/ativar',
