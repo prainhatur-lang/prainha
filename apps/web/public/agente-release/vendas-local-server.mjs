@@ -1936,8 +1936,25 @@ async function ifoodBaixarPedido(orderId, prontinho = null) {
     const det = [extras, it.observations, alvo.aviso].filter(Boolean).join(' · ');
     itens.push({ pedido_id: o.id, seq: i, codigo_pdv: alvo.codigo_pdv, nome: it.name || 'item',
       quantidade: Number(it.quantity || 1), valor_total: Number(it.totalPrice ?? it.price ?? 0) || 0,
-      detalhes: det.trim() || null, area_codigo: alvo.area_codigo });
+      detalhes: det.trim() || null, area_codigo: alvo.area_codigo, _semCodigo: !cod });
   }
+  // Item SEM código de PDV no cardápio do iFood caía em "Sem área" enquanto o
+  // resto do pedido saía na cozinha (31/10: #5532, arroz na COZ PRAINHA e
+  // legumes/purê/farofa/vinagrete soltos). Só a PRAÇA é deduzida — o código
+  // continua nulo e o aviso continua no item:
+  //   1º produto da casa com o MESMO nome (sem acento/maiúscula) numa praça só;
+  //   2º a praça dos outros itens do pedido, se todos saem na mesma.
+  const pracasPedido = [...new Set(itens.filter((x) => x.area_codigo != null).map((x) => Number(x.area_codigo)))];
+  for (const x of itens) {
+    if (!x._semCodigo || x.area_codigo != null) continue;
+    const n = semAcento(x.nome).trim();
+    const achou = n ? await sql`SELECT DISTINCT area_codigo FROM produto_local
+      WHERE area_codigo IS NOT NULL
+        AND (lower(trim(nome))=${String(x.nome).toLowerCase().trim()} OR trim(nome_busca)=${n})` : [];
+    if (achou.length === 1) x.area_codigo = Number(achou[0].area_codigo);
+    else if (pracasPedido.length === 1) x.area_codigo = pracasPedido[0];
+  }
+  for (const x of itens) delete x._semCodigo;
   // item_codigo é bigserial e o KDS guarda "pronto/entregue" por ele: trocar os
   // itens reabre o que já foi marcado. Só reescreve quando MUDOU de verdade.
   const atuais = await sql`SELECT seq, codigo_pdv, nome, quantidade, detalhes FROM ifood_item WHERE pedido_id=${o.id} ORDER BY seq`;
