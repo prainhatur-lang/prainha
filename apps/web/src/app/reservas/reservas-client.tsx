@@ -569,6 +569,54 @@ function Linha({ r, hist, fiado, membro, podeAtualizar, podeExcluir = false, mos
   const areasDaFilial = (filiais.find((f) => f.id === r.filialId)?.areas ?? []).filter((a) => a.ativo && !a.somenteEventos);
   const mesasDoEspaco = areasDaFilial.find((a) => a.nome === r.area)?.mesas ?? [];
   const precisaConfirmarBebida = !!r.bebidaPedido && r.bebidaConfirmada == null;
+  // Área com taxa (Lounge): reserva feita pela equipe pode ser cobrada aqui.
+  const areaTaxa = (filiais.find((f) => f.id === r.filialId)?.areas ?? []).find((a) => a.nome === r.area && a.taxaReserva);
+  const podeCobrar =
+    !!areaTaxa &&
+    r.status !== 'cancelada' &&
+    r.status !== 'no_show' &&
+    r.pagamentoStatus !== 'pago' &&
+    !(r.pagamentoStatus ?? '').startsWith('estorn');
+  const [cobranca, setCobranca] = useState<{ valor: number; pix: string; texto: string; zapEnviado: boolean; zapErro: string | null } | null>(null);
+
+  async function cobrarTaxa() {
+    setSalvando(true);
+    try {
+      const r2 = await fetch(`/api/reservas/${r.id}/cobrar-taxa`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enviarZap: true }),
+      });
+      const d = await r2.json().catch(() => ({}));
+      if (!r2.ok || !d.ok) {
+        alert(d.error ?? d.erro ?? `Erro ${r2.status} ao gerar o Pix.`);
+        return;
+      }
+      setCobranca({ valor: d.valor, pix: d.pixCopiaECola, texto: d.texto, zapEnviado: !!d.zapEnviado, zapErro: d.zapErro ?? null });
+      onMudou();
+    } finally {
+      setSalvando(false);
+    }
+  }
+
+  async function conferirPagamento() {
+    setSalvando(true);
+    try {
+      const r2 = await fetch(`/api/reservas/${r.id}/cobrar-taxa`);
+      const d = await r2.json().catch(() => ({}));
+      if (!r2.ok) {
+        alert(d.error ?? `Erro ${r2.status} ao conferir.`);
+        return;
+      }
+      alert(d.status === 'pago' ? '✅ Pago! A reserva foi marcada como paga.' : 'Ainda não caiu o Pix.');
+      if (d.status === 'pago') {
+        setCobranca(null);
+        onMudou();
+      }
+    } finally {
+      setSalvando(false);
+    }
+  }
 
   async function setStatus(status: string, extra?: Record<string, unknown>) {
     setSalvando(true);
@@ -692,6 +740,11 @@ function Linha({ r, hist, fiado, membro, podeAtualizar, podeExcluir = false, mos
                 💳 aguardando pagamento{r.pagamentoValor ? ` (R$ ${Number(r.pagamentoValor).toFixed(2).replace('.', ',')})` : ''}
               </span>
             )}
+            {r.pagamentoStatus === 'cobrado' && (
+              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800" title="Pix da taxa gerado pela equipe — a mesa continua garantida enquanto o cliente não paga">
+                💳 taxa cobrada{r.pagamentoValor ? ` R$ ${Number(r.pagamentoValor).toFixed(2).replace('.', ',')}` : ''} — aguardando Pix
+              </span>
+            )}
             {r.pagamentoStatus === 'pago' && (
               <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700" title="Taxa de reserva paga">
                 💳 taxa paga
@@ -763,6 +816,16 @@ function Linha({ r, hist, fiado, membro, podeAtualizar, podeExcluir = false, mos
               💵 Devolvido em dinheiro
             </Btn>
           )}
+          {podeCobrar && (
+            <Btn onClick={cobrarTaxa} disabled={salvando} cls="border-violet-300 text-violet-700 active:bg-violet-100 hover:bg-violet-50" title="Gera o Pix da taxa do espaço (valor do dia) e manda no WhatsApp do cliente">
+              💳 {r.pagamentoStatus === 'cobrado' ? 'Reenviar Pix da taxa' : 'Cobrar taxa'}
+            </Btn>
+          )}
+          {r.pagamentoStatus === 'cobrado' && (
+            <Btn onClick={conferirPagamento} disabled={salvando} cls="border-emerald-300 text-emerald-700 active:bg-emerald-100 hover:bg-emerald-50" title="Pergunta pra operadora se o Pix já caiu">
+              🔄 Conferir pagamento
+            </Btn>
+          )}
           {r.status !== 'no_show' && <Btn onClick={() => setStatus('no_show')} disabled={salvando} cls="border-amber-300 text-amber-700 active:bg-amber-100 hover:bg-amber-50">No-show</Btn>}
           {r.status !== 'cancelada' && !editandoData && (
             <Btn onClick={() => setEditandoData(true)} disabled={salvando} cls="border-slate-300 text-slate-700 active:bg-slate-100 hover:bg-slate-50" title="Mudar o dia ou o horário — só grava se a mesa estiver livre no dia novo">📅 Alterar data/hora</Btn>
@@ -770,6 +833,37 @@ function Linha({ r, hist, fiado, membro, podeAtualizar, podeExcluir = false, mos
           {podeExcluir && r.pagamentoStatus !== 'pago' && !(r.pagamentoStatus ?? '').startsWith('estorno_falhou') && (
             <Btn onClick={excluir} disabled={salvando} cls="border-rose-200 text-rose-500 active:bg-rose-100 hover:bg-rose-50" title="Apaga a reserva feita por engano (some da agenda e do histórico)">🗑 Excluir</Btn>
           )}
+        </div>
+      )}
+      {cobranca && (
+        <div className="mt-3 rounded-lg border border-violet-200 bg-violet-50 p-3 text-sm">
+          <p className="font-semibold text-violet-900">
+            💳 Pix de R$ {cobranca.valor.toFixed(2).replace('.', ',')} gerado
+          </p>
+          {cobranca.zapEnviado ? (
+            <p className="mt-1 text-xs text-emerald-700">✅ Enviado no WhatsApp da casa, na conversa do cliente.</p>
+          ) : (
+            <p className="mt-1 text-xs text-amber-800">
+              ⚠️ Não foi pelo WhatsApp da casa{cobranca.zapErro ? ` (${cobranca.zapErro})` : ''}. Mande pelo botão abaixo ou copie o Pix.
+            </p>
+          )}
+          <textarea readOnly value={cobranca.pix} rows={3} className="mt-2 w-full rounded border border-violet-200 bg-white p-2 font-mono text-[11px] text-slate-700" onFocus={(e) => e.currentTarget.select()} />
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Btn onClick={() => { navigator.clipboard?.writeText(cobranca.pix).then(() => alert('Pix copiado.')).catch(() => {}); }} cls="border-violet-300 bg-white text-violet-700 active:bg-violet-100 hover:bg-violet-50">
+              📋 Copiar Pix
+            </Btn>
+            {r.clienteTelefone && (
+              <a
+                href={`https://wa.me/${telefoneComDdi(r.clienteTelefone)}?text=${encodeURIComponent(`${cobranca.texto}\n\n${cobranca.pix}`)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="rounded-lg border border-emerald-300 bg-white px-3 py-2.5 text-sm font-medium text-emerald-700 active:bg-emerald-100 hover:bg-emerald-50 sm:py-2"
+              >
+                💬 Mandar pelo wa.me
+              </a>
+            )}
+            <button onClick={() => setCobranca(null)} className="text-xs text-violet-700 underline">fechar</button>
+          </div>
         </div>
       )}
       {podeAtualizar && editandoData && (
