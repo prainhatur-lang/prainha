@@ -15,7 +15,8 @@ import { db, schema } from '@concilia/db';
 import { and, eq, isNull } from 'drizzle-orm';
 import { createAdminClient } from '@/lib/supabase/server';
 import { exigirPermApi, negarSemPerm } from '@/lib/exigir-perm';
-import { filiaisDoUsuario } from '@/lib/filiais';
+// E.B. e Lelis só pro Admin; pros outros = filiaisDoUsuario de sempre.
+import { filiaisDoFinanceiro as filiaisDoUsuario } from '@/lib/eb/acesso-financeiro';
 import {
   BUCKET_DOC_EMPRESA,
   DOC_EMPRESA_EXTENSOES,

@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server';
 import { exigirPerm } from '@/lib/exigir-perm';
 import { podeUsuario } from '@/lib/permissoes-runtime';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { filiaisDoFinanceiro } from '@/lib/eb/acesso-financeiro';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
 import { and, desc, inArray, isNull } from 'drizzle-orm';
@@ -25,9 +26,12 @@ export default async function DocumentosEmpresaPage(props: { searchParams: Promi
   await exigirPerm(user.id, 'configuracao.read');
   const podeEditar = await podeUsuario(user.id, 'configuracao.editar');
 
-  const filiais = await filiaisDoUsuario(user.id);
+  const filiaisMenu = await filiaisDoUsuario(user.id);
   const sp = await props.searchParams;
-  const ativa = await escolherFilial(filiais, sp.filialId);
+  const ativa = await escolherFilial(filiaisMenu, sp.filialId);
+  // E.B. e Lelis entram no fim da lista só pro Admin (31/10/2026: documentos
+  // do sócio da Lelis). Pros outros a lista é a de sempre.
+  const filiais = await filiaisDoFinanceiro(user.id);
   if (!ativa) {
     return (
       <main className="min-h-screen bg-slate-50">

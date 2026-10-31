@@ -36,6 +36,8 @@ export const TIPOS_DOC_EMPRESA: TipoDocEmpresa[] = [
   { tipo: 'inscricao_estadual', rotulo: 'Inscrição estadual', semVencimento: true },
   { tipo: 'cartao_cnpj', rotulo: 'Cartão CNPJ', semVencimento: true },
   { tipo: 'contrato_social', rotulo: 'Contrato social / alteração', semVencimento: true },
+  { tipo: 'documento_socio', rotulo: 'Documento do sócio (CNH/RG)' },
+  { tipo: 'comprovante_endereco', rotulo: 'Comprovante de endereço', semVencimento: true },
   { tipo: 'outro', rotulo: 'Outro documento' },
 ];
 
