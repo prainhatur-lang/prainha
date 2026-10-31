@@ -15,6 +15,9 @@ import { resolverFornecedorParaNota } from '@/lib/match-fornecedor';
 
 export const ORIGEM_PEDIDO_FOTO = 'PEDIDO_FOTO';
 export const BUCKET_PEDIDO = 'producao-fotos';
+/** Marca que o celular grava quando terminou de mandar as folhas (pronto.json = nome antigo). */
+export const MARCA_PRONTO = '_pronto.png';
+export const MARCAS_PRONTO = [MARCA_PRONTO, 'pronto.json'];
 
 export const MIMES_PEDIDO = new Set(['application/pdf', 'image/jpeg', 'image/png', 'image/webp']);
 

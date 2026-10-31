@@ -8,7 +8,7 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createAdminClient, createClient } from '@/lib/supabase/server';
 import { pastaPedidoCelular, validarLinkPedidoCelular } from '@/lib/pedido-celular-link';
-import { BUCKET_PEDIDO } from '@/lib/pedido-sem-nota';
+import { BUCKET_PEDIDO, MARCAS_PRONTO } from '@/lib/pedido-sem-nota';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -55,10 +55,10 @@ export async function POST(req: Request) {
     const pasta = `${raiz}/${g.name}`;
     const { data: arquivos } = await bucket.list(pasta, { limit: 20, sortBy: { column: 'name', order: 'asc' } });
     const lista = arquivos ?? [];
-    if (!lista.some((a) => a.name === 'pronto.json')) continue; // celular ainda mandando
+    if (!lista.some((a) => MARCAS_PRONTO.includes(a.name))) continue; // celular ainda mandando
     const fotos: Array<{ nome: string; url: string }> = [];
     for (const a of lista) {
-      if (!a.id || a.name === 'pronto.json') continue;
+      if (!a.id || MARCAS_PRONTO.includes(a.name)) continue;
       const { data: s } = await bucket.createSignedUrl(`${pasta}/${a.name}`, 600);
       if (s?.signedUrl) fotos.push({ nome: a.name, url: s.signedUrl });
     }

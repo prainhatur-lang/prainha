@@ -36,7 +36,10 @@ export function EnviarPedido({
   const camRef = useRef<HTMLInputElement>(null);
   const arqRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => () => previas.forEach((p) => URL.revokeObjectURL(p)), [previas]);
+  // Solta as prévias só ao sair da página — soltar a cada folha nova apagava a miniatura das anteriores
+  const previasRef = useRef<string[]>([]);
+  previasRef.current = previas;
+  useEffect(() => () => previasRef.current.forEach((p) => p && URL.revokeObjectURL(p)), []);
 
   async function api(body: Record<string, unknown>): Promise<Record<string, unknown>> {
     const res = await fetch('/api/pedido-celular', {
