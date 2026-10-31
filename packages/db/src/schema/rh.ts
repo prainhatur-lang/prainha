@@ -113,6 +113,9 @@ export const funcionario = pgTable(
     /** COZINHA | SALAO | PRODUCAO | ADM — vocabulário de colaborador.tipo. */
     setor: varchar('setor', { length: 20 }),
     dataAdmissao: date('data_admissao'),
+    /** Por que a pessoa entrou (31/10/2026): "substitui Fulano", "reforço do verão"…
+     *  Pedido nas pendências da escala (/rh/escala-mensal). */
+    motivoAdmissao: varchar('motivo_admissao', { length: 200 }),
     dataDesligamento: date('data_desligamento'),
     motivoDesligamento: varchar('motivo_desligamento', { length: 200 }),
     ativo: boolean('ativo').notNull().default(true),

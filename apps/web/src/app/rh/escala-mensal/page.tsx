@@ -13,6 +13,8 @@ import { AppHeader } from '@/components/app-header';
 import { hojeBr } from '@/lib/datas';
 import { montarEscalaMes } from '@/lib/rh/escala-mensal';
 import { EscalaGrade } from './grade';
+import { PendenciasEscalaAviso } from './pendencias';
+import { pendenciasEscala, type PendenciasEscala } from '@/lib/rh/escala-pendencias';
 import { atestadosNoPeriodo, diasDeAtestado } from '@/lib/rh/atestado';
 
 export const dynamic = 'force-dynamic';
@@ -56,9 +58,14 @@ export default async function EscalaMensalPage(props: { searchParams: Promise<SP
 
   const hoje = hojeBr();
   const mes = sp.mes && /^\d{4}-(0[1-9]|1[0-2])$/.test(sp.mes) ? sp.mes : hoje.slice(0, 7);
-  const [escala, podeEditar] = await Promise.all([
+  const [escala, podeEditar, pendencias] = await Promise.all([
     montarEscalaMes(filial.id, mes, hoje),
     podeUsuario(user.id, 'funcionario.update'),
+    // Pendências (31/10/2026): extra — falhou, a grade sai sem o aviso.
+    pendenciasEscala(filial.id, hoje).catch((e): PendenciasEscala | null => {
+      console.error('[escala-mensal] pendências:', e);
+      return null;
+    }),
   ]);
   // Atestados do mês (21/10/2026): 🩺 no dia e não conta como divergência.
   const diaAtestado = diasDeAtestado(
@@ -122,6 +129,8 @@ export default async function EscalaMensalPage(props: { searchParams: Promise<SP
             })}
           </div>
         )}
+
+        {pendencias && <PendenciasEscalaAviso filialId={filial.id} pendencias={pendencias} podeEditar={podeEditar} />}
 
         <EscalaGrade
           key={`${filial.id}-${mes}`}

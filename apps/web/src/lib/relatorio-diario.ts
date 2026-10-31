@@ -16,6 +16,7 @@ import { dateToBrYmd, hojeBr } from './datas';
 import { diasEntre, rotuloTipoDoc } from './empresa-documento';
 import { chamarLojaCaixa } from './caixa-loja';
 import { contarEvento } from './evento-ticket';
+import { pendenciasEscala, totalPendencias, type PendenciasEscala } from './rh/escala-pendencias';
 
 const TZ = 'America/Sao_Paulo';
 const DIA_MS = 24 * 3600 * 1000;
@@ -288,6 +289,8 @@ export interface RelatorioCasa {
   pontoEmAberto?: PontoAberto[];
   /** documentos da empresa (alvará, certidão…) vencidos ou vencendo em até 30 dias — /empresa/documentos */
   documentosVencendo?: DocVencendo[];
+  /** furos de quem saiu e gente nova sem motivo/horário/escala — /rh/escala-mensal (31/10/2026) */
+  pendenciasEscala?: PendenciasEscala;
   atencao: string[];
 }
 
@@ -1623,6 +1626,12 @@ export async function montarRelatorioFiliais(
         console.error('[relatorio-diario] documentos:', e);
         return [] as DocVencendo[];
       });
+      // Pendências da escala (31/10/2026, dono: "houve uma demissão, quem cobre?").
+      // Conta a partir de hoje (não do dia do relatório). Extra — falhou, sai sem.
+      casa.pendenciasEscala = await pendenciasEscala(f.id, hojeBr()).catch((e) => {
+        console.error('[relatorio-diario] pendências da escala:', e);
+        return undefined;
+      });
       if (eventos.length) {
         casa.eventos = eventos;
         // A queda contra a semana passada foi medida só com o PDV; com ticket de
@@ -1689,9 +1698,10 @@ export function resumoUmaLinha(casas: RelatorioCasa[]): string {
   );
   const abertos = casas.reduce((s, c) => s + (c.pontoEmAberto?.length ?? 0), 0);
   const docs = casas.reduce((s, c) => s + (c.documentosVencendo?.length ?? 0), 0);
+  const escala = casas.reduce((s, c) => s + totalPendencias(c.pendenciasEscala), 0);
   return `${partes.join(' · ')} · Total ${reais(total, false)}${abertos ? ` · Ponto em aberto: ${abertos}` : ''}${
     docs ? ` · Documentos vencendo: ${docs}` : ''
-  }`;
+  }${escala ? ` · Escala: ${escala} ${escala === 1 ? "pendência" : "pendências"}` : ''}`;
 }
 
 /** Frase da validade de um documento ("venceu há 3 dias", "vence em 7 dias"). */
@@ -1710,6 +1720,50 @@ function linhasDocumentos(c: RelatorioCasa): string[] {
   const L = [`📄 Documentos (${lista.length}) — vencido ou vencendo em até 30 dias:`];
   for (const d of lista) L.push(`• ${d.dias < 0 ? '🔴' : d.dias <= 7 ? '🟠' : '🟡'} ${d.titulo} — ${fraseDocVencendo(d)}`);
   L.push(`Renovar: https://app.prainhabar.com/empresa/documentos?${new URLSearchParams({ filialId: c.filialId }).toString()}`);
+  return L;
+}
+
+function ddmm(ymd: string): string {
+  const [, m, d] = ymd.split('-');
+  return `${d}/${m}`;
+}
+
+function nome1(n: string): string {
+  const p = n.trim().split(/\s+/)[0] ?? n;
+  return p.charAt(0) + p.slice(1).toLowerCase();
+}
+
+/** Pendências da escala pro texto do WhatsApp (vazio = nenhuma). */
+function linhasEscala(c: RelatorioCasa): string[] {
+  const p = c.pendenciasEscala;
+  if (!p || !totalPendencias(p)) return [];
+  const L = [`📅 Escala (${totalPendencias(p)} ${totalPendencias(p) === 1 ? "pendência" : "pendências"}):`];
+  // Furos agrupados por quem saiu.
+  const porPessoa = new Map<string, typeof p.furos>();
+  for (const f of p.furos) {
+    const lista = porPessoa.get(f.funcionarioId) ?? [];
+    lista.push(f);
+    porPessoa.set(f.funcionarioId, lista);
+  }
+  for (const lista of porPessoa.values()) {
+    const f0 = lista[0];
+    const dias = lista
+      .map((f) => {
+        const quem = f.candidatos.slice(0, 2).map((x) => nome1(x.nome));
+        return `${ddmm(f.dia)} (${quem.length ? `pode cobrir: ${quem.join(', ')}` : 'ninguém livre → vai faltar'})`;
+      })
+      .slice(0, 6);
+    L.push(
+      `• 🚨 ${nome1(f0.nome)}${f0.cargo ? ` (${f0.cargo})` : ''} saiu${f0.desligamento ? ` em ${ddmm(f0.desligamento)}` : ''} e ainda está escalada(o): ${dias.join('; ')}${lista.length > 6 ? ` e mais ${lista.length - 6}` : ''}`,
+    );
+  }
+  const MAX = 10;
+  for (const e of p.entradas.slice(0, MAX)) {
+    const falta = [!e.motivo && 'por quê', !e.horaEntrada && 'horário', e.mesSemEscala && 'escala'].filter(Boolean);
+    L.push(`• 🆕 ${nome1(e.nome)}${e.cargo ? ` (${e.cargo})` : ''} entrou ${ddmm(e.admissao)} — falta: ${falta.join(', ')}`);
+  }
+  if (p.entradas.length > MAX) L.push(`• e mais ${p.entradas.length - MAX} pessoas novas`);
+  L.push(`Resolver: https://app.prainhabar.com/rh/escala-mensal?${new URLSearchParams({ filialId: c.filialId }).toString()}`);
   return L;
 }
 
@@ -1806,6 +1860,7 @@ function textoCasa(c: RelatorioCasa): string {
       }
     }
     L.push(...linhasPontoAberto(c));
+    L.push(...linhasEscala(c));
     L.push(...linhasDocumentos(c));
     return L.join('\n');
   }
@@ -1866,6 +1921,7 @@ function textoCasa(c: RelatorioCasa): string {
   }
   L.push(...linhasCaixa(c));
   L.push(...linhasPontoAberto(c));
+  L.push(...linhasEscala(c));
   L.push(...linhasDocumentos(c));
   if (c.atencao.length) {
     L.push('⚠️ Atenção:');

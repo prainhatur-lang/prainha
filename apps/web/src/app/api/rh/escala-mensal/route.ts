@@ -3,6 +3,7 @@
 //           pessoa+dia; o VT da quinzena passa a contar os dias de trabalho dela
 //   limpar  apaga a escala salva do mês da casa (volta pra sugestão)
 //   sexo    'H' | 'M' do funcionário — regra do domingo (CCT cl.16 / CLT 386)
+//   motivoAdmissao  por que a pessoa entrou (pendências da escala, 31/10/2026)
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
@@ -27,6 +28,7 @@ const Body = z.discriminatedUnion('acao', [
   }),
   z.object({ acao: z.literal('limpar'), filialId: z.string().uuid(), mes: Mes }),
   z.object({ acao: z.literal('sexo'), funcionarioId: z.string().uuid(), sexo: z.enum(['H', 'M']).nullable() }),
+  z.object({ acao: z.literal('motivoAdmissao'), funcionarioId: z.string().uuid(), motivo: z.string().trim().min(1).max(200) }),
 ]);
 
 export async function POST(req: Request) {
@@ -42,6 +44,23 @@ export async function POST(req: Request) {
   const semPerm = await negarSemPerm(user.id, 'funcionario.update');
   if (semPerm) return semPerm;
   const filiais = await filiaisDoUsuario(user.id);
+
+  if (d.acao === 'motivoAdmissao') {
+    const [func] = await db
+      .select({ filialId: schema.funcionario.filialId })
+      .from(schema.funcionario)
+      .where(eq(schema.funcionario.id, d.funcionarioId))
+      .limit(1);
+    if (!func) return NextResponse.json({ error: 'funcionário não encontrado' }, { status: 404 });
+    if (!filiais.some((f) => f.id === func.filialId)) {
+      return NextResponse.json({ error: 'sem acesso à casa desse funcionário' }, { status: 403 });
+    }
+    await db
+      .update(schema.funcionario)
+      .set({ motivoAdmissao: d.motivo, atualizadoEm: new Date() })
+      .where(eq(schema.funcionario.id, d.funcionarioId));
+    return NextResponse.json({ ok: true });
+  }
 
   if (d.acao === 'sexo') {
     const [func] = await db

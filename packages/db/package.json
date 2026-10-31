@@ -161,6 +161,7 @@
     "migrate:fidelidade-por-casa": "tsx scripts/migrate-fidelidade-por-casa.ts",
     "migrate:fidelidade-codigo-carteira": "tsx scripts/migrate-fidelidade-codigo-carteira.ts",
     "migrate:campanha-convite": "tsx scripts/migrate-campanha-convite.ts",
+    "migrate:motivo-admissao": "tsx scripts/migrate-motivo-admissao.ts",
     "migrate:whatsapp-nao-enviar": "tsx scripts/migrate-whatsapp-nao-enviar.ts",
     "migrate:combo-marcado": "tsx scripts/migrate-combo-marcado.ts",
     "migrate:combo-regra": "tsx scripts/migrate-combo-regra.ts",
