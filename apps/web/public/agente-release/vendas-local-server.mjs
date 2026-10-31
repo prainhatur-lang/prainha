@@ -9058,8 +9058,12 @@ async function apiCaixaCancelarItem(body, quem) {
   const areaCanc = areaRows.find((a) => Number(a.item_codigo) === item)?.area_codigo ?? null;
   // hora em que o item foi lançado (vai pro relatório ao lado da hora do cancelamento)
   const lancadoEm = areaRows.find((a) => Number(a.item_codigo) === item)?.criado ?? null;
+  // SERVIÇO NÃO SE PRODUZ (dono, 31/10/2026): couvert/Lounge/Kids entram já
+  // baixados (somem do KDS), e o cancelamento gravava "entregue" → "JÁ
+  // PRODUZIDO" no balanço. Grava 'servico'. A dupla senha acima segue igual.
+  const statusGravado = status !== 'a_produzir' && await ehItemDeServico(principal.nome) ? 'servico' : status;
   await sql`INSERT INTO cancelamento (login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo, area_codigo, foto, lancado_em)
-    VALUES (${quem.login}, ${gerente}, ${numero}, ${ped}, ${item}, ${nomeLog}, ${valor}, ${status}, ${T(body.motivo)}, ${areaCanc == null ? null : Number(areaCanc)}, ${foto}, ${lancadoEm})`;
+    VALUES (${quem.login}, ${gerente}, ${numero}, ${ped}, ${item}, ${nomeLog}, ${valor}, ${statusGravado}, ${T(body.motivo)}, ${areaCanc == null ? null : Number(areaCanc)}, ${foto}, ${lancadoEm})`;
   cupomCancelado(parcial
     ? areaRows.filter((a) => Number(a.item_codigo) === item).map((a) => ({ ...a, nome: a.nome, quantidade: qtdCanc }))
     : areaRows, numero).catch(() => {});
@@ -15177,6 +15181,12 @@ async function baixarAbertosForaKds() {
   const r = await sql`UPDATE comanda_item SET produzido = COALESCE(produzido, criado, now()),
       entregue = COALESCE(entregue, criado, now()) WHERE item_codigo = ANY(${ids})`;
   console.log('[fora-kds] ' + r.count + ' item(ns) aberto(s) que ninguém produz baixado(s)');
+}
+/** Item que ninguém produz (couvert, taxa do Lounge, Espaço Kids): mesma lista do KDS. */
+async function ehItemDeServico(nome) {
+  const fora = await itensForaKds();
+  const nm = semAcento(String(nome || ''));
+  return fora.length > 0 && fora.some((t) => nm.includes(t));
 }
 async function itensForaKds() {
   const txt = await cfgGet('itens_fora_kds', ITENS_FORA_KDS_PADRAO);
@@ -29451,7 +29461,7 @@ async function telaCancRel(el){
     h+='<div class="it"><span>'+quando+' · '+(x.numero||'—')+' · '+esc(x.nome||'')+
       '<small class="mut" style="display:block">por '+esc(x.login||'?')+
       (x.gerente&&x.gerente!==x.login?' · autorizou: '+esc(x.gerente):'')+
-      (x.status_item&&x.status_item!=='a_produzir'&&x.status_item!=='pedido'?' · estava '+esc(x.status_item):'')+
+      (x.status_item&&x.status_item!=='a_produzir'&&x.status_item!=='pedido'&&x.status_item!=='servico'?' · estava '+esc(x.status_item):'')+
       (x.motivo?' · "'+esc(x.motivo)+'"':'')+'</small></span>'+
       '<b>'+brl(x.valor)+'</b></div>';
   });
@@ -30732,8 +30742,8 @@ async function montarBalanco() {
   // gerente são "últimas 24h", aqui é o DIA, que é o que fecha o balanço.
   const canc = await one(sql`SELECT COUNT(*)::int n, COALESCE(SUM(valor),0)::float valor,
       COUNT(*) FILTER (WHERE item_codigo IS NULL OR status_item='pedido')::int pedidos,
-      COUNT(*) FILTER (WHERE status_item IS NOT NULL AND status_item NOT IN ('a_produzir','pedido'))::int produzidos,
-      COALESCE(SUM(valor) FILTER (WHERE status_item IS NOT NULL AND status_item NOT IN ('a_produzir','pedido')),0)::float valor_produzidos,
+      COUNT(*) FILTER (WHERE status_item IS NOT NULL AND status_item NOT IN ('a_produzir','pedido','servico') AND nome !~* 'couvert|lounge taxa|espa.o kids')::int produzidos,
+      COALESCE(SUM(valor) FILTER (WHERE status_item IS NOT NULL AND status_item NOT IN ('a_produzir','pedido','servico') AND nome !~* 'couvert|lounge taxa|espa.o kids'),0)::float valor_produzidos,
       COUNT(*) FILTER (WHERE motivo ILIKE 'devolu%')::int devolucoes
     FROM cancelamento WHERE quando >= ${dia}::date`);
   const cancLista = await many(sql`SELECT id, quando, login, gerente, numero, nome, valor, status_item, motivo

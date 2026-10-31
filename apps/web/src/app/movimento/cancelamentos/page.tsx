@@ -14,7 +14,7 @@ import { and, asc, count, desc, eq, gte, isNotNull, lte, sql } from 'drizzle-orm
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDateTime, int } from '@/lib/format';
 import { hojeBr, diasAtrasBr, brDateStart, brDateEnd } from '@/lib/datas';
-import { ehEstornoDeItem } from '@/lib/cancelamento-tipo';
+import { ehEstornoDeItem, statusDoCancelado } from '@/lib/cancelamento-tipo';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,10 +35,11 @@ function rotuloStatus(s: string | null): string {
   if (!s) return '—';
   if (s === 'a_produzir') return 'antes de produzir';
   if (s === 'pedido') return 'pedido inteiro';
+  if (s === 'servico') return 'serviço (não se produz)';
   return s.replace(/_/g, ' ');
 }
 function jaProduzido(s: string | null): boolean {
-  return !!s && s !== 'a_produzir' && s !== 'pedido';
+  return !!s && s !== 'a_produzir' && s !== 'pedido' && s !== 'servico';
 }
 
 interface Grupo {
@@ -147,7 +148,7 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
   const cancelados = todas.filter((l) => !ehEstorno(l));
   const linhas = tipoSel === 'estorno' ? estornos : tipoSel === 'cancelamento' ? cancelados : todas;
   const total = cancelados.reduce((s, l) => s + valorDe(l), 0);
-  const produzidos = cancelados.filter((l) => jaProduzido(l.statusItem));
+  const produzidos = cancelados.filter((l) => jaProduzido(statusDoCancelado(l.statusItem, l.nome)));
   const valorProduzidos = produzidos.reduce((s, l) => s + valorDe(l), 0);
   const pedidosInteiros = linhas.filter((l) => l.tipo === 'pedido').length;
   // Devolução = produto voltou pro bar/estoque; a regra da casa é: só com foto.
@@ -339,7 +340,7 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
               ) : (
                 linhas.map((l) => {
                   const estorno = ehEstorno(l);
-                  const prod = !estorno && jaProduzido(l.statusItem);
+                  const prod = !estorno && jaProduzido(statusDoCancelado(l.statusItem, l.nome));
                   return (
                     <tr key={l.id} className={`border-t border-slate-100 ${l.tipo === 'pedido' ? 'bg-rose-50/40' : prod ? 'bg-amber-50/40' : ''}`}>
                       <td className="px-4 py-2 font-mono text-xs text-slate-500">{l.lancadoEm ? formatDateTime(l.lancadoEm) : '—'}</td>
@@ -356,7 +357,7 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
                       </td>
                       <td className="px-4 py-2 text-right font-mono text-sm text-slate-900">{brl(l.valor)}</td>
                       <td className={`px-4 py-2 text-xs ${prod ? 'font-medium text-amber-700' : 'text-slate-600'}`}>
-                        {estorno ? 'voltou pro bar' : rotuloStatus(l.statusItem)}
+                        {estorno ? 'voltou pro bar' : rotuloStatus(statusDoCancelado(l.statusItem, l.nome))}
                       </td>
                       <td className="px-4 py-2 text-xs text-slate-800">{l.login ?? '—'}</td>
                       <td className="px-4 py-2 text-xs text-slate-600">

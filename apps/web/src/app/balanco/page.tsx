@@ -15,7 +15,7 @@ import { AppHeader } from '@/components/app-header';
 import { brDateEnd, brDateStart, hojeBr } from '@/lib/datas';
 import { brl, formatDate, int, relativeTime } from '@/lib/format';
 import type { BalancoDados } from '@/lib/balanco';
-import { ehEstornoDeItem, jaSaiu } from '@/lib/cancelamento-tipo';
+import { ehEstornoDeItem, jaSaiu, statusDoCancelado } from '@/lib/cancelamento-tipo';
 import { AutoRefresh, BotaoAtualizar } from './balanco-client';
 
 export const dynamic = 'force-dynamic';
@@ -96,7 +96,7 @@ function eventosDoDia(d: BalancoDados, estornoItem: Set<number> = new Set()): Ev
       });
       continue;
     }
-    const produzido = !!c.status_item && c.status_item !== 'a_produzir' && c.status_item !== 'pedido';
+    const produzido = jaSaiu(statusDoCancelado(c.status_item, c.nome));
     const inteiro = c.status_item === 'pedido';
     ev.push({
       quando: c.quando,

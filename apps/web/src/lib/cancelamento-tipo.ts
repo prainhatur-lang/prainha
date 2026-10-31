@@ -25,7 +25,25 @@ export interface ItemCancelado {
 
 /** O item já tinha saído (pronto, entregue…) quando foi tirado da conta. */
 export function jaSaiu(statusItem: string | null | undefined): boolean {
-  return !!statusItem && statusItem !== 'a_produzir' && statusItem !== 'pedido';
+  return !!statusItem && statusItem !== 'a_produzir' && statusItem !== 'pedido' && statusItem !== 'servico';
+}
+
+// SERVIÇO NÃO SE PRODUZ (dono, 31/10/2026). Couvert, taxa do Lounge e Espaço
+// Kids entram na conta JÁ BAIXADOS na loja (pra sumir do KDS), e o cancelamento
+// gravava "entregue" → "JÁ PRODUZIDO" no balanço. A loja passa a gravar
+// 'servico'; os cancelamentos antigos são reconhecidos pelo nome.
+// Mesma lista da loja (ITENS_FORA_KDS_PADRAO + Espaço Kids no vendas-local).
+const NOMES_SERVICO = /couvert|lounge taxa|taxa lounge|espa[cç]o kids/i;
+
+export function itemDeServico(nome: string | null | undefined): boolean {
+  return NOMES_SERVICO.test(nome ?? '');
+}
+
+/** Status do item cancelado pra mostrar: serviço já baixado vira 'servico'. */
+export function statusDoCancelado(statusItem: string | null | undefined, nome: string | null | undefined): string | null {
+  if (!statusItem) return null;
+  if (statusItem !== 'a_produzir' && statusItem !== 'pedido' && itemDeServico(nome)) return 'servico';
+  return statusItem;
 }
 
 /** Praça que só entrega bebida fechada (garrafa, lata) — o que volta pro estoque. */
