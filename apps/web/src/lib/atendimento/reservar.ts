@@ -772,7 +772,9 @@ async function validarSlotEAlocarMesa(p: {
     const valor = valorTaxaLounge(areaCfg.taxaReserva, p.data, await ehFeriadoOuProlongado(p.data).catch(() => false));
     return `${areaCfg.nome} tem taxa de R$ ${valor} paga por Pix — NÃO dá pra fechar por aqui. Explique a taxa e mande o cliente concluir em reservas.prainhabar.com.`;
   }
-  if (areaCfg.horaLimite && p.hora > areaCfg.horaLimite) {
+  // Lounge (área com taxa) pela Nina não tem hora-limite: dono 01/11/2026,
+  // "o lounge pode ser até a hora que ele quiser". As outras áreas seguem.
+  if (areaCfg.horaLimite && p.hora > areaCfg.horaLimite && !areaComTaxa) {
     return `${areaCfg.nome} aceita reserva só até ${areaCfg.horaLimite}. Sugira um horário até essa hora.`;
   }
 
@@ -1208,6 +1210,13 @@ export async function remarcarReservaWhatsApp(p: {
     excluirReservaId: alvo.id,
     telefone: p.telefone,
     pertoPassarela: p.pertoPassarela,
+    // Lounge JÁ PAGO (ou com Pix cobrado) trocando horário/dia no MESMO
+    // Lounge: a taxa já está paga, não se cobra de novo (caso 01/11/2026:
+    // a Nina recusou 9h30→11h e pediu os R$ 250 de novo). Mudar de uma área
+    // grátis PRA o Lounge continua indo pro site/equipe.
+    permitirTaxa:
+      (alvo.pagamentoStatus === 'pago' || alvo.pagamentoStatus === 'cobrado') &&
+      area.toLowerCase() === String(alvo.area ?? '').toLowerCase(),
   });
   if (typeof slot === 'string') {
     // Nada foi alterado — a reserva antiga continua valendo.
