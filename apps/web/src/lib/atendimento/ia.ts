@@ -119,7 +119,7 @@ export interface ExecutoresFerramentas {
   }) => Promise<string>;
   consultarEstorno: () => Promise<string>;
   /** Lê o nome do cliente na fila de espera de hoje (só onde a casa tem fila na recepção). */
-  consultarFilaEspera?: () => Promise<string>;
+  consultarFilaEspera?: (dados: { nome: string | null }) => Promise<string>;
   /** Achados e perdidos: anota o objeto, avisa o responsável da casa e passa pra equipe. */
   registrarAchadoPerdido?: (dados: { objeto: string; quando: string | null; onde: string | null; detalhes: string | null }) => Promise<string>;
   entrarListaEspera: (dados: { nome: string; pessoas: number; area: string | null }) => Promise<string>;
@@ -860,8 +860,13 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'consultar_minha_fila_espera',
       description:
-        'Consulta se o telefone DESTA conversa está na fila de espera da recepção HOJE: nome anotado, pessoas, posição, e se já foi chamado, acomodado ou se o nome saiu da fila (e a que horas). Só LÊ — não põe ninguém na fila. Chame SEMPRE que o cliente disser que já está na fila / já deu o nome na recepção, perguntar quanto falta, ou perguntar se avisam pelo WhatsApp — antes de responder.',
-      parameters: { type: 'object', properties: {} },
+        'Consulta se o telefone DESTA conversa está na fila de espera da recepção HOJE: nome anotado, pessoas, posição, e se já foi chamado, acomodado ou se o nome saiu da fila (e a que horas). Só LÊ — não põe ninguém na fila. Chame SEMPRE que o cliente disser que já está na fila / já deu o nome na recepção, perguntar quanto falta ("quantas pessoas tem na frente?"), ou perguntar se avisam pelo WhatsApp — antes de responder. Cliente que diz "fiz uma RESERVA no nome de X" e pergunta quantos tem na FRENTE está falando da FILA: use esta ferramenta, não localizar_reserva. Passe o nome se o cliente disse em nome de quem está (o nome pode ter sido anotado com outro telefone).',
+      parameters: {
+        type: 'object',
+        properties: {
+          nome: { type: 'string', description: 'Nome em que o cliente diz estar na fila (ex.: "Bruna"). Opcional.' },
+        },
+      },
     },
   },
   {
@@ -1669,7 +1674,7 @@ Como usar, SEM EXCEÇÃO:
           resultado = await params.executores.consultarEstorno();
         } else if (tc.function.name === 'consultar_minha_fila_espera') {
           resultado = params.executores.consultarFilaEspera
-            ? await params.executores.consultarFilaEspera()
+            ? await params.executores.consultarFilaEspera({ nome: String(args.nome ?? '').trim() || null })
             : 'Esta casa não tem fila de espera no sistema. A chamada é feita pessoalmente na recepção — não prometa aviso pelo WhatsApp; oriente o cliente a falar com a recepção.';
         } else if (tc.function.name === 'consultar_pedido_delivery') {
           resultado = params.executores.consultarPedidoDelivery

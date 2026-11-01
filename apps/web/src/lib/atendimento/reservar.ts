@@ -16,7 +16,7 @@
 
 import { db, schema } from '@concilia/db';
 import type { AreaReserva, ReservaConfig } from '@concilia/db/schema';
-import { and, eq, gte, ne, sql } from 'drizzle-orm';
+import { and, eq, gte, ne, sql, type SQL } from 'drizzle-orm';
 import { nomeDaCasa } from './outras-casas';
 import { randomBytes } from 'node:crypto';
 import { hojeBr, horaAgoraBr } from '@/lib/datas';
@@ -1341,50 +1341,75 @@ export async function entrarListaEsperaWhatsApp(p: {
  *  de HOJE (dia BRT) pelo telefone desta conversa (últimos 8 dígitos — o
  *  WhatsApp chega sem o 9º dígito) e diz em que pé está. A chamada da fila é
  *  presencial, na recepção; o "📲 Chamar" do painel é extra e nem sempre é usado. */
-export async function consultarFilaEsperaWhatsApp(p: { filialId: string; telefone: string }): Promise<string> {
+export async function consultarFilaEsperaWhatsApp(p: {
+  filialId: string;
+  telefone: string;
+  /** Nome que o cliente diz ("no nome de Bruna") — a recepção às vezes anota outro telefone. */
+  nome?: string | null;
+}): Promise<string> {
   const suf = p.telefone.replace(/\D/g, '').slice(-8);
   const presencial =
     'A chamada da fila é feita PESSOALMENTE na recepção — NÃO prometa aviso pelo WhatsApp; oriente o cliente a ficar por perto da recepção.';
-  if (suf.length < 8) return `Não consegui ler o telefone desta conversa. ${presencial}`;
   const hoje = hojeBr();
-  const linhas = (await db.execute(sql`
-    SELECT le.nome, le.pessoas, le.status, le.area,
-           to_char(le.criado_em AT TIME ZONE 'America/Maceio', 'HH24:MI') AS entrou,
-           to_char(le.chamado_em AT TIME ZONE 'America/Maceio', 'HH24:MI') AS chamado,
-           to_char(le.sentado_em AT TIME ZONE 'America/Maceio', 'HH24:MI') AS sentado,
-           to_char(le.atualizado_em AT TIME ZONE 'America/Maceio', 'HH24:MI') AS mudou,
-           (SELECT count(*)::int FROM lista_espera o
-             WHERE o.filial_id = le.filial_id AND o.status = 'aguardando'
-               AND (o.criado_em AT TIME ZONE 'America/Maceio')::date = ${hoje}::date
-               AND o.criado_em < le.criado_em) AS antes
-    FROM lista_espera le
-    WHERE le.filial_id = ${p.filialId}
-      AND (le.criado_em AT TIME ZONE 'America/Maceio')::date = ${hoje}::date
-      AND right(regexp_replace(coalesce(le.telefone, ''), '\\D', '', 'g'), 8) = ${suf}
-    ORDER BY le.criado_em DESC
-    LIMIT 3
-  `)) as unknown as Array<{
+  type Linha = {
     nome: string; pessoas: number; status: string; area: string | null;
     entrou: string; chamado: string | null; sentado: string | null; mudou: string | null; antes: number;
-  }>;
+  };
+  const buscar = async (filtro: SQL) =>
+    (await db.execute(sql`
+      SELECT le.nome, le.pessoas, le.status, le.area,
+             to_char(le.criado_em AT TIME ZONE 'America/Maceio', 'HH24:MI') AS entrou,
+             to_char(le.chamado_em AT TIME ZONE 'America/Maceio', 'HH24:MI') AS chamado,
+             to_char(le.sentado_em AT TIME ZONE 'America/Maceio', 'HH24:MI') AS sentado,
+             to_char(le.atualizado_em AT TIME ZONE 'America/Maceio', 'HH24:MI') AS mudou,
+             (SELECT count(*)::int FROM lista_espera o
+               WHERE o.filial_id = le.filial_id AND o.status = 'aguardando'
+                 AND (o.criado_em AT TIME ZONE 'America/Maceio')::date = ${hoje}::date
+                 AND o.criado_em < le.criado_em) AS antes
+      FROM lista_espera le
+      WHERE le.filial_id = ${p.filialId}
+        AND (le.criado_em AT TIME ZONE 'America/Maceio')::date = ${hoje}::date
+        AND ${filtro}
+      ORDER BY le.criado_em DESC
+      LIMIT 4
+    `)) as unknown as Linha[];
+
+  let linhas: Linha[] = suf.length === 8
+    ? await buscar(sql`right(regexp_replace(coalesce(le.telefone, ''), '\\D', '', 'g'), 8) = ${suf}`)
+    : [];
+  let peloNome = false;
+  // Primeiro nome do que o cliente disse, sem acento na comparação simples (ILIKE).
+  const primeiro = (p.nome ?? '').trim().split(/\s+/)[0]?.replace(/[%_]/g, '') ?? '';
+  if (!linhas.length && primeiro.length >= 3) {
+    linhas = await buscar(sql`le.nome ILIKE ${primeiro + '%'}`);
+    peloNome = linhas.length > 0;
+  }
 
   if (!linhas.length) {
-    return `NÃO ACHEI nome na fila de hoje com o telefone desta conversa (pode ter sido anotado com outro número). ${presencial} Se o cliente diz que já está na fila, peça pra confirmar o nome com a recepção ali mesmo; se ele insistir que foi esquecido, chame transferir_para_humano com o nome que ele der.`;
+    return `NÃO ACHEI nome na fila de hoje com o telefone desta conversa${primeiro ? ` nem com o nome "${primeiro}"` : ''} (pode ter sido anotado com outro número ou outro nome — se o cliente não disse em nome de quem está, pergunte e chame de novo com o nome). ${presencial} Se ele insistir que foi esquecido, chame transferir_para_humano com o nome que ele der.`;
   }
-  const l = linhas[0];
-  const quem = `${l.nome}, ${l.pessoas} pessoa(s)${l.area ? `, ${l.area}` : ''} — entrou na fila às ${l.entrou}`;
-  if (l.status === 'aguardando') {
-    const frente = l.antes > 0 ? `${l.antes} grupo(s) na frente agora` : 'é o PRÓXIMO da fila';
-    return `NA FILA, AGUARDANDO: ${quem}; ${frente}. A fila anda conforme as mesas vagam, sem hora garantida. ${presencial}`;
+
+  const descrever = (l: Linha): string => {
+    const quem = `${l.nome}, ${l.pessoas} pessoa(s)${l.area ? `, ${l.area}` : ''} — entrou na fila às ${l.entrou}`;
+    if (l.status === 'aguardando') {
+      const frente = l.antes > 0 ? `${l.antes} grupo(s) na frente agora` : 'é o PRÓXIMO da fila';
+      return `NA FILA, AGUARDANDO: ${quem}; ${frente}. A fila anda conforme as mesas vagam, sem hora garantida. ${presencial}`;
+    }
+    if (l.status === 'chamado') {
+      return `JÁ FOI CHAMADO às ${l.chamado ?? l.mudou ?? '?'}: ${quem}. A mesa está pronta — diga pra procurar a recepção AGORA e se apresentar pelo nome.`;
+    }
+    if (l.status === 'sentado') {
+      return `JÁ FOI ACOMODADO às ${l.sentado ?? l.mudou ?? '?'}: ${quem}. Se o cliente diz que ainda está esperando, chame transferir_para_humano.`;
+    }
+    return `O NOME SAIU DA FILA às ${l.mudou ?? '?'} (marcado como desistência — normalmente chegou a vez e o grupo não estava na recepção): ${quem}. Explique isso com gentileza, diga que a chamada é pessoalmente na recepção e oriente a procurar a recepção agora pra ver o encaixe. Em seguida chame transferir_para_humano com o motivo "cliente diz que está aqui; nome ${l.nome} saiu da fila às ${l.mudou ?? '?'}" pra recepção ver.`;
+  };
+
+  if (peloNome && linhas.length > 1) {
+    return `Achei ${linhas.length} nomes parecidos na fila de hoje (anotados com outro telefone): ${linhas
+      .map((l) => `${l.nome}, ${l.pessoas} pessoa(s), entrou às ${l.entrou}, status ${l.status}`)
+      .join(' | ')}. Pergunte ao cliente quantas pessoas são ou a que horas deu o nome, e responda só sobre o grupo dele. Regras por status: ${descrever(linhas[0])}`;
   }
-  if (l.status === 'chamado') {
-    return `JÁ FOI CHAMADO às ${l.chamado ?? l.mudou ?? '?'}: ${quem}. A mesa está pronta — diga pra procurar a recepção AGORA e se apresentar pelo nome.`;
-  }
-  if (l.status === 'sentado') {
-    return `JÁ FOI ACOMODADO às ${l.sentado ?? l.mudou ?? '?'}: ${quem}. Se o cliente diz que ainda está esperando, chame transferir_para_humano.`;
-  }
-  // desistiu
-  return `O NOME SAIU DA FILA às ${l.mudou ?? '?'} (marcado como desistência — normalmente chegou a vez e o grupo não estava na recepção): ${quem}. Explique isso com gentileza, diga que a chamada é pessoalmente na recepção e oriente a procurar a recepção agora pra ver o encaixe. Em seguida chame transferir_para_humano com o motivo "cliente diz que está aqui; nome saiu da fila às ${l.mudou ?? '?'}" pra recepção ver.`;
+  return (peloNome ? 'Achei PELO NOME (anotado com outro telefone). ' : '') + descrever(linhas[0]);
 }
 
 /** Passa a reserva pro telefone DESTA conversa e manda a confirmação de novo.
