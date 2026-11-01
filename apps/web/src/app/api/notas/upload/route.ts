@@ -5,6 +5,7 @@
 // Parseia XML da NFe e cria nota_compra + nota_compra_item.
 // Idempotente: se chave já existe, retorna a existente.
 
+import { colunasTribEntrada } from '@/lib/nfe-trib-entrada';
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
@@ -167,6 +168,7 @@ export async function POST(req: Request) {
       valorIpi: it.valorIpi !== null ? String(it.valorIpi) : null,
       valorPis: it.valorPis !== null ? String(it.valorPis) : null,
       valorCofins: it.valorCofins !== null ? String(it.valorCofins) : null,
+      ...colunasTribEntrada(it),
     }));
     await db.insert(schema.notaCompraItem).values(itens);
   }

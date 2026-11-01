@@ -89,6 +89,17 @@ export interface NfeItemParseado {
   valorIpi: number | null;
   valorPis: number | null;
   valorCofins: number | null;
+  // Tributação de entrada (01/11/2026 — Lelis monta a saída a partir dela)
+  /** Origem da mercadoria (0 nacional, 1/2/6/7 estrangeira...). */
+  origem?: string | null;
+  /** CST do ICMS (regime normal) ou CSOSN (Simples), como veio. */
+  cstIcms?: string | null;
+  valorBcSt?: number | null;
+  valorIcmsSt?: number | null;
+  /** ICMS-ST retido antes (CST 60 / CSOSN 500). */
+  valorIcmsStRet?: number | null;
+  cstPis?: string | null;
+  cstCofins?: string | null;
 }
 
 function n(v: unknown): number {
@@ -167,12 +178,22 @@ export function parseNfeXml(xml: string): NfeParseada {
     const icmsNode = imposto?.ICMS as Record<string, unknown> | undefined;
     let vIcms: number | null = null;
     let pIcms: number | null = null;
+    let orig: string | null = null;
+    let cstIcms: string | null = null;
+    let vBcSt: number | null = null;
+    let vIcmsSt: number | null = null;
+    let vIcmsStRet: number | null = null;
     if (icmsNode) {
       for (const k of Object.keys(icmsNode)) {
         const v = icmsNode[k] as Record<string, unknown>;
         if (v && typeof v === 'object') {
           vIcms = nullableN(v.vICMS) ?? vIcms;
           pIcms = nullableN(v.pICMS) ?? pIcms;
+          orig = nullableS(v.orig) ?? orig;
+          cstIcms = nullableS(v.CST) ?? nullableS(v.CSOSN) ?? cstIcms;
+          vBcSt = nullableN(v.vBCST) ?? vBcSt;
+          vIcmsSt = nullableN(v.vICMSST) ?? vIcmsSt;
+          vIcmsStRet = nullableN(v.vICMSSTRet) ?? vIcmsStRet;
         }
       }
     }
@@ -184,18 +205,26 @@ export function parseNfeXml(xml: string): NfeParseada {
     }
     const pisNode = imposto?.PIS as Record<string, unknown> | undefined;
     let vPis: number | null = null;
+    let cstPis: string | null = null;
     if (pisNode) {
       for (const k of Object.keys(pisNode)) {
         const v = pisNode[k] as Record<string, unknown>;
-        if (v && typeof v === 'object') vPis = nullableN(v.vPIS) ?? vPis;
+        if (v && typeof v === 'object') {
+          vPis = nullableN(v.vPIS) ?? vPis;
+          cstPis = nullableS(v.CST) ?? cstPis;
+        }
       }
     }
     const cofinsNode = imposto?.COFINS as Record<string, unknown> | undefined;
     let vCofins: number | null = null;
+    let cstCofins: string | null = null;
     if (cofinsNode) {
       for (const k of Object.keys(cofinsNode)) {
         const v = cofinsNode[k] as Record<string, unknown>;
-        if (v && typeof v === 'object') vCofins = nullableN(v.vCOFINS) ?? vCofins;
+        if (v && typeof v === 'object') {
+          vCofins = nullableN(v.vCOFINS) ?? vCofins;
+          cstCofins = nullableS(v.CST) ?? cstCofins;
+        }
       }
     }
 
@@ -218,6 +247,13 @@ export function parseNfeXml(xml: string): NfeParseada {
       valorIpi: vIpi,
       valorPis: vPis,
       valorCofins: vCofins,
+      origem: orig,
+      cstIcms,
+      valorBcSt: vBcSt,
+      valorIcmsSt: vIcmsSt,
+      valorIcmsStRet: vIcmsStRet,
+      cstPis,
+      cstCofins,
     };
   });
 

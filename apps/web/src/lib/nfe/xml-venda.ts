@@ -126,6 +126,11 @@ export interface NfeVendaItem {
   quantidade: number;
   valorUnitario: number;
   origem?: string | null;
+  /** Tributação do item (01/11/2026, tirada da nota de entrada). Vazio = config geral. */
+  cstIcms?: string | null;
+  csosn?: string | null;
+  cstPis?: string | null;
+  cstCofins?: string | null;
 }
 
 export interface DadosNfeVenda {
@@ -189,7 +194,17 @@ export function montarXmlNfeVenda(dados: DadosNfeVenda): XmlNfeMontado {
   if (!normal && !['102', '400', '500'].includes(csosn)) throw new Error(`CSOSN ${csosn} não suportado (102, 400 ou 500)`);
   const st = normal ? cstIcms === '60' : csosn === '500';
   const aliqIcms = Number(fis.aliqIcms ?? 0);
-  if (normal && cstIcms === '00' && !(aliqIcms > 0)) throw new Error('CST 00 precisa da alíquota do ICMS');
+
+  // tributação de cada item: a do produto (tirada da entrada) ou a geral
+  const tribItem = (item: NfeVendaItem) => {
+    const c = so(item.cstIcms) ? so(item.cstIcms).padStart(2, '0') : cstIcms;
+    const sn = so(item.csosn) || csosn;
+    if (normal && !['00', '40', '41', '60'].includes(c)) throw new Error(`CST ${c} do ICMS de "${item.descricao}" não suportado (00, 40, 41 ou 60)`);
+    if (!normal && !['102', '400', '500'].includes(sn)) throw new Error(`CSOSN ${sn} de "${item.descricao}" não suportado (102, 400 ou 500)`);
+    if (normal && c === '00' && !(aliqIcms > 0)) throw new Error('CST 00 precisa da alíquota do ICMS');
+    const itemSt = normal ? c === '60' : sn === '500';
+    return { cst: c, csosn: sn, st: itemSt, cfop: so(dados.cfop) || cfopPadraoVenda(ufE, ufD, itemSt) };
+  };
 
   const cfop = so(dados.cfop) || cfopPadraoVenda(ufE, ufD, st);
   if (!/^[56]\d{3}$/.test(cfop)) throw new Error(`CFOP inválido pra venda: ${cfop}`);
@@ -205,8 +220,9 @@ export function montarXmlNfeVenda(dados: DadosNfeVenda): XmlNfeMontado {
   const aliqPis = Number(fis.aliqPis ?? 0);
   const aliqCof = Number(fis.aliqCofins ?? 0);
   const NT = ['04', '05', '06', '07', '08', '09'];
+  const pisOk = (c: string) => c === '01' || NT.includes(c) || c === '49' || c === '99';
   for (const c of [cstPis, cstCof]) {
-    if (!(c === '01' || NT.includes(c) || c === '49' || c === '99')) throw new Error(`CST ${c} de PIS/COFINS não suportado (01, 04–09, 49 ou 99)`);
+    if (!pisOk(c)) throw new Error(`CST ${c} de PIS/COFINS não suportado (01, 04–09, 49 ou 99)`);
   }
 
   const tPag = so(dados.formaPagamento).padStart(2, '0');
@@ -241,6 +257,10 @@ export function montarXmlNfeVenda(dados: DadosNfeVenda): XmlNfeMontado {
       const uCom = texto(item.unidade || 'UN', 6).toUpperCase() || 'UN';
       const cProd = texto(item.codigo, 60) || String(n);
       const ean = gtin(item.ean);
+      const tr = tribItem(item);
+      const cstIcms = tr.cst;
+      const csosn = tr.csosn;
+      const cfop = tr.cfop;
 
       let icms: string;
       if (normal) {
@@ -269,7 +289,12 @@ export function montarXmlNfeVenda(dados: DadosNfeVenda): XmlNfeMontado {
         if (NT.includes(c)) return `<${imp}><${imp}NT><CST>${c}</CST></${imp}NT></${imp}>`;
         return `<${imp}><${imp}Outr><CST>${c}</CST><vBC>0.00</vBC><p${imp}>0.0000</p${imp}><v${imp}>0.00</v${imp}></${imp}Outr></${imp}>`;
       };
-      const pisCofins = grupo('PIS', cstPis, aliqPis) + grupo('COFINS', cstCof, aliqCof);
+      const cPisItem = normal && so(item.cstPis) ? so(item.cstPis).padStart(2, '0') : cstPis;
+      const cCofItem = normal && so(item.cstCofins) ? so(item.cstCofins).padStart(2, '0') : cstCof;
+      for (const c of [cPisItem, cCofItem]) {
+        if (!pisOk(c)) throw new Error(`CST ${c} de PIS/COFINS de "${item.descricao}" não suportado (01, 04–09, 49 ou 99)`);
+      }
+      const pisCofins = grupo('PIS', cPisItem, aliqPis) + grupo('COFINS', cCofItem, aliqCof);
 
       let ibsCbs = '';
       if (ibsTributado) {

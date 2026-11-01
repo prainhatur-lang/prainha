@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { acessoLelisApi } from '@/lib/lelis/acesso';
 import { cancelarNfeEmitida } from '@/lib/nfe/emitir';
 import { nfeVendaLelisPorId } from '@/lib/nfe/emitir-venda';
+import { estornarVendaLelis } from '@/lib/lelis/movimento';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -22,5 +23,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!nota) return NextResponse.json({ error: 'nota não encontrada' }, { status: 404 });
   const r = await cancelarNfeEmitida({ nfeId: id, userId: a.userId, justificativa: parsed.data.justificativa, acessoConferido: true });
   if (!r.ok) return NextResponse.json({ error: r.erro }, { status: r.transitorio ? 503 : 400 });
+  // devolve o estoque e cancela o a receber em aberto
+  await estornarVendaLelis(a.filialId, id, a.email ?? a.userId).catch((e) => console.error('[lelis/cancelar] estorno', e));
   return NextResponse.json({ ok: true, protocolo: r.protocolo });
 }

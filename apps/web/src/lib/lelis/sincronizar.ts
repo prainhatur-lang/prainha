@@ -6,6 +6,7 @@
 import { db } from '@concilia/db';
 import { sql } from 'drizzle-orm';
 import { filialDoCnpj, LELIS_CNPJ } from '@/lib/impostos/guia';
+import { cstPisDaEntrada, tribIcmsDaEntrada } from './tributacao';
 
 let lelisIdCache: string | null = null;
 export async function lelisFilialId(): Promise<string | null> {
@@ -24,6 +25,13 @@ export function gtinValido(ean: string | null | undefined): string | null {
   let soma = 0;
   nums.reverse().forEach((x, i) => { soma += x * (i % 2 === 0 ? 3 : 1); });
   return (10 - (soma % 10)) % 10 === dv ? d : null;
+}
+
+/** Chave do produto na tela de preço: GTIN válido, senão fornecedor + código. */
+export function chaveProduto(ean: string | null, emitCnpj: string | null, codigo: string | null, descricao: string | null): string {
+  const g = gtinValido(ean);
+  const cnpj = (emitCnpj ?? '').replace(/\D/g, '');
+  return g ?? `F${cnpj}:${(codigo ?? descricao ?? '').slice(0, 60)}`;
 }
 
 // Interestadual pra Sergipe (Nordeste): Sul/Sudeste (menos ES) = 7%, resto = 12%.
@@ -52,6 +60,11 @@ interface LinhaItem {
   valor_frete: string | null;
   valor_ipi: string | null;
   aliquota_icms: string | null;
+  cfop: string | null;
+  cst_icms: string | null;
+  cst_pis: string | null;
+  valor_icms_st: string | null;
+  valor_icms_st_ret: string | null;
 }
 
 export async function sincronizarProdutosDasNotas(filialId: string, usuario: string): Promise<{ itens: number; produtos: number }> {
@@ -60,7 +73,8 @@ export async function sincronizarProdutosDasNotas(filialId: string, usuario: str
            (n.data_emissao AT TIME ZONE 'America/Sao_Paulo')::date::text AS dia,
            i.codigo_produto_fornecedor AS codigo, i.ean, i.descricao, i.ncm, i.cest, i.unidade,
            i.quantidade::text, i.valor_total::text, i.valor_desconto::text, i.valor_frete::text,
-           i.valor_ipi::text, i.aliquota_icms::text
+           i.valor_ipi::text, i.aliquota_icms::text,
+           i.cfop, i.cst_icms, i.cst_pis, i.valor_icms_st::text, i.valor_icms_st_ret::text
       FROM nota_compra_item i JOIN nota_compra n ON n.id = i.nota_compra_id
      WHERE i.filial_id = ${filialId}::uuid
      ORDER BY n.data_emissao NULLS FIRST, i.numero_item
@@ -71,8 +85,7 @@ export async function sincronizarProdutosDasNotas(filialId: string, usuario: str
     const qtd = Number(it.quantidade) || 0;
     if (qtd <= 0) continue;
     const ean = gtinValido(it.ean);
-    const cnpj = (it.emit_cnpj ?? '').replace(/\D/g, '');
-    const chave = ean ?? `F${cnpj}:${(it.codigo ?? it.descricao ?? '').slice(0, 60)}`;
+    const chave = chaveProduto(it.ean, it.emit_cnpj, it.codigo, it.descricao);
     chaves.add(chave);
     const bruto = Number(it.valor_total) || 0;
     const desc = Number(it.valor_desconto) || 0;
@@ -84,13 +97,21 @@ export async function sincronizarProdutosDasNotas(filialId: string, usuario: str
     const ncm = (it.ncm ?? '').replace(/\D/g, '').slice(0, 8) || null;
     const cest = (it.cest ?? '').replace(/\D/g, '').slice(0, 7) || null;
     const un = (it.unidade ?? 'UN').toUpperCase().slice(0, 6);
+    const vSt = Number(it.valor_icms_st) || 0;
+    const vStRet = Number(it.valor_icms_st_ret) || 0;
+    const tribIcms = tribIcmsDaEntrada({ cfop: it.cfop, cstIcms: it.cst_icms, cstPis: it.cst_pis, valorIcmsSt: vSt, valorIcmsStRet: vStRet });
+    const cstPisSaida = cstPisDaEntrada(it.cst_pis);
+    const cfopEntrada = (it.cfop ?? '').replace(/\D/g, '').slice(0, 4) || null;
+    const stUnit = vSt + vStRet > 0 ? ((vSt + vStRet) / qtd).toFixed(4) : null;
 
     await db.execute(sql`
       INSERT INTO revenda_produto (filial_id, chave, ean, codigo_fornecedor, fornecedor_nome, descricao, ncm, cest, unidade,
-                                   custo_unit, pct_ipi, aliq_origem, frete_unit, ultima_nota_chave, ultima_compra_em, atualizado_por)
+                                   custo_unit, pct_ipi, aliq_origem, frete_unit, ultima_nota_chave, ultima_compra_em, atualizado_por,
+                                   trib_icms, cst_pis_saida, cfop_entrada, cst_icms_entrada, cst_pis_entrada, icms_st_unit)
       VALUES (${filialId}::uuid, ${chave}, ${ean}, ${it.codigo}, ${it.emit_nome}, ${it.descricao ?? 'SEM DESCRIÇÃO'}, ${ncm}, ${cest}, ${un},
               ${custoUnit.toFixed(4)}::numeric, ${pctIpi.toFixed(4)}::numeric, ${aliqOrigem}::numeric, ${freteUnit.toFixed(4)}::numeric,
-              ${it.chave_nota}, ${it.dia}::date, ${usuario})
+              ${it.chave_nota}, ${it.dia}::date, ${usuario},
+              ${tribIcms}, ${cstPisSaida}, ${cfopEntrada}, ${it.cst_icms}, ${it.cst_pis}, ${stUnit}::numeric)
       ON CONFLICT (filial_id, chave) DO UPDATE SET
         custo_unit = excluded.custo_unit,
         pct_ipi = excluded.pct_ipi,
@@ -102,6 +123,14 @@ export async function sincronizarProdutosDasNotas(filialId: string, usuario: str
         cest = COALESCE(excluded.cest, revenda_produto.cest),
         ultima_nota_chave = excluded.ultima_nota_chave,
         ultima_compra_em = excluded.ultima_compra_em,
+        cfop_entrada = COALESCE(excluded.cfop_entrada, revenda_produto.cfop_entrada),
+        cst_icms_entrada = COALESCE(excluded.cst_icms_entrada, revenda_produto.cst_icms_entrada),
+        cst_pis_entrada = COALESCE(excluded.cst_pis_entrada, revenda_produto.cst_pis_entrada),
+        icms_st_unit = COALESCE(excluded.icms_st_unit, revenda_produto.icms_st_unit),
+        trib_icms = CASE WHEN revenda_produto.trib_manual THEN revenda_produto.trib_icms
+                         ELSE COALESCE(excluded.trib_icms, revenda_produto.trib_icms) END,
+        cst_pis_saida = CASE WHEN revenda_produto.trib_manual THEN revenda_produto.cst_pis_saida
+                             ELSE COALESCE(excluded.cst_pis_saida, revenda_produto.cst_pis_saida) END,
         atualizado_em = now(),
         atualizado_por = excluded.atualizado_por
       WHERE revenda_produto.ultima_compra_em IS NULL

@@ -8,6 +8,8 @@ import { db, schema } from '@concilia/db';
 import { and, eq, inArray } from 'drizzle-orm';
 import { acessoLelisApi } from '@/lib/lelis/acesso';
 import { emitirNfeVenda, nfesVendaLelis } from '@/lib/nfe/emitir-venda';
+import { cstsDaVenda } from '@/lib/lelis/tributacao';
+import { parcelasPadrao, registrarVendaLelis } from '@/lib/lelis/movimento';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -46,6 +48,11 @@ const Body = z.object({
   modFrete: txt(1).optional(),
   cfop: txt(4).optional(),
   infoExtra: txt(2000).optional(),
+  /** Vencimentos do a receber (vazio = um só: hoje, ou +28 dias no boleto). */
+  vencimentos: z
+    .array(z.object({ data: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), valor: z.number().positive() }))
+    .max(24)
+    .optional(),
 });
 
 export async function POST(req: Request) {
@@ -91,6 +98,8 @@ export async function POST(req: Request) {
         valorUnitario: i.preco,
         // compra de fora do país não passa por aqui: mercadoria nacional
         origem: '0',
+        // tributação tirada da nota de entrada (ou escolhida à mão no produto)
+        ...cstsDaVenda(p),
       };
     }),
     formaPagamento: d.formaPagamento,
@@ -106,7 +115,38 @@ export async function POST(req: Request) {
       { status: r.transitorio ? 503 : 400 },
     );
   }
-  return NextResponse.json({ ok: true, jaExistia: r.jaExistia, nota: r.nota, aviso: r.aviso });
+  // nota de verdade: baixa o estoque e lança o a receber (idempotente — reenvio não duplica)
+  let avisoFin: string | undefined;
+  if (r.nota.ambiente === 1 && r.nota.status === 'AUTORIZADA') {
+    try {
+      const porProd = new Map<string, number>();
+      for (const i of d.itens) porProd.set(i.produtoId, (porProd.get(i.produtoId) ?? 0) + i.quantidade);
+      const total = r.nota.valorTotal;
+      const somaV = (d.vencimentos ?? []).reduce((s, v) => s + v.valor, 0);
+      const parcelas =
+        d.vencimentos?.length && Math.abs(somaV - total) < 0.05
+          ? d.vencimentos.map((v) => ({ vencimento: v.data, valor: v.valor }))
+          : parcelasPadrao(total, d.formaPagamento);
+      await registrarVendaLelis({
+        filialId: a.filialId,
+        nfeId: r.nota.id,
+        numero: r.nota.numero,
+        usuario: a.email ?? a.userId,
+        compradorDoc: d.destinatario.documento.replace(/\D/g, ''),
+        compradorNome: d.destinatario.nome,
+        formaPagamento: d.formaPagamento,
+        itens: [...porProd].map(([produtoId, quantidade]) => {
+          const p = porId.get(produtoId)!;
+          return { produtoId, quantidade, custoUnit: Number(p.custoUnit) + Number(p.freteUnit) };
+        }),
+        parcelas,
+      });
+    } catch (e) {
+      console.error('[lelis/nfe] estoque/receber', e);
+      avisoFin = 'A nota saiu, mas não consegui baixar o estoque/lançar o a receber — me avise.';
+    }
+  }
+  return NextResponse.json({ ok: true, jaExistia: r.jaExistia, nota: r.nota, aviso: [r.aviso, avisoFin].filter(Boolean).join(' ') || undefined });
 }
 
 export async function GET() {

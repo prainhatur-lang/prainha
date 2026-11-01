@@ -213,6 +213,15 @@ export const notaCompraItem = pgTable(
     valorIpi: numeric('valor_ipi', { precision: 14, scale: 2 }),
     valorPis: numeric('valor_pis', { precision: 14, scale: 2 }),
     valorCofins: numeric('valor_cofins', { precision: 14, scale: 2 }),
+    // Tributação de entrada (01/11/2026 — Lelis monta a saída por ela). Nota antiga = null.
+    origemMerc: varchar('origem_merc', { length: 1 }),
+    /** CST do ICMS (regime normal) ou CSOSN (Simples) como veio no XML. */
+    cstIcms: varchar('cst_icms', { length: 4 }),
+    valorBcSt: numeric('valor_bc_st', { precision: 14, scale: 2 }),
+    valorIcmsSt: numeric('valor_icms_st', { precision: 14, scale: 2 }),
+    valorIcmsStRet: numeric('valor_icms_st_ret', { precision: 14, scale: 2 }),
+    cstPis: varchar('cst_pis', { length: 2 }),
+    cstCofins: varchar('cst_cofins', { length: 2 }),
 
     // Matching com produto local
     produtoId: uuid('produto_id').references(() => produto.id, { onDelete: 'set null' }),

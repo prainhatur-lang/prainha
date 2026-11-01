@@ -11,6 +11,7 @@ import { and, asc, eq } from 'drizzle-orm';
 import { ehAdmin } from '@/lib/usuario-admin';
 import { lelisFilialId } from '@/lib/lelis/sincronizar';
 import { PrecosLelisManager, type ProdutoLinha, type ConfigLelis } from './manager';
+import { EstoqueFinanceiroLelis } from './estoque-financeiro';
 
 export const dynamic = 'force-dynamic';
 
@@ -114,6 +115,7 @@ export default async function PrecosLelisPage() {
           </p>
         </div>
         <PrecosLelisManager config={config} produtos={linhas} />
+        <div className="mt-6"><EstoqueFinanceiroLelis /></div>
       </div>
     </main>
   );

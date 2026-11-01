@@ -256,7 +256,8 @@
     "migrate:preco-horario": "tsx scripts/migrate-preco-horario.ts",
     "migrate:promo-leve2": "tsx scripts/migrate-promo-leve2.ts",
     "migrate:permuta": "tsx scripts/migrate-permuta.ts",
-    "migrate:revenda-preco": "tsx scripts/migrate-revenda-preco.ts"
+    "migrate:revenda-preco": "tsx scripts/migrate-revenda-preco.ts",
+    "migrate:lelis-entrada": "tsx scripts/migrate-lelis-entrada.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",

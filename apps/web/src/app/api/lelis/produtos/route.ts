@@ -29,6 +29,9 @@ const Campos = z.object({
   pctImpostosVenda: num,
   precoManual: num,
   ativo: z.boolean().optional(),
+  /** Tributação da saída escolhida à mão (null = volta pro que a nota de entrada diz). */
+  tribIcms: z.enum(['TRIBUTADO', 'ST', 'ISENTO', 'NAO_TRIB']).nullable().optional(),
+  cstPisSaida: z.enum(['01', '04', '05', '06', '07', '08', '09']).nullable().optional(),
 });
 
 const txt = (x: number | null | undefined) => (x == null ? null : String(x));
@@ -52,6 +55,12 @@ function paraBanco(c: z.infer<typeof Campos>) {
   if (c.pctImpostosVenda !== undefined) s.pctImpostosVenda = txt(c.pctImpostosVenda);
   if (c.precoManual !== undefined) s.precoManual = c.precoManual && c.precoManual > 0 ? String(c.precoManual) : null;
   if (c.ativo !== undefined) s.ativo = c.ativo;
+  if (c.tribIcms !== undefined || c.cstPisSaida !== undefined) {
+    if (c.tribIcms !== undefined) s.tribIcms = c.tribIcms;
+    if (c.cstPisSaida !== undefined) s.cstPisSaida = c.cstPisSaida;
+    // os dois null = "voltar pro automático": a próxima sincronização refaz pela nota
+    s.tribManual = !(c.tribIcms === null && (c.cstPisSaida === null || c.cstPisSaida === undefined));
+  }
   return s;
 }
 

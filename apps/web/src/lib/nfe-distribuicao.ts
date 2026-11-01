@@ -7,6 +7,7 @@
 //
 // Usado tanto pelo endpoint manual quanto pelo cron.
 
+import { colunasTribEntrada } from '@/lib/nfe-trib-entrada';
 import { db, schema } from '@concilia/db';
 import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
@@ -292,6 +293,7 @@ async function inserirNfeCompleta(
         valorIpi: it.valorIpi != null ? String(it.valorIpi) : null,
         valorPis: it.valorPis != null ? String(it.valorPis) : null,
         valorCofins: it.valorCofins != null ? String(it.valorCofins) : null,
+        ...colunasTribEntrada(it),
       })),
     );
   }
