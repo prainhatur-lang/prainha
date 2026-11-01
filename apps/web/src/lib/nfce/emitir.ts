@@ -261,8 +261,87 @@ async function marcarAutorizada(rowId: string, prot: ProtocoloNfce, nfeAssinada:
     .where(eq(schema.nfceEmitida.id, rowId));
 }
 
-/** Aloca o próximo número da série (atômico — upsert com incremento). */
+/**
+ * Aloca o próximo número da série, pulando número que já é de outra nota.
+ *
+ * A série pode ter sido usada antes pelo Consumer: no Bar, a série 20 do
+ * Consumer foi de 1893 a 4213 (abr–ago/2026) e o contador daqui começou do 1 —
+ * em 01/11/2026 encostou no 1893 e a SEFAZ devolveu 539 (duplicidade com outra
+ * chave). Se o número cai dentro da faixa que o Consumer usou na série
+ * (`nf_venda`, só produção) ou já está numa nota daqui, o contador salta pro
+ * maior número usado + 1.
+ */
 async function alocarNumero(filialId: string, serie: number, ambiente: number): Promise<number> {
+  const n = await incrementarContador(filialId, serie, ambiente);
+
+  let tetoConsumer = 0;
+  let caiNoConsumer = false;
+  if (ambiente === 1) {
+    const [fx] = await db
+      .select({
+        min: dsql<number | null>`min(${schema.nfVenda.numero})`,
+        max: dsql<number | null>`max(${schema.nfVenda.numero})`,
+      })
+      .from(schema.nfVenda)
+      .where(
+        and(
+          eq(schema.nfVenda.filialId, filialId),
+          eq(schema.nfVenda.tipo, 'NFCE'),
+          eq(schema.nfVenda.serie, serie),
+        ),
+      );
+    const min = fx?.min != null ? Number(fx.min) : null;
+    const max = fx?.max != null ? Number(fx.max) : null;
+    if (min != null && max != null) {
+      tetoConsumer = max;
+      caiNoConsumer = n >= min && n <= max;
+    }
+  }
+
+  const [aqui] = await db
+    .select({ id: schema.nfceEmitida.id })
+    .from(schema.nfceEmitida)
+    .where(
+      and(
+        eq(schema.nfceEmitida.filialId, filialId),
+        eq(schema.nfceEmitida.ambiente, ambiente),
+        eq(schema.nfceEmitida.serie, serie),
+        eq(schema.nfceEmitida.numero, n),
+      ),
+    )
+    .limit(1);
+
+  if (!caiNoConsumer && !aqui) return n;
+
+  const [mx] = await db
+    .select({ max: dsql<number | null>`max(${schema.nfceEmitida.numero})` })
+    .from(schema.nfceEmitida)
+    .where(
+      and(
+        eq(schema.nfceEmitida.filialId, filialId),
+        eq(schema.nfceEmitida.ambiente, ambiente),
+        eq(schema.nfceEmitida.serie, serie),
+      ),
+    );
+  const teto = Math.max(n, tetoConsumer, mx?.max != null ? Number(mx.max) : 0);
+  const [r] = await db
+    .update(schema.nfceNumeracao)
+    .set({ ultimoNumero: dsql`greatest(${schema.nfceNumeracao.ultimoNumero}, ${teto}::int) + 1` })
+    .where(
+      and(
+        eq(schema.nfceNumeracao.filialId, filialId),
+        eq(schema.nfceNumeracao.serie, serie),
+        eq(schema.nfceNumeracao.ambiente, ambiente),
+      ),
+    )
+    .returning({ numero: schema.nfceNumeracao.ultimoNumero });
+  if (!r) throw new Error('falha alocando número da NFC-e');
+  console.warn(`[nfce] série ${serie}: número ${n} já usado — contador saltou pra ${r.numero}`);
+  return r.numero;
+}
+
+/** Contador atômico da série (upsert com incremento). */
+async function incrementarContador(filialId: string, serie: number, ambiente: number): Promise<number> {
   const [r] = await db
     .insert(schema.nfceNumeracao)
     .values({ filialId, serie, ambiente, ultimoNumero: 1 })
@@ -283,6 +362,8 @@ export async function emitirNfcePedido(
   filialId: string,
   input: EmitirInput,
   tentativa = 0,
+  /** Quantas vezes já pulou número por 539 nesta emissão (trava o laço). */
+  saltos = 0,
 ): Promise<EmitirResultado> {
   const ctxR = await contextoFiscal(filialId);
   if (!ctxR.ok) return { ok: false, erro: ctxR.erro, pendencias: ctxR.pendencias };
@@ -358,9 +439,10 @@ export async function emitirNfcePedido(
   }
 
   // número: reusa o alocado SÓ se série/ambiente continuam os mesmos (mudou a
-  // config no meio? número novo do contador certo — o velho fica pra inutilizar)
+  // config no meio? número novo do contador certo — o velho fica pra inutilizar).
+  // Rejeição 539 = o número é de OUTRA nota (outra chave): não reusa, pega outro.
   const numero =
-    reuso && reuso.serie === ctx.serie && reuso.ambiente === ctx.tpAmb
+    reuso && reuso.serie === ctx.serie && reuso.ambiente === ctx.tpAmb && reuso.cstat !== '539'
       ? reuso.numero
       : await alocarNumero(filialId, ctx.serie, ctx.tpAmb);
 
@@ -504,6 +586,70 @@ export async function emitirNfcePedido(
       }
     } catch {
       /* cai na rejeição normal */
+    }
+  }
+
+  // 539 = série+número já usados por OUTRA chave. Dois casos:
+  //  a) a outra chave é a tentativa anterior DESTE pedido (mesma linha, mesmo
+  //     número, cNF diferente) que a SEFAZ autorizou sem o sistema gravar →
+  //     adota a autorizada em vez de emitir outra;
+  //  b) o número é de outra nota (Consumer usou a série antes) → marca a linha
+  //     com 539 (assim nunca mais reusa esse número) e tenta com número novo.
+  if (cstatRej === '539') {
+    const chOutra = /chNFe:?\s*(\d{44})/.exec(xmotivoRej ?? '')?.[1] ?? null;
+    if (chOutra && reuso && chOutra === reuso.chave) {
+      try {
+        const cons = await consultarChave({ chave: chOutra, tpAmb: ctx.tpAmb, pem: ctx.pem });
+        if (cons.cStat === '100' && cons.prot) {
+          await db
+            .update(schema.nfceEmitida)
+            .set({
+              ambiente: reuso.ambiente,
+              serie: reuso.serie,
+              numero: reuso.numero,
+              chave: reuso.chave,
+              cnf: reuso.cnf,
+              destDocumento: reuso.destDocumento,
+              valorTotal: reuso.valorTotal,
+              valorDesconto: reuso.valorDesconto,
+              valorOutro: reuso.valorOutro,
+              itens: reuso.itens,
+              pagamentos: reuso.pagamentos,
+              infoExtra: reuso.infoExtra,
+              qrcode: reuso.qrcode,
+              urlChave: reuso.urlChave,
+              xml: reuso.xml,
+            })
+            .where(eq(schema.nfceEmitida.id, rowId));
+          await marcarAutorizada(rowId, cons.prot, reuso.xml);
+          const [atual] = await db
+            .select()
+            .from(schema.nfceEmitida)
+            .where(eq(schema.nfceEmitida.id, rowId))
+            .limit(1);
+          return respostaDaNota(atual!, ctx.cfg, ctx.cnpj, true);
+        }
+      } catch {
+        // consulta falhou: não arrisca nota em dobro do mesmo pedido
+        await db
+          .update(schema.nfceEmitida)
+          .set({ status: 'REJEITADA', cstat: '539', xmotivo: xmotivoRej || null, atualizadoEm: new Date() })
+          .where(eq(schema.nfceEmitida.id, rowId));
+        return { ok: false, cstat: '539', erro: 'SEFAZ instável agora — tente de novo em instantes' };
+      }
+    }
+    if (saltos < 5) {
+      await db
+        .update(schema.nfceEmitida)
+        .set({
+          status: 'REJEITADA',
+          cstat: '539',
+          xmotivo: xmotivoRej || null,
+          erro: `número ${numero} já é de outra nota${chOutra ? ` (${chOutra})` : ''} — tentando com número novo`,
+          atualizadoEm: new Date(),
+        })
+        .where(eq(schema.nfceEmitida.id, rowId));
+      return emitirNfcePedido(filialId, input, 0, saltos + 1);
     }
   }
 
