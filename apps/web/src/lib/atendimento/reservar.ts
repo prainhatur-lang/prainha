@@ -1335,6 +1335,58 @@ export async function entrarListaEsperaWhatsApp(p: {
   );
 }
 
+/** "Já estou na fila — vocês chamam por aqui?" (caso Verbi, 01/11/2026): a
+ *  Nina prometeu passar pra equipe e o cliente ficou sem resposta, enquanto o
+ *  nome dele já tinha saído da fila às 12:10. Só LEITURA: acha o nome na fila
+ *  de HOJE (dia BRT) pelo telefone desta conversa (últimos 8 dígitos — o
+ *  WhatsApp chega sem o 9º dígito) e diz em que pé está. A chamada da fila é
+ *  presencial, na recepção; o "📲 Chamar" do painel é extra e nem sempre é usado. */
+export async function consultarFilaEsperaWhatsApp(p: { filialId: string; telefone: string }): Promise<string> {
+  const suf = p.telefone.replace(/\D/g, '').slice(-8);
+  const presencial =
+    'A chamada da fila é feita PESSOALMENTE na recepção — NÃO prometa aviso pelo WhatsApp; oriente o cliente a ficar por perto da recepção.';
+  if (suf.length < 8) return `Não consegui ler o telefone desta conversa. ${presencial}`;
+  const hoje = hojeBr();
+  const linhas = (await db.execute(sql`
+    SELECT le.nome, le.pessoas, le.status, le.area,
+           to_char(le.criado_em AT TIME ZONE 'America/Maceio', 'HH24:MI') AS entrou,
+           to_char(le.chamado_em AT TIME ZONE 'America/Maceio', 'HH24:MI') AS chamado,
+           to_char(le.sentado_em AT TIME ZONE 'America/Maceio', 'HH24:MI') AS sentado,
+           to_char(le.atualizado_em AT TIME ZONE 'America/Maceio', 'HH24:MI') AS mudou,
+           (SELECT count(*)::int FROM lista_espera o
+             WHERE o.filial_id = le.filial_id AND o.status = 'aguardando'
+               AND (o.criado_em AT TIME ZONE 'America/Maceio')::date = ${hoje}::date
+               AND o.criado_em < le.criado_em) AS antes
+    FROM lista_espera le
+    WHERE le.filial_id = ${p.filialId}
+      AND (le.criado_em AT TIME ZONE 'America/Maceio')::date = ${hoje}::date
+      AND right(regexp_replace(coalesce(le.telefone, ''), '\\D', '', 'g'), 8) = ${suf}
+    ORDER BY le.criado_em DESC
+    LIMIT 3
+  `)) as unknown as Array<{
+    nome: string; pessoas: number; status: string; area: string | null;
+    entrou: string; chamado: string | null; sentado: string | null; mudou: string | null; antes: number;
+  }>;
+
+  if (!linhas.length) {
+    return `NÃO ACHEI nome na fila de hoje com o telefone desta conversa (pode ter sido anotado com outro número). ${presencial} Se o cliente diz que já está na fila, peça pra confirmar o nome com a recepção ali mesmo; se ele insistir que foi esquecido, chame transferir_para_humano com o nome que ele der.`;
+  }
+  const l = linhas[0];
+  const quem = `${l.nome}, ${l.pessoas} pessoa(s)${l.area ? `, ${l.area}` : ''} — entrou na fila às ${l.entrou}`;
+  if (l.status === 'aguardando') {
+    const frente = l.antes > 0 ? `${l.antes} grupo(s) na frente agora` : 'é o PRÓXIMO da fila';
+    return `NA FILA, AGUARDANDO: ${quem}; ${frente}. A fila anda conforme as mesas vagam, sem hora garantida. ${presencial}`;
+  }
+  if (l.status === 'chamado') {
+    return `JÁ FOI CHAMADO às ${l.chamado ?? l.mudou ?? '?'}: ${quem}. A mesa está pronta — diga pra procurar a recepção AGORA e se apresentar pelo nome.`;
+  }
+  if (l.status === 'sentado') {
+    return `JÁ FOI ACOMODADO às ${l.sentado ?? l.mudou ?? '?'}: ${quem}. Se o cliente diz que ainda está esperando, chame transferir_para_humano.`;
+  }
+  // desistiu
+  return `O NOME SAIU DA FILA às ${l.mudou ?? '?'} (marcado como desistência — normalmente chegou a vez e o grupo não estava na recepção): ${quem}. Explique isso com gentileza, diga que a chamada é pessoalmente na recepção e oriente a procurar a recepção agora pra ver o encaixe. Em seguida chame transferir_para_humano com o motivo "cliente diz que está aqui; nome saiu da fila às ${l.mudou ?? '?'}" pra recepção ver.`;
+}
+
 /** Passa a reserva pro telefone DESTA conversa e manda a confirmação de novo.
  *
  *  Caso Tainah (11/10/2026): reservou pelo site digitando o celular errado

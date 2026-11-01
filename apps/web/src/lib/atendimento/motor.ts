@@ -25,6 +25,7 @@ import {
   corrigirTelefoneReservaWhatsApp,
   consultarEstornoWhatsApp,
   entrarListaEsperaWhatsApp,
+  consultarFilaEsperaWhatsApp,
   consultarMesa,
 } from './reservar';
 import { consultarCardapio, FILIAL_TABUARA } from './cardapio';
@@ -754,6 +755,11 @@ export async function processarEntrada(params: {
       corrigirTelefoneReserva: (dados: { data: string | null; telefoneReserva: string | null; cpfReserva: string | null }) =>
         corrigirTelefoneReservaWhatsApp({ filialId: entrada.filialId, filialNome, telefone: entrada.telefone, ...dados }),
       consultarEstorno: () => consultarEstornoWhatsApp(entrada.filialId, entrada.telefone),
+      // Fila de espera na recepção só existe no Prainha Bar (ocupacao.ts / painel /lista-espera).
+      consultarFilaEspera:
+        entrada.filialId === '7c5c66ce-cceb-4e89-9c6d-d0785255c4f9'
+          ? () => consultarFilaEsperaWhatsApp({ filialId: entrada.filialId, telefone: entrada.telefone })
+          : undefined,
       entrarListaEspera: (dados: { nome: string; pessoas: number; area: string | null }) =>
         entrarListaEsperaWhatsApp({ filialId: entrada.filialId, telefone: entrada.telefone, ...dados }),
       cadastrarFornecedor: async (dados: {

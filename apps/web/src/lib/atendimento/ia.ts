@@ -118,6 +118,8 @@ export interface ExecutoresFerramentas {
     telefoneContato: string | null;
   }) => Promise<string>;
   consultarEstorno: () => Promise<string>;
+  /** Lê o nome do cliente na fila de espera de hoje (só onde a casa tem fila na recepção). */
+  consultarFilaEspera?: () => Promise<string>;
   /** Achados e perdidos: anota o objeto, avisa o responsável da casa e passa pra equipe. */
   registrarAchadoPerdido?: (dados: { objeto: string; quando: string | null; onde: string | null; detalhes: string | null }) => Promise<string>;
   entrarListaEspera: (dados: { nome: string; pessoas: number; area: string | null }) => Promise<string>;
@@ -161,6 +163,7 @@ const FERRAMENTAS_SO_CONSULTA = new Set([
   'consultar_mesa',
   'localizar_reserva',
   'consultar_estorno_reserva',
+  'consultar_minha_fila_espera',
   'consultar_pedido_delivery',
   'consultar_cotacoes_fornecedor',
 ]);
@@ -470,6 +473,7 @@ ${duasCasas
 - DIA DA SEMANA E TAXA: use o dia da semana e o VALOR NESSA DATA que a consulta de disponibilidade devolver. Feriado NÃO vira sábado nem domingo: feriado numa sexta-feira é sexta-feira, e a taxa de área paga é a de dia útil. Nunca diga "por ser sábado" de um dia que não é sábado.
 - PEDIDO PRA HOJE EM CIMA DA HORA: NUNCA recuse por conta própria dizendo que "está perto do horário" — quem decide é a ferramenta, e o mínimo de antecedência MUDA com o movimento (casa com espaço aceita reserva com 20 minutos; casa cheia exige 1 hora). Se o horário pedido é hoje e ainda não passou, CHAME criar_reserva e deixe ela responder. Nunca ofereça um horário e recuse esse mesmo horário na mensagem seguinte — se você disse que dá pra reservar até as 17h, então 14h, 15h e 16h estão valendo.
 - QUANDO A RESERVA DE HOJE NÃO DÁ MAIS (ferramenta recusou / janela fechou / lotado): a mensagem NUNCA é só "não dá" — a casa CONTINUA RECEBENDO por ordem de chegada. Diga isso como convite: chegando, é só procurar a recepção, que acomoda conforme as mesas forem vagando. NÃO ofereça "colocar o nome na lista de espera", NÃO diga que anotou o nome nem que o cliente tem posição na fila — a fila é feita na recepção, na chegada (decisão do dono, 10/10). Seja honesta: sem mesa garantida e sem hora garantida; com a casa cheia, diga que pode ter espera; se a ocupação de agora informar fila na recepção, só AVISE quantos grupos estão esperando ("agora tem 2 grupos na fila").
+- CLIENTE QUE JÁ ESTÁ NA FILA DA RECEPÇÃO ("já tô na fila", "meu nome tá na lista", "quanto falta?", "vocês chamam por aqui?"): chame consultar_minha_fila_espera ANTES de responder e responda com o que ela disser (posição, já chamado, nome saiu da fila). A CHAMADA DA FILA É PRESENCIAL, na recepção: NUNCA prometa "te chamamos pelo WhatsApp" nem "a equipe te avisa por aqui" — diga pra ficar por perto da recepção. NÃO transfira só pra responder isso; transfira quando a ferramenta mandar (caso Verbi, 01/11/2026: a Nina prometeu passar pra equipe, ninguém respondeu e o nome dele já tinha saído da fila às 12h10).
 ${duasCasas
     ? `- Lounge NOVO (regra do dono, 31/10/2026): VOCÊ FECHA AQUI. Explique a taxa com o valor DESSA data (consultar_disponibilidade_reserva — R$ 100 dia útil; sábado, domingo e feriado R$ 250; com garçom exclusivo. PROMOÇÃO DE ÚLTIMA HORA: no PRÓPRIO dia, depois das 15h, se o lounge ainda está vazio, sai R$ 100 mais barato (R$ 150) — a consulta avisa quando vale; use pra fechar, e nunca prometa esse desconto pra outro dia ou antes das 15h) e, se o cliente topar, confirme data, hora, pessoas e nome e chame criar_reserva com a área do Lounge: o sistema reserva a mesa e manda o Pix copia e cola numa mensagem separada logo depois da sua (NUNCA escreva o código do Pix você mesma). A reserva fica confirmada quando o Pix cair. Se o cliente preferir, o site https://reservas.prainhabar.com continua valendo. OFEREÇA O LOUNGE quando a reserva gratuita não dá (passou do corte do dia, sábado/domingo/feriado à tarde, área lotada) e o cliente quer chegar mais tarde ou garantir lugar: "se quiser garantir lugar mais tarde, tem o Lounge, com garçom exclusivo, por R$ X — fecho pra você agora?". O Lounge não segue o corte do dia. TODA vez que o cliente falar de Lounge — reserva nova, "dá pra trocar da Areia pro Lounge?", "quanto é o Lounge?" — a MESMA resposta leva o valor DESSA data e a oferta de fechar aqui. É PROIBIDO responder "veja com a equipe na chegada" ou "depende da disponibilidade no dia": o Lounge só é garantido pagando a taxa (caso Ismael, 18/10: pediu pra trocar a Areia pelo Lounge e ficou sem valor e sem link). Se ele quiser as duas coisas, crie a reserva da Areia normalmente e ofereça fechar o Lounge também. Isso vale SÓ pra reserva NOVA: lounge JÁ RESERVADO/PAGO que quer mudar horário, dia ou pessoas é remarcar_reserva (você faz na hora).
 - GRUPOS GRANDES: a ferramenta junta DUAS mesas sozinha quando o grupo não cabe numa só (na Areia duas mesas atendem até 16; no Deck Superior, até 24). Se nem duas mesas derem, ofereça a área que comporta ou transfira pra equipe (3 mesas ou mais é com humanos). NÃO transfira antes de tentar criar — deixe a ferramenta decidir. Ex.: 13 pessoas na Areia = DUAS mesas = você mesma cria com criar_reserva (caso Tais, 11/10: ouviu "precisaria juntar mais de duas mesas" e ficou sem reserva). Nunca diga que precisa de mais de duas mesas pra grupo que cabe em duas.`
@@ -848,6 +852,15 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
       name: 'consultar_estorno_reserva',
       description:
         'Consulta o ESTORNO/reembolso de reserva paga (Lounge) do telefone DESTA conversa: acha a reserva, diz se o estorno já saiu, o valor e COMO o dinheiro volta (cartão = estorno na fatura; Pix = volta pra conta de origem). Chame SEMPRE que o cliente perguntar de estorno, reembolso, devolução do pagamento ou "meu dinheiro não caiu" — antes de responder qualquer coisa e SEM pedir chave Pix.',
+      parameters: { type: 'object', properties: {} },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'consultar_minha_fila_espera',
+      description:
+        'Consulta se o telefone DESTA conversa está na fila de espera da recepção HOJE: nome anotado, pessoas, posição, e se já foi chamado, acomodado ou se o nome saiu da fila (e a que horas). Só LÊ — não põe ninguém na fila. Chame SEMPRE que o cliente disser que já está na fila / já deu o nome na recepção, perguntar quanto falta, ou perguntar se avisam pelo WhatsApp — antes de responder.',
       parameters: { type: 'object', properties: {} },
     },
   },
@@ -1438,10 +1451,13 @@ Como usar, SEM EXCEÇÃO:
   const podePassar = modo === 'cliente' && (params.outrasCasas?.length ?? 0) > 0 && !!params.executores.passarParaOutraCasa;
   // Achados e perdidos só onde a casa tem responsável (executor presente).
   const podeAchados = modo === 'cliente' && !!params.executores.registrarAchadoPerdido;
+  // Fila de espera só onde a casa tem fila na recepção (executor presente).
+  const podeFila = modo === 'cliente' && !!params.executores.consultarFilaEspera;
   const ferramentas = ferramentasBase.filter(
     (f) =>
       !(f.type === 'function' && f.function.name === 'passar_para_outra_casa' && !podePassar) &&
-      !(f.type === 'function' && f.function.name === 'registrar_achado_perdido' && !podeAchados),
+      !(f.type === 'function' && f.function.name === 'registrar_achado_perdido' && !podeAchados) &&
+      !(f.type === 'function' && f.function.name === 'consultar_minha_fila_espera' && !podeFila),
   );
 
   // 5 rodadas: da pra consultar disponibilidade, criar a reserva e ainda
@@ -1651,6 +1667,10 @@ Como usar, SEM EXCEÇÃO:
           if (podeAchados) transferiu = true;
         } else if (tc.function.name === 'consultar_estorno_reserva') {
           resultado = await params.executores.consultarEstorno();
+        } else if (tc.function.name === 'consultar_minha_fila_espera') {
+          resultado = params.executores.consultarFilaEspera
+            ? await params.executores.consultarFilaEspera()
+            : 'Esta casa não tem fila de espera no sistema. A chamada é feita pessoalmente na recepção — não prometa aviso pelo WhatsApp; oriente o cliente a falar com a recepção.';
         } else if (tc.function.name === 'consultar_pedido_delivery') {
           resultado = params.executores.consultarPedidoDelivery
             ? await params.executores.consultarPedidoDelivery({
