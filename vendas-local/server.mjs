@@ -29788,53 +29788,53 @@ const TOTEM_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none}
 html,body{margin:0;height:100%;background:var(--bg);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink);overflow:hidden}
 .tela{position:fixed;inset:0;display:none;flex-direction:column}.tela.on{display:flex}
-#ini{background:radial-gradient(circle at 50% 30%,#1d6f8c 0,#0e2a3a 70%);color:#fff;align-items:center;justify-content:center;text-align:center;gap:3vh;cursor:pointer}
-#ini h1{font-size:7vh;margin:0;letter-spacing:-.02em}#ini p{font-size:3vh;margin:0;opacity:.85}
-#ini .ico{font-size:16vh;animation:bal 3s ease-in-out infinite}@keyframes bal{50%{transform:translateY(-2vh) rotate(-4deg)}}
-#ini .bt{margin-top:3vh;background:linear-gradient(135deg,var(--sun),var(--sun2));color:#3a1d00;font-size:4vh;font-weight:800;padding:2.4vh 7vh;border-radius:99px;box-shadow:0 1vh 4vh rgba(255,140,0,.45);animation:pul 2s infinite}
+#ini{background:radial-gradient(circle at 50% 30%,#1d6f8c 0,#0e2a3a 70%);color:#fff;align-items:center;justify-content:center;text-align:center;gap:3vmin;cursor:pointer}
+#ini h1{font-size:7vmin;margin:0;letter-spacing:-.02em}#ini p{font-size:3vmin;margin:0;opacity:.85}
+#ini .ico{font-size:16vmin;animation:bal 3s ease-in-out infinite}@keyframes bal{50%{transform:translateY(-2vmin) rotate(-4deg)}}
+#ini .bt{margin-top:3vmin;background:linear-gradient(135deg,var(--sun),var(--sun2));color:#3a1d00;font-size:4vmin;font-weight:800;padding:2.4vmin 7vmin;border-radius:99px;box-shadow:0 1vmin 4vmin rgba(255,140,0,.45);animation:pul 2s infinite}
 @keyframes pul{50%{transform:scale(1.05)}}
-header{background:var(--bg2);color:#fff;padding:2vh 3vh;display:flex;align-items:center;gap:2vh}
-header b{font-size:3.2vh;flex:1}header button{font-size:2.4vh;padding:1.4vh 2.6vh;border-radius:99px;border:2px solid #fff6;background:transparent;color:#fff}
-.abas{display:flex;gap:1.6vh;padding:2vh 3vh;background:var(--bg2);overflow-x:auto}
-.aba{flex:1;min-width:22vh;font-size:3vh;font-weight:700;padding:2.2vh 1vh;border-radius:2vh;border:0;background:#ffffff1a;color:#fff}
+header{background:var(--bg2);color:#fff;padding:2vmin 3vmin;display:flex;align-items:center;gap:2vmin}
+header b{font-size:3.2vmin;flex:1}header button{font-size:2.4vmin;padding:1.4vmin 2.6vmin;border-radius:99px;border:2px solid #fff6;background:transparent;color:#fff}
+.abas{display:flex;gap:1.6vmin;padding:2vmin 3vmin;background:var(--bg2);overflow-x:auto}
+.aba{flex:1;min-width:22vmin;font-size:3vmin;font-weight:700;padding:2.2vmin 1vmin;border-radius:2vmin;border:0;background:#ffffff1a;color:#fff}
 .aba.on{background:linear-gradient(135deg,var(--sun),var(--sun2));color:#3a1d00}
-.grade{flex:1;overflow-y:auto;padding:3vh;display:grid;grid-template-columns:repeat(auto-fill,minmax(30vh,1fr));gap:2.4vh;align-content:start;background:#eef4f6}
-.prod{background:var(--card);border-radius:2.4vh;overflow:hidden;box-shadow:0 .6vh 2vh #0001;display:flex;flex-direction:column;border:0;padding:0;text-align:left;font:inherit;color:inherit}
-.prod:active{transform:scale(.97)}.prod .f{aspect-ratio:1/1;background:#dfeef2 center/cover no-repeat;display:flex;align-items:center;justify-content:center;font-size:12vh}
-.prod .t{padding:1.6vh 2vh 2vh}.prod .n{font-size:2.6vh;font-weight:700;line-height:1.15}.prod .d{font-size:1.8vh;color:var(--mut);margin-top:.6vh}
-.prod .p{font-size:3vh;font-weight:800;color:#0b7a8c;margin-top:1vh}.prod.esg{opacity:.45}.prod.esg .p{color:var(--red);font-size:2.4vh}
+.grade{flex:1;overflow-y:auto;padding:3vmin;display:grid;grid-template-columns:repeat(auto-fill,minmax(30vmin,1fr));gap:2.4vmin;align-content:start;background:#eef4f6}
+.prod{background:var(--card);border-radius:2.4vmin;overflow:hidden;box-shadow:0 .6vmin 2vmin #0001;display:flex;flex-direction:column;border:0;padding:0;text-align:left;font:inherit;color:inherit}
+.prod:active{transform:scale(.97)}.prod .f{aspect-ratio:1/1;background:#dfeef2 center/cover no-repeat;display:flex;align-items:center;justify-content:center;font-size:12vmin}
+.prod .t{padding:1.6vmin 2vmin 2vmin}.prod .n{font-size:2.6vmin;font-weight:700;line-height:1.15}.prod .d{font-size:1.8vmin;color:var(--mut);margin-top:.6vmin}
+.prod .p{font-size:3vmin;font-weight:800;color:#0b7a8c;margin-top:1vmin}.prod.esg{opacity:.45}.prod.esg .p{color:var(--red);font-size:2.4vmin}
 .prod .q{position:absolute}
-.rod{background:#fff;padding:2vh 3vh;display:flex;align-items:center;gap:2vh;box-shadow:0 -1vh 3vh #0002}
-.rod .r{flex:1;font-size:2.6vh}.rod .r b{font-size:3.6vh;display:block}
-.bt1{border:0;border-radius:2vh;font-size:3vh;font-weight:800;padding:2.2vh 4vh;background:var(--green);color:#fff}
-.bt1:disabled{background:#b8c4ca}.bt2{border:2px solid #c9d5da;border-radius:2vh;font-size:2.6vh;font-weight:700;padding:2vh 3vh;background:#fff;color:var(--ink)}
+.rod{background:#fff;padding:2vmin 3vmin;display:flex;align-items:center;gap:2vmin;box-shadow:0 -1vmin 3vmin #0002}
+.rod .r{flex:1;font-size:2.6vmin}.rod .r b{font-size:3.6vmin;display:block}
+.bt1{border:0;border-radius:2vmin;font-size:3vmin;font-weight:800;padding:2.2vmin 4vmin;background:var(--green);color:#fff}
+.bt1:disabled{background:#b8c4ca}.bt2{border:2px solid #c9d5da;border-radius:2vmin;font-size:2.6vmin;font-weight:700;padding:2vmin 3vmin;background:#fff;color:var(--ink)}
 .modal{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;z-index:9}.modal.on{display:flex}
-.cx{background:#fff;border-radius:3vh;width:min(92vw,80vh);max-height:90vh;overflow-y:auto;padding:4vh}
-.cx h2{margin:0 0 1vh;font-size:3.6vh}.cx h3{font-size:2.6vh;margin:3vh 0 1.4vh}
-.ops{display:flex;flex-wrap:wrap;gap:1.4vh}.op{font-size:2.4vh;padding:1.8vh 2.6vh;border-radius:1.6vh;border:2px solid #c9d5da;background:#fff}
+.cx{background:#fff;border-radius:3vmin;width:min(92vw,80vmin);max-height:90vmin;overflow-y:auto;padding:4vmin}
+.cx h2{margin:0 0 1vmin;font-size:3.6vmin}.cx h3{font-size:2.6vmin;margin:3vmin 0 1.4vmin}
+.ops{display:flex;flex-wrap:wrap;gap:1.4vmin}.op{font-size:2.4vmin;padding:1.8vmin 2.6vmin;border-radius:1.6vmin;border:2px solid #c9d5da;background:#fff}
 .op.on{border-color:var(--sea);background:#e3f8fb;font-weight:700}
-.qtd{display:flex;align-items:center;gap:3vh;justify-content:center;margin:3vh 0}
-.qtd button{width:9vh;height:9vh;border-radius:50%;border:0;background:#e6eef1;font-size:5vh;font-weight:800}.qtd span{font-size:5vh;font-weight:800;min-width:8vh;text-align:center}
-.acoes{display:flex;gap:2vh;margin-top:3vh}.acoes>*{flex:1}
-.lin{display:flex;align-items:center;gap:1.6vh;padding:1.8vh 0;border-bottom:1px solid #e5ecef;font-size:2.4vh}
-.lin .nm{flex:1}.lin .nm small{display:block;color:var(--mut);font-size:1.8vh}.lin button{width:6vh;height:6vh;border-radius:50%;border:0;background:#e6eef1;font-size:3vh;font-weight:800}
-.tot{display:flex;justify-content:space-between;font-size:3.4vh;font-weight:800;margin-top:2.4vh}
-#pix,#ok{background:#fff;align-items:center;justify-content:center;text-align:center;padding:4vh;gap:2vh}
-#pix h1,#ok h1{font-size:5vh;margin:0}#pix .v{font-size:6vh;font-weight:800;color:#0b7a8c}
-#pix img{width:min(46vh,80vw);height:auto;border:1.4vh solid #fff;box-shadow:0 0 0 2px #dbe5e9;border-radius:2vh}
-#pix p{font-size:2.6vh;color:var(--mut);margin:0;max-width:80vh}.esp{display:inline-block;width:3vh;height:3vh;border:.5vh solid #cde;border-top-color:var(--sea);border-radius:50%;animation:gira 1s linear infinite;vertical-align:middle;margin-right:1vh}
+.qtd{display:flex;align-items:center;gap:3vmin;justify-content:center;margin:3vmin 0}
+.qtd button{width:9vmin;height:9vmin;border-radius:50%;border:0;background:#e6eef1;font-size:5vmin;font-weight:800}.qtd span{font-size:5vmin;font-weight:800;min-width:8vmin;text-align:center}
+.acoes{display:flex;gap:2vmin;margin-top:3vmin}.acoes>*{flex:1}
+.lin{display:flex;align-items:center;gap:1.6vmin;padding:1.8vmin 0;border-bottom:1px solid #e5ecef;font-size:2.4vmin}
+.lin .nm{flex:1}.lin .nm small{display:block;color:var(--mut);font-size:1.8vmin}.lin button{width:6vmin;height:6vmin;border-radius:50%;border:0;background:#e6eef1;font-size:3vmin;font-weight:800}
+.tot{display:flex;justify-content:space-between;font-size:3.4vmin;font-weight:800;margin-top:2.4vmin}
+#pix,#ok{background:#fff;align-items:center;justify-content:center;text-align:center;padding:4vmin;gap:2vmin}
+#pix h1,#ok h1{font-size:5vmin;margin:0}#pix .v{font-size:6vmin;font-weight:800;color:#0b7a8c}
+#pix img{width:min(46vmin,80vw);height:auto;border:1.4vmin solid #fff;box-shadow:0 0 0 2px #dbe5e9;border-radius:2vmin}
+#pix p{font-size:2.6vmin;color:var(--mut);margin:0;max-width:80vmin}.esp{display:inline-block;width:3vmin;height:3vmin;border:.5vmin solid #cde;border-top-color:var(--sea);border-radius:50%;animation:gira 1s linear infinite;vertical-align:middle;margin-right:1vmin}
 @keyframes gira{to{transform:rotate(360deg)}}
-#ok{background:linear-gradient(160deg,#16a34a,#0e7a37);color:#fff}#ok .num{font-size:22vh;font-weight:900;line-height:1;letter-spacing:-.04em}
-#ok p{font-size:3.2vh;margin:0;opacity:.95}#ok .itens{font-size:2.6vh;opacity:.9;max-width:80vh}
-.erro{color:var(--red);font-size:2.4vh;margin-top:1.6vh;min-height:3vh}
+#ok{background:linear-gradient(160deg,#16a34a,#0e7a37);color:#fff}#ok .num{font-size:22vmin;font-weight:900;line-height:1;letter-spacing:-.04em}
+#ok p{font-size:3.2vmin;margin:0;opacity:.95}#ok .itens{font-size:2.6vmin;opacity:.9;max-width:80vmin}
+.erro{color:var(--red);font-size:2.4vmin;margin-top:1.6vmin;min-height:3vmin}
 </style></head><body>
 <div id="ini" class="tela on" onclick="comecar()"><div class="ico">🍹</div><h1>Bateu a sede?</h1><p>Enquanto espera sua mesa, peça aqui e retire no balcão</p><div class="bt">Toque para pedir</div><p id="semPix" style="display:none;color:#ffd0d0">Pedidos pelo totem indisponíveis agora — peça no balcão</p></div>
 <div id="menu" class="tela"><header><b id="loja"></b><button onclick="reiniciar()">✕ Cancelar</button></header>
 <div class="abas" id="abas"></div><div class="grade" id="grade"></div>
 <div class="rod"><div class="r" id="resumo">Toque num item para adicionar</div><button class="bt2" id="btVer" onclick="verCarrinho()" disabled>🛒 Ver pedido</button><button class="bt1" id="btPag" onclick="pagar()" disabled>Pagar no Pix</button></div></div>
-<div id="pix" class="tela"><h1>Pague com Pix</h1><div class="v" id="pixV"></div><img id="pixImg" alt="QR do Pix"><p>Abra o app do seu banco, escolha <b>Pix → Ler QR code</b> e aponte para a tela.</p><p><span class="esp"></span>Esperando o pagamento…</p><div class="acoes" style="width:min(80vh,90vw)"><button class="bt2" onclick="reiniciar()">Cancelar pedido</button></div></div>
-<div id="ok" class="tela"><p>Pagamento aprovado! Seu pedido é o</p><div class="num" id="okN"></div><p><b>Retire no balcão do bar</b> — fale esse número</p><div class="itens" id="okI"></div><button class="bt2" style="margin-top:3vh" onclick="reiniciar()">Fazer outro pedido</button></div>
-<div class="modal" id="mItem"><div class="cx"><h2 id="miN"></h2><div id="miD" style="color:var(--mut);font-size:2.2vh"></div><div id="miE"></div>
+<div id="pix" class="tela"><h1>Pague com Pix</h1><div class="v" id="pixV"></div><img id="pixImg" alt="QR do Pix"><p>Abra o app do seu banco, escolha <b>Pix → Ler QR code</b> e aponte para a tela.</p><p><span class="esp"></span>Esperando o pagamento…</p><div class="acoes" style="width:min(80vmin,90vw)"><button class="bt2" onclick="reiniciar()">Cancelar pedido</button></div></div>
+<div id="ok" class="tela"><p>Pagamento aprovado! Seu pedido é o</p><div class="num" id="okN"></div><p><b>Retire no balcão do bar</b> — fale esse número</p><div class="itens" id="okI"></div><button class="bt2" style="margin-top:3vmin" onclick="reiniciar()">Fazer outro pedido</button></div>
+<div class="modal" id="mItem"><div class="cx"><h2 id="miN"></h2><div id="miD" style="color:var(--mut);font-size:2.2vmin"></div><div id="miE"></div>
 <div class="qtd"><button onclick="mQ(-1)">−</button><span id="miQ">1</span><button onclick="mQ(1)">+</button></div><div class="erro" id="miErr"></div>
 <div class="acoes"><button class="bt2" onclick="fechar('mItem')">Voltar</button><button class="bt1" id="miOk" onclick="addItem()">Adicionar</button></div></div></div>
 <div class="modal" id="mCar"><div class="cx"><h2>Seu pedido</h2><div id="carL"></div><div class="tot"><span>Total</span><span id="carT"></span></div><div class="erro" id="carErr"></div>
