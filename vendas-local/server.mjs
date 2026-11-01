@@ -29283,13 +29283,16 @@ function lancarNum(n){location.href='/venda?mesa='+n+'&volta=caixa'}
    O texto livre virava "teste"/"" e o relatório não dizia ONDE a perda nasce
    (salão, cozinha, cliente, estoque). Motivo agora é obrigatório e vem de
    uma lista fixa — "Outro…" abre o texto livre pra exceção de verdade. */
-var MOTIVOS_CANC=['Lançamento errado do garçom','Cozinha errou o pedido','Cliente recusou o prato','Cliente desistiu / mudou o pedido','Produto em falta','Demora no preparo','Devolução — produto voltou pro bar/estoque'];
+var MOTIVOS_CANC=['Lançamento errado do garçom','Cozinha errou o pedido','Cliente recusou o prato','Cliente desistiu / mudou o pedido','Produto em falta','Demora no preparo','Devolução — produto voltou pro bar/estoque','Estorno — caixa térmica (bebida fechada voltou)'];
 var MOTIVO_DEV=6; // devolução exige FOTO do produto devolvido (só pra item, não pro pedido inteiro)
+// Caixa térmica (isopor): a mesa devolve as garrafas que não abriu. Começa com
+// 'Estorno' → a nuvem conta como estorno (não é perda). Sem foto; só pra item.
+var MOTIVO_TERMICA=7;
 var MOTSEL=null,MOTPED=null;
 function chipsMotivoHtml(sel,fn,semDev){
   return '<div class="mut" style="margin-top:10px">Motivo do cancelamento (obrigatório):</div>'+
     '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">'+
-    MOTIVOS_CANC.map(function(m,ix){if(semDev&&ix===MOTIVO_DEV)return '';return '<button type="button" class="seg'+(sel===ix?' on':'')+'" style="flex:1 1 45%" onclick="'+fn+'('+ix+')">'+(ix===MOTIVO_DEV?'📷 ':'')+m+'</button>'}).join('')+
+    MOTIVOS_CANC.map(function(m,ix){if(semDev&&(ix===MOTIVO_DEV||ix===MOTIVO_TERMICA))return '';return '<button type="button" class="seg'+(sel===ix?' on':'')+'" style="flex:1 1 45%" onclick="'+fn+'('+ix+')">'+(ix===MOTIVO_DEV?'📷 ':ix===MOTIVO_TERMICA?'🧊 ':'')+m+'</button>'}).join('')+
     '<button type="button" class="seg'+(sel==='O'?' on':'')+'" style="flex:1 1 45%" onclick="'+fn+'(\\'O\\')">Outro…</button></div>'+
     (sel==='O'?'<input id="cmot" placeholder="qual o motivo?" style="margin-top:8px">':'');
 }
