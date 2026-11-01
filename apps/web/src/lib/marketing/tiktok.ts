@@ -294,3 +294,144 @@ export async function esperarEnvioTiktok(
   console.log('[marketing/tiktok] envio', publishId, ultimo.status || '(sem situação)', ultimo.motivo);
   return ultimo;
 }
+
+// ── Publicar direto no perfil (Direct Post) ───────────────────────────────
+// Escopo `video.publish` (Content Posting API com "Direct Post" ligado no
+// app). Enquanto o app não passa na auditoria do TikTok, o post só sai como
+// PRIVADO (SELF_ONLY): o creator_info devolve só essa opção. Depois da
+// auditoria aparecem as outras. Regras de tela do TikTok: mostrar a conta,
+// a casa escolhe a privacidade (sem padrão), comentário/dueto/stitch
+// desmarcados de saída, aviso de conteúdo comercial e de música.
+
+/** A chave da casa tem o escopo de publicar direto? */
+export function temPublicarTiktok(escopos: string): boolean {
+  return escopos.split(/[,\s]+/).includes('video.publish');
+}
+
+export interface CriadorTiktok {
+  foto: string | null;
+  usuario: string;
+  nome: string;
+  privacidades: string[];
+  semComentario: boolean;
+  semDueto: boolean;
+  semStitch: boolean;
+  maxSegundos: number | null;
+}
+
+/** O TikTok pede essa leitura antes de cada post direto (e a tela mostra). */
+export async function criadorTiktok(token: string): Promise<CriadorTiktok> {
+  const d = await chamar('post/publish/creator_info/query/', token, { metodo: 'POST', corpo: {} });
+  return {
+    foto: (d.creator_avatar_url as string) || null,
+    usuario: String(d.creator_username ?? ''),
+    nome: String(d.creator_nickname ?? ''),
+    privacidades: Array.isArray(d.privacy_level_options) ? d.privacy_level_options.map(String) : [],
+    semComentario: d.comment_disabled === true,
+    semDueto: d.duet_disabled === true,
+    semStitch: d.stitch_disabled === true,
+    maxSegundos: typeof d.max_video_post_duration_sec === 'number' ? d.max_video_post_duration_sec : null,
+  };
+}
+
+export interface OpcoesDiretoTiktok {
+  privacidade: string;
+  comentarios: boolean;
+  dueto: boolean;
+  stitch: boolean;
+  marcaPropria: boolean;
+  conteudoPago: boolean;
+}
+
+/** Confere as escolhas com o que a conta permite agora. Devolve o erro em português ou null. */
+export function conferirDiretoTiktok(o: OpcoesDiretoTiktok, c: CriadorTiktok): string | null {
+  if (!c.privacidades.includes(o.privacidade)) {
+    return c.privacidades.length === 1 && c.privacidades[0] === 'SELF_ONLY'
+      ? 'Enquanto o TikTok não aprova o app, o post direto só sai como "Só eu" (privado).'
+      : 'Essa opção de quem pode ver não está liberada pra esta conta agora.';
+  }
+  if (o.conteudoPago && o.privacidade === 'SELF_ONLY') {
+    return 'Conteúdo de parceria paga não pode sair como "Só eu" (regra do TikTok).';
+  }
+  return null;
+}
+
+function postInfoDireto(o: OpcoesDiretoTiktok, c: CriadorTiktok, titulo: string, video: boolean) {
+  return {
+    title: titulo,
+    privacy_level: o.privacidade,
+    disable_comment: c.semComentario || !o.comentarios,
+    ...(video ? { disable_duet: c.semDueto || !o.dueto, disable_stitch: c.semStitch || !o.stitch } : {}),
+    brand_organic_toggle: o.marcaPropria,
+    brand_content_toggle: o.conteudoPago,
+  };
+}
+
+/** Vídeo direto no perfil, com legenda (até 2.200). Devolve o publish_id. */
+export async function publicarVideoTiktok(
+  token: string,
+  video: Uint8Array<ArrayBuffer>,
+  legenda: string,
+  o: OpcoesDiretoTiktok,
+): Promise<string> {
+  const c = await criadorTiktok(token);
+  const erro = conferirDiretoTiktok(o, c);
+  if (erro) throw new ErroTiktok(erro);
+  const total = video.byteLength;
+  if (total < 1) throw new ErroTiktok('O vídeo veio vazio.');
+  const pedaco = total <= 64 * MB ? total : 10 * MB;
+  const qtd = Math.max(1, Math.floor(total / pedaco));
+  const d = await chamar('post/publish/video/init/', token, {
+    metodo: 'POST',
+    corpo: {
+      post_info: postInfoDireto(o, c, legenda.slice(0, 2200), true),
+      source_info: { source: 'FILE_UPLOAD', video_size: total, chunk_size: pedaco, total_chunk_count: qtd },
+    },
+  });
+  const publishId = String(d.publish_id ?? '');
+  const uploadUrl = String(d.upload_url ?? '');
+  if (!publishId || !uploadUrl) throw new ErroTiktok('O TikTok não devolveu o endereço de envio.');
+  for (let i = 0; i < qtd; i++) {
+    const ini = i * pedaco;
+    const fim = i === qtd - 1 ? total : ini + pedaco;
+    let r: Response;
+    try {
+      r = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'video/mp4', 'Content-Range': `bytes ${ini}-${fim - 1}/${total}` },
+        body: video.subarray(ini, fim),
+        cache: 'no-store',
+        signal: AbortSignal.timeout(180000),
+      });
+    } catch {
+      throw new ErroTiktok('O envio do vídeo pro TikTok caiu no meio. Tente de novo.');
+    }
+    if (!r.ok) throw new ErroTiktok(`O TikTok recusou o vídeo (pedaço ${i + 1}/${qtd}, HTTP ${r.status}).`);
+  }
+  return publishId;
+}
+
+/** Fotos (até 35) direto no perfil, com legenda. Mesmo link verificado do rascunho. */
+export async function publicarFotosTiktok(
+  token: string,
+  fotos: string[],
+  legenda: string,
+  o: OpcoesDiretoTiktok,
+): Promise<string> {
+  const c = await criadorTiktok(token);
+  const erro = conferirDiretoTiktok(o, c);
+  if (erro) throw new ErroTiktok(erro);
+  const titulo = (legenda.split('\n').find((l) => l.trim()) ?? '').trim().slice(0, 90);
+  const d = await chamar('post/publish/content/init/', token, {
+    metodo: 'POST',
+    corpo: {
+      post_info: { ...postInfoDireto(o, c, titulo, false), description: legenda.slice(0, 4000), auto_add_music: true },
+      source_info: { source: 'PULL_FROM_URL', photo_cover_index: 0, photo_images: fotos.slice(0, 35) },
+      post_mode: 'DIRECT_POST',
+      media_type: 'PHOTO',
+    },
+  });
+  const publishId = String(d.publish_id ?? '');
+  if (!publishId) throw new ErroTiktok('O TikTok não devolveu o número do envio.');
+  return publishId;
+}

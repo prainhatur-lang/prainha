@@ -1,5 +1,6 @@
 // /api/marketing/posts — tela /marketing → Publicar.
-//   POST  { filialId, midias, legenda, redes, agendadoPara? }  cria; sem agendadoPara publica na hora
+//   POST  { filialId, midias, legenda, redes, agendadoPara?, tiktokDireto? }  cria; sem agendadoPara publica na hora
+//         tiktokDireto = escolhas do post direto no TikTok (sem ele, TikTok = rascunho como sempre)
 //   PATCH { filialId, id, acao: 'refazer' | 'excluir' | 'publicar' }
 //   PATCH { filialId, id, acao: 'reagendar', agendadoPara }  troca o horário de um AGENDADO
 // Publicar = lib/marketing/publicar.ts (o mesmo que o cron usa pros agendados).
@@ -18,6 +19,8 @@ export const runtime = 'nodejs';
 export const maxDuration = 300;
 
 const T = schema.marketingPost;
+type TiktokDireto = NonNullable<typeof T.$inferInsert.tiktokDireto>;
+const PRIVACIDADES = ['PUBLIC_TO_EVERYONE', 'MUTUAL_FOLLOW_FRIENDS', 'FOLLOWER_OF_CREATOR', 'SELF_ONLY'];
 const erro = (msg: string, status = 400) => NextResponse.json({ error: msg }, { status });
 /** Tempo do pedido (maxDuration 300) menos folga pra gravar e responder. */
 const ate = () => Date.now() + 240_000;
@@ -29,6 +32,7 @@ export async function POST(req: Request) {
     legenda?: string;
     redes?: unknown;
     agendadoPara?: string | null;
+    tiktokDireto?: unknown;
   };
   const a = await acessoMarketingApi(b.filialId);
   if (a.error) return a.error;
@@ -52,6 +56,25 @@ export async function POST(req: Request) {
   const legenda = String(b.legenda ?? '').trim();
   if (legenda.length > 2200) return erro('Legenda passou de 2.200 caracteres (limite do Instagram).');
 
+  let tiktokDireto: TiktokDireto | null = null;
+  if (b.tiktokDireto && redes.includes('tiktok')) {
+    const t = b.tiktokDireto as Record<string, unknown>;
+    if (typeof t.privacidade !== 'string' || !PRIVACIDADES.includes(t.privacidade)) {
+      return erro('TikTok direto: escolha quem pode ver o post.');
+    }
+    tiktokDireto = {
+      privacidade: t.privacidade,
+      comentarios: t.comentarios === true,
+      dueto: t.dueto === true,
+      stitch: t.stitch === true,
+      marcaPropria: t.marcaPropria === true,
+      conteudoPago: t.conteudoPago === true,
+    };
+    if (tiktokDireto.conteudoPago && tiktokDireto.privacidade === 'SELF_ONLY') {
+      return erro('Conteúdo de parceria paga não pode sair como "Só eu" no TikTok.');
+    }
+  }
+
   let agendadoPara: Date | null = null;
   if (b.agendadoPara) {
     agendadoPara = new Date(b.agendadoPara);
@@ -67,6 +90,7 @@ export async function POST(req: Request) {
       legenda,
       redes,
       agendadoPara,
+      tiktokDireto,
       status: agendadoPara ? 'AGENDADO' : 'RASCUNHO',
       criadoPor: a.user.id,
       criadoPorEmail: a.user.email ?? null,

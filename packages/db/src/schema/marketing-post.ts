@@ -1,6 +1,19 @@
 import { index, jsonb, pgTable, text, timestamp, uuid, varchar } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
+/** Escolhas da casa pro post direto no TikTok (regras de UX do TikTok). */
+export interface TiktokDireto {
+  /** PUBLIC_TO_EVERYONE · MUTUAL_FOLLOW_FRIENDS · FOLLOWER_OF_CREATOR · SELF_ONLY */
+  privacidade: string;
+  comentarios: boolean;
+  dueto: boolean;
+  stitch: boolean;
+  /** Conteúdo comercial: promove a própria casa */
+  marcaPropria: boolean;
+  /** Conteúdo comercial: parceria paga com outra marca */
+  conteudoPago: boolean;
+}
+
 /** Post montado pela tela /marketing → Publicar (pedido do dono 21/10/2026):
  *  fotos/vídeo no bucket `marketing-midia`, legenda (IA ou escrita), redes
  *  escolhidas e quando sai. Status: RASCUNHO · AGENDADO · PUBLICANDO ·
@@ -44,6 +57,11 @@ export const marketingPost = pgTable(
     aprovadoPorEmail: text('aprovado_por_email'),
     aprovadoEm: timestamp('aprovado_em', { withTimezone: true }),
     recusaMotivo: text('recusa_motivo'),
+    // ── TikTok direto (pedido do dono 01/11/2026) ─────────────────────────
+    // Vazio = como sempre: vai pra caixa de entrada (rascunho). Preenchido =
+    // publica direto no perfil (escopo video.publish) com o que a casa
+    // escolheu na tela, como o TikTok exige. (migrate:marketing-tiktok-direto)
+    tiktokDireto: jsonb('tiktok_direto').$type<TiktokDireto>(),
   },
   (t) => ({
     filialIdx: index('idx_marketing_post_filial').on(t.filialId, t.criadoEm),

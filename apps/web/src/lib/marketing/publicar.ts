@@ -19,7 +19,17 @@ import {
   situacaoContainerInstagram,
   temPublicarInstagram,
 } from './instagram';
-import { ErroTiktok, esperarEnvioTiktok, rascunhoFotosTiktok, rascunhoVideoTiktok, statusEnvioTiktok, temRascunhoTiktok } from './tiktok';
+import {
+  ErroTiktok,
+  esperarEnvioTiktok,
+  publicarFotosTiktok,
+  publicarVideoTiktok,
+  rascunhoFotosTiktok,
+  rascunhoVideoTiktok,
+  statusEnvioTiktok,
+  temPublicarTiktok,
+  temRascunhoTiktok,
+} from './tiktok';
 import { BUCKET_MARKETING, linkArquivo } from './midia-link';
 
 const T = schema.marketingPost;
@@ -101,6 +111,13 @@ async function noInstagram(p: PostMarketing, ant: ResultadoRede | undefined, ate
 async function noTiktok(p: PostMarketing, base: string): Promise<ResultadoRede> {
   const tt = await chaveValida(p.filialId, 'tiktok');
   if (!tt) return { estado: 'erro', erro: 'O TikTok desta casa não está conectado.' };
+  // Direto no perfil (01/11/2026): só quando a casa escolheu na tela e a
+  // ligação tem video.publish. Sem a permissão, cai no rascunho de sempre.
+  let avisoDireto = '';
+  if (p.tiktokDireto) {
+    if (temPublicarTiktok(tt.escopos)) return noTiktokDireto(p, base, tt.accessToken);
+    avisoDireto = 'A ligação ainda não tem a permissão de publicar direto (video.publish), então foi pra caixa de entrada. ';
+  }
   if (!temRascunhoTiktok(tt.escopos)) {
     return {
       estado: 'erro',
@@ -124,6 +141,32 @@ async function noTiktok(p: PostMarketing, base: string): Promise<ResultadoRede> 
       ? await statusEnvioTiktok(tt.accessToken, publishId)
       : await esperarEnvioTiktok(tt.accessToken, publishId);
     if (status === 'FAILED') return { estado: 'erro', erro: `O TikTok recusou o envio (${motivo || 'sem motivo'}).` };
+  } catch {
+    // sem situação: o envio já foi aceito
+  }
+  return { estado: 'ok', id: publishId, obs: avisoDireto + obs, quando: new Date().toISOString() };
+}
+
+async function noTiktokDireto(p: PostMarketing, base: string, token: string): Promise<ResultadoRede> {
+  const o = p.tiktokDireto!;
+  const legenda = p.legendaTiktok?.trim() || p.legenda;
+  const video = p.midias.find((m) => m.tipo === 'video');
+  const publishId = video
+    ? await publicarVideoTiktok(token, await baixar(video.path), legenda, o)
+    : await publicarFotosTiktok(
+        token,
+        p.midias.filter((m) => m.tipo === 'foto').map((m) => linkArquivo(base, m.path)),
+        legenda,
+        o,
+      );
+  const privado = o.privacidade === 'SELF_ONLY';
+  const obs =
+    (privado
+      ? 'Publicado direto no perfil como "Só eu" (privado). Pra abrir pra todos, mude no app do TikTok. '
+      : 'Publicado direto no perfil do TikTok. ') + 'Pode levar alguns minutos pra aparecer.';
+  try {
+    const { status, motivo } = await esperarEnvioTiktok(token, publishId, video ? 8_000 : 20_000);
+    if (status === 'FAILED') return { estado: 'erro', erro: `O TikTok recusou o post (${motivo || 'sem motivo'}).` };
   } catch {
     // sem situação: o envio já foi aceito
   }

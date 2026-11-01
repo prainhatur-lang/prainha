@@ -8,6 +8,7 @@
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
+import { DIRETO_VAZIO, TiktokDireto, faltaNoDireto, type EscolhaDireto } from './tiktok-direto';
 
 export interface PostVisto {
   id: string;
@@ -28,6 +29,8 @@ interface Redes {
   igPodePublicar: boolean;
   ttLigado: boolean;
   ttRascunho: boolean;
+  /** Ligação com video.publish: pode postar direto no perfil. */
+  ttPublicar?: boolean;
 }
 
 interface Arquivo {
@@ -159,6 +162,8 @@ export function Publicar({
     ...(redes.ttLigado ? ['tiktok'] : []),
   ]);
   const [modo, setModo] = useState<'agora' | 'agendar'>('agora');
+  const [ttModo, setTtModo] = useState<'rascunho' | 'direto'>('rascunho');
+  const [ttDireto, setTtDireto] = useState<EscolhaDireto>(DIRETO_VAZIO);
   const [quando, setQuando] = useState('');
   const [ocupado, setOcupado] = useState<'' | 'ia' | 'publicando'>('');
   const [msg, setMsg] = useState<{ ok: boolean; txt: string } | null>(null);
@@ -265,6 +270,11 @@ export function Publicar({
       if (!quando) return setMsg({ ok: false, txt: 'Escolha o dia e a hora.' });
       agendadoPara = new Date(`${quando}:00-03:00`).toISOString(); // hora de Aracaju
     }
+    const direto = escolhidas.includes('tiktok') && redes.ttPublicar && ttModo === 'direto';
+    if (direto) {
+      const falta = faltaNoDireto(ttDireto);
+      if (falta) return setMsg({ ok: false, txt: falta });
+    }
     setOcupado('publicando');
     try {
       const j = await chamar('/api/marketing/posts', 'POST', {
@@ -273,6 +283,18 @@ export function Publicar({
         legenda,
         redes: escolhidas,
         agendadoPara,
+        ...(direto
+          ? {
+              tiktokDireto: {
+                privacidade: ttDireto.privacidade,
+                comentarios: ttDireto.comentarios,
+                dueto: temVideo && ttDireto.dueto,
+                stitch: temVideo && ttDireto.stitch,
+                marcaPropria: ttDireto.comercial && ttDireto.marcaPropria,
+                conteudoPago: ttDireto.comercial && ttDireto.conteudoPago,
+              },
+            }
+          : {}),
       });
       const p = j.post as { status?: string; erro?: string | null } | undefined;
       const st = String(p?.status ?? '');
@@ -491,12 +513,31 @@ export function Publicar({
                 <span className="block text-[11px] text-slate-500">
                   {!redes.ttLigado
                     ? 'não conectado'
-                    : !redes.ttRascunho
-                      ? 'a ligação não tem a permissão de rascunho (video.upload) — conecte o TikTok de novo'
-                      : 'vai pra caixa de entrada do app do TikTok — lá você põe a música e toca em Publicar'}
+                    : redes.ttPublicar && ttModo === 'direto'
+                      ? 'sai direto no perfil do TikTok, com as opções abaixo'
+                      : !redes.ttRascunho
+                        ? 'a ligação não tem a permissão de rascunho (video.upload) — conecte o TikTok de novo'
+                        : 'vai pra caixa de entrada do app do TikTok — lá você põe a música e toca em Publicar'}
                 </span>
               </span>
             </label>
+            {redes.ttPublicar && escolhidas.includes('tiktok') && (
+              <div className="ml-6 text-xs">
+                <div className="flex flex-wrap gap-3">
+                  <label className="flex items-center gap-1">
+                    <input type="radio" checked={ttModo === 'rascunho'} onChange={() => setTtModo('rascunho')} />
+                    Caixa de entrada (rascunho)
+                  </label>
+                  <label className="flex items-center gap-1">
+                    <input type="radio" checked={ttModo === 'direto'} onChange={() => setTtModo('direto')} />
+                    Publicar direto no perfil
+                  </label>
+                </div>
+                {ttModo === 'direto' && (
+                  <TiktokDireto filialId={filialId} temVideo={temVideo} valor={ttDireto} mudar={setTtDireto} />
+                )}
+              </div>
+            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-3 text-sm">

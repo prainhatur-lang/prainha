@@ -38,7 +38,7 @@ import { and, asc, desc, eq, ne } from 'drizzle-orm';
 import { FilaAprovacao, type PostFila } from './fila-aprovacao';
 import { createAdminClient } from '@/lib/supabase/server';
 import { temPublicarInstagram } from '@/lib/marketing/instagram';
-import { temRascunhoTiktok } from '@/lib/marketing/tiktok';
+import { temPublicarTiktok, temRascunhoTiktok } from '@/lib/marketing/tiktok';
 import { BUCKET_MARKETING } from '@/lib/marketing/midia-link';
 
 export const dynamic = 'force-dynamic';
@@ -294,6 +294,7 @@ export default async function MarketingPage(props: {
               igPodePublicar: !!ligIg && temPublicarInstagram(ligIg.escopos),
               ttLigado: tt.estado === 'ok',
               ttRascunho: !!ligTt && temRascunhoTiktok(ligTt.escopos),
+              ttPublicar: !!ligTt && temPublicarTiktok(ligTt.escopos),
             }}
             posts={postsFeitos}
           />
