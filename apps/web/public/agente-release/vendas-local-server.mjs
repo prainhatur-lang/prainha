@@ -20910,13 +20910,34 @@ async function apiSaidaConsultar(token) {
 // (e abre o zap da pessoa, se tiver), pra dar pra ver na tela quem já foi
 // chamado e há quanto tempo — é isso que evita a mesa ficar vazia esperando
 // alguém que já foi embora.
+// MESA ABERTA AQUI NA LOJA (01/11): a nuvem marca "ocupada" olhando os pedidos
+// que ela recebeu, mas a conta do banco próprio só sobe quando FECHA — então a
+// mesa com gente sentada aparecia livre no "em qual mesa?" da fila. Junta a
+// comanda aberta do banco da loja à marca da nuvem (soma, não troca). Se a
+// consulta falhar, fica só a marca da nuvem, como era.
+async function areasComMesaAberta(areas) {
+  const lista = (areas || []).filter((a) => a && a.nome);
+  let abertas;
+  try {
+    const rows = await sql`SELECT DISTINCT numero FROM comanda
+      WHERE fechada_em IS NULL AND numero > 0 AND numero < ${gerLimComanda()}`;
+    abertas = new Set(rows.map((r) => String(r.numero)));
+  } catch (err) {
+    console.error('[espera] mesas abertas na loja:', err.message);
+    return lista;
+  }
+  return lista.map((a) => ({
+    ...a,
+    mesas: (a.mesas || []).map((m) => (m && !m.ocupada && abertas.has(String(Number(String(m.numero).trim()))) ? { ...m, ocupada: true } : m)),
+  }));
+}
 async function apiEsperaLista() {
   const n = await salaoDaNuvem(true);
   if (!n || !n.ok) return { ok: false, erro: (n && n.erro) || 'sem resposta do Concilia', espera: [] };
   // O mapa de mesas da nuvem vem inteiro: serve pras duas coisas desta tela —
   // marcar ONDE a pessoa quer ficar (o nome da área) e oferecer só mesa que
   // cabe a turma e está livre na hora de sentar.
-  return { ok: true, velho: !!n.velho, espera: n.espera || [], areas: (n.areas || []).filter((a) => a && a.nome) };
+  return { ok: true, velho: !!n.velho, espera: n.espera || [], areas: await areasComMesaAberta(n.areas) };
 }
 async function apiEsperaNovo(body) {
   const nome = String(body.nome || '').trim().slice(0, 60);
@@ -32308,8 +32329,10 @@ const server = http.createServer(async (req, res) => {
         observacao: r.observacao, preferencias: r.preferencias, bebida: r.bebida,
         bebida_qtd: r.bebida_qtd, valor: r.valor, canal: r.canal,
       }));
-      // o mapa de mesas vai junto: é ele que diz o que dá pra oferecer
-      const areas = ((n && n.ok && n.areas) || []).filter((a) => a && a.nome);
+      // o mapa de mesas vai junto: é ele que diz o que dá pra oferecer.
+      // Hoje, a conta aberta aqui na loja também ocupa a mesa (outro dia, não).
+      const areasNuvem = ((n && n.ok && n.areas) || []).filter((a) => a && a.nome);
+      const areas = !dataPedida || dataPedida === (n && n.hoje) ? await areasComMesaAberta(areasNuvem) : areasNuvem;
       res.writeHead(200, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ ok: !!(n && n.ok), velho: !!(n && n.velho), erro: (n && n.erro) || null, hoje: (n && n.hoje) || null, reservas, areas }));
     }
