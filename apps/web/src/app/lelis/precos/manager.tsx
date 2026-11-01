@@ -619,7 +619,7 @@ function DadosFiscais({
               <p className="mt-1 text-red-700">Sem certificado: a nota não sai sem ele.</p>
             )}
             <div className="mt-2 flex flex-wrap items-center gap-2">
-              <input ref={pfx} type="file" accept=".pfx,.p12" className="text-xs" />
+              <label className="text-xs text-slate-600">1. Arquivo .pfx:{' '}<input ref={pfx} type="file" accept=".pfx,.p12" className="text-xs file:mr-2 file:rounded-md file:border file:border-slate-400 file:bg-slate-100 file:px-3 file:py-1 file:text-sm file:font-medium file:text-slate-800 hover:file:bg-slate-200" /></label>
               <input type="password" placeholder="senha do certificado" value={senha} onChange={(ev) => setSenha(ev.target.value)} className="rounded-md border border-slate-300 px-2 py-1" />
               <button onClick={subirCert} className="rounded-md border border-slate-300 px-3 py-1">{config.certificado ? 'Trocar certificado' : 'Enviar certificado'}</button>
             </div>
