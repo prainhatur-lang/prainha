@@ -269,8 +269,9 @@ class MesasActivity : AppCompatActivity() {
     private fun dialogTicket() {
         AlertDialog.Builder(this)
             .setTitle("🎟 Ticket · venda direta")
-            .setItems(arrayOf("🎟 Vender ticket", "🔒 Reimprimir ticket (supervisor)")) { _, i ->
+            .setItems(arrayOf("🎟 Vender ticket", "🔒 Reimprimir ticket (supervisor)", "🍹 Modo totem (cartão do totem da recepção)")) { _, i ->
                 if (i == 0) startActivity(Intent(this, ProdutosActivity::class.java).putExtra("ticket", true))
+                else if (i == 2) startActivity(Intent(this, TotemActivity::class.java))
                 else ticketReimprimir()
             }
             .setNegativeButton("Cancelar", null)

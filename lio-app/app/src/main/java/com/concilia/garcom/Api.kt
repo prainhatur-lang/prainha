@@ -154,6 +154,7 @@ object Api {
         val saldo: Double,
         val quitada: Boolean,
         val erro: String?,
+        val impressoTotem: Boolean = false, // pedido do totem: os tickets já saíram na impressora da recepção
     )
 
     // -------- HTTP helpers --------
@@ -582,8 +583,21 @@ object Api {
             saldo = j.optDouble("saldo", 0.0),
             quitada = j.optBoolean("quitada", false),
             erro = j.optStringOrNull("erro"),
+            impressoTotem = j.optBoolean("impresso_totem", false),
         )
     }
+
+    /** MODO TOTEM: a LIO do lado do totem pergunta se tem pedido no cartão
+     *  esperando. Devolve {ok, impressora, pedido:{ticket_id,total,itens}|null}.
+     *  O servidor já reserva o pedido pra este login (outra LIO não pega). */
+    @Throws(IOException::class)
+    fun totemFila(base: String, token: String): JSONObject = getJson("$base/api/lio/totem/fila", token)
+
+    /** Devolve o pedido do totem: desistiu=true (cliente cancelou na maquininha)
+     *  ou false (falhou aqui — volta pra fila). */
+    @Throws(IOException::class)
+    fun totemLiberar(base: String, token: String, ticketId: Int, desistiu: Boolean): JSONObject =
+        postJson("$base/api/lio/totem/liberar", token, JSONObject().put("ticket_id", ticketId).put("desistiu", desistiu))
 
     // -------- VENDA DIRETA (ticket): sem mesa, paga na hora --------
 
