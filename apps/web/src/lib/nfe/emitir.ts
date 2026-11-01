@@ -418,10 +418,12 @@ export async function cancelarNfeEmitida(opts: {
   nfeId: string;
   userId: string;
   justificativa: string;
+  /** Rota já conferiu o acesso por outro caminho (Lelis: só Admin, fora de usuario_filial). */
+  acessoConferido?: boolean;
 }): Promise<{ ok: true; protocolo: string | null } | { ok: false; erro: string; transitorio?: boolean }> {
   const [nota] = await db.select().from(schema.nfeEmitida).where(eq(schema.nfeEmitida.id, opts.nfeId)).limit(1);
   if (!nota) return { ok: false, erro: 'nota não encontrada' };
-  if (!(await temAcesso(opts.userId, nota.filialId))) return { ok: false, erro: 'sem acesso à casa que emitiu' };
+  if (!opts.acessoConferido && !(await temAcesso(opts.userId, nota.filialId))) return { ok: false, erro: 'sem acesso à casa que emitiu' };
   if (nota.status !== 'AUTORIZADA' || !nota.protocolo) {
     return { ok: false, erro: `só nota AUTORIZADA pode ser cancelada (esta está ${nota.status})` };
   }

@@ -11,6 +11,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import { parseNfeXml } from '@/lib/nfe-parser';
+import { ebLiberadaNoFinanceiro } from '@/lib/eb/acesso-financeiro';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -55,7 +56,10 @@ export async function POST(req: Request) {
       ),
     )
     .limit(1);
-  if (!link) return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
+  // Lelis/E.B. ficam fora de usuario_filial: o Admin sobe as notas delas (01/11/2026).
+  if (!link && !(await ebLiberadaNoFinanceiro(user.id, filialId))) {
+    return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
+  }
 
   // Parse
   let nfe;

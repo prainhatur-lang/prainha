@@ -68,3 +68,4 @@ export * from './vale-presente';
 export * from './traducao-texto';
 export * from './empresa-documento';
 export * from './permuta';
+export * from './revenda';
