@@ -298,7 +298,19 @@ export function ListaEsperaClient({
                     Sentou
                   </button>
                   <button
-                    onClick={() => acao(i.id, 'desistiu')}
+                    onClick={() => {
+                      // Trava (dono 01/11/2026, caso Janete): quem nunca foi chamado e
+                      // deixou telefone está esperando sem aviso nenhum.
+                      if (
+                        !i.chamadoEm &&
+                        (i.telefone ?? '').replace(/\D/g, '').length >= 10 &&
+                        !confirm(
+                          `${i.nome} ainda NÃO foi chamado(a) — não recebeu aviso nenhum no WhatsApp.\n\nAperte 📲 Chamar primeiro.\n\nTirar da fila mesmo assim?`,
+                        )
+                      )
+                        return;
+                      acao(i.id, 'desistiu');
+                    }}
                     disabled={pending}
                     className="rounded-lg border border-slate-300 px-3 py-3 text-sm font-medium text-slate-600 active:bg-slate-100 disabled:opacity-50 sm:py-2.5"
                   >

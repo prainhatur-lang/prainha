@@ -236,7 +236,7 @@ export async function POST(request: Request) {
     const acao = String(body.acao || '');
     if (!ACOES_ESPERA.has(acao)) return NextResponse.json({ ok: false, erro: 'ação inválida' }, { status: 400 });
     const [item] = await db
-      .select({ nome: schema.listaEspera.nome, telefone: schema.listaEspera.telefone, filialNome: schema.filial.nome })
+      .select({ nome: schema.listaEspera.nome, telefone: schema.listaEspera.telefone, chamadoEm: schema.listaEspera.chamadoEm, filialNome: schema.filial.nome })
       .from(schema.listaEspera)
       .innerJoin(schema.filial, eq(schema.filial.id, schema.listaEspera.filialId))
       .where(and(eq(schema.listaEspera.id, id), eq(schema.listaEspera.filialId, f)))
@@ -278,9 +278,16 @@ export async function POST(request: Request) {
         .set({ status: 'aguardando', chamadoEm: null, sentadoEm: null, atualizadoEm: sql`now()` })
         .where(eq(schema.listaEspera.id, id));
     } else {
+      // Quem tirou e se tinha sido chamado ficam na observação (caso Janete,
+      // 01/11/2026: saiu da fila sem chamada e ninguém sabia quem tirou).
+      const marca = (item.chamadoEm ? 'saiu da fila' : 'saiu da fila SEM ser chamado') + ' por ' + por;
       await db
         .update(schema.listaEspera)
-        .set({ status: 'desistiu', atualizadoEm: sql`now()` })
+        .set({
+          status: 'desistiu',
+          atualizadoEm: sql`now()`,
+          observacao: sql`coalesce(${schema.listaEspera.observacao} || ' · ', '') || ${marca} || ' às ' || to_char(now() at time zone 'America/Bahia', 'HH24:MI')`,
+        })
         .where(eq(schema.listaEspera.id, id));
     }
     return NextResponse.json({ ok: true, zap });

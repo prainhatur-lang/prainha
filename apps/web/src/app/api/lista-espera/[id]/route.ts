@@ -38,6 +38,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       filialId: schema.listaEspera.filialId,
       nome: schema.listaEspera.nome,
       telefone: schema.listaEspera.telefone,
+      chamadoEm: schema.listaEspera.chamadoEm,
       filialNome: schema.filial.nome,
     })
     .from(schema.listaEspera)
@@ -78,9 +79,16 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       .set({ status: 'sentado', sentadoEm: sql`now()`, atualizadoEm: sql`now()` })
       .where(eq(schema.listaEspera.id, id));
   } else {
+    // Quem tirou e se tinha sido chamado ficam na observação (caso Janete, 01/11/2026).
+    const por = user.email ?? 'painel';
+    const marca = (item.chamadoEm ? 'saiu da fila' : 'saiu da fila SEM ser chamado') + ' por ' + por;
     await db
       .update(schema.listaEspera)
-      .set({ status: 'desistiu', atualizadoEm: sql`now()` })
+      .set({
+        status: 'desistiu',
+        atualizadoEm: sql`now()`,
+        observacao: sql`coalesce(${schema.listaEspera.observacao} || ' · ', '') || ${marca} || ' às ' || to_char(now() at time zone 'America/Bahia', 'HH24:MI')`,
+      })
       .where(and(eq(schema.listaEspera.id, id)));
   }
 

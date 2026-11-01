@@ -21347,12 +21347,12 @@ async function apiEsperaNovo(body) {
     observacao: String(body.obs || '').trim().slice(0, 140),
   });
 }
-async function apiEsperaAcao(body) {
+async function apiEsperaAcao(body, quem) {
   const id = String(body.id || '');
   if (!id) return { ok: false, erro: 'sem id' };
   const acao = String(body.acao || '');
   if (!['chamar', 'sentou', 'desistiu', 'voltar'].includes(acao)) return { ok: false, erro: 'ação desconhecida' };
-  return salaoNuvemPost({ tipo: 'espera', id, acao, mesa: String(body.mesa || ''), por: 'recepção (loja)' });
+  return salaoNuvemPost({ tipo: 'espera', id, acao, mesa: String(body.mesa || ''), por: quem ? 'recepção (loja): ' + quem : 'recepção (loja)' });
 }
 // ---- ações da RECEPÇÃO na reserva (sentar, não veio, mudar hora/mesa) ----
 // Vai tudo pra nuvem: a reserva é de lá (mapa de mesas, estorno, auditoria,
@@ -22006,6 +22006,9 @@ document.getElementById('app').addEventListener('click',async function(ev){
     if(!corpo.mesa&&!confirm('Sentou sem marcar a mesa?'))return;
   }
   if(a==='desistiu'&&!b.getAttribute('data-ok')){
+    // Trava (dono 01/11/2026, caso Janete): tirar da fila quem NUNCA foi
+    // chamado e deixou telefone = cliente esperando lá fora sem aviso.
+    if(x&&!x.chamado_em&&dig(x.telefone)&&!confirm((x.nome||'Esse cliente')+' ainda NÃO foi chamado(a) — não recebeu aviso nenhum no WhatsApp.\\n\\nAperte 📣 Chamar primeiro.\\n\\nTirar da fila mesmo assim?'))return;
     b.setAttribute('data-ok','1');b.textContent='Confirmar?';
     setTimeout(function(){if(b.isConnected){b.removeAttribute('data-ok');b.innerHTML='&#10005; Desistiu'}},4000);
     return;
@@ -32989,7 +32992,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/espera') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiEsperaLista())); }
     if (req.method === 'POST' && p === '/api/espera/novo') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiEsperaNovo(body))); }
     if (req.method === 'POST' && p === '/api/reservas/acao') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiReservaAcao(body, RECEP && (RECEP.nome || RECEP.login)))); }
-    if (req.method === 'POST' && p === '/api/espera/acao') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiEsperaAcao(body))); }
+    if (req.method === 'POST' && p === '/api/espera/acao') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiEsperaAcao(body, RECEP && (RECEP.nome || RECEP.login)))); }
     // Página do CELULAR do caixa: abre a câmera e manda a foto do comprovante.
     // Sem login de propósito — quem chegou aqui tem o token, que vale 10 min e
     // uma vez só. Fica na LAN da loja, não na internet.
