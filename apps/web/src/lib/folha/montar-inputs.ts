@@ -217,6 +217,31 @@ export async function montarInputsFolha(folhaSemanaId: string, filialId: string)
       cur[r.dia] = (cur[r.dia] ?? 0) + r.min;
       horasDezPctPorCpf.set(r.cpf, cur);
     }
+    // Ponto batido numa empresa sem folha semanal (Lelis — dono 01/11/2026:
+    // "eles batem o ponto na lelis mas participam da comissao das 3 casas").
+    // Lá o ponto só vira ponto_dia; entra aqui pra contar no rateio. Filial
+    // que tem folha_semana nessa semana já veio pelo folha_horas acima.
+    if (folhaRow.dataFim) {
+      const cpfFunc = sql<string>`regexp_replace(${schema.funcionario.cpf}, '[^0-9]', '', 'g')`;
+      const doPonto = await db
+        .select({ cpf: cpfFunc, dia: schema.pontoDia.dia, min: schema.pontoDia.totalMin })
+        .from(schema.pontoDia)
+        .innerJoin(schema.funcionario, eq(schema.funcionario.id, schema.pontoDia.funcionarioId))
+        .where(
+          and(
+            gte(schema.pontoDia.dia, folhaRow.dataInicio),
+            lte(schema.pontoDia.dia, folhaRow.dataFim),
+            inArray(cpfFunc, cpfsDivide),
+            sql`NOT EXISTS (SELECT 1 FROM folha_semana fs WHERE fs.filial_id = ${schema.pontoDia.filialId} AND fs.data_inicio = ${folhaRow.dataInicio})`,
+          ),
+        );
+      for (const r of doPonto) {
+        if (!r.min) continue;
+        const cur = horasDezPctPorCpf.get(r.cpf) ?? {};
+        cur[r.dia] = (cur[r.dia] ?? 0) + r.min;
+        horasDezPctPorCpf.set(r.cpf, cur);
+      }
+    }
   }
 
   const pessoas: PessoaInput[] = pessoasRows.map((p) => ({
