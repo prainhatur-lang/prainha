@@ -21339,6 +21339,7 @@ async function apiEsperaLista() {
 async function apiEsperaNovo(body) {
   const nome = String(body.nome || '').trim().slice(0, 60);
   if (!nome) return { ok: false, erro: 'diga o nome de quem está esperando' };
+  if (soDig(body.telefone).length < 10) return { ok: false, erro: 'o WhatsApp é obrigatório (com DDD) — é por ele que a pessoa recebe o aviso de mesa pronta' };
   return salaoNuvemPost({
     tipo: 'espera_nova', nome,
     pessoas: Math.max(1, Math.min(60, Number(body.pessoas) || 2)),
@@ -21563,7 +21564,7 @@ a.zap{text-decoration:none;font-weight:700;color:#0a7a3d}
 <div class="novo" id="novo" style="display:none">
 <input id="en" placeholder="nome de quem chegou" autocomplete="off" onkeydown="if(event.key==='Enter')esperaNovo()">
 <input id="ep" type="number" min="1" value="2" title="quantas pessoas" onkeydown="if(event.key==='Enter')esperaNovo()">
-<input id="et" placeholder="whatsapp (opcional)" inputmode="numeric" autocomplete="off" onkeydown="if(event.key==='Enter')esperaNovo()">
+<input id="et" placeholder="whatsapp com DDD (obrigatório)" inputmode="numeric" autocomplete="off" onkeydown="if(event.key==='Enter')esperaNovo()">
 <input id="eo" placeholder="observação (ex.: aniversário)" autocomplete="off" onkeydown="if(event.key==='Enter')esperaNovo()">
 <button onclick="esperaNovo()">+ Colocar na fila</button>
 <div class="areas" id="eareas"></div></div>
@@ -21897,6 +21898,8 @@ document.getElementById('eareas').addEventListener('change',function(ev){
 async function esperaNovo(){
   var en=document.getElementById('en'),n=en.value.trim();
   if(!n){en.focus();return}
+  var et=document.getElementById('et');
+  if(dig(et.value).length<10){alert('O WhatsApp é obrigatório (com DDD) — é por ele que a pessoa recebe o aviso de mesa pronta.');et.focus();return}
   var area=areaEscolhida();
   if(area===null){alert('Marque onde a pessoa quer ficar (ou "qualquer lugar").');return}
   var r=await post('/api/espera/novo',{nome:n,pessoas:Number(document.getElementById('ep').value)||2,

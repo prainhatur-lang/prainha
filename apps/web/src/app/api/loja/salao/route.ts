@@ -541,6 +541,12 @@ type EsperaNova = { nome?: string; pessoas?: number; telefone?: string | null; a
 async function esperaNova(f: string, b: EsperaNova) {
   const nome = String(b.nome || '').trim().slice(0, 200);
   if (!nome) return NextResponse.json({ ok: false, erro: 'diga o nome' }, { status: 400 });
+  if (String(b.telefone || '').replace(/\D/g, '').length < 10) {
+    return NextResponse.json(
+      { ok: false, erro: 'o WhatsApp é obrigatório (com DDD) — é por ele que a pessoa recebe o aviso de mesa pronta' },
+      { status: 400 },
+    );
+  }
   const pessoas = Math.max(1, Math.min(500, Math.round(Number(b.pessoas) || 1)));
   const txt = (v: unknown, n: number) => (String(v ?? '').trim() ? String(v).trim().slice(0, n) : null);
   const { db, schema } = await import('@concilia/db');

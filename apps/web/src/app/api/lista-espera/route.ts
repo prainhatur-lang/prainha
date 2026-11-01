@@ -34,6 +34,12 @@ export async function POST(request: Request) {
 
   const pessoas = Number.isInteger(b?.pessoas) && b.pessoas > 0 ? Math.min(b.pessoas, 999) : 1;
   const telefone = normTelefone(typeof b?.telefone === 'string' ? b.telefone : null);
+  if (!telefone) {
+    return NextResponse.json(
+      { error: 'O WhatsApp é obrigatório (com DDD) — é por ele que o cliente recebe o aviso de mesa pronta.' },
+      { status: 400 },
+    );
+  }
   const txt = (v: unknown, max: number) =>
     typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null;
 

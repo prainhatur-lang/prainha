@@ -106,6 +106,10 @@ export function ListaEsperaClient({
       setErro('Informe o nome do cliente.');
       return;
     }
+    if (telefone.replace(/\D/g, '').length < 10) {
+      setErro('O WhatsApp é obrigatório (com DDD) — é por ele que o cliente recebe o aviso de mesa pronta.');
+      return;
+    }
     const r = await fetch('/api/lista-espera', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -214,12 +218,13 @@ export function ListaEsperaClient({
           />
         </label>
         <label className="block">
-          <span className="text-xs font-medium text-slate-600">WhatsApp</span>
+          <span className="text-xs font-medium text-slate-600">WhatsApp *</span>
           <input
             value={telefone}
             onChange={(e) => setTelefone(e.target.value)}
             placeholder="(00) 00000-0000"
             inputMode="tel"
+            required
             className={inputCls}
           />
         </label>
