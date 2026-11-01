@@ -726,6 +726,8 @@ async function initSchema() {
     valor_itens numeric NOT NULL, valor_servico numeric NOT NULL, total numeric NOT NULL,
     status text NOT NULL DEFAULT 'aberto', pedido_fb integer, pago_em timestamptz,
     nsu text, forma text, erro text)`;
+  await addCol('ticket_venda', 'pix_txid text'); // totem da recepção: o Pix que paga o ticket
+  await addCol('ticket_venda', 'origem text');
   // REIMPRESSÃO de ticket só com senha do supervisor (dono, 14/10): quem pediu,
   // quem liberou e quando — ticket repetido vira item retirado duas vezes.
   await sql`CREATE TABLE IF NOT EXISTS ticket_reimpressao (id bigserial PRIMARY KEY,
@@ -6706,6 +6708,183 @@ async function ticketMontarConta(t) {
   espelho().catch(() => {});
   return ped;
 }
+// ---- TOTEM DE AUTOATENDIMENTO (recepção da Prainha Bar, 01/11/2026) ----
+// Tela de toque em /totem: cardápio curto (só o que a nuvem ligou em
+// /cardapio/totem), o cliente paga no Pix na própria tela e retira no balcão
+// pelo número do pedido. Por baixo é um TICKET (ticket_venda, login 'totem',
+// sem 10%): a conta só nasce quando o Pix cai — ticketMontarConta lança os
+// itens, imprime na praça ("TICKET <id>") e aqui o Pix entra e a conta fecha.
+const TOTEM_LOGIN = 'totem';
+const totemEmVoo = new Map(); // txid -> promise (status da tela e fila não baixam juntos)
+async function loopTotemNuvem() {
+  if (!FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  try {
+    const d = await chamarNuvem('/api/loja/cardapio-totem');
+    if (!d?.ok || !Array.isArray(d.itens)) return;
+    const grupos = (Array.isArray(d.grupos) ? d.grupos : []).map((g) => ({
+      id: String(g.id || ''), nome: String(g.nome || '').slice(0, 40), emoji: String(g.emoji || '').slice(0, 8) })).filter((g) => g.id);
+    const itens = d.itens.slice(0, 150).map((x) => ({ codigo: Number(x.codigo), grupo: String(x.grupo || ''), ordem: Number(x.ordem) || 0 }))
+      .filter((x) => x.codigo > 0 && x.grupo);
+    await cfgSet('totem_cardapio', JSON.stringify({ grupos, itens }));
+  } catch (e) {
+    console.error('[totem]', e.message);
+  }
+}
+async function totemConfig() {
+  try {
+    const c = JSON.parse(await cfgGet('totem_cardapio', '{}')) || {};
+    return { grupos: Array.isArray(c.grupos) ? c.grupos : [], itens: Array.isArray(c.itens) ? c.itens : [] };
+  } catch { return { grupos: [], itens: [] }; }
+}
+/** GET /api/totem/cardapio — grupos com os produtos (foto, preço, escolhas). */
+async function apiTotemCardapio() {
+  const cfg = await totemConfig();
+  const cods = [...new Set(cfg.itens.map((i) => Number(i.codigo)).filter((n) => n > 0))];
+  const pix = pixStatus().disponivel;
+  if (!cods.length) return { ok: true, loja: LOJA_NOME, pix, grupos: [] };
+  const prods = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, descricao, sem_estoque,
+      EXISTS(SELECT 1 FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS tem_foto
+    FROM produto_local WHERE codigo_pdv = ANY(${cods})`;
+  const perg = await sql`SELECT wp.codigo_pdv, p.codigo, p.texto, wp.ordem FROM wizard_produto wp
+    JOIN wizard_pergunta p ON p.codigo = wp.pergunta WHERE wp.codigo_pdv = ANY(${cods}) ORDER BY wp.ordem, p.codigo`;
+  const pc = perg.map((x) => Number(x.codigo));
+  const ops = pc.length ? await sql`SELECT o.codigo, o.pergunta, COALESCE(NULLIF(o.nome,''), pl.nome) AS nome, o.preco
+    FROM wizard_opcao o LEFT JOIN LATERAL (SELECT nome FROM produto_local WHERE codigo_pdv = o.produto_pdv LIMIT 1) pl ON true
+    WHERE o.pergunta = ANY(${pc}) ORDER BY o.codigo` : [];
+  const porCod = new Map();
+  for (const t of prods) {
+    const c = Number(t.codigo_pdv);
+    if (porCod.has(c) || !(Number(t.preco) > 0)) continue;
+    const escolhas = perg.filter((x) => Number(x.codigo_pdv) === c).map((x) => ({
+      pergunta: x.texto || 'Escolha',
+      opcoes: ops.filter((o) => Number(o.pergunta) === Number(x.codigo) && o.nome)
+        .map((o) => ({ codigo: Number(o.codigo), nome: o.nome, preco: Number(o.preco || 0) })).slice(0, 30),
+    })).filter((x) => x.opcoes.length);
+    porCod.set(c, { codigo_pdv: c, produto_codigo: t.produto_codigo == null ? null : Number(t.produto_codigo),
+      nome: t.nome, tamanho: t.tamanho || null, preco: Number(t.preco), descricao: t.descricao || null,
+      tem_foto: !!t.tem_foto, esgotado: t.sem_estoque === true, escolhas });
+  }
+  const grupos = cfg.grupos.map((g) => ({ ...g, itens: cfg.itens.filter((i) => i.grupo === g.id)
+    .sort((a, b) => a.ordem - b.ordem).map((i) => porCod.get(Number(i.codigo))).filter(Boolean) }))
+    .filter((g) => g.itens.length);
+  return { ok: true, loja: LOJA_NOME, pix, grupos };
+}
+/** POST /api/totem/pedido {itens:[{codigo_pdv, qtd, respostas?}]} → ticket + QR do Pix. */
+async function apiTotemPedido(body) {
+  if (!pixStatus().disponivel) return { ok: false, erro: 'Pagamento indisponível agora. Peça no balcão.' };
+  const cfg = await totemConfig();
+  const permitidos = new Set(cfg.itens.map((i) => Number(i.codigo)));
+  const lista = (Array.isArray(body?.itens) ? body.itens : []).slice(0, 30);
+  if (!lista.length) return { ok: false, erro: 'Carrinho vazio.' };
+  if (lista.some((p) => !permitidos.has(Number(p.codigo_pdv)))) return { ok: false, erro: 'Um item não está mais no cardápio do totem. Atualize a tela.' };
+  if (lista.reduce((s, p) => s + Math.max(1, Math.floor(Number(p.qtd) || 1)), 0) > 30) return { ok: false, erro: 'Máximo de 30 itens por pedido.' };
+  const esg = await sql`SELECT nome FROM produto_local WHERE codigo_pdv = ANY(${lista.map((p) => Number(p.codigo_pdv))}) AND sem_estoque IS TRUE LIMIT 1`;
+  if (esg.length) return { ok: false, erro: esg[0].nome + ' acabou. Tire do carrinho.' };
+  const c = await ticketCalcular(lista.map((p) => ({ codigo_pdv: Number(p.codigo_pdv), qtd: p.qtd,
+    respostas: Array.isArray(p.respostas) ? p.respostas.map(Number).filter((n) => n > 0).slice(0, 10) : [] })));
+  if (!c.ok) return c;
+  const total = c.total_sem; // autoatendimento: sem 10%
+  if (!(total > 0)) return { ok: false, erro: 'Pedido sem valor.' };
+  const [t] = await sql`INSERT INTO ticket_venda (login, nome_usuario, itens, servico, valor_itens, valor_servico, total, origem)
+    VALUES (${TOTEM_LOGIN}, ${'Totem da recepção'}, ${JSON.stringify(c.itens)}, false, ${c.valor_itens}, 0, ${total}, 'totem') RETURNING id`;
+  const id = Number(t.id);
+  const r = await pixCriarCobranca({ valor: total, rotulo: 'Pedido ' + id + ' (totem)', origem: 'totem' });
+  if (!r.ok) {
+    await sql`UPDATE ticket_venda SET status='desistido', erro=${String(r.erro || 'Pix falhou').slice(0, 300)} WHERE id=${id}`;
+    return { ok: false, erro: 'Não consegui gerar o Pix agora. Tente de novo ou peça no balcão.' };
+  }
+  await sql`UPDATE ticket_venda SET pix_txid=${r.txid} WHERE id=${id}`;
+  console.log(`[totem] pedido ${id} · ${c.itens.length} linha(s) · R$ ${total.toFixed(2)} · Pix ${r.txid}`);
+  return { ok: true, pedido: id, total, itens: c.itens.map((i) => ({ nome: i.nome, qtd: i.qtd, valor: i.valor, opcoes: i.opcoes })),
+    txid: r.txid, copia_cola: r.copia, imagem: pixQrImagem(r.copia) };
+}
+/** GET /api/totem/status?txid= — a tela pergunta de 4 em 4 s se o Pix caiu. */
+async function apiTotemStatus(txid) {
+  txid = String(txid || '');
+  const cob = (await sql`SELECT txid, origem, pago_em, baixado_em FROM pix_cobranca WHERE txid=${txid}`)[0];
+  if (!cob || cob.origem !== 'totem') return { ok: false, erro: 'cobrança não encontrada' };
+  const [t] = await sql`SELECT id FROM ticket_venda WHERE pix_txid=${txid}`;
+  if (!cob.pago_em) {
+    const r = await apiPixConferir(txid);
+    if (!r.ok) return { ok: true, pago: false, pedido: t ? Number(t.id) : null };
+    if (!r.pago) return { ok: true, pago: false, pedido: t ? Number(t.id) : null };
+  } else if (!cob.baixado_em) {
+    await totemBaixar(txid).catch(() => null);
+  }
+  return { ok: true, pago: true, pedido: t ? Number(t.id) : null };
+}
+/** ⚠️ DINHEIRO. Pix do totem CONFIRMADO → monta a conta do ticket (itens +
+ *  impressão na praça), lança o Pix Online nela e fecha. Idempotente, como o
+ *  pixBaixarNaConta: o Pix entra UMA vez (checa pela marca "Pix do cliente
+ *  <txid>" antes de gravar, fail-closed). Falha volta pela loopTotemFila. */
+async function totemBaixar(txid) {
+  txid = String(txid || '');
+  const emVoo = totemEmVoo.get(txid);
+  if (emVoo) return emVoo;
+  const p = (async () => {
+    const cob = (await sql`SELECT * FROM pix_cobranca WHERE txid=${txid}`)[0];
+    if (!cob || cob.origem !== 'totem') return { ok: false, erro: 'não é cobrança do totem' };
+    if (!cob.pago_em) return { ok: false, erro: 'Pix ainda não confirmado' };
+    if (cob.baixado_em) return { ok: true, ja_baixado: true };
+    const [t] = await sql`SELECT * FROM ticket_venda WHERE pix_txid=${txid}`;
+    if (!t) return { ok: false, erro: 'ticket do totem não encontrado' };
+    const valor = Number(cob.valor) || 0;
+    const tent = (Number(cob.baixa_tentativas) || 0) + 1;
+    await sql`UPDATE pix_cobranca SET baixa_tentada_em=now(), baixa_tentativas=${tent} WHERE txid=${txid}`;
+    try {
+      const ped = await ticketMontarConta(t);
+      const marca = 'Pix do cliente ' + txid;
+      let nsu = cob.nsu || null;
+      if (!nsu && cob.provedor !== 'cielo') nsu = cob.e2e || null;
+      let pagFb = null;
+      if (nativo()) {
+        const d = await sql`SELECT codigo FROM pagamento_local WHERE observacao=${marca} AND cancelado_em IS NULL LIMIT 1`;
+        if (d.length) pagFb = Number(d[0].codigo);
+      } else {
+        const dup = await qi(`SELECT FIRST 1 CODIGO FROM PAGAMENTOS WHERE DATADELETE IS NULL AND OBSERVACAO CONTAINING '${fbEsc(txid)}'`);
+        if (!dup.ok) throw new Error('Firebird não respondeu na checagem de duplicidade: ' + dup.err);
+        if (dup.rows.length) pagFb = Number(dup.rows[0].CODIGO);
+      }
+      if (!pagFb) pagFb = await fbInserirPagamento(ped, { forma_codigo: FORMA.PIX_ONLINE, valor, autorizacao: nsu || undefined, observacao: marca });
+      const jaLocal = pagFb ? await sql`SELECT 1 FROM venda_pagamento WHERE pagamento_fb=${pagFb} LIMIT 1` : [];
+      if (!jaLocal.length) {
+        await sql`INSERT INTO venda_pagamento (numero, pedido_fb, forma_codigo, forma, valor, origem, status, autorizacao, pagamento_fb)
+          VALUES (0, ${ped}, ${FORMA.PIX_ONLINE}, ${'Pix Online'}, ${valor}, ${'totem'}, ${'ok'}, ${nsu || null}, ${pagFb})`;
+      }
+      await sql`UPDATE pix_cobranca SET baixado_em=now(), pedido_fb=${ped}, baixa_erro=null WHERE txid=${txid}`;
+      await sql`UPDATE ticket_venda SET status='pago', pago_em=COALESCE(pago_em, now()), nsu=COALESCE(nsu, ${nsu}),
+        forma=COALESCE(forma, 'Pix'), erro=NULL WHERE id=${t.id}`;
+      let fechou = false;
+      try { fechou = (await apiCaixaFechar(0, ped))?.fechada === true; } catch { /* segue aberta, o caixa vê */ }
+      console.log(`[totem] pedido ${t.id} PAGO R$ ${valor.toFixed(2)} (Pix ${txid}) · conta ${ped}${fechou ? ' fechada' : ' — NÃO fechou, conferir no caixa'}`);
+      return { ok: true, pedido: Number(t.id), conta: ped, fechou };
+    } catch (e) {
+      const msg = String(e.message || 'falhou').slice(0, 300);
+      await sql`UPDATE pix_cobranca SET baixa_erro=${msg} WHERE txid=${txid}`.catch(() => {});
+      await sql`UPDATE ticket_venda SET erro=${msg} WHERE id=${t.id}`.catch(() => {});
+      console.error(`[totem] ⚠️ pedido ${t.id} PAGO (Pix ${txid}, R$ ${valor.toFixed(2)}) mas sem baixa (${tent}ª): ${msg}`);
+      return { ok: false, erro: msg };
+    }
+  })();
+  totemEmVoo.set(txid, p);
+  try { return await p; } finally { if (totemEmVoo.get(txid) === p) totemEmVoo.delete(txid); }
+}
+/** Fila do totem (1 min): (a) Pix pago sem baixa tenta de novo por 3 dias;
+ *  (b) QR dos últimos 40 min ainda sem pagamento é conferido — o cliente pode
+ *  ter pago e saído antes da tela confirmar. */
+async function loopTotemFila() {
+  try {
+    const semBaixa = await sql`SELECT txid FROM pix_cobranca WHERE origem='totem' AND pago_em IS NOT NULL
+      AND baixado_em IS NULL AND pago_em > now() - interval '3 days' ORDER BY pago_em LIMIT 10`;
+    for (const r of semBaixa) await totemBaixar(r.txid).catch(() => {});
+    const abertos = await sql`SELECT txid FROM pix_cobranca WHERE origem='totem' AND pago_em IS NULL
+      AND criado_em > now() - interval '40 minutes' ORDER BY criado_em LIMIT 10`;
+    for (const r of abertos) await apiPixConferir(r.txid).catch(() => {});
+  } catch (e) {
+    console.error('[totem fila]', e.message);
+  }
+}
+
 async function apiTicketPagar(body, garcom) {
   const id = Number(body.ticket_id);
   if (!(id > 0)) return { ok: false, erro: 'ticket inválido' };
@@ -22006,6 +22185,12 @@ async function apiPixConferir(txid) {
   // pedido pra pousar — deixar cair no caminho de baixo daria fbAcharPedido(0),
   // marcaria a cobrança como "Pix órfão" e, pior, se por acaso achasse pedido,
   // pagaria e FECHARIA a conta de quem ainda estava jantando.
+  // TOTEM DA RECEPÇÃO: o Pix é de um ticket — monta a conta própria dele e paga
+  // ali (totemBaixar). Nunca cai no caminho de mesa abaixo.
+  if (cob.origem === 'totem') {
+    const b = await totemBaixar(String(txid)).catch((err) => ({ ok: false, erro: err.message }));
+    return { ok: true, pago: true, e2e, baixado: !!b.ok };
+  }
   if (cob.origem === 'kids') {
     await sql`UPDATE pix_cobranca SET baixado_em=now() WHERE txid=${String(txid)}`; // avulsa: não há conta pra baixar
     await sql`UPDATE kids_cobranca SET pago_em=now() WHERE txid=${String(txid)} AND pago_em IS NULL`;
@@ -29595,6 +29780,112 @@ checaPedidosNovos();
 inicio();
 </script></body></html>`;
 // ---- TELA DO ESPAÇO KIDS (tablet da monitora) ----
+// Totem de autoatendimento da recepção (32" de toque, em pé). Tela cheia,
+// botões grandes, sem login. Volta pro início sozinha depois de 90 s parada.
+const TOTEM_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><meta name="mobile-web-app-capable" content="yes">
+<title>${LOJA_NOME} — Peça aqui</title><style>
+:root{--bg:#0e2a3a;--bg2:#123a50;--card:#fff;--ink:#14212b;--mut:#5f6f7a;--sun:#ffb21e;--sun2:#ff8a00;--sea:#16b3c9;--green:#16a34a;--red:#dc2626}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none}
+html,body{margin:0;height:100%;background:var(--bg);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink);overflow:hidden}
+.tela{position:fixed;inset:0;display:none;flex-direction:column}.tela.on{display:flex}
+#ini{background:radial-gradient(circle at 50% 30%,#1d6f8c 0,#0e2a3a 70%);color:#fff;align-items:center;justify-content:center;text-align:center;gap:3vh;cursor:pointer}
+#ini h1{font-size:7vh;margin:0;letter-spacing:-.02em}#ini p{font-size:3vh;margin:0;opacity:.85}
+#ini .ico{font-size:16vh;animation:bal 3s ease-in-out infinite}@keyframes bal{50%{transform:translateY(-2vh) rotate(-4deg)}}
+#ini .bt{margin-top:3vh;background:linear-gradient(135deg,var(--sun),var(--sun2));color:#3a1d00;font-size:4vh;font-weight:800;padding:2.4vh 7vh;border-radius:99px;box-shadow:0 1vh 4vh rgba(255,140,0,.45);animation:pul 2s infinite}
+@keyframes pul{50%{transform:scale(1.05)}}
+header{background:var(--bg2);color:#fff;padding:2vh 3vh;display:flex;align-items:center;gap:2vh}
+header b{font-size:3.2vh;flex:1}header button{font-size:2.4vh;padding:1.4vh 2.6vh;border-radius:99px;border:2px solid #fff6;background:transparent;color:#fff}
+.abas{display:flex;gap:1.6vh;padding:2vh 3vh;background:var(--bg2);overflow-x:auto}
+.aba{flex:1;min-width:22vh;font-size:3vh;font-weight:700;padding:2.2vh 1vh;border-radius:2vh;border:0;background:#ffffff1a;color:#fff}
+.aba.on{background:linear-gradient(135deg,var(--sun),var(--sun2));color:#3a1d00}
+.grade{flex:1;overflow-y:auto;padding:3vh;display:grid;grid-template-columns:repeat(auto-fill,minmax(30vh,1fr));gap:2.4vh;align-content:start;background:#eef4f6}
+.prod{background:var(--card);border-radius:2.4vh;overflow:hidden;box-shadow:0 .6vh 2vh #0001;display:flex;flex-direction:column;border:0;padding:0;text-align:left;font:inherit;color:inherit}
+.prod:active{transform:scale(.97)}.prod .f{aspect-ratio:1/1;background:#dfeef2 center/cover no-repeat;display:flex;align-items:center;justify-content:center;font-size:12vh}
+.prod .t{padding:1.6vh 2vh 2vh}.prod .n{font-size:2.6vh;font-weight:700;line-height:1.15}.prod .d{font-size:1.8vh;color:var(--mut);margin-top:.6vh}
+.prod .p{font-size:3vh;font-weight:800;color:#0b7a8c;margin-top:1vh}.prod.esg{opacity:.45}.prod.esg .p{color:var(--red);font-size:2.4vh}
+.prod .q{position:absolute}
+.rod{background:#fff;padding:2vh 3vh;display:flex;align-items:center;gap:2vh;box-shadow:0 -1vh 3vh #0002}
+.rod .r{flex:1;font-size:2.6vh}.rod .r b{font-size:3.6vh;display:block}
+.bt1{border:0;border-radius:2vh;font-size:3vh;font-weight:800;padding:2.2vh 4vh;background:var(--green);color:#fff}
+.bt1:disabled{background:#b8c4ca}.bt2{border:2px solid #c9d5da;border-radius:2vh;font-size:2.6vh;font-weight:700;padding:2vh 3vh;background:#fff;color:var(--ink)}
+.modal{position:fixed;inset:0;background:#000a;display:none;align-items:center;justify-content:center;z-index:9}.modal.on{display:flex}
+.cx{background:#fff;border-radius:3vh;width:min(92vw,80vh);max-height:90vh;overflow-y:auto;padding:4vh}
+.cx h2{margin:0 0 1vh;font-size:3.6vh}.cx h3{font-size:2.6vh;margin:3vh 0 1.4vh}
+.ops{display:flex;flex-wrap:wrap;gap:1.4vh}.op{font-size:2.4vh;padding:1.8vh 2.6vh;border-radius:1.6vh;border:2px solid #c9d5da;background:#fff}
+.op.on{border-color:var(--sea);background:#e3f8fb;font-weight:700}
+.qtd{display:flex;align-items:center;gap:3vh;justify-content:center;margin:3vh 0}
+.qtd button{width:9vh;height:9vh;border-radius:50%;border:0;background:#e6eef1;font-size:5vh;font-weight:800}.qtd span{font-size:5vh;font-weight:800;min-width:8vh;text-align:center}
+.acoes{display:flex;gap:2vh;margin-top:3vh}.acoes>*{flex:1}
+.lin{display:flex;align-items:center;gap:1.6vh;padding:1.8vh 0;border-bottom:1px solid #e5ecef;font-size:2.4vh}
+.lin .nm{flex:1}.lin .nm small{display:block;color:var(--mut);font-size:1.8vh}.lin button{width:6vh;height:6vh;border-radius:50%;border:0;background:#e6eef1;font-size:3vh;font-weight:800}
+.tot{display:flex;justify-content:space-between;font-size:3.4vh;font-weight:800;margin-top:2.4vh}
+#pix,#ok{background:#fff;align-items:center;justify-content:center;text-align:center;padding:4vh;gap:2vh}
+#pix h1,#ok h1{font-size:5vh;margin:0}#pix .v{font-size:6vh;font-weight:800;color:#0b7a8c}
+#pix img{width:min(46vh,80vw);height:auto;border:1.4vh solid #fff;box-shadow:0 0 0 2px #dbe5e9;border-radius:2vh}
+#pix p{font-size:2.6vh;color:var(--mut);margin:0;max-width:80vh}.esp{display:inline-block;width:3vh;height:3vh;border:.5vh solid #cde;border-top-color:var(--sea);border-radius:50%;animation:gira 1s linear infinite;vertical-align:middle;margin-right:1vh}
+@keyframes gira{to{transform:rotate(360deg)}}
+#ok{background:linear-gradient(160deg,#16a34a,#0e7a37);color:#fff}#ok .num{font-size:22vh;font-weight:900;line-height:1;letter-spacing:-.04em}
+#ok p{font-size:3.2vh;margin:0;opacity:.95}#ok .itens{font-size:2.6vh;opacity:.9;max-width:80vh}
+.erro{color:var(--red);font-size:2.4vh;margin-top:1.6vh;min-height:3vh}
+</style></head><body>
+<div id="ini" class="tela on" onclick="comecar()"><div class="ico">🍹</div><h1>Bateu a sede?</h1><p>Enquanto espera sua mesa, peça aqui e retire no balcão</p><div class="bt">Toque para pedir</div><p id="semPix" style="display:none;color:#ffd0d0">Pedidos pelo totem indisponíveis agora — peça no balcão</p></div>
+<div id="menu" class="tela"><header><b id="loja"></b><button onclick="reiniciar()">✕ Cancelar</button></header>
+<div class="abas" id="abas"></div><div class="grade" id="grade"></div>
+<div class="rod"><div class="r" id="resumo">Toque num item para adicionar</div><button class="bt2" id="btVer" onclick="verCarrinho()" disabled>🛒 Ver pedido</button><button class="bt1" id="btPag" onclick="pagar()" disabled>Pagar no Pix</button></div></div>
+<div id="pix" class="tela"><h1>Pague com Pix</h1><div class="v" id="pixV"></div><img id="pixImg" alt="QR do Pix"><p>Abra o app do seu banco, escolha <b>Pix → Ler QR code</b> e aponte para a tela.</p><p><span class="esp"></span>Esperando o pagamento…</p><div class="acoes" style="width:min(80vh,90vw)"><button class="bt2" onclick="reiniciar()">Cancelar pedido</button></div></div>
+<div id="ok" class="tela"><p>Pagamento aprovado! Seu pedido é o</p><div class="num" id="okN"></div><p><b>Retire no balcão do bar</b> — fale esse número</p><div class="itens" id="okI"></div><button class="bt2" style="margin-top:3vh" onclick="reiniciar()">Fazer outro pedido</button></div>
+<div class="modal" id="mItem"><div class="cx"><h2 id="miN"></h2><div id="miD" style="color:var(--mut);font-size:2.2vh"></div><div id="miE"></div>
+<div class="qtd"><button onclick="mQ(-1)">−</button><span id="miQ">1</span><button onclick="mQ(1)">+</button></div><div class="erro" id="miErr"></div>
+<div class="acoes"><button class="bt2" onclick="fechar('mItem')">Voltar</button><button class="bt1" id="miOk" onclick="addItem()">Adicionar</button></div></div></div>
+<div class="modal" id="mCar"><div class="cx"><h2>Seu pedido</h2><div id="carL"></div><div class="tot"><span>Total</span><span id="carT"></span></div><div class="erro" id="carErr"></div>
+<div class="acoes"><button class="bt2" onclick="fechar('mCar')">Continuar pedindo</button><button class="bt1" onclick="fechar('mCar');pagar()">Pagar no Pix</button></div></div></div>
+<script>
+var D=null,aba=0,car=[],atual=null,qtd=1,esc={},txid=null,poll=null,ocioso=null;
+function R(v){return 'R$ '+Number(v||0).toFixed(2).replace('.',',')}
+function E(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function tela(id){document.querySelectorAll('.tela').forEach(function(t){t.classList.toggle('on',t.id===id)})}
+function fechar(id){document.getElementById(id).classList.remove('on')}
+function mexeu(){clearTimeout(ocioso);ocioso=setTimeout(function(){if(!document.getElementById('ini').classList.contains('on'))reiniciar()},txid?300000:90000)}
+document.addEventListener('pointerdown',mexeu,true);
+function carregar(){return fetch('/api/totem/cardapio').then(function(r){return r.json()}).then(function(d){if(d&&d.ok){D=d;document.getElementById('loja').textContent=d.loja;
+ document.getElementById('semPix').style.display=(!d.pix||!d.grupos.length)?'block':'none'}}).catch(function(){})}
+function comecar(){if(!D||!D.pix||!D.grupos.length){carregar();return}aba=0;car=[];desenhar();tela('menu');mexeu()}
+function reiniciar(){clearInterval(poll);poll=null;txid=null;car=[];['mItem','mCar'].forEach(fechar);tela('ini');carregar()}
+function desenhar(){var g=D.grupos;document.getElementById('abas').innerHTML=g.map(function(x,i){return '<button class="aba'+(i===aba?' on':'')+'" onclick="aba='+i+';desenhar()">'+E(x.emoji+' '+x.nome)+'</button>'}).join('');
+ var it=(g[aba]||{itens:[]}).itens;document.getElementById('grade').innerHTML=it.map(function(p,i){var foto=p.tem_foto&&p.produto_codigo!=null?'style="background-image:url(/produto-foto/'+p.produto_codigo+')"':'';
+ return '<button class="prod'+(p.esgotado?' esg':'')+'" onclick="abrir('+i+')"><div class="f" '+foto+'>'+(foto?'':E((g[aba].emoji)||'🥤'))+'</div><div class="t"><div class="n">'+E(p.nome)+(p.tamanho?' <small>'+E(p.tamanho)+'</small>':'')+'</div>'+(p.descricao?'<div class="d">'+E(p.descricao)+'</div>':'')+'<div class="p">'+(p.esgotado?'Acabou':R(p.preco))+'</div></div></button>'}).join('');
+ rodape()}
+function rodape(){var n=car.reduce(function(s,c){return s+c.qtd},0),t=car.reduce(function(s,c){return s+c.unit*c.qtd},0);
+ document.getElementById('resumo').innerHTML=n?(n+' ite'+(n>1?'ns':'m')+'<b>'+R(t)+'</b>'):'Toque num item para adicionar';
+ document.getElementById('btVer').disabled=!n;document.getElementById('btPag').disabled=!n}
+function abrir(i){var p=D.grupos[aba].itens[i];if(p.esgotado)return;atual=p;qtd=1;esc={};
+ document.getElementById('miN').textContent=p.nome+(p.tamanho?' '+p.tamanho:'');document.getElementById('miD').textContent=p.descricao||'';document.getElementById('miErr').textContent='';
+ document.getElementById('miE').innerHTML=p.escolhas.map(function(e,k){return '<h3>'+E(e.pergunta)+'</h3><div class="ops">'+e.opcoes.map(function(o){return '<button class="op" data-k="'+k+'" data-c="'+o.codigo+'" onclick="escolher('+k+','+o.codigo+')">'+E(o.nome)+(o.preco>0?' +'+R(o.preco):'')+'</button>'}).join('')+'</div>'}).join('');
+ document.getElementById('miQ').textContent=1;document.getElementById('mItem').classList.add('on')}
+function escolher(k,c){esc[k]=c;document.querySelectorAll('.op[data-k="'+k+'"]').forEach(function(b){b.classList.toggle('on',Number(b.dataset.c)===c)})}
+function mQ(d){qtd=Math.max(1,Math.min(10,qtd+d));document.getElementById('miQ').textContent=qtd}
+function addItem(){var p=atual;for(var k=0;k<p.escolhas.length;k++)if(!esc[k]){document.getElementById('miErr').textContent='Escolha: '+p.escolhas[k].pergunta;return}
+ var resp=p.escolhas.map(function(e,k){return esc[k]}),extra=0,nomes=[];p.escolhas.forEach(function(e,k){var o=e.opcoes.find(function(x){return x.codigo===esc[k]});if(o){extra+=o.preco;nomes.push(o.nome)}});
+ var chave=p.codigo_pdv+':'+resp.join(','),j=car.find(function(c){return c.chave===chave});
+ if(j)j.qtd=Math.min(10,j.qtd+qtd);else car.push({chave:chave,codigo_pdv:p.codigo_pdv,nome:p.nome+(p.tamanho?' '+p.tamanho:''),opc:nomes.join(', '),respostas:resp,qtd:qtd,unit:p.preco+extra});
+ fechar('mItem');rodape()}
+function verCarrinho(){if(!car.length){fechar('mCar');rodape();return}document.getElementById('carErr').textContent='';
+ document.getElementById('carL').innerHTML=car.map(function(c,i){return '<div class="lin"><div class="nm">'+c.qtd+'× '+E(c.nome)+(c.opc?'<small>'+E(c.opc)+'</small>':'')+'</div><b>'+R(c.unit*c.qtd)+'</b><button onclick="tira('+i+')">−</button></div>'}).join('');
+ document.getElementById('carT').textContent=R(car.reduce(function(s,c){return s+c.unit*c.qtd},0));document.getElementById('mCar').classList.add('on')}
+function tira(i){car[i].qtd--;if(car[i].qtd<1)car.splice(i,1);verCarrinho();rodape()}
+var pagando=false;
+function pagar(){if(pagando||!car.length)return;pagando=true;var b=document.getElementById('btPag');b.disabled=true;b.textContent='Gerando Pix…';
+ fetch('/api/totem/pedido',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({itens:car.map(function(c){return {codigo_pdv:c.codigo_pdv,qtd:c.qtd,respostas:c.respostas}})})})
+ .then(function(r){return r.json()}).then(function(d){if(!d.ok){alert(d.erro||'Não deu certo. Tente de novo.');carregar().then(function(){if(D)desenhar()});return}
+  txid=d.txid;document.getElementById('pixV').textContent=R(d.total);document.getElementById('pixImg').src=d.imagem;
+  document.getElementById('okN').textContent=d.pedido;document.getElementById('okI').textContent=d.itens.map(function(i){return i.qtd+'× '+i.nome}).join(' · ');
+  tela('pix');mexeu();clearInterval(poll);poll=setInterval(conferir,4000)})
+ .catch(function(){alert('Sem conexão. Tente de novo.')}).then(function(){pagando=false;b.textContent='Pagar no Pix';rodape()})}
+function conferir(){if(!txid)return;var t=txid;fetch('/api/totem/status?txid='+encodeURIComponent(t)).then(function(r){return r.json()}).then(function(d){
+ if(t!==txid||!d.pago)return;clearInterval(poll);poll=null;txid=null;car=[];tela('ok');clearTimeout(ocioso);ocioso=setTimeout(reiniciar,25000)}).catch(function(){})}
+carregar();setInterval(function(){if(document.getElementById('ini').classList.contains('on'))carregar()},120000);
+</script></body></html>`;
+
 // Uma tela só, cinco estados: login → lista → nova entrada → QR → config.
 // A lista se renova sozinha a cada 5 s, então dois tablets mostram o mesmo.
 const KIDS_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"><meta name="mobile-web-app-capable" content="yes"><link rel="apple-touch-icon" href="/app-icon.png">
@@ -32232,6 +32523,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/venda/transferencias') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTransferencias())); }
     if (p === '/conta') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CONTA_HTML); }
     if (p === '/caixa') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CAIXA_HTML); }
+    if (p === '/totem') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(TOTEM_HTML); }
     if (p === '/kids') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(KIDS_HTML); }
     if (p === '/api/pag/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(pagStatus())); }
     if (p === '/api/conta') {
@@ -32350,6 +32642,10 @@ const server = http.createServer(async (req, res) => {
     // cardápio inclusivo: com ?restr=g,l a busca/grupo do cliente só devolve o que a cozinha marcou
     if (p === '/api/mesa/restricoes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaRestricoes())); }
     // destaques do QR (almoço executivo, happy hour) — card no topo do cardápio
+    // totem de autoatendimento da recepção (sem login, como o QR da mesa)
+    if (p === '/api/totem/cardapio') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTotemCardapio())); }
+    if (p === '/api/totem/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTotemStatus(u.searchParams.get('txid')))); }
+    if (req.method === 'POST' && p === '/api/totem/pedido') { const b = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTotemPedido(b))); }
     if (p === '/api/mesa/destaques') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaDestaques())); }
     if (restrPedida(u.searchParams.get('restr')) && u.searchParams.get('cliente') === '1' && (p === '/api/venda/busca' || p === '/api/venda/categoria' || p === '/api/venda/categorias')) {
       const r = restrPedida(u.searchParams.get('restr'));
@@ -32920,6 +33216,9 @@ async function main() {
   setInterval(() => loopRestricoesNuvem().catch(() => {}), 10 * 60 * 1000);
   setTimeout(() => loopDestaquesNuvem().catch(() => {}), 50 * 1000);
   setInterval(() => loopDestaquesNuvem().catch(() => {}), 5 * 60 * 1000);
+  setTimeout(() => loopTotemNuvem().catch(() => {}), 55 * 1000);
+  setInterval(() => loopTotemNuvem().catch(() => {}), 5 * 60 * 1000);
+  setInterval(() => loopTotemFila().catch(() => {}), 60 * 1000);
   setTimeout(() => loopEspelhoWizard().catch(() => {}), 90 * 1000);
   setInterval(() => loopEspelhoWizard().catch(() => {}), 30 * 60 * 1000);
   setTimeout(() => loopNfceFila().catch(() => {}), 30 * 1000);
