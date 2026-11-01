@@ -17,6 +17,7 @@ import { diasEntre, rotuloTipoDoc } from './empresa-documento';
 import { chamarLojaCaixa } from './caixa-loja';
 import { contarEvento } from './evento-ticket';
 import { pendenciasEscala, totalPendencias, type PendenciasEscala } from './rh/escala-pendencias';
+import { googleDoDia, tripadvisorDoDia, type GoogleDia, type TripadvisorDia } from './avaliacoes-publicas-dia';
 
 const TZ = 'America/Sao_Paulo';
 const DIA_MS = 24 * 3600 * 1000;
@@ -291,6 +292,10 @@ export interface RelatorioCasa {
   documentosVencendo?: DocVencendo[];
   /** furos de quem saiu e gente nova sem motivo/horário/escala — /rh/escala-mensal (31/10/2026) */
   pendenciasEscala?: PendenciasEscala;
+  /** TripAdvisor: avaliações novas desde a leitura anterior (01/11/2026) */
+  tripadvisor?: TripadvisorDia | null;
+  /** Google: avaliações do dia, lidas ao vivo (só com a conta ligada) */
+  google?: GoogleDia | null;
   atencao: string[];
 }
 
@@ -1632,6 +1637,23 @@ export async function montarRelatorioFiliais(
         console.error('[relatorio-diario] pendências da escala:', e);
         return undefined;
       });
+      // Avaliações públicas (01/11/2026, dono: "a média do resumo é sempre 5").
+      // O ⭐ é só o QR da mesa; TripAdvisor e Google entram em linhas próprias. Extra — falhou, sai sem.
+      casa.tripadvisor = await tripadvisorDoDia(f.id, dia).catch((e) => {
+        console.error('[relatorio-diario] tripadvisor:', e);
+        return null;
+      });
+      casa.google = await googleDoDia(f.id, dia).catch((e) => {
+        console.error('[relatorio-diario] google:', e);
+        return null;
+      });
+      const taBaixas = [1, 2, 3].reduce((s, n) => s + (casa.tripadvisor?.porNota[n] ?? 0), 0);
+      if (taBaixas) {
+        casa.atencao.push(`TripAdvisor: ${taBaixas} ${taBaixas === 1 ? 'avaliação nova' : 'avaliações novas'} com nota 3 ou menos — ver em /avaliacoes`);
+      }
+      for (const b of (casa.google?.baixas ?? []).slice(0, 3)) {
+        casa.atencao.push(`Google: nota ${b.nota}${b.hora ? ` às ${b.hora}` : ''}${b.texto ? `: "${b.texto.slice(0, 120)}"` : ''}`);
+      }
       if (eventos.length) {
         casa.eventos = eventos;
         // A queda contra a semana passada foi medida só com o PDV; com ticket de
@@ -1702,6 +1724,29 @@ export function resumoUmaLinha(casas: RelatorioCasa[]): string {
   return `${partes.join(' · ')} · Total ${reais(total, false)}${abertos ? ` · Ponto em aberto: ${abertos}` : ''}${
     docs ? ` · Documentos vencendo: ${docs}` : ''
   }${escala ? ` · Escala: ${escala} ${escala === 1 ? "pendência" : "pendências"}` : ''}`;
+}
+
+const nota1 = (n: number | null) => (n == null ? '—' : n.toFixed(1).replace('.', ','));
+
+/** TripAdvisor e Google, cada um na sua linha (separados do QR da mesa). */
+export function linhasAvaliacoesPublicas(c: RelatorioCasa): string[] {
+  const L: string[] = [];
+  const t = c.tripadvisor;
+  if (t && t.novas > 0) {
+    const notas = Object.keys(t.porNota).map(Number);
+    const detalhe =
+      notas.length === 1
+        ? t.novas === 1 ? `${notas[0]}★` : `todas ${notas[0]}★`
+        : [5, 4, 3, 2, 1].filter((n) => t.porNota[n]).map((n) => `${t.porNota[n]}× ${n}★`).join(', ');
+    L.push(`🦉 TripAdvisor: +${t.novas} ${t.novas === 1 ? 'nova' : 'novas'} (${detalhe}) · nota geral ${nota1(t.nota)} (${t.total})`);
+  }
+  const g = c.google;
+  if (g && (g.total > 0 || g.totalGeral > 0)) {
+    L.push(
+      `🔎 Google: ${g.total ? `${g.total} ${g.total === 1 ? 'avaliação' : 'avaliações'} no dia, média ${nota1(g.media)}${g.baixas.length ? ` — ${g.baixas.length} com nota baixa` : ''}` : 'nenhuma avaliação no dia'} · nota geral ${nota1(g.notaGeral)} (${g.totalGeral})`,
+    );
+  }
+  return L;
 }
 
 /** Frase da validade de um documento ("venceu há 3 dias", "vence em 7 dias"). */
@@ -1910,10 +1955,11 @@ function textoCasa(c: RelatorioCasa): string {
   }
   if (c.avaliacoes.total) {
     L.push(
-      `⭐ ${c.avaliacoes.total} ${c.avaliacoes.total === 1 ? 'avaliação' : 'avaliações'}, média ${(c.avaliacoes.media ?? 0).toFixed(1).replace('.', ',')}` +
+      `⭐ QR da mesa: ${c.avaliacoes.total} ${c.avaliacoes.total === 1 ? 'avaliação' : 'avaliações'}, média ${(c.avaliacoes.media ?? 0).toFixed(1).replace('.', ',')}` +
         (c.avaliacoes.baixas.length ? ` — ${c.avaliacoes.baixas.length} com nota baixa` : ''),
     );
   }
+  L.push(...linhasAvaliacoesPublicas(c));
   if (c.reservas.total) {
     L.push(
       `📅 ${pl(c.reservas.total, 'reserva', 'reservas')}: ${pl(c.reservas.sentadas, 'veio', 'vieram')}, ${pl(c.reservas.noShow, 'faltou', 'faltaram')}`,
