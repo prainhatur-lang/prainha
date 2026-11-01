@@ -732,6 +732,14 @@ async function initSchema() {
   await addCol('ticket_venda', 'lio_login text');
   await addCol('ticket_venda', 'lio_pegou_em timestamptz');
   await addCol('ticket_venda', 'impresso_em timestamptz');
+  // ESTOQUE DA RECEPÇÃO (dono, 01/11/2026): saldo próprio do totem, separado do
+  // estoque da casa. Item sem linha aqui = não controlado (vende como antes).
+  await sql`CREATE TABLE IF NOT EXISTS totem_estoque (codigo_pdv integer PRIMARY KEY,
+    saldo numeric NOT NULL DEFAULT 0, atualizado_em timestamptz DEFAULT now())`;
+  await sql`CREATE TABLE IF NOT EXISTS totem_estoque_mov (id bigserial PRIMARY KEY,
+    criado_em timestamptz DEFAULT now(), codigo_pdv integer NOT NULL, tipo text NOT NULL,
+    qtd numeric NOT NULL, saldo_depois numeric, ticket_id bigint, quem text, obs text)`;
+  await addCol('ticket_venda', 'estoque_baixado_em timestamptz');
   // REIMPRESSÃO de ticket só com senha do supervisor (dono, 14/10): quem pediu,
   // quem liberou e quando — ticket repetido vira item retirado duas vezes.
   await sql`CREATE TABLE IF NOT EXISTS ticket_reimpressao (id bigserial PRIMARY KEY,
@@ -6767,6 +6775,7 @@ async function apiTotemCardapio() {
   const ops = pc.length ? await sql`SELECT o.codigo, o.pergunta, COALESCE(NULLIF(o.nome,''), pl.nome) AS nome, o.preco
     FROM wizard_opcao o LEFT JOIN LATERAL (SELECT nome FROM produto_local WHERE codigo_pdv = o.produto_pdv LIMIT 1) pl ON true
     WHERE o.pergunta = ANY(${pc}) ORDER BY o.codigo` : [];
+  const saldos = await totemSaldos(cods);
   const porCod = new Map();
   for (const t of prods) {
     const c = Number(t.codigo_pdv);
@@ -6778,7 +6787,8 @@ async function apiTotemCardapio() {
     })).filter((x) => x.opcoes.length);
     porCod.set(c, { codigo_pdv: c, produto_codigo: t.produto_codigo == null ? null : Number(t.produto_codigo),
       nome: t.nome, tamanho: t.tamanho || null, preco: Number(t.preco), descricao: t.descricao || null,
-      tem_foto: !!t.tem_foto, esgotado: t.sem_estoque === true, escolhas });
+      tem_foto: !!t.tem_foto, esgotado: t.sem_estoque === true || (saldos.has(c) && !(saldos.get(c) > 0)),
+      saldo: saldos.has(c) ? saldos.get(c) : null, escolhas });
   }
   const grupos = cfg.grupos.map((g) => ({ ...g, itens: cfg.itens.filter((i) => i.grupo === g.id)
     .sort((a, b) => a.ordem - b.ordem).map((i) => porCod.get(Number(i.codigo))).filter(Boolean) }))
@@ -6798,6 +6808,20 @@ async function apiTotemPedido(body) {
   if (lista.reduce((s, p) => s + Math.max(1, Math.floor(Number(p.qtd) || 1)), 0) > 30) return { ok: false, erro: 'Máximo de 30 itens por pedido.' };
   const esg = await sql`SELECT nome FROM produto_local WHERE codigo_pdv = ANY(${lista.map((p) => Number(p.codigo_pdv))}) AND sem_estoque IS TRUE LIMIT 1`;
   if (esg.length) return { ok: false, erro: esg[0].nome + ' acabou. Tire do carrinho.' };
+  { // estoque da recepção: não vende mais do que tem
+    const quer = new Map();
+    for (const p of lista) quer.set(Number(p.codigo_pdv), (quer.get(Number(p.codigo_pdv)) || 0) + Math.max(1, Math.floor(Number(p.qtd) || 1)));
+    const saldos = await totemSaldos([...quer.keys()]);
+    for (const [c, q] of quer) {
+      if (!saldos.has(c)) continue;
+      const tem = Math.max(0, Math.floor(saldos.get(c)));
+      if (q > tem) {
+        const [pr] = await sql`SELECT nome FROM produto_local WHERE codigo_pdv=${c} LIMIT 1`;
+        const nome = pr?.nome || 'Um item';
+        return { ok: false, erro: tem > 0 ? `${nome}: só ${tem === 1 ? 'resta 1' : 'restam ' + tem}. Diminua no carrinho.` : nome + ' acabou. Tire do carrinho.' };
+      }
+    }
+  }
   const c = await ticketCalcular(lista.map((p) => ({ codigo_pdv: Number(p.codigo_pdv), qtd: p.qtd,
     respostas: Array.isArray(p.respostas) ? p.respostas.map(Number).filter((n) => n > 0).slice(0, 10) : [] })));
   if (!c.ok) return c;
@@ -6881,6 +6905,7 @@ async function totemBaixar(txid) {
         forma=COALESCE(forma, 'Pix'), erro=NULL WHERE id=${t.id}`;
       let fechou = false;
       try { fechou = (await apiCaixaFechar(0, ped))?.fechada === true; } catch { /* segue aberta, o caixa vê */ }
+      await totemEstoqueBaixar(Number(t.id)).catch((e) => console.error('[totem estoque]', e.message));
       totemImprimirTickets(Number(t.id)).catch(() => {});
       console.log(`[totem] pedido ${t.id} PAGO R$ ${valor.toFixed(2)} (Pix ${txid}) · conta ${ped}${fechou ? ' fechada' : ' — NÃO fechou, conferir no caixa'}`);
       return { ok: true, pedido: Number(t.id), conta: ped, fechou };
@@ -7000,6 +7025,80 @@ async function totemImprimirTickets(id) {
   }
 }
 
+// ---- ESTOQUE DA RECEPÇÃO (totem_estoque) ----
+/** Saldo de cada item controlado: Map codigo_pdv -> saldo. */
+async function totemSaldos(cods) {
+  const rows = cods?.length ? await sql`SELECT codigo_pdv, saldo FROM totem_estoque WHERE codigo_pdv = ANY(${cods})`
+    : await sql`SELECT codigo_pdv, saldo FROM totem_estoque`;
+  return new Map(rows.map((r) => [Number(r.codigo_pdv), Number(r.saldo)]));
+}
+/** Pedido do totem PAGO → tira do estoque da recepção. UMA vez por ticket
+ *  (marca estoque_baixado_em antes). Item não controlado passa direto. */
+async function totemEstoqueBaixar(id) {
+  const [t] = await sql`UPDATE ticket_venda SET estoque_baixado_em=now()
+    WHERE id=${id} AND origem='totem' AND status='pago' AND estoque_baixado_em IS NULL RETURNING itens`;
+  if (!t) return;
+  const itens = typeof t.itens === 'string' ? JSON.parse(t.itens) : (t.itens || []);
+  const porCod = new Map();
+  for (const o of itens) {
+    const c = Number(o.codigo_pdv);
+    if (c > 0) porCod.set(c, (porCod.get(c) || 0) + Math.max(1, Math.floor(Number(o.qtd) || 1)));
+  }
+  for (const [c, q] of porCod) {
+    const [r] = await sql`UPDATE totem_estoque SET saldo = saldo - ${q}, atualizado_em=now()
+      WHERE codigo_pdv=${c} RETURNING saldo`;
+    if (r) await sql`INSERT INTO totem_estoque_mov (codigo_pdv, tipo, qtd, saldo_depois, ticket_id, quem)
+      VALUES (${c}, 'venda', ${-q}, ${r.saldo}, ${id}, 'totem')`;
+  }
+}
+/** GET /api/central/totem-estoque/saldo — itens do cardápio do totem com o saldo. */
+async function apiTotemEstoqueSaldo() {
+  const cfg = await totemConfig();
+  const sal = await sql`SELECT codigo_pdv, saldo, atualizado_em FROM totem_estoque`;
+  const cods = [...new Set([...cfg.itens.map((i) => Number(i.codigo)), ...sal.map((r) => Number(r.codigo_pdv))])].filter((n) => n > 0);
+  const nomes = cods.length ? await sql`SELECT DISTINCT ON (codigo_pdv) codigo_pdv, nome, tamanho FROM produto_local WHERE codigo_pdv = ANY(${cods})` : [];
+  const nm = new Map(nomes.map((r) => [Number(r.codigo_pdv), r.nome + (r.tamanho ? ' (' + r.tamanho + ')' : '')]));
+  const sm = new Map(sal.map((r) => [Number(r.codigo_pdv), r]));
+  const noTotem = new Set(cfg.itens.map((i) => Number(i.codigo)));
+  const itens = cods.map((c) => ({ codigo_pdv: c, nome: nm.get(c) || ('#' + c), no_totem: noTotem.has(c),
+    controlado: sm.has(c), saldo: sm.has(c) ? Number(sm.get(c).saldo) : null, atualizado_em: sm.get(c)?.atualizado_em ?? null }));
+  const movs = await sql`SELECT m.id, m.criado_em, m.codigo_pdv, m.tipo, m.qtd, m.saldo_depois, m.ticket_id, m.quem, m.obs
+    FROM totem_estoque_mov m ORDER BY m.id DESC LIMIT 60`;
+  return { ok: true, itens, movs: movs.map((m) => ({ ...m, id: Number(m.id), codigo_pdv: Number(m.codigo_pdv),
+    nome: nm.get(Number(m.codigo_pdv)) || ('#' + m.codigo_pdv), qtd: Number(m.qtd),
+    saldo_depois: m.saldo_depois == null ? null : Number(m.saldo_depois), ticket_id: m.ticket_id == null ? null : Number(m.ticket_id) })) };
+}
+/** POST /api/central/totem-estoque/ajustar {codigo_pdv, tipo, qtd, quem, obs}
+ *  tipo: 'entrada' (soma), 'saida' (tira: quebra/consumo), 'contagem' (o saldo
+ *  passa a ser qtd), 'parar' (deixa de controlar — volta a vender sem limite). */
+async function apiTotemEstoqueAjustar(b) {
+  const c = Number(b?.codigo_pdv) || 0;
+  const tipo = String(b?.tipo || '');
+  const qtd = Number(b?.qtd);
+  const quem = String(b?.quem || '').slice(0, 80) || null;
+  const obs = String(b?.obs || '').slice(0, 200) || null;
+  if (!(c > 0)) return { ok: false, erro: 'item inválido' };
+  if (!['entrada', 'saida', 'contagem', 'parar'].includes(tipo)) return { ok: false, erro: 'tipo inválido' };
+  if (tipo !== 'parar' && !(Number.isFinite(qtd) && qtd >= 0 && qtd <= 100000)) return { ok: false, erro: 'quantidade inválida' };
+  if ((tipo === 'entrada' || tipo === 'saida') && !(qtd > 0)) return { ok: false, erro: 'quantidade tem que ser maior que zero' };
+  if (tipo === 'parar') {
+    const [r] = await sql`DELETE FROM totem_estoque WHERE codigo_pdv=${c} RETURNING saldo`;
+    if (r) await sql`INSERT INTO totem_estoque_mov (codigo_pdv, tipo, qtd, saldo_depois, quem, obs)
+      VALUES (${c}, 'parar', 0, NULL, ${quem}, ${obs})`;
+    return { ok: true, saldo: null };
+  }
+  const [ant] = await sql`SELECT saldo FROM totem_estoque WHERE codigo_pdv=${c}`;
+  const antes = ant ? Number(ant.saldo) : 0;
+  const delta = tipo === 'entrada' ? qtd : tipo === 'saida' ? -qtd : qtd - antes;
+  const [r] = await sql`INSERT INTO totem_estoque (codigo_pdv, saldo, atualizado_em) VALUES (${c}, ${tipo === 'contagem' ? qtd : delta}, now())
+    ON CONFLICT (codigo_pdv) DO UPDATE SET saldo = ${tipo === 'contagem' ? sql`${qtd}` : sql`totem_estoque.saldo + ${delta}`}, atualizado_em=now()
+    RETURNING saldo`;
+  await sql`INSERT INTO totem_estoque_mov (codigo_pdv, tipo, qtd, saldo_depois, quem, obs)
+    VALUES (${c}, ${tipo}, ${delta}, ${r.saldo}, ${quem}, ${obs})`;
+  console.log(`[totem estoque] #${c} ${tipo} ${delta >= 0 ? '+' : ''}${delta} → ${Number(r.saldo)} (${quem || '?'})`);
+  return { ok: true, saldo: Number(r.saldo) };
+}
+
 async function apiTicketPagar(body, garcom) {
   const id = Number(body.ticket_id);
   if (!(id > 0)) return { ok: false, erro: 'ticket inválido' };
@@ -7041,6 +7140,7 @@ async function apiTicketPagar(body, garcom) {
     // totem no cartão: os tickets saem na impressora da recepção
     let impresso_totem = false;
     if (r.ok && t.origem === 'totem' && (r.quitada || r.ja_registrado)) impresso_totem = await totemImprimirTickets(id).catch(() => false);
+    if (r.ok && t.origem === 'totem' && (r.quitada || r.ja_registrado)) await totemEstoqueBaixar(id).catch((e) => console.error('[totem estoque]', e.message));
     return { ...r, impresso_totem, ticket_id: id, pedido_fb: ped, itens, total: Number(t.total), servico: t.servico,
       valor_servico: Number(t.valor_servico), loja: LOJA_NOME, criado_em: t.criado_em, garcom: t.nome_usuario || t.login };
   })();
@@ -32094,6 +32194,18 @@ const server = http.createServer(async (req, res) => {
     // usuários+permissões, cria usuário, liga/desliga permissão, ativa/
     // desativa. Erros das funções fbEquipe* (ex.: login duplicado, filial em
     // modo próprio) chegam aqui como {ok:false,erro} — nunca 500 cru.
+    // ---- ESTOQUE DA RECEPÇÃO (totem) pelo CENTRAL — assinado, escopo 'totem-estoque'
+    if (p.startsWith('/api/central/totem-estoque/')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (!centralAssinou(u, 'totem-estoque')) return res.end(JSON.stringify({ ok: false, erro: 'assinatura inválida' }));
+      try {
+        if (p === '/api/central/totem-estoque/saldo') return res.end(JSON.stringify(await apiTotemEstoqueSaldo()));
+        if (req.method === 'POST' && p === '/api/central/totem-estoque/ajustar') return res.end(JSON.stringify(await apiTotemEstoqueAjustar(await readBody(req))));
+      } catch (e) {
+        return res.end(JSON.stringify({ ok: false, erro: e.message }));
+      }
+      return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
+    }
     if (p.startsWith('/api/central/equipe/')) {
       res.writeHead(200, { 'content-type': 'application/json' });
       if (!centralAssinou(u, 'equipe')) return res.end(JSON.stringify({ ok: false, erro: 'assinatura inválida' }));

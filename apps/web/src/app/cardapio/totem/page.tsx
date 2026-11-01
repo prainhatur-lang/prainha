@@ -9,6 +9,7 @@ import { escolherFilial } from '@/lib/filial-ativa';
 import { itensDaCasa } from '@/lib/cardapio-destaque';
 import { GRUPOS_TOTEM, listarTotem } from '@/lib/cardapio-totem';
 import { TotemClient } from './totem-client';
+import { EstoqueRecepcao } from './estoque-client';
 
 export const dynamic = 'force-dynamic';
 
@@ -62,6 +63,7 @@ export default async function TotemPage(props: { searchParams: Promise<{ filialI
           inicial={ligados}
           itens={itens}
         />
+        <EstoqueRecepcao key={'est-' + filial.id} filialId={filial.id} />
       </div>
     </main>
   );
