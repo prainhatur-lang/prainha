@@ -1,5 +1,7 @@
 # TikTok — liberar o post direto (Direct Post) e pedir a auditoria
 
+> **01/11/2026:** a Produção foi recusada. O TikTok não aprova app de uso interno de empresa ("Applications intended for personal use or internal company use are not eligible for approval"). Sem aprovação, o post direto só sai como "Só eu". O caminho público continua sendo o rascunho na caixa de entrada.
+
 O Concilia já sabe postar direto no perfil (sem passar pela caixa de entrada).
 Faltam passos que só o dono faz: no portal do TikTok e na Vercel.
 
