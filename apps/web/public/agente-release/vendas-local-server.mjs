@@ -728,6 +728,10 @@ async function initSchema() {
     nsu text, forma text, erro text)`;
   await addCol('ticket_venda', 'pix_txid text'); // totem da recepção: o Pix que paga o ticket
   await addCol('ticket_venda', 'origem text');
+  // totem no CARTÃO: qual LIO pegou o pedido da fila e quando os tickets saíram na recepção
+  await addCol('ticket_venda', 'lio_login text');
+  await addCol('ticket_venda', 'lio_pegou_em timestamptz');
+  await addCol('ticket_venda', 'impresso_em timestamptz');
   // REIMPRESSÃO de ticket só com senha do supervisor (dono, 14/10): quem pediu,
   // quem liberou e quando — ticket repetido vira item retirado duas vezes.
   await sql`CREATE TABLE IF NOT EXISTS ticket_reimpressao (id bigserial PRIMARY KEY,
@@ -4250,13 +4254,20 @@ async function imprimirComprovantePix(txid) {
 async function apiImpressora() {
   const pracas = await sql`SELECT a.codigo, a.nome, pi.ip FROM area a
     LEFT JOIN praca_impressora pi ON pi.area_codigo=a.codigo ORDER BY a.nome`;
-  return { ok: true, ip: await cfgGet('impressora_ip', ''), modo: await cfgGet('producao_modo', 'kds'),
+  return { ok: true, ip: await cfgGet('impressora_ip', ''), modo: await cfgGet('producao_modo', 'kds'), totem_ip: await cfgGet('totem_impressora_ip', ''),
     pracas: pracas.map((x) => ({ codigo: Number(x.codigo), nome: x.nome, ip: (x.ip || '').trim() })), ultimo: impUltimo };
 }
 const impIpValido = (ip) => !ip || /^\d{1,3}(\.\d{1,3}){3}(:\d{1,5})?$/.test(ip);
 async function apiImpressoraSalvar(body) {
   const ip = String(body.ip ?? '').trim();
-  if (!impIpValido(ip)) return { ok: false, erro: 'IP inválido — ex.: 192.168.10.9 ou 192.168.10.9:9100' };
+  if (!impIpValido(ip) && body.totem_ip === undefined) return { ok: false, erro: 'IP inválido — ex.: 192.168.10.9 ou 192.168.10.9:9100' };
+  // {totem_ip} = impressora da RECEPÇÃO (tickets do totem); vazio desliga
+  if (body.totem_ip !== undefined) {
+    const tip = String(body.totem_ip ?? '').trim();
+    if (!impIpValido(tip)) return { ok: false, erro: 'IP inválido — ex.: 192.168.10.9 ou 192.168.10.9:9100' };
+    await cfgSet('totem_impressora_ip', tip);
+    return { ok: true, totem_ip: tip };
+  }
   // {area_codigo, ip} = impressora DA PRAÇA (vazio remove; volta pra geral)
   if (body.area_codigo != null) {
     if (!ip) await sql`DELETE FROM praca_impressora WHERE area_codigo=${Number(body.area_codigo)}`;
@@ -4278,7 +4289,10 @@ async function apiImpressoraSalvar(body) {
 }
 async function apiImpressoraTeste(body) {
   let ip = '', onde = 'geral (caixa)';
-  if (body && body.area_codigo != null) {
+  if (body && body.totem) {
+    ip = (await cfgGet('totem_impressora_ip', '')).trim();
+    onde = 'recepção (totem)';
+  } else if (body && body.area_codigo != null) {
     const r = (await sql`SELECT a.nome, pi.ip FROM area a LEFT JOIN praca_impressora pi ON pi.area_codigo=a.codigo
       WHERE a.codigo=${Number(body.area_codigo)}`)[0];
     ip = (r?.ip || '').trim() || (await cfgGet('impressora_ip', '')).trim();
@@ -6741,7 +6755,9 @@ async function apiTotemCardapio() {
   const cfg = await totemConfig();
   const cods = [...new Set(cfg.itens.map((i) => Number(i.codigo)).filter((n) => n > 0))];
   const pix = pixStatus().disponivel;
-  if (!cods.length) return { ok: true, loja: LOJA_NOME, pix, grupos: [] };
+  const cartao = totemCartaoOn();
+  const impressora = !!(await cfgGet('totem_impressora_ip', '')).trim();
+  if (!cods.length) return { ok: true, loja: LOJA_NOME, pix, cartao, impressora, grupos: [] };
   const prods = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, descricao, sem_estoque,
       EXISTS(SELECT 1 FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS tem_foto
     FROM produto_local WHERE codigo_pdv = ANY(${cods})`;
@@ -6767,11 +6783,13 @@ async function apiTotemCardapio() {
   const grupos = cfg.grupos.map((g) => ({ ...g, itens: cfg.itens.filter((i) => i.grupo === g.id)
     .sort((a, b) => a.ordem - b.ordem).map((i) => porCod.get(Number(i.codigo))).filter(Boolean) }))
     .filter((g) => g.itens.length);
-  return { ok: true, loja: LOJA_NOME, pix, grupos };
+  return { ok: true, loja: LOJA_NOME, pix, cartao, impressora, grupos };
 }
 /** POST /api/totem/pedido {itens:[{codigo_pdv, qtd, respostas?}]} → ticket + QR do Pix. */
 async function apiTotemPedido(body) {
-  if (!pixStatus().disponivel) return { ok: false, erro: 'Pagamento indisponível agora. Peça no balcão.' };
+  const noCartao = body?.forma === 'cartao';
+  if (noCartao && !totemCartaoOn()) return { ok: false, erro: 'A maquininha do totem está desligada agora. Pague no Pix ou peça no balcão.' };
+  if (!noCartao && !pixStatus().disponivel) return { ok: false, erro: 'Pagamento indisponível agora. Peça no balcão.' };
   const cfg = await totemConfig();
   const permitidos = new Set(cfg.itens.map((i) => Number(i.codigo)));
   const lista = (Array.isArray(body?.itens) ? body.itens : []).slice(0, 30);
@@ -6788,6 +6806,12 @@ async function apiTotemPedido(body) {
   const [t] = await sql`INSERT INTO ticket_venda (login, nome_usuario, itens, servico, valor_itens, valor_servico, total, origem)
     VALUES (${TOTEM_LOGIN}, ${'Totem da recepção'}, ${JSON.stringify(c.itens)}, false, ${c.valor_itens}, 0, ${total}, 'totem') RETURNING id`;
   const id = Number(t.id);
+  if (noCartao) {
+    // a LIO do lado puxa pela /api/lio/totem/fila e cobra (apiLioTotemFila)
+    await sql`UPDATE ticket_venda SET status='aguardando_lio' WHERE id=${id}`;
+    console.log(`[totem] pedido ${id} · ${c.itens.length} linha(s) · R$ ${total.toFixed(2)} · CARTÃO na maquininha`);
+    return { ok: true, pedido: id, total, forma: 'cartao', itens: c.itens.map((i) => ({ nome: i.nome, qtd: i.qtd, valor: i.valor, opcoes: i.opcoes })) };
+  }
   const r = await pixCriarCobranca({ valor: total, rotulo: 'Pedido ' + id + ' (totem)', origem: 'totem' });
   if (!r.ok) {
     await sql`UPDATE ticket_venda SET status='desistido', erro=${String(r.erro || 'Pix falhou').slice(0, 300)} WHERE id=${id}`;
@@ -6799,7 +6823,8 @@ async function apiTotemPedido(body) {
     txid: r.txid, copia_cola: r.copia, imagem: pixQrImagem(r.copia) };
 }
 /** GET /api/totem/status?txid= — a tela pergunta de 4 em 4 s se o Pix caiu. */
-async function apiTotemStatus(txid) {
+async function apiTotemStatus(txid, ticket) {
+  if (!txid && ticket) return totemStatusTicket(ticket);
   txid = String(txid || '');
   const cob = (await sql`SELECT txid, origem, pago_em, baixado_em FROM pix_cobranca WHERE txid=${txid}`)[0];
   if (!cob || cob.origem !== 'totem') return { ok: false, erro: 'cobrança não encontrada' };
@@ -6856,6 +6881,7 @@ async function totemBaixar(txid) {
         forma=COALESCE(forma, 'Pix'), erro=NULL WHERE id=${t.id}`;
       let fechou = false;
       try { fechou = (await apiCaixaFechar(0, ped))?.fechada === true; } catch { /* segue aberta, o caixa vê */ }
+      totemImprimirTickets(Number(t.id)).catch(() => {});
       console.log(`[totem] pedido ${t.id} PAGO R$ ${valor.toFixed(2)} (Pix ${txid}) · conta ${ped}${fechou ? ' fechada' : ' — NÃO fechou, conferir no caixa'}`);
       return { ok: true, pedido: Number(t.id), conta: ped, fechou };
     } catch (e) {
@@ -6885,6 +6911,95 @@ async function loopTotemFila() {
   }
 }
 
+// ---- TOTEM no CARTÃO (dono, 01/11/2026): sem TEF. O totem cria o pedido e a
+// LIO do lado (app em "modo totem") puxa da fila, cobra na maquininha — o
+// comprovante do cartão sai NA LIO — e lança pelo /api/lio/pagar com
+// ticket_id, o mesmo caminho do ticket da venda direta (apiTicketPagar). Os
+// tickets saem na impressora fixa da recepção (totem_impressora_ip); sem ela
+// (ou se falhar), a resposta diz impresso_totem:false e a LIO imprime.
+let totemLioVisto = 0;
+const totemCartaoOn = () => Date.now() - totemLioVisto < 90 * 1000;
+async function totemStatusTicket(id) {
+  id = Number(id) || 0;
+  const [t] = await sql`SELECT id, status, lio_login, origem, impresso_em FROM ticket_venda WHERE id=${id}`;
+  if (!t || t.origem !== 'totem') return { ok: false, erro: 'pedido não encontrado' };
+  return { ok: true, pedido: id, pago: t.status === 'pago', desistido: t.status === 'desistido',
+    na_maquininha: !!t.lio_login && t.status === 'aguardando_lio', impresso: !!t.impresso_em };
+}
+/** POST /api/totem/cancelar {pedido} — só enquanto a LIO não pegou. */
+async function apiTotemCancelar(body) {
+  const id = Number(body?.pedido) || 0;
+  const r = await sql`UPDATE ticket_venda SET status='desistido', erro='cancelado no totem'
+    WHERE id=${id} AND origem='totem' AND status='aguardando_lio' AND lio_login IS NULL RETURNING id`;
+  if (r.length) return { ok: true };
+  const s = await totemStatusTicket(id);
+  if (s.pago) return { ok: false, pago: true, erro: 'Esse pedido já foi pago.' };
+  if (s.na_maquininha) return { ok: false, na_maquininha: true, erro: 'O pedido já está na maquininha — cancele por lá.' };
+  return { ok: true };
+}
+/** GET /api/lio/totem/fila — a LIO do totem pergunta de 3 em 3 s. Entrega o
+ *  pedido mais antigo esperando cartão e o prende nela (outra LIO não pega). */
+async function apiLioTotemFila(g) {
+  totemLioVisto = Date.now();
+  // ninguém pagou em 15 min: sai da fila (o totem já voltou pro início)
+  await sql`UPDATE ticket_venda SET status='desistido', erro='ninguém pagou na maquininha'
+    WHERE origem='totem' AND status='aguardando_lio' AND criado_em < now() - interval '15 minutes'
+      AND (lio_login IS NULL OR lio_pegou_em < now() - interval '15 minutes')`;
+  const [t] = await sql`UPDATE ticket_venda SET lio_login=${g.login}, lio_pegou_em=now()
+    WHERE id = (SELECT id FROM ticket_venda WHERE origem='totem' AND status='aguardando_lio'
+      AND (lio_login IS NULL OR lio_login=${g.login}) ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
+    RETURNING id, itens, total, criado_em`;
+  const impressora = !!(await cfgGet('totem_impressora_ip', '')).trim();
+  if (!t) return { ok: true, pedido: null, impressora };
+  const itens = typeof t.itens === 'string' ? JSON.parse(t.itens) : (t.itens || []);
+  return { ok: true, impressora, pedido: { ticket_id: Number(t.id), total: Number(t.total), itens, criado_em: t.criado_em } };
+}
+/** POST /api/lio/totem/liberar {ticket_id, desistiu?} — cliente cancelou na
+ *  maquininha (desistiu) ou a LIO devolve o pedido pra fila. */
+async function apiLioTotemLiberar(body, g) {
+  const id = Number(body?.ticket_id) || 0;
+  if (body?.desistiu) await sql`UPDATE ticket_venda SET status='desistido', erro='cancelado na maquininha'
+    WHERE id=${id} AND origem='totem' AND status='aguardando_lio'`;
+  else await sql`UPDATE ticket_venda SET lio_login=NULL, lio_pegou_em=NULL
+    WHERE id=${id} AND origem='totem' AND status='aguardando_lio' AND lio_login=${g.login}`;
+  return { ok: true };
+}
+/** Os tickets do totem em ESC/POS: um papel por unidade, com corte. */
+function totemTicketsEscpos(t) {
+  const itens = typeof t.itens === 'string' ? JSON.parse(t.itens) : (t.itens || []);
+  const un = [];
+  for (const o of itens) for (let k = 0; k < Math.max(1, Math.floor(Number(o.qtd) || 1)); k++) un.push(o);
+  const quando = new Date(t.pago_em || Date.now()).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  const b = [IMP.init];
+  un.forEach((o, i) => {
+    const nome = String(o.nome || '');
+    const tam = o.tamanho && !nome.toLowerCase().includes(String(o.tamanho).toLowerCase()) ? ' (' + o.tamanho + ')' : '';
+    b.push(IMP.centro, IMP.neg, impLn(LOJA_NOME), IMP.grande, impLn('TICKET ' + t.id), IMP.norm, IMP.negFim,
+      impLn((i + 1) + ' de ' + un.length), impTraco(), IMP.neg, IMP.alto, impLn('1x ' + nome + tam), IMP.norm, IMP.negFim);
+    for (const op of (Array.isArray(o.opcoes) ? o.opcoes : [])) if (op) b.push(impLn('- ' + op));
+    b.push(impTraco(), IMP.neg, IMP.alto, impLn('RETIRAR NO: ' + String(o.area_nome || 'BAR').toUpperCase()), IMP.norm, IMP.negFim,
+      impLn(quando + ' · totem'), IMP.corte);
+  });
+  return Buffer.concat(b);
+}
+/** Imprime UMA vez (marca impresso_em antes). Falhou = desmarca e devolve
+ *  false; no cartão a LIO imprime no lugar (nunca os dois). */
+async function totemImprimirTickets(id) {
+  const ip = (await cfgGet('totem_impressora_ip', '')).trim();
+  if (!ip) return false;
+  const [t] = await sql`UPDATE ticket_venda SET impresso_em=now()
+    WHERE id=${id} AND origem='totem' AND status='pago' AND impresso_em IS NULL RETURNING *`;
+  if (!t) return (await sql`SELECT 1 FROM ticket_venda WHERE id=${id} AND impresso_em IS NOT NULL`).length > 0;
+  try {
+    await imprimirRaw(ip, totemTicketsEscpos(t), 'tickets do totem ' + id);
+    return true;
+  } catch (e) {
+    await sql`UPDATE ticket_venda SET impresso_em=NULL, erro=${('impressora da recepção: ' + e.message).slice(0, 300)} WHERE id=${id}`.catch(() => {});
+    console.error(`[totem] ⚠️ tickets do pedido ${id} NÃO imprimiram na recepção (${ip}): ${e.message}`);
+    return false;
+  }
+}
+
 async function apiTicketPagar(body, garcom) {
   const id = Number(body.ticket_id);
   if (!(id > 0)) return { ok: false, erro: 'ticket inválido' };
@@ -6896,7 +7011,7 @@ async function apiTicketPagar(body, garcom) {
     // ticket se paga UMA vez, inteiro: reenvio da fila (mesmo Pix sem NSU) não grava de novo
     if (t.status === 'pago') {
       const itens = typeof t.itens === 'string' ? JSON.parse(t.itens) : (t.itens || []);
-      return { ok: true, ja_registrado: true, quitada: true, ticket_id: id, pedido_fb: Number(t.pedido_fb) || null,
+      return { ok: true, ja_registrado: true, quitada: true, ticket_id: id, pedido_fb: Number(t.pedido_fb) || null, impresso_totem: !!t.impresso_em,
         itens, total: Number(t.total), servico: t.servico, valor_servico: Number(t.valor_servico),
         loja: LOJA_NOME, criado_em: t.criado_em, garcom: t.nome_usuario || t.login };
     }
@@ -6923,7 +7038,10 @@ async function apiTicketPagar(body, garcom) {
     }
     console.log(`[ticket] #${id} · conta ${ped} · ${body.forma} R$ ${valor.toFixed(2)} → ${r.ok ? (r.quitada ? 'pago e fechado' : r.ja_registrado ? 'já registrado' : 'ok, falta ' + r.saldo) : 'ERRO: ' + r.erro}`);
     const itens = typeof t.itens === 'string' ? JSON.parse(t.itens) : (t.itens || []);
-    return { ...r, ticket_id: id, pedido_fb: ped, itens, total: Number(t.total), servico: t.servico,
+    // totem no cartão: os tickets saem na impressora da recepção
+    let impresso_totem = false;
+    if (r.ok && t.origem === 'totem' && (r.quitada || r.ja_registrado)) impresso_totem = await totemImprimirTickets(id).catch(() => false);
+    return { ...r, impresso_totem, ticket_id: id, pedido_fb: ped, itens, total: Number(t.total), servico: t.servico,
       valor_servico: Number(t.valor_servico), loja: LOJA_NOME, criado_em: t.criado_em, garcom: t.nome_usuario || t.login };
   })();
   ticketEmVoo.set(id, p);
@@ -23783,7 +23901,10 @@ async function pintaImp(){
     '</select><span class="ok" id="ok-im"></span></div>'+
     '<div class="l"><div class="nm">Impressora do caixa (a conta sai nela)<small>e padrão de praça sem impressora própria</small></div>'+
     '<input id="iip" type="text" value="'+esc(d.ip||'')+'" placeholder="192.168.10.9" style="width:150px;text-align:left" onchange="salvaImp()">'+
-    '<button class="back" style="cursor:pointer" onclick="testeImp()">testar</button></div>';
+    '<button class="back" style="cursor:pointer" onclick="testeImp()">testar</button></div>'+
+    '<div class="l"><div class="nm">Impressora da recepção (totem)<small>os tickets do totem saem nela; vazio = a maquininha imprime</small></div>'+
+    '<input id="itip" type="text" value="'+esc(d.totem_ip||'')+'" placeholder="192.168.10.20" style="width:150px;text-align:left" onchange="salvaImpTotem()">'+
+    '<button class="back" style="cursor:pointer" onclick="testeImpTotem()">testar</button><span class="ok" id="ok-it"></span></div>';
   (d.pracas||[]).forEach(function(a){
     h+='<div class="l"><div class="nm">'+esc(a.nome)+'<small>'+(a.ip?('imprime em '+esc(a.ip)):(d.ip?('sem IP próprio — usa a do caixa ('+esc(d.ip)+')'):'sem impressora'))+'</small></div>'+
       '<input type="text" value="'+esc(a.ip||'')+'" placeholder="IP da praça" style="width:150px;text-align:left" onchange="salvaImpPraca('+a.codigo+',this.value)">'+
@@ -23798,6 +23919,18 @@ async function salvaImp(){
   var r=await jpost('/api/impressora',{modo:(document.getElementById('imodo')||{}).value,ip:((document.getElementById('iip')||{}).value||'').trim()});
   if(!r.ok){alert(r.erro||'não salvou');pintaImp();return}
   await pintaImp();marcaOk('ok-im');
+}
+async function salvaImpTotem(){
+  var r=await jpost('/api/impressora',{totem_ip:((document.getElementById('itip')||{}).value||'').trim()});
+  if(!r.ok){alert(r.erro||'não salvou');pintaImp();return}
+  await pintaImp();marcaOk('ok-it');
+}
+async function testeImpTotem(){
+  var r0=await jpost('/api/impressora',{totem_ip:((document.getElementById('itip')||{}).value||'').trim()});
+  if(!r0.ok){alert(r0.erro||'não salvou');return}
+  var r=await jpost('/api/impressora/teste',{totem:true});
+  alert(r.ok?'Enviado! Confere o cupom na impressora da recepção.':(r.erro||'não imprimiu'));
+  pintaImp();
 }
 async function salvaImpPraca(cod,v){
   var r=await jpost('/api/impressora',{area_codigo:cod,ip:(v||'').trim()});
@@ -29819,10 +29952,10 @@ header b{font-size:3.2vmin;flex:1}header button{font-size:2.4vmin;padding:1.4vmi
 .lin{display:flex;align-items:center;gap:1.6vmin;padding:1.8vmin 0;border-bottom:1px solid #e5ecef;font-size:2.4vmin}
 .lin .nm{flex:1}.lin .nm small{display:block;color:var(--mut);font-size:1.8vmin}.lin button{width:6vmin;height:6vmin;border-radius:50%;border:0;background:#e6eef1;font-size:3vmin;font-weight:800}
 .tot{display:flex;justify-content:space-between;font-size:3.4vmin;font-weight:800;margin-top:2.4vmin}
-#pix,#ok{background:#fff;align-items:center;justify-content:center;text-align:center;padding:4vmin;gap:2vmin}
-#pix h1,#ok h1{font-size:5vmin;margin:0}#pix .v{font-size:6vmin;font-weight:800;color:#0b7a8c}
+#pix,#ok,#cartao{background:#fff;align-items:center;justify-content:center;text-align:center;padding:4vmin;gap:2vmin}
+#pix h1,#ok h1,#cartao h1{font-size:5vmin;margin:0}#cartao .v,#pix .v{font-size:6vmin;font-weight:800;color:#0b7a8c}
 #pix img{width:min(46vmin,80vw);height:auto;border:1.4vmin solid #fff;box-shadow:0 0 0 2px #dbe5e9;border-radius:2vmin}
-#pix p{font-size:2.6vmin;color:var(--mut);margin:0;max-width:80vmin}.esp{display:inline-block;width:3vmin;height:3vmin;border:.5vmin solid #cde;border-top-color:var(--sea);border-radius:50%;animation:gira 1s linear infinite;vertical-align:middle;margin-right:1vmin}
+#cartao p,#pix p{font-size:2.6vmin;color:var(--mut);margin:0;max-width:80vmin}.esp{display:inline-block;width:3vmin;height:3vmin;border:.5vmin solid #cde;border-top-color:var(--sea);border-radius:50%;animation:gira 1s linear infinite;vertical-align:middle;margin-right:1vmin}
 @keyframes gira{to{transform:rotate(360deg)}}
 #ok{background:linear-gradient(160deg,#16a34a,#0e7a37);color:#fff}#ok .num{font-size:22vmin;font-weight:900;line-height:1;letter-spacing:-.04em}
 #ok p{font-size:3.2vmin;margin:0;opacity:.95}#ok .itens{font-size:2.6vmin;opacity:.9;max-width:80vmin}
@@ -29831,33 +29964,37 @@ header b{font-size:3.2vmin;flex:1}header button{font-size:2.4vmin;padding:1.4vmi
 <div id="ini" class="tela on" onclick="comecar()"><div class="ico">🍹</div><h1>Bateu a sede?</h1><p>Enquanto espera sua mesa, peça aqui e retire no balcão</p><div class="bt">Toque para pedir</div><p id="semPix" style="display:none;color:#ffd0d0">Pedidos pelo totem indisponíveis agora — peça no balcão</p></div>
 <div id="menu" class="tela"><header><b id="loja"></b><button onclick="reiniciar()">✕ Cancelar</button></header>
 <div class="abas" id="abas"></div><div class="grade" id="grade"></div>
-<div class="rod"><div class="r" id="resumo">Toque num item para adicionar</div><button class="bt2" id="btVer" onclick="verCarrinho()" disabled>🛒 Ver pedido</button><button class="bt1" id="btPag" onclick="pagar()" disabled>Pagar no Pix</button></div></div>
+<div class="rod"><div class="r" id="resumo">Toque num item para adicionar</div><button class="bt2" id="btVer" onclick="verCarrinho()" disabled>🛒 Ver pedido</button><button class="bt1" id="btCar" onclick="pagar('cartao')" disabled style="display:none">💳 Cartão</button><button class="bt1" id="btPag" onclick="pagar()" disabled>Pagar no Pix</button></div></div>
 <div id="pix" class="tela"><h1>Pague com Pix</h1><div class="v" id="pixV"></div><img id="pixImg" alt="QR do Pix"><p>Abra o app do seu banco, escolha <b>Pix → Ler QR code</b> e aponte para a tela.</p><p><span class="esp"></span>Esperando o pagamento…</p><div class="acoes" style="width:min(80vmin,90vw)"><button class="bt2" onclick="reiniciar()">Cancelar pedido</button></div></div>
-<div id="ok" class="tela"><p>Pagamento aprovado! Seu pedido é o</p><div class="num" id="okN"></div><p><b>Retire no balcão do bar</b> — fale esse número</p><div class="itens" id="okI"></div><button class="bt2" style="margin-top:3vmin" onclick="reiniciar()">Fazer outro pedido</button></div>
+<div id="cartao" class="tela"><h1>Pague na maquininha ao lado</h1><div class="v" id="carV"></div><p style="font-size:3.4vmin">💳 Pedido <b id="carN"></b> — passe ou aproxime o cartão na maquininha</p><p id="carMsg"><span class="esp"></span>Esperando a maquininha…</p><div class="acoes" style="width:min(80vmin,90vw)"><button class="bt2" onclick="cancelarCartao()">Cancelar pedido</button></div></div>
+<div id="ok" class="tela"><p>Pagamento aprovado! Seu pedido é o</p><div class="num" id="okN"></div><p><b>Retire no balcão do bar</b> — fale esse número</p><p id="okImp" style="display:none">🎟️ Seus tickets estão saindo na impressora</p><div class="itens" id="okI"></div><button class="bt2" style="margin-top:3vmin" onclick="reiniciar()">Fazer outro pedido</button></div>
 <div class="modal" id="mItem"><div class="cx"><h2 id="miN"></h2><div id="miD" style="color:var(--mut);font-size:2.2vmin"></div><div id="miE"></div>
 <div class="qtd"><button onclick="mQ(-1)">−</button><span id="miQ">1</span><button onclick="mQ(1)">+</button></div><div class="erro" id="miErr"></div>
 <div class="acoes"><button class="bt2" onclick="fechar('mItem')">Voltar</button><button class="bt1" id="miOk" onclick="addItem()">Adicionar</button></div></div></div>
 <div class="modal" id="mCar"><div class="cx"><h2>Seu pedido</h2><div id="carL"></div><div class="tot"><span>Total</span><span id="carT"></span></div><div class="erro" id="carErr"></div>
-<div class="acoes"><button class="bt2" onclick="fechar('mCar')">Continuar pedindo</button><button class="bt1" onclick="fechar('mCar');pagar()">Pagar no Pix</button></div></div></div>
+<div class="acoes"><button class="bt2" onclick="fechar('mCar')">Continuar pedindo</button><button class="bt1" id="mCarCartao" style="display:none" onclick="fechar('mCar');pagar('cartao')">💳 Cartão</button><button class="bt1" id="mCarPix" onclick="fechar('mCar');pagar()">Pagar no Pix</button></div></div></div>
 <script>
-var D=null,aba=0,car=[],atual=null,qtd=1,esc={},txid=null,poll=null,ocioso=null;
+var D=null,aba=0,car=[],atual=null,qtd=1,esc={},txid=null,poll=null,ocioso=null,pedCartao=null;
 function R(v){return 'R$ '+Number(v||0).toFixed(2).replace('.',',')}
 function E(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function tela(id){document.querySelectorAll('.tela').forEach(function(t){t.classList.toggle('on',t.id===id)})}
 function fechar(id){document.getElementById(id).classList.remove('on')}
-function mexeu(){clearTimeout(ocioso);ocioso=setTimeout(function(){if(!document.getElementById('ini').classList.contains('on'))reiniciar()},txid?300000:90000)}
+function mexeu(){clearTimeout(ocioso);ocioso=setTimeout(function(){if(!document.getElementById('ini').classList.contains('on'))reiniciar()},(txid||pedCartao)?300000:90000)}
 document.addEventListener('pointerdown',mexeu,true);
 function carregar(){return fetch('/api/totem/cardapio').then(function(r){return r.json()}).then(function(d){if(d&&d.ok){D=d;document.getElementById('loja').textContent=d.loja;
- document.getElementById('semPix').style.display=(!d.pix||!d.grupos.length)?'block':'none'}}).catch(function(){})}
-function comecar(){if(!D||!D.pix||!D.grupos.length){carregar();return}aba=0;car=[];desenhar();tela('menu');mexeu()}
-function reiniciar(){clearInterval(poll);poll=null;txid=null;car=[];['mItem','mCar'].forEach(fechar);tela('ini');carregar()}
+ document.getElementById('semPix').style.display=((!d.pix&&!d.cartao)||!d.grupos.length)?'block':'none';
+ document.getElementById('btPag').style.display=d.pix?'':'none';document.getElementById('mCarPix').style.display=d.pix?'':'none';
+ document.getElementById('btCar').style.display=d.cartao?'':'none';document.getElementById('mCarCartao').style.display=d.cartao?'':'none'}}).catch(function(){})}
+function comecar(){if(!D||!(D.pix||D.cartao)||!D.grupos.length){carregar();return}aba=0;car=[];desenhar();tela('menu');mexeu()}
+function reiniciar(){if(pedCartao){var pc=pedCartao;fetch('/api/totem/cancelar',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({pedido:pc})}).catch(function(){})}
+ pedCartao=null;clearInterval(poll);poll=null;txid=null;car=[];['mItem','mCar'].forEach(fechar);tela('ini');carregar()}
 function desenhar(){var g=D.grupos;document.getElementById('abas').innerHTML=g.map(function(x,i){return '<button class="aba'+(i===aba?' on':'')+'" onclick="aba='+i+';desenhar()">'+E(x.emoji+' '+x.nome)+'</button>'}).join('');
  var it=(g[aba]||{itens:[]}).itens;document.getElementById('grade').innerHTML=it.map(function(p,i){var foto=p.tem_foto&&p.produto_codigo!=null?'style="background-image:url(/produto-foto/'+p.produto_codigo+')"':'';
  return '<button class="prod'+(p.esgotado?' esg':'')+'" onclick="abrir('+i+')"><div class="f" '+foto+'>'+(foto?'':E((g[aba].emoji)||'🥤'))+'</div><div class="t"><div class="n">'+E(p.nome)+(p.tamanho?' <small>'+E(p.tamanho)+'</small>':'')+'</div>'+(p.descricao?'<div class="d">'+E(p.descricao)+'</div>':'')+'<div class="p">'+(p.esgotado?'Acabou':R(p.preco))+'</div></div></button>'}).join('');
  rodape()}
 function rodape(){var n=car.reduce(function(s,c){return s+c.qtd},0),t=car.reduce(function(s,c){return s+c.unit*c.qtd},0);
  document.getElementById('resumo').innerHTML=n?(n+' ite'+(n>1?'ns':'m')+'<b>'+R(t)+'</b>'):'Toque num item para adicionar';
- document.getElementById('btVer').disabled=!n;document.getElementById('btPag').disabled=!n}
+ document.getElementById('btVer').disabled=!n;document.getElementById('btPag').disabled=!n;document.getElementById('btCar').disabled=!n}
 function abrir(i){var p=D.grupos[aba].itens[i];if(p.esgotado)return;atual=p;qtd=1;esc={};
  document.getElementById('miN').textContent=p.nome+(p.tamanho?' '+p.tamanho:'');document.getElementById('miD').textContent=p.descricao||'';document.getElementById('miErr').textContent='';
  document.getElementById('miE').innerHTML=p.escolhas.map(function(e,k){return '<h3>'+E(e.pergunta)+'</h3><div class="ops">'+e.opcoes.map(function(o){return '<button class="op" data-k="'+k+'" data-c="'+o.codigo+'" onclick="escolher('+k+','+o.codigo+')">'+E(o.nome)+(o.preco>0?' +'+R(o.preco):'')+'</button>'}).join('')+'</div>'}).join('');
@@ -29874,15 +30011,33 @@ function verCarrinho(){if(!car.length){fechar('mCar');rodape();return}document.g
  document.getElementById('carT').textContent=R(car.reduce(function(s,c){return s+c.unit*c.qtd},0));document.getElementById('mCar').classList.add('on')}
 function tira(i){car[i].qtd--;if(car[i].qtd<1)car.splice(i,1);verCarrinho();rodape()}
 var pagando=false;
-function pagar(){if(pagando||!car.length)return;pagando=true;var b=document.getElementById('btPag');b.disabled=true;b.textContent='Gerando Pix…';
+function pagar(forma){if(pagando||!car.length)return;if(forma==='cartao')return pagarCartao();pagando=true;var b=document.getElementById('btPag');b.disabled=true;b.textContent='Gerando Pix…';
  fetch('/api/totem/pedido',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({itens:car.map(function(c){return {codigo_pdv:c.codigo_pdv,qtd:c.qtd,respostas:c.respostas}})})})
  .then(function(r){return r.json()}).then(function(d){if(!d.ok){alert(d.erro||'Não deu certo. Tente de novo.');carregar().then(function(){if(D)desenhar()});return}
+  document.getElementById('okImp').style.display=D&&D.impressora?'':'none';
   txid=d.txid;document.getElementById('pixV').textContent=R(d.total);document.getElementById('pixImg').src=d.imagem;
   document.getElementById('okN').textContent=d.pedido;document.getElementById('okI').textContent=d.itens.map(function(i){return i.qtd+'× '+i.nome}).join(' · ');
   tela('pix');mexeu();clearInterval(poll);poll=setInterval(conferir,4000)})
  .catch(function(){alert('Sem conexão. Tente de novo.')}).then(function(){pagando=false;b.textContent='Pagar no Pix';rodape()})}
 function conferir(){if(!txid)return;var t=txid;fetch('/api/totem/status?txid='+encodeURIComponent(t)).then(function(r){return r.json()}).then(function(d){
  if(t!==txid||!d.pago)return;clearInterval(poll);poll=null;txid=null;car=[];tela('ok');clearTimeout(ocioso);ocioso=setTimeout(reiniciar,25000)}).catch(function(){})}
+function pagarCartao(){pagando=true;var b=document.getElementById('btCar');b.disabled=true;b.textContent='Enviando…';
+ fetch('/api/totem/pedido',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({forma:'cartao',itens:car.map(function(c){return {codigo_pdv:c.codigo_pdv,qtd:c.qtd,respostas:c.respostas}})})})
+ .then(function(r){return r.json()}).then(function(d){if(!d.ok){alert(d.erro||'Não deu certo. Tente de novo.');carregar().then(function(){if(D)desenhar()});return}
+  pedCartao=d.pedido;document.getElementById('carV').textContent=R(d.total);document.getElementById('carN').textContent=d.pedido;
+  document.getElementById('carMsg').innerHTML='<span class="esp"></span>Esperando a maquininha…';
+  document.getElementById('okN').textContent=d.pedido;document.getElementById('okI').textContent=d.itens.map(function(i){return i.qtd+'× '+i.nome}).join(' · ');
+  document.getElementById('okImp').style.display=D&&D.impressora?'':'none';
+  tela('cartao');mexeu();clearInterval(poll);poll=setInterval(conferirCartao,3000)})
+ .catch(function(){alert('Sem conexão. Tente de novo.')}).then(function(){pagando=false;b.textContent='💳 Cartão';rodape()})}
+function conferirCartao(){if(!pedCartao)return;var pc=pedCartao;fetch('/api/totem/status?ticket='+pc).then(function(r){return r.json()}).then(function(d){
+ if(pc!==pedCartao||!d.ok)return;
+ if(d.pago){clearInterval(poll);poll=null;pedCartao=null;car=[];tela('ok');clearTimeout(ocioso);ocioso=setTimeout(reiniciar,25000);return}
+ if(d.desistido){clearInterval(poll);poll=null;pedCartao=null;alert('O pagamento não foi feito. Seu pedido continua aqui — tente de novo.');tela('menu');rodape();mexeu();return}
+ document.getElementById('carMsg').innerHTML='<span class="esp"></span>'+(d.na_maquininha?'Siga as instruções na maquininha…':'Esperando a maquininha…')}).catch(function(){})}
+function cancelarCartao(){if(!pedCartao){tela('menu');return}var pc=pedCartao;fetch('/api/totem/cancelar',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({pedido:pc})}).then(function(r){return r.json()}).then(function(d){
+ if(d.pago){conferirCartao();return}if(d.na_maquininha){alert(d.erro);return}
+ clearInterval(poll);poll=null;pedCartao=null;tela('menu');rodape();mexeu()}).catch(function(){alert('Sem conexão. Tente de novo.')})}
 carregar();setInterval(function(){if(document.getElementById('ini').classList.contains('on'))carregar()},120000);
 </script></body></html>`;
 
@@ -32458,6 +32613,18 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTicketReimprimir(body, g)));
     }
+    // TOTEM no cartão: a LIO do lado do totem puxa o pedido e devolve/cancela
+    if (p === '/api/lio/totem/fila') {
+      const g = await garcomDaRequisicao(req, u);
+      if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiLioTotemFila(g)));
+    }
+    if (req.method === 'POST' && p === '/api/lio/totem/liberar') {
+      const g = await garcomDaRequisicao(req, u);
+      if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
+      const body = await readBody(req);
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiLioTotemLiberar(body, g)));
+    }
     if (p === '/api/lio/tickets') {
       const g = await garcomDaRequisicao(req, u);
       if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
@@ -32644,7 +32811,8 @@ const server = http.createServer(async (req, res) => {
     // destaques do QR (almoço executivo, happy hour) — card no topo do cardápio
     // totem de autoatendimento da recepção (sem login, como o QR da mesa)
     if (p === '/api/totem/cardapio') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTotemCardapio())); }
-    if (p === '/api/totem/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTotemStatus(u.searchParams.get('txid')))); }
+    if (p === '/api/totem/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTotemStatus(u.searchParams.get('txid'), u.searchParams.get('ticket')))); }
+    if (req.method === 'POST' && p === '/api/totem/cancelar') { const b = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTotemCancelar(b))); }
     if (req.method === 'POST' && p === '/api/totem/pedido') { const b = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiTotemPedido(b))); }
     if (p === '/api/mesa/destaques') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiMesaDestaques())); }
     if (restrPedida(u.searchParams.get('restr')) && u.searchParams.get('cliente') === '1' && (p === '/api/venda/busca' || p === '/api/venda/categoria' || p === '/api/venda/categorias')) {
