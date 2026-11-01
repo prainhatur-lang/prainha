@@ -51,6 +51,23 @@ export function EstoqueFinanceiroLelis() {
   }, []);
   useEffect(() => { void carregar(); }, [carregar]);
 
+  async function buscarSefaz() {
+    setOcupado('sefaz'); setMsg('Buscando na SEFAZ… (até 1 minuto)');
+    const r = await fetch('/api/lelis/buscar-sefaz', { method: 'POST' }).then((x) => x.json()).catch(() => ({ error: 'sem conexão' }));
+    setOcupado(null);
+    if (r.error) { setMsg(`Erro: ${r.error}`); return; }
+    const partes = [
+      `${r.completas + r.upgrades + r.xmlPorChave} nota(s) completa(s) com XML`,
+      r.resumos ? `${r.resumos} só com resumo (ciência dada: ${r.ciencias}; o XML vem na próxima busca)` : null,
+      r.tribAtualizadas ? `${r.tribAtualizadas} nota(s) antiga(s) com CST/CFOP preenchido pelo XML` : null,
+      r.semXml?.length ? `${r.semXml.length} sem XML ainda` : null,
+      r.bloqueio ? `SEFAZ pediu pra esperar 1 hora (${r.bloqueio})` : null,
+      r.aviso ? `Aviso: ${r.aviso}` : null,
+    ].filter(Boolean);
+    setMsg(`SEFAZ: ${partes.join(' · ')}. Produtos na tela de preço: ${r.produtos}.`);
+    await carregar();
+  }
+
   async function darEntrada(n: Nota) {
     setOcupado(n.id); setMsg(null);
     const r = await fetch('/api/lelis/entrada', {
@@ -125,6 +142,15 @@ export function EstoqueFinanceiroLelis() {
 
       {aba === 'notas' && (
         <div className="overflow-x-auto">
+          <div className="mb-2">
+            <button disabled={ocupado === 'sefaz'} onClick={buscarSefaz}
+              className="rounded-md bg-slate-900 px-3 py-1.5 text-sm text-white disabled:opacity-50">
+              {ocupado === 'sefaz' ? 'Buscando…' : '⬇ Buscar notas na SEFAZ (XML)'}
+            </button>
+            <span className="ml-2 text-xs text-slate-500">
+              Puxa as notas emitidas pra Lelis nos últimos 90 dias e preenche CST/CFOP das antigas pelo XML. Também roda sozinho às 04h e 16h.
+            </span>
+          </div>
           <p className="mb-2 text-xs text-slate-500">
             Notas de compra que chegaram pra Lelis (SEFAZ ou upload). “Dar entrada” põe os itens no estoque, lança as
             duplicatas no a pagar e já calcula a tributação da venda de cada produto pelo CFOP/CST da nota.

@@ -823,3 +823,77 @@ export async function importarPorChave(opts: {
     ciencia,
   };
 }
+
+// ── Tributação de entrada das notas antigas (01/11/2026) ──────────────────
+// Nota completa que entrou antes de o parser guardar CST/origem/ST fica com
+// essas colunas vazias. Busca o XML de novo pela chave (consChNFe, até 90 dias)
+// e preenche só os itens — não mexe em nada mais da nota.
+export interface ResultadoTribXml {
+  tentadas: number;
+  atualizadas: string[];
+  semXml: { chave: string; motivo: string }[];
+  bloqueio: string | null;
+}
+
+export async function reprocessarTribPorChave(opts: {
+  filialId: string;
+  limite?: number;
+  uf?: string;
+}): Promise<ResultadoTribXml> {
+  const limite = Math.min(opts.limite ?? 10, 15);
+  const res: ResultadoTribXml = { tentadas: 0, atualizadas: [], semXml: [], bloqueio: null };
+  const alvos = (await db.execute(sql`
+    SELECT n.id, n.chave
+      FROM nota_compra n
+     WHERE n.filial_id = ${opts.filialId}::uuid
+       AND n.modelo = 55
+       AND coalesce(n.situacao, '') <> 'CANCELADA'
+       AND coalesce(n.origem_importacao, '') NOT IN ('SEFAZ_DFE_RESUMO', 'SEFAZ_DFE_RESUMO_CIENTE')
+       AND coalesce(n.data_autorizacao, n.data_emissao) >= now() - interval '89 days'
+       AND EXISTS (SELECT 1 FROM nota_compra_item i
+                    WHERE i.nota_compra_id = n.id AND i.cst_icms IS NULL AND i.cst_pis IS NULL)
+     ORDER BY n.atualizado_em ASC
+     LIMIT ${limite}
+  `)) as unknown as { id: string; chave: string }[];
+  if (alvos.length === 0) return res;
+
+  const uf = (opts.uf ?? 'SE').toUpperCase();
+  const cUF = UF_CODIGO[uf];
+  if (!cUF) throw new Error(`UF invalida: ${uf}`);
+  const row = await findActiveCertForFilial(opts.filialId);
+  if (!row) throw new Error('filial sem certificado A1 disponivel (nem proprio nem compartilhado)');
+  const pfxBytes = await baixarPfx(row.pfxStoragePath);
+  const senhaPfx = decifrarSenha(row.senhaCifrada);
+
+  for (const a of alvos) {
+    res.tentadas++;
+    let motivo: string | null = null;
+    try {
+      const r = await consultarPorChave({ pfxBytes, senhaPfx, cnpj: row.filialCnpj, cUF, chave: a.chave, tpAmb: 1 });
+      if (r.cStat === '656') {
+        res.bloqueio = `${r.cStat} ${r.xMotivo}`;
+        res.tentadas--;
+        break;
+      }
+      const completa = r.docs.find((d) => d.tipo === 'NFE_COMPLETA' && d.chave === a.chave);
+      if (!completa) {
+        motivo = `${r.cStat} ${r.xMotivo}`.trim() || 'SEFAZ não devolveu o XML';
+      } else {
+        const nfe = parseNfeXml(completa.xml);
+        for (const it of nfe.itens) {
+          await db
+            .update(schema.notaCompraItem)
+            .set({ ...colunasTribEntrada(it), ...(it.cfop ? { cfop: it.cfop } : {}) })
+            .where(and(eq(schema.notaCompraItem.notaCompraId, a.id), eq(schema.notaCompraItem.numeroItem, it.numeroItem)));
+        }
+        res.atualizadas.push(a.chave);
+      }
+    } catch (e) {
+      motivo = (e as Error).message.slice(0, 200);
+    }
+    // gira a fila mesmo quando falha
+    await db.update(schema.notaCompra).set({ atualizadoEm: new Date() }).where(eq(schema.notaCompra.id, a.id));
+    if (motivo) res.semXml.push({ chave: a.chave, motivo });
+  }
+  return res;
+}
