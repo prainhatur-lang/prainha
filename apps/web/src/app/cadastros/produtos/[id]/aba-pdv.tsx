@@ -108,6 +108,18 @@ interface Props {
   catalogo?: Array<{ codigo: number; rotulo: string }>;
   complementos: ComplementoPdv[];
   insumos: InsumoPdv[];
+  /** Quadro "Onde vende" (🎟 Ticket da maquininha e totem), por tamanho. */
+  ondeVende?: OndeVende;
+}
+
+export interface OndeVende {
+  /** Quantos tamanhos a CASA tem marcados pro ticket (0 = maquininha mostra tudo). */
+  ticketNaCasa: number;
+  /** Códigos de PDV deste produto marcados pro ticket. */
+  ticket: number[];
+  /** código de PDV → grupo do totem, deste produto. */
+  totem: Record<number, string>;
+  grupos: Array<{ id: string; nome: string }>;
 }
 
 const ROTULO: Record<string, string> = {
@@ -488,6 +500,10 @@ export function AbaPdv(p: Props) {
         )}
       </div>
 
+      {p.ondeVende && p.variantes.length > 0 && (
+        <QuadroOndeVende produtoId={p.produtoId} variantes={p.variantes} inicial={p.ondeVende} />
+      )}
+
       <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
         <div className="border-b border-slate-200 px-5 py-3">
           <h2 className="text-sm font-semibold text-slate-900">Perguntas do PDV (acompanhamento)</h2>
@@ -806,5 +822,130 @@ function LinhaVariante({
         </button>
       </td>
     </tr>
+  );
+}
+
+/** "Onde vende": cada tamanho pode ir pro 🎟 Ticket da maquininha e/ou pro
+ *  totem da recepção. Grava na hora (é cadastro nosso, não passa pela fila do
+ *  Consumer); a loja puxa em até 5 min. */
+function QuadroOndeVende({
+  produtoId,
+  variantes,
+  inicial,
+}: {
+  produtoId: string;
+  variantes: VariantePdv[];
+  inicial: OndeVende;
+}) {
+  const router = useRouter();
+  const [ticket, setTicket] = useState<Set<number>>(new Set(inicial.ticket));
+  const [totem, setTotem] = useState<Record<number, string>>(inicial.totem);
+  const [ticketNaCasa, setTicketNaCasa] = useState(inicial.ticketNaCasa);
+  const [ocupado, setOcupado] = useState<number | null>(null);
+  const [msg, setMsg] = useState<{ ok: boolean; texto: string } | null>(null);
+
+  async function gravar(codigo: number, campos: { ticket?: boolean; totem?: string | null }) {
+    setOcupado(codigo);
+    setMsg(null);
+    try {
+      const r = await fetch('/api/cadastros/produtos/onde-vende', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ produtoId, codigo, ...campos }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) throw new Error(j.erro || 'não salvou');
+      if (campos.ticket !== undefined) {
+        const novo = new Set(ticket);
+        if (campos.ticket) novo.add(codigo);
+        else novo.delete(codigo);
+        setTicketNaCasa((n) => n + (campos.ticket ? 1 : -1) * (ticket.has(codigo) === campos.ticket ? 0 : 1));
+        setTicket(novo);
+      }
+      if (campos.totem !== undefined) {
+        const novo = { ...totem };
+        if (campos.totem) novo[codigo] = campos.totem;
+        else delete novo[codigo];
+        setTotem(novo);
+      }
+      setMsg({ ok: true, texto: 'Salvo. A loja atualiza em até 5 minutos.' });
+      router.refresh();
+    } catch (e) {
+      setMsg({ ok: false, texto: e instanceof Error ? e.message : 'não salvou' });
+    } finally {
+      setOcupado(null);
+    }
+  }
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+      <div className="border-b border-slate-200 px-5 py-3">
+        <h2 className="text-sm font-semibold text-slate-900">Onde vende — Ticket e Totem</h2>
+        <p className="mt-1 text-xs text-slate-500">
+          <b>🎟 Ticket</b>: o que aparece na maquininha no botão Ticket (venda direta).{' '}
+          {ticketNaCasa === 0 ? (
+            <span className="font-medium text-amber-700">
+              Nenhum item marcado nesta casa — hoje a maquininha mostra o cardápio todo. Ao marcar o
+              primeiro, ela passa a mostrar só os marcados.
+            </span>
+          ) : (
+            <span>
+              Esta casa tem <b>{ticketNaCasa}</b> {ticketNaCasa === 1 ? 'item marcado' : 'itens marcados'}; a
+              maquininha mostra só eles.
+            </span>
+          )}
+          <br />
+          <b>Totem</b>: em qual grupo o item aparece na tela de autoatendimento da recepção.
+        </p>
+      </div>
+      <table className="w-full text-sm">
+        <thead className="bg-slate-50 text-left text-xs font-medium uppercase tracking-wide text-slate-500">
+          <tr>
+            <th className="px-4 py-2">Tamanho</th>
+            <th className="px-4 py-2">🎟 Ticket (maquininha)</th>
+            <th className="px-4 py-2">Totem</th>
+          </tr>
+        </thead>
+        <tbody>
+          {variantes.map((v) => (
+            <tr key={v.codigo} className="border-t border-slate-100">
+              <td className="px-4 py-2 text-slate-700">
+                {v.tamanho || 'Único'} <span className="font-mono text-xs text-slate-400">· {v.codigo}</span>
+              </td>
+              <td className="px-4 py-2">
+                <label className="flex items-center gap-2 text-xs text-slate-700">
+                  <input
+                    type="checkbox"
+                    disabled={ocupado !== null}
+                    checked={ticket.has(v.codigo)}
+                    onChange={(e) => gravar(v.codigo, { ticket: e.target.checked })}
+                  />
+                  {ticket.has(v.codigo) ? <span className="font-medium text-amber-800">vende no ticket</span> : 'não'}
+                </label>
+              </td>
+              <td className="px-4 py-2">
+                <select
+                  disabled={ocupado !== null}
+                  value={totem[v.codigo] ?? ''}
+                  onChange={(e) => gravar(v.codigo, { totem: e.target.value || null })}
+                  aria-label={`Grupo do totem do tamanho ${v.tamanho || v.codigo}`}
+                  className="rounded-lg border border-slate-300 px-2 py-1 text-xs"
+                >
+                  <option value="">— não vai pro totem</option>
+                  {inicial.grupos.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.nome}
+                    </option>
+                  ))}
+                </select>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {msg && (
+        <p className={`px-5 py-2 text-xs ${msg.ok ? 'text-blue-800' : 'text-rose-700'}`}>{msg.texto}</p>
+      )}
+    </div>
   );
 }

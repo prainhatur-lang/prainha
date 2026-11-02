@@ -4720,16 +4720,18 @@ async function apiFotosLimpar(body) {
 }
 
 /** As variantes de um produto — só as que dá pra vender aparecem em primeiro. */
-async function apiVendaVariantes(produtoCodigo, cliente) {
+async function apiVendaVariantes(produtoCodigo, cliente, ticket) {
+  const tl = ticket ? await ticketLista() : null;
   const p = Number(produtoCodigo);
   if (!(p > 0)) return { ok: false, erro: 'produto inválido' };
   const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque, estoque, descricao,
       EXISTS(SELECT 1 FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS tem_foto
-    FROM produto_local WHERE produto_codigo=${p} ${soCliente(cliente)}
+    FROM produto_local WHERE produto_codigo=${p} ${soCliente(cliente)} ${soTicket(tl)}
     ORDER BY sem_estoque, preco, tamanho`;
   return { ok: true, nome: rows[0]?.nome ?? null, produtos: rows };
 }
-async function apiVendaBusca(termo, cliente) {
+async function apiVendaBusca(termo, cliente, ticket) {
+  const tl = ticket ? await ticketLista() : null;
   // busca sem acento e sem caixa — nome_busca ja vem normalizada do catalogo
   // ⚠️ A BUSCA TAMBÉM FILTRA PRO CLIENTE. Ela não filtrava: bastava digitar
   // "couvert" pra achar e pedir couvert, serviço, complemento interno — tudo
@@ -4738,7 +4740,7 @@ async function apiVendaBusca(termo, cliente) {
   const t = '%' + semAcento(String(termo || '').trim()) + '%';
   const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque, estoque, descricao,
       EXISTS(SELECT 1 FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS tem_foto
-    FROM produto_local WHERE nome_busca LIKE ${t} ${soCliente(cliente)}
+    FROM produto_local WHERE nome_busca LIKE ${t} ${soCliente(cliente)} ${soTicket(tl)}
     ORDER BY sem_estoque, comanda_mobile DESC, nome LIMIT 60`;
   return { produtos: agruparVariantes(rows) };
 }
@@ -4752,13 +4754,28 @@ const soCliente = (cliente) => (cliente
   ? sql`AND COALESCE((SELECT c.cliente FROM produto_config c WHERE c.codigo_pdv = produto_local.codigo_pdv), cardapio_digital)
         AND categoria NOT IN (SELECT categoria FROM grupo_oculto)`
   : sql`AND COALESCE((SELECT c.garcom FROM produto_config c WHERE c.codigo_pdv = produto_local.codigo_pdv), TRUE)`);
-async function apiVendaCategorias(cliente) {
+// 🎟 TICKET (02/11/2026): o cadastro do produto no Concilia diz o que vende no
+// botão Ticket da maquininha (tabela ticket_item, vem junto com o cardápio do
+// totem). A LIO manda ?ticket=1 só na tela do Ticket. Lista vazia = sem filtro
+// (a casa ainda não escolheu → mostra tudo, como sempre foi).
+async function ticketLista() {
+  try {
+    const l = JSON.parse(await cfgGet('ticket_cardapio', '[]'));
+    return Array.isArray(l) ? l.map(Number).filter((n) => n > 0) : [];
+  } catch { return []; }
+}
+// SÍNCRONA de propósito: o fragmento sql`` do postgres.js é "thenable" — se
+// sair de uma função async ele EXECUTA sozinho e a rota trava. Quem chama
+// carrega a lista antes (await ticketLista()) e passa aqui.
+const soTicket = (lista) => (lista && lista.length ? sql`AND codigo_pdv = ANY(${lista})` : sql``);
+async function apiVendaCategorias(cliente, ticket) {
+  const tl = ticket ? await ticketLista() : null;
   // Só grupo que tem o que vender AGORA. Grupo inteiro fora de estoque não
   // aparece — o garçom não deve tocar num grupo pra descobrir que está vazio.
   // parenteses no FILTER antes do cast: sem eles a precedencia fica ambigua
   const rows = await sql`SELECT categoria, min(categoria_ordem) AS ordem, count(*)::int AS n,
       (count(*) FILTER (WHERE NOT sem_estoque))::int AS disp
-    FROM produto_local WHERE TRUE ${soCliente(cliente)} GROUP BY categoria
+    FROM produto_local WHERE TRUE ${soCliente(cliente)} ${soTicket(tl)} GROUP BY categoria
     HAVING count(*) FILTER (WHERE NOT sem_estoque) > 0
     -- A SEQUÊNCIA É A DO CONSUMER (ETIQUETAS.ORDEM), não alfabética. A casa
     -- monta o cardápio numa hierarquia pensada — Drink, Petiscos, Parrilha,
@@ -4767,10 +4784,11 @@ async function apiVendaCategorias(cliente) {
     ORDER BY ordem, categoria`;
   return { categorias: rows };
 }
-async function apiVendaCategoria(nome, cliente) {
+async function apiVendaCategoria(nome, cliente, ticket) {
+  const tl = ticket ? await ticketLista() : null;
   const rows = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_estoque, estoque, descricao,
       EXISTS(SELECT 1 FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS tem_foto
-    FROM produto_local WHERE categoria=${String(nome || '')} ${soCliente(cliente)}
+    FROM produto_local WHERE categoria=${String(nome || '')} ${soCliente(cliente)} ${soTicket(tl)}
     ORDER BY sem_estoque, nome`;
   return { categoria: String(nome || ''), produtos: agruparVariantes(rows) };
 }
@@ -6753,6 +6771,10 @@ async function loopTotemNuvem() {
     const itens = d.itens.slice(0, 150).map((x) => ({ codigo: Number(x.codigo), grupo: String(x.grupo || ''), ordem: Number(x.ordem) || 0 }))
       .filter((x) => x.codigo > 0 && x.grupo);
     await cfgSet('totem_cardapio', JSON.stringify({ grupos, itens }));
+    // Lista do 🎟 Ticket (servidor antigo da nuvem não manda → não mexe).
+    if (Array.isArray(d.ticket)) {
+      await cfgSet('ticket_cardapio', JSON.stringify(d.ticket.map(Number).filter((n) => n > 0).slice(0, 2000)));
+    }
   } catch (e) {
     console.error('[totem]', e.message);
   }
@@ -33321,7 +33343,7 @@ const server = http.createServer(async (req, res) => {
     }
     // busca do cliente em outro idioma (só quando a tela manda lang=); sem lang, segue a de sempre logo abaixo
     if (p === '/api/venda/busca' && u.searchParams.get('lang')) { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaBuscaIdioma(u.searchParams.get('q') || '', u.searchParams.get('cliente') === '1', u.searchParams.get('lang')))); }
-    if (p === '/api/venda/busca') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaBusca(u.searchParams.get('q') || '', u.searchParams.get('cliente') === '1'))); }
+    if (p === '/api/venda/busca') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaBusca(u.searchParams.get('q') || '', u.searchParams.get('cliente') === '1', u.searchParams.get('ticket') === '1'))); }
     if (p === '/api/venda/mesa') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaMesa(u.searchParams.get('n') || 0))); }
     if (req.method === 'POST' && p === '/api/venda/identificar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiIdentificarSalvar(body))); }
     if (p === '/api/venda/identificar') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaIdentificar(u.searchParams.get('cpf') || '', u.searchParams.get('tel') || ''))); }
@@ -33527,7 +33549,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/impressora') { res.writeHead(200, { 'content-type': 'application/json' }); if (req.method === 'POST') return res.end(JSON.stringify(await apiImpressoraSalvar(await readBody(req)))); return res.end(JSON.stringify(await apiImpressora())); }
     if (req.method === 'POST' && p === '/api/chamado') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamadoCriar(body))); }
     if (req.method === 'POST' && p === '/api/chamado/atender') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiChamadoAtender(body))); }
-    if (p === '/api/venda/categorias') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaCategorias(u.searchParams.get('cliente') === '1'))); }
+    if (p === '/api/venda/categorias') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaCategorias(u.searchParams.get('cliente') === '1', u.searchParams.get('ticket') === '1'))); }
     if (p === '/api/produtos') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiProdutos(u.searchParams.get('q') || '', u.searchParams.get('so') || ''))); }
     if (req.method === 'POST' && p === '/api/produto/salvar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiProdutoSalvar(body))); }
     if (req.method === 'POST' && p === '/api/produto/foto') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiProdutoFoto(body))); }
@@ -33545,8 +33567,8 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/fotos/limpar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiFotosLimpar(body))); }
     if (p === '/produtos') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(PRODUTOS_HTML); }
     if (p === '/api/venda/perguntas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPerguntas(u.searchParams.get('pdv') || 0))); }
-    if (p === '/api/venda/variantes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaVariantes(u.searchParams.get('p') || 0, u.searchParams.get('cliente') === '1'))); }
-    if (p === '/api/venda/categoria') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaCategoria(u.searchParams.get('c') || '', u.searchParams.get('cliente') === '1'))); }
+    if (p === '/api/venda/variantes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaVariantes(u.searchParams.get('p') || 0, u.searchParams.get('cliente') === '1', u.searchParams.get('ticket') === '1'))); }
+    if (p === '/api/venda/categoria') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaCategoria(u.searchParams.get('c') || '', u.searchParams.get('cliente') === '1', u.searchParams.get('ticket') === '1'))); }
     if (p === '/api/grupos-ocultos') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGruposOcultos())); }
     if (req.method === 'POST' && p === '/api/grupo-ocultar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGrupoOcultar(body))); }
     res.writeHead(404); res.end('not found');

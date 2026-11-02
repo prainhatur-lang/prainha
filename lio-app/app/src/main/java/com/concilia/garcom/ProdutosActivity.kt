@@ -107,7 +107,7 @@ class ProdutosActivity : AppCompatActivity() {
         vazio.text = "Carregando cardápio…"
         Thread {
             try {
-                val cs = Api.categorias(Session.servidor(this))
+                val cs = Api.categorias(Session.servidor(this), ticket)
                 runOnUiThread {
                     categorias = cs
                     montarChips()
@@ -151,7 +151,7 @@ class ProdutosActivity : AppCompatActivity() {
         if (nome == null) return
         Thread {
             try {
-                val ps = Api.categoria(Session.servidor(this), nome)
+                val ps = Api.categoria(Session.servidor(this), nome, ticket)
                 runOnUiThread { mostrarProdutos(ps) }
             } catch (e: Exception) {
                 runOnUiThread { vazio.visibility = View.VISIBLE; vazio.text = e.message ?: "Erro" }
@@ -162,7 +162,7 @@ class ProdutosActivity : AppCompatActivity() {
     private fun buscar(termo: String) {
         Thread {
             try {
-                val ps = Api.busca(Session.servidor(this), termo)
+                val ps = Api.busca(Session.servidor(this), termo, ticket)
                 runOnUiThread { mostrarProdutos(ps) }
             } catch (_: Exception) { }
         }.start()
@@ -192,7 +192,7 @@ class ProdutosActivity : AppCompatActivity() {
         if (!p.grupo && p.codigoPdv != null) { carregarPerguntas(p.codigoPdv, nomeComTamanho(p), p.preco); return }
         Thread {
             try {
-                val vs = Api.variantes(Session.servidor(this), p.produtoCodigo)
+                val vs = Api.variantes(Session.servidor(this), p.produtoCodigo, ticket)
                 runOnUiThread {
                     if (vs.isEmpty()) { Toast.makeText(this, "Sem variantes vendáveis", Toast.LENGTH_SHORT).show(); return@runOnUiThread }
                     val rotulos = vs.map {

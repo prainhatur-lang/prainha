@@ -460,9 +460,13 @@ object Api {
 
     // -------- catálogo (espelho local, sem auth — SEM cliente=1: garçom vê tudo) --------
 
+    // ticket=true (tela 🎟 Ticket, 1.10.40): só o que o cadastro do produto marcou
+    // pro ticket. Servidor antigo ignora o parâmetro e devolve tudo, como antes.
+    private fun tk(ticket: Boolean, sep: Char) = if (ticket) "${sep}ticket=1" else ""
+
     @Throws(IOException::class)
-    fun categorias(base: String): List<Categoria> {
-        val arr = getJson("$base/api/venda/categorias").optJSONArray("categorias") ?: JSONArray()
+    fun categorias(base: String, ticket: Boolean = false): List<Categoria> {
+        val arr = getJson("$base/api/venda/categorias${tk(ticket, '?')}").optJSONArray("categorias") ?: JSONArray()
         return (0 until arr.length()).mapNotNull { i ->
             val o = arr.optJSONObject(i) ?: return@mapNotNull null
             Categoria(o.optString("categoria"), o.optInt("n"), o.optInt("disp"))
@@ -470,17 +474,17 @@ object Api {
     }
 
     @Throws(IOException::class)
-    fun categoria(base: String, nome: String): List<Produto> =
-        parseProdutos(getJson("$base/api/venda/categoria?c=${enc(nome)}").optJSONArray("produtos"))
+    fun categoria(base: String, nome: String, ticket: Boolean = false): List<Produto> =
+        parseProdutos(getJson("$base/api/venda/categoria?c=${enc(nome)}${tk(ticket, '&')}").optJSONArray("produtos"))
 
     @Throws(IOException::class)
-    fun busca(base: String, termo: String): List<Produto> =
-        parseProdutos(getJson("$base/api/venda/busca?q=${enc(termo)}").optJSONArray("produtos"))
+    fun busca(base: String, termo: String, ticket: Boolean = false): List<Produto> =
+        parseProdutos(getJson("$base/api/venda/busca?q=${enc(termo)}${tk(ticket, '&')}").optJSONArray("produtos"))
 
     /** Variantes de um grupo (dose/garrafa, tamanhos) — todas vendáveis. */
     @Throws(IOException::class)
-    fun variantes(base: String, produtoCodigo: Int): List<Produto> {
-        val j = getJson("$base/api/venda/variantes?p=$produtoCodigo")
+    fun variantes(base: String, produtoCodigo: Int, ticket: Boolean = false): List<Produto> {
+        val j = getJson("$base/api/venda/variantes?p=$produtoCodigo${tk(ticket, '&')}")
         if (!j.optBoolean("ok")) throw IOException(j.optString("erro", "Produto inválido"))
         return parseProdutos(j.optJSONArray("produtos"))
     }

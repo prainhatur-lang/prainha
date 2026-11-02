@@ -10,6 +10,7 @@ import { AbaFornecedores } from './aba-fornecedores';
 import { AbaSaldo } from './aba-saldo';
 import { AbaMarcas } from './aba-marcas';
 import { AbaPdv } from './aba-pdv';
+import { GRUPOS_TOTEM, listarTicket, listarTotem } from '@/lib/cardapio-totem';
 import { TrocarTipoButton } from './trocar-tipo';
 import { ControleEstoque } from './controle-estoque';
 import { ConverterUnidadeButton } from './converter-unidade';
@@ -287,6 +288,14 @@ export default async function ProdutoDetalhePage(props: {
           )
           .orderBy(asc(schema.produtoVariante.codigoExterno))
       : [];
+
+  // ONDE VENDE (02/11/2026): 🎟 Ticket da maquininha e totem, por tamanho.
+  // A lista é da casa inteira — o quadro precisa saber se ela está vazia
+  // (vazia = a maquininha mostra tudo).
+  const [ticketCasa, totemCasa] =
+    aba === 'pdv' && produto.codigoExterno != null
+      ? await Promise.all([listarTicket(produto.filialId), listarTotem(produto.filialId)])
+      : [[] as number[], [] as Awaited<ReturnType<typeof listarTotem>>];
 
   const etiquetasPdv =
     aba === 'pdv'
@@ -671,6 +680,14 @@ export default async function ProdutoDetalhePage(props: {
                 codigoBarra: v.codigoBarra,
               }))}
               pendentes={pendentesPdv}
+              ondeVende={{
+                ticketNaCasa: ticketCasa.length,
+                ticket: ticketCasa.filter((c) => variantesPdv.some((v) => v.codigo === c)),
+                totem: Object.fromEntries(
+                  totemCasa.filter((t) => variantesPdv.some((v) => v.codigo === t.codigo)).map((t) => [t.codigo, t.grupo]),
+                ),
+                grupos: GRUPOS_TOTEM.map((g) => ({ id: g.id, nome: `${g.emoji} ${g.nome}` })),
+              }}
               perguntas={perguntasPdv.map((q) => ({
                 varianteCodigo: q.varianteCodigo,
                 codigo: q.codigo,

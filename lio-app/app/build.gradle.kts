@@ -164,8 +164,10 @@ android {
         // 1.10.39 (02/11/2026): cabeçalho da tela de mesas reorganizado em 3
         // linhas — loja + Sair; garçom · conexão · versão; Entregas / Fechamento
         // do dia. Os mesmos botões, com o mesmo efeito; só não espremem mais o nome.
-        versionCode = 63
-        versionName = "1.10.39"
+        // 1.10.40 (02/11/2026): 🎟 Ticket mostra só os itens marcados no cadastro
+        // do produto (aba PDV → Onde vende). Casa sem nada marcado = tudo.
+        versionCode = 64
+        versionName = "1.10.40"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CONCILIA_BASE", "\"$conciliaBase\"")
     }
