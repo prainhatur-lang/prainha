@@ -23,7 +23,7 @@ function mascaraFone(v: string): string {
 const campo =
   'mt-1 w-full rounded-lg border border-black/15 bg-white px-3 py-2.5 text-[16px] outline-none focus:border-[#0b7a83] focus:ring-2 focus:ring-[#0b7a83]/20';
 
-export function FormComecar({ origem, zap }: { origem: string; zap: string }) {
+export function FormComecar({ origem, zap, plano }: { origem: string; zap: string; plano?: string }) {
   const [f, setF] = useState({
     nome: '',
     estabelecimento: '',
@@ -31,7 +31,7 @@ export function FormComecar({ origem, zap }: { origem: string; zap: string }) {
     whatsapp: '',
     email: '',
     maquininhas: '',
-    plano: 'nao_sei',
+    plano: PLANOS.some((p) => p.v === plano) ? plano! : 'nao_sei',
     mensagem: '',
     site: '',
   });
