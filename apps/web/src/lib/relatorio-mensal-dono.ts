@@ -287,8 +287,9 @@ export interface ResultadoMesDono {
 }
 
 /**
- * Dia 01: manda o mês anterior pra quem recebe o relatório completo. Fora do
- * dia 01 não faz nada, a não ser com `forcar` (manda o último mês fechado).
+ * Dia 01: manda o mês anterior pra quem recebe o relatório completo (até o
+ * dia 05 repesca quem não recebeu). Depois disso não faz nada, a não ser com
+ * `forcar` (manda o último mês fechado).
  * `repetir` manda mesmo pra quem já recebeu.
  */
 export async function enviarMesDono(
@@ -296,7 +297,9 @@ export async function enviarMesDono(
 ): Promise<ResultadoMesDono[]> {
   const origem = opts.origem ?? 'cron';
   const hoje = somaDias(ultimoDiaFechado(), 1);
-  if (!opts.forcar && hoje.slice(8, 10) !== '01') return [];
+  // Dia 01 é o normal; até o dia 05 o cron tenta de novo quem ainda não
+  // recebeu (o registro ok do mês trava a repetição).
+  if (!opts.forcar && hoje.slice(8, 10) > '05') return [];
   const mes = mesAnteriorDe(hoje);
   const configs = await db
     .select({ organizacaoId: schema.relatorioDiarioConfig.organizacaoId })

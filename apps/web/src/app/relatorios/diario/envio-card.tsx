@@ -213,6 +213,46 @@ export function EnvioCard({
     setConferencia((c) => (c && c.antes === antes ? { ...c, fase: 'pronto' } : c));
   }
 
+  // Resultado do último mês fechado (todas as casas) pros números acima.
+  const [enviandoMes, setEnviandoMes] = useState(false);
+  const [msgMes, setMsgMes] = useState<{ tom: 'ok' | 'erro'; txt: string } | null>(null);
+  const nomeMes = (() => {
+    const d = new Date(`${dia}T12:00:00`);
+    d.setDate(d.getDate() + 1);
+    d.setMonth(d.getMonth() - 1);
+    return d.toLocaleDateString('pt-BR', { month: 'long' });
+  })();
+  async function enviarMes() {
+    if (!window.confirm(`Mandar agora o resultado de ${nomeMes} (todas as casas) pros números cadastrados?`)) return;
+    setEnviandoMes(true);
+    setMsgMes(null);
+    try {
+      const r = await fetch('/api/relatorios/diario/enviar-mes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ organizacaoId }),
+      });
+      const j = (await r.json().catch(() => null)) as
+        | { error?: string; resultados?: Array<{ telefone: string; ok: boolean; erro?: string }> }
+        | null;
+      if (!r.ok) {
+        setMsgMes({ tom: 'erro', txt: j?.error ?? 'Não consegui enviar.' });
+        return;
+      }
+      const falhas = (j?.resultados ?? []).filter((x) => !x.ok);
+      setMsgMes(
+        falhas.length
+          ? { tom: 'erro', txt: falhas.map((f) => `${formatFone(f.telefone)}: ${f.erro ?? 'não foi'}`).join(' · ') }
+          : { tom: 'ok', txt: `Resultado de ${nomeMes} enviado no WhatsApp.` },
+      );
+      router.refresh();
+    } catch {
+      setMsgMes({ tom: 'erro', txt: 'Sem conexão — tente de novo.' });
+    } finally {
+      setEnviandoMes(false);
+    }
+  }
+
   const [enviandoCasas, setEnviandoCasas] = useState(false);
   const [msgCasas, setMsgCasas] = useState<{ tom: 'ok' | 'erro'; txt: string } | null>(null);
   async function enviarCasas() {
@@ -374,6 +414,18 @@ export function EnvioCard({
             </button>
             {msg && (
               <span className={`text-xs ${msg.tom === 'ok' ? 'text-emerald-700' : 'text-rose-700'}`}>{msg.txt}</span>
+            )}
+            <button
+              type="button"
+              onClick={enviarMes}
+              disabled={enviandoMes || telefones.length === 0}
+              title={telefones.length === 0 ? 'Salve um número primeiro' : undefined}
+              className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+            >
+              {enviandoMes ? 'Enviando…' : `Enviar o mês (${nomeMes})`}
+            </button>
+            {msgMes && (
+              <span className={`text-xs ${msgMes.tom === 'ok' ? 'text-emerald-700' : 'text-rose-700'}`}>{msgMes.txt}</span>
             )}
             <button
               type="button"
