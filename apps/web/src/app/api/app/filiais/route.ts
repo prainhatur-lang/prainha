@@ -51,7 +51,8 @@ export async function GET(request: Request) {
     return NextResponse.json({
       ok: true,
       empresa: 'Concilia — demonstração',
-      filiais: [{ id: 'demo', nome: 'Demonstração', url }],
+      // login de teste da demo: o app já preenche (é público de propósito)
+      filiais: [{ id: 'demo', nome: 'Demonstração', url, login: 'teste', pin: '1234' }],
     });
   }
 

@@ -77,6 +77,10 @@ object Api {
         val lan: String? = null,
         /** cielo | rede — adquirente da maquininha desta filial (escolhido no Concilia). */
         val adquirente: String = "cielo",
+        /** Nome do cartão de fidelidade na tela ("Cartão Prainha"; SaaS/demo: "Cartão fidelidade"). */
+        val fidelidadeNome: String = "Cartão Prainha",
+        /** Casa trabalha com passe de saída (catraca/cancela)? Servidor antigo = sim. */
+        val passeSaida: Boolean = true,
     )
 
     /** Mesa/comanda aberta na grade (espelho local — rápido). */
@@ -198,7 +202,11 @@ object Api {
     }
 
     /** Uma filial devolvida pelo Concilia pro código da empresa. */
-    data class FilialNuvem(val id: String, val nome: String, val url: String)
+    data class FilialNuvem(
+        val id: String, val nome: String, val url: String,
+        /** Login de teste já preenchido (só a demonstração manda). */
+        val login: String? = null, val pin: String? = null,
+    )
 
     /** Filiais (com túnel) da empresa — GET <Concilia>/api/app/filiais?empresa=<codigo>.
      *  É o que substitui digitar a URL do túnel na mão. Lança em erro de rede/código.
@@ -215,7 +223,10 @@ object Api {
         if (arr != null) for (i in 0 until arr.length()) {
             val f = arr.optJSONObject(i) ?: continue
             val url = f.optString("url", "")
-            if (url.startsWith("https://")) out.add(FilialNuvem(f.optString("id"), f.optString("nome", "Filial"), url.trimEnd('/')))
+            if (url.startsWith("https://")) out.add(FilialNuvem(
+                f.optString("id"), f.optString("nome", "Filial"), url.trimEnd('/'),
+                login = f.optStringOrNull("login"), pin = f.optStringOrNull("pin"),
+            ))
         }
         return j.optString("empresa", c) to out
     }
@@ -336,6 +347,8 @@ object Api {
                 taxaServico = j.optDouble("taxa_servico", 10.0),
                 lan = j.optStringOrNull("lan"),
                 adquirente = j.optString("adquirente", "cielo"),
+                fidelidadeNome = j.optString("fidelidade_nome", "").ifBlank { "Cartão Prainha" },
+                passeSaida = j.optBoolean("passe_saida", true),
             )
         } catch (_: Exception) { null }
     }
@@ -896,7 +909,7 @@ object Api {
                 .put("numero", numero).put("codigo", codigo).put("gorjeta_pct", gorjetaPct))
         } catch (e: IOException) {
             if ((e.message ?: "").contains("404"))
-                throw IOException("Servidor da loja ainda sem o Cartão Prainha na maquininha — aguarde a atualização")
+                throw IOException("Servidor da loja ainda sem o cartão de fidelidade na maquininha — aguarde a atualização")
             throw e
         }
         if (!j.optBoolean("ok") && j.optBoolean("sem_sessao")) throw SemSessao()

@@ -498,7 +498,8 @@ class ContaActivity : AppCompatActivity() {
             acoes.add(Acao("✔ Dar baixa na comanda (vazia)") { darBaixaComanda() })
         }
         // Passe de saída (catraca + cancela) — o servidor exige conta zerada.
-        acoes.add(Acao("🚗 Passe de saída") { dialogPasse(numero) })
+        // Só nas casas que trabalham com ele (/api/config passe_saida).
+        if (Session.passeSaida(this@ContaActivity)) acoes.add(Acao("🚗 Passe de saída") { dialogPasse(numero) })
         AlertDialog.Builder(this)
             .setTitle(titulo.text)
             .setItems(acoes.map { it.rotulo }.toTypedArray()) { _, pos -> acoes[pos].executar() }
@@ -1113,12 +1114,12 @@ class ContaActivity : AppCompatActivity() {
                     (if (desconto > 0) " − desconto ${Cupom.brl(desconto)}" else "") +
                     (if (acrescimo > 0) " + acréscimo ${Cupom.brl(acrescimo)}" else "") +
                     (if (pago > 0) " − já pago ${Cupom.brl(pago)}" else "") +
-                    (if (fidVale()) " − Cartão Prainha ${Cupom.brl(fidDesc)}" else "")
+                    (if (fidVale()) " − ${Session.fidelidadeNome(this@ContaActivity)} ${Cupom.brl(fidDesc)}" else "")
             }
             fidBtn.text = when {
-                fidUso == null -> "🎟️ Cartão Prainha (código do cliente)"
+                fidUso == null -> "🎟️ ${Session.fidelidadeNome(this@ContaActivity)} (código do cliente)"
                 fidVale() -> "🎟️ $fidRot · −${Cupom.brl(fidDesc)}  (toque pra tirar)"
-                else -> "🎟️ Cartão Prainha só vale na conta inteira (toque pra tirar)"
+                else -> "🎟️ ${Session.fidelidadeNome(this@ContaActivity)} só vale na conta inteira (toque pra tirar)"
             }
             gorjBtns.forEach { (p, b) ->
                 b.setBackgroundColor(if (p == gorj) 0xFF0C7091.toInt() else 0xFFE5E7EB.toInt())
@@ -1187,7 +1188,7 @@ class ContaActivity : AppCompatActivity() {
             cx.setPadding(dp(20), dp(8), dp(20), 0)
             cx.addView(codIn)
             AlertDialog.Builder(this)
-                .setTitle("Cartão Prainha")
+                .setTitle(Session.fidelidadeNome(this@ContaActivity))
                 .setMessage("Peça o código que aparece no cartão do cliente (4 letras). Vale pra conta inteira, sem dividir.")
                 .setView(cx)
                 .setPositiveButton("Aplicar") { _, _ ->
@@ -1216,7 +1217,7 @@ class ContaActivity : AppCompatActivity() {
                                     fidUso = res.usoId
                                     fidDesc = res.desconto
                                     val pctTxt = if (res.pct % 1.0 == 0.0) res.pct.toInt().toString() else res.pct.toString()
-                                    fidRot = (res.nome.ifBlank { "Cartão Prainha" }) + " · $pctTxt%"
+                                    fidRot = (res.nome.ifBlank { Session.fidelidadeNome(this@ContaActivity) }) + " · $pctTxt%"
                                 } else {
                                     // o Receber fechou enquanto consultava: não segura a reserva
                                     val uso = res.usoId
@@ -1919,7 +1920,7 @@ class ContaActivity : AppCompatActivity() {
         }
         val zap = campoZap()
         val depois = {
-            if (quitada) dialogPasse(alvo, fecharAoSair) else if (fecharAoSair) finish()
+            if (quitada && Session.passeSaida(this@ContaActivity)) dialogPasse(alvo, fecharAoSair) else if (fecharAoSair) finish()
         }
         AlertDialog.Builder(this)
             .setTitle("📱 Comprovante por WhatsApp")

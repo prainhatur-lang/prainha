@@ -84,10 +84,19 @@ object Session {
             .putInt("numero_max", c.numeroMax)
             .putString("taxa_servico", c.taxaServico.toString())
             .putString("adquirente", if (c.adquirente == "rede") "rede" else "cielo")
+            .putString("fidelidade_nome", c.fidelidadeNome)
+            .putBoolean("passe_saida", c.passeSaida)
             .apply()
         saveLan(ctx, c.lan, de) // aprende o IP local da loja (pra preferir local dentro)
         configEm = SystemClock.elapsedRealtime()
     }
+
+    /** Nome do cartão de fidelidade desta casa (do /api/config). */
+    fun fidelidadeNome(ctx: Context): String =
+        prefs(ctx).getString("fidelidade_nome", null)?.ifBlank { null } ?: "Cartão Prainha"
+
+    /** A casa usa passe de saída (catraca/cancela)? Sem config = sim, como sempre foi. */
+    fun passeSaida(ctx: Context): Boolean = prefs(ctx).getBoolean("passe_saida", true)
 
     /** Adquirente da maquininha desta filial (do /api/config): cielo | rede. */
     fun adquirente(ctx: Context): String = prefs(ctx).getString("adquirente", null) ?: "cielo"

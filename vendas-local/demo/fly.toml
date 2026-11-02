@@ -17,6 +17,8 @@ primary_region = "gru"
   TAXA_SERVICO = "10"
   PAGAMENTO_MANUAL = "on"
   TZ = "America/Sao_Paulo"
+  FIDELIDADE_NOME = "Cartão fidelidade"
+  PASSE_SAIDA = "off"   # demo não tem catraca/cancela
 
 [http_service]
   internal_port = 8790

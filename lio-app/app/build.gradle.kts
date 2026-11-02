@@ -166,8 +166,12 @@ android {
         // do dia. Os mesmos botões, com o mesmo efeito; só não espremem mais o nome.
         // 1.10.40 (02/11/2026): 🎟 Ticket mostra só os itens marcados no cadastro
         // do produto (aba PDV → Onde vende). Casa sem nada marcado = tudo.
-        versionCode = 64
-        versionName = "1.10.40"
+        // 1.10.41 (02/11/2026): nome do cartão de fidelidade e o "Passe de saída"
+        // vêm do /api/config (fidelidade_nome, passe_saida). Servidor antigo =
+        // "Cartão Prainha" e passe ligado, como sempre. Código "demo" já preenche
+        // login teste / PIN 1234 (o Concilia manda junto com a filial).
+        versionCode = 65
+        versionName = "1.10.41"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CONCILIA_BASE", "\"$conciliaBase\"")
     }

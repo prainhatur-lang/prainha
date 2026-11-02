@@ -149,6 +149,12 @@ class LoginActivity : AppCompatActivity() {
                         else "☁️ $empresa: " + lista.joinToString(" · ") { it.nome } +
                             (if (manual) " — escolha a filial na lista" else "")
                     mostrarStatus()
+                    // Demonstração: o Concilia manda o login de teste — já entra preenchido.
+                    val demo = lista.singleOrNull()?.takeIf { !it.login.isNullOrBlank() && !it.pin.isNullOrBlank() }
+                    if (demo != null && (manual || loginIn.text.isNullOrBlank())) {
+                        loginIn.setText(demo.login)
+                        pinIn.setText(demo.pin)
+                    }
                     if (manual) {
                         erro.visibility = View.GONE
                         // Abre a lista na hora: as filiais entram no seletor, mas ele

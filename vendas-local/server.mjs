@@ -97,6 +97,11 @@ const MESA_MAX = Number(process.env.MESA_MAX ?? (COMANDA_ATIVA ? COMANDA_MIN - 1
 const NUMERO_MAX = COMANDA_ATIVA ? COMANDA_MAX : MESA_MAX;
 // Nome da casa, pros títulos e telas do cliente.
 const LOJA_NOME = process.env.LOJA_NOME || 'Prainha Bar';
+// Nome do cartão de fidelidade nas telas (SaaS/demo: "Cartão fidelidade").
+const FIDELIDADE_NOME = (process.env.FIDELIDADE_NOME || '').trim() || 'Cartão Prainha';
+// Passe de saída (catraca/cancela): só nas casas que trabalham com ele.
+// Sem a env = ligado, como sempre foi nas lojas do Prainha.
+const PASSE_SAIDA = !/^(off|0|false|nao|não)$/i.test(String(process.env.PASSE_SAIDA || 'on').trim());
 // A última palavra sai em destaque, como era o "Prainha <b>Bar</b>".
 const LOJA_HTML = (() => {
   const p = LOJA_NOME.trim().split(/\s+/);
@@ -7385,7 +7390,10 @@ function apiConfig() {
     // comanda abre e recebe item sem nome/CPF/WhatsApp — escolhido no Concilia (Configurações)
     comanda_sem_cadastro: COMANDA_SEM_CADASTRO,
     // identificação só pelo CPF (sem pedir WhatsApp) — idem
-    comanda_so_cpf: COMANDA_SO_CPF };
+    comanda_so_cpf: COMANDA_SO_CPF,
+    // nome do cartão de fidelidade e se a casa usa passe de saída — o app usa
+    fidelidade_nome: FIDELIDADE_NOME,
+    passe_saida: PASSE_SAIDA };
 }
 
 // ---- status efetivo = timestamp do Firebird OU a nossa marca local ----
@@ -21078,7 +21086,7 @@ async function fidReservarNaCobranca(conta, cob, body) {
   // conta inteira: dividir ou pagar uma parte não leva desconto (a base do %
   // é a conta toda — metade da mesa não pode levar o desconto da mesa inteira)
   if (cob.partes > 1 || (body.valor != null && cob.valor < cob.restaTotal - 0.01)) {
-    return { ok: false, erro: 'O Cartão Prainha vale pra pagar a conta inteira no Pix — sem dividir.' };
+    return { ok: false, erro: 'O ' + FIDELIDADE_NOME + ' vale pra pagar a conta inteira no Pix — sem dividir.' };
   }
   const codigo = String(body.fidelidade || '').toUpperCase().replace(/[^A-Z]/g, '');
   if (codigo.length !== 4) return { ok: false, erro: 'O código do cartão tem 4 letras.' };
@@ -21089,7 +21097,7 @@ async function fidReservarNaCobranca(conta, cob, body) {
     j = await fidNuvem('reservar', { codigo, consumo, mesa });
   } catch (e) {
     console.error('[fidelidade] reservar mesa ' + mesa + ':', e.message);
-    return { ok: false, erro: 'Não consegui consultar o Cartão Prainha agora (sem internet?). Pague sem o cartão ou chame o garçom.' };
+    return { ok: false, erro: 'Não consegui consultar o ' + FIDELIDADE_NOME + ' agora (sem internet?). Pague sem o cartão ou chame o garçom.' };
   }
   if (!j.ok) {
     if (j.erro === 'nao_encontrado' || j.erro === 'codigo_invalido') FID_ERROS.push({ t: Date.now(), mesa });
@@ -21230,7 +21238,7 @@ async function lioFidPago(body, rl) {
 // dinheiro", a loja reserva na nuvem e devolve quanto fica a conta. O desconto
 // só entra na conta na hora do recebimento. Conta inteira, sem dividir.
 async function apiCaixaFidelidade(body, quem) {
-  if (body.ped) return { ok: false, erro: 'O Cartão Prainha no dinheiro vale só pra conta de mesa.' };
+  if (body.ped) return { ok: false, erro: 'O ' + FIDELIDADE_NOME + ' no dinheiro vale só pra conta de mesa.' };
   const r = await apiLioFidelidade({ acao: body.acao, uso_id: body.uso_id, numero: body.numero, codigo: body.codigo },
     { login: quem.login });
   if (!r.ok || !r.uso_id) return r;
@@ -21250,11 +21258,11 @@ async function caixaFidConferir(b) {
   const n = Number(b.numero);
   const [c] = await sql`SELECT desconto FROM lio_fidelidade WHERE uso_id=${uso} AND numero=${n}
     AND aplicado_em IS NULL AND liberado_em IS NULL AND criado_em > now() - interval '45 minutes'`.catch(() => []);
-  if (!c) return 'O código do Cartão Prainha não vale mais nesta conta. Digite o código de novo.';
+  if (!c) return 'O código do ' + FIDELIDADE_NOME + ' não vale mais nesta conta. Digite o código de novo.';
   const aPagar = await caixaFidAPagar(n, c.desconto);
-  if (aPagar == null) return 'Não consegui conferir a conta pro desconto do Cartão Prainha.';
+  if (aPagar == null) return 'Não consegui conferir a conta pro desconto do ' + FIDELIDADE_NOME + '.';
   if (Number(b.valor) < aPagar - 0.01) {
-    return 'Com o Cartão Prainha é a conta inteira: faltam R$ ' + aPagar.toFixed(2).replace('.', ',') + ' já com o desconto.';
+    return 'Com o ' + FIDELIDADE_NOME + ' é a conta inteira: faltam R$ ' + aPagar.toFixed(2).replace('.', ',') + ' já com o desconto.';
   }
   return null;
 }
@@ -33040,7 +33048,7 @@ const server = http.createServer(async (req, res) => {
         const b = await readBody(req);
         let rf;
         try { rf = await apiCaixaFidelidade(b, quem); }
-        catch (e) { console.error('[fidelidade] caixa:', e.message); rf = { ok: false, erro: 'Não consegui consultar o Cartão Prainha agora.' }; }
+        catch (e) { console.error('[fidelidade] caixa:', e.message); rf = { ok: false, erro: 'Não consegui consultar o ' + FIDELIDADE_NOME + ' agora.' }; }
         return res.end(JSON.stringify(rf));
       }
       if (req.method === 'POST' && p === '/api/caixa/fechar') { const b = await readBody(req); return res.end(JSON.stringify(await apiCaixaFechar(b.numero, b.ped))); }
@@ -33124,7 +33132,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       let rf;
       try { rf = await apiLioFidelidade(body, g); }
-      catch (e) { console.error('[fidelidade] LIO:', e.message); rf = { ok: false, erro: 'Não consegui consultar o Cartão Prainha agora.' }; }
+      catch (e) { console.error('[fidelidade] LIO:', e.message); rf = { ok: false, erro: 'Não consegui consultar o ' + FIDELIDADE_NOME + ' agora.' }; }
       if (rf.ok && rf.uso_id) console.log('[fidelidade] LIO ' + g.login + ' · mesa ' + body.numero + ' · reservou ' + rf.uso_id);
       return res.end(JSON.stringify(rf));
     }
