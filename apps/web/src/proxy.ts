@@ -211,6 +211,8 @@ export async function proxy(request: NextRequest) {
     isCartaoPublico ||
     // /soea é o cadastro público do benefício da 81ª SOEA (soea.prainhabar.com).
     path === '/soea' ||
+    // /conheca: site de venda do Concilia (SaaS) — formulário grava em /api/conheca.
+    path === '/conheca' ||
     path === '/jipeshow' ||
     // Termos e Privacidade públicos (exigidos pelo cadastro do app no TikTok)
     // + arquivo de verificação de URL do TikTok (tiktokXXXX.txt na raiz).

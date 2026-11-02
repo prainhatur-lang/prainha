@@ -70,3 +70,4 @@ export * from './empresa-documento';
 export * from './permuta';
 export * from './revenda';
 export * from './estoque-local';
+export * from './saas-interessado';

@@ -262,7 +262,8 @@
     "migrate:lelis-entrada": "tsx scripts/migrate-lelis-entrada.ts",
     "migrate:estoque-local": "tsx scripts/migrate-estoque-local.ts",
     "migrate:ifood-entrega-endereco": "tsx scripts/migrate-ifood-entrega-endereco.ts",
-    "migrate:ifood-homolog-log": "tsx scripts/migrate-ifood-homolog-log.ts"
+    "migrate:ifood-homolog-log": "tsx scripts/migrate-ifood-homolog-log.ts",
+    "migrate:saas-interessado": "tsx scripts/migrate-saas-interessado.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",
