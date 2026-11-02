@@ -593,6 +593,34 @@ object Api {
     @Throws(IOException::class)
     fun totemFila(base: String, token: String): JSONObject = getJson("$base/api/lio/totem/fila", token)
 
+    /** Nota do pedido do totem pra imprimir AQUI (recepção sem impressora).
+     *  pronta=false enquanto a SEFAZ não autorizou; fim=true quando não vai
+     *  sair agora (desligada, na fila, rejeitada) — a maquininha para de esperar. */
+    data class TotemNfce(val pronta: Boolean, val fim: Boolean, val numero: Int?, val aviso: String?, val blocos: List<Bloco>)
+
+    @Throws(IOException::class)
+    fun totemNfce(base: String, token: String, ticketId: Int): TotemNfce {
+        val j = getJson("$base/api/lio/totem/nfce?ticket=$ticketId", token)
+        if (!j.optBoolean("ok")) return TotemNfce(false, true, null, j.optStringOrNull("erro"), emptyList())
+        if (j.optBoolean("desligada")) return TotemNfce(false, true, null, null, emptyList())
+        if (!j.optBoolean("pronta")) {
+            val fila = j.optBoolean("na_fila")
+            val rej = j.optBoolean("rejeitada")
+            return TotemNfce(false, fila || rej, null,
+                if (fila) "SEFAZ sem resposta — a nota ficou na fila da loja" else if (rej) (j.optStringOrNull("erro") ?: "nota rejeitada") else null,
+                emptyList())
+        }
+        val arr = j.optJSONArray("blocos")
+        val blocos = mutableListOf<Bloco>()
+        if (arr != null) for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val qr = o.optStringOrNull("qr")
+            if (qr != null) blocos.add(Bloco(qr = qr))
+            else blocos.add(Bloco(texto = o.optString("texto", ""), negrito = o.optBoolean("negrito", false), tamanho = o.optInt("tamanho", 18)))
+        }
+        return TotemNfce(true, true, if (j.isNull("numero")) null else j.optInt("numero"), null, blocos)
+    }
+
     /** Devolve o pedido do totem: desistiu=true (cliente cancelou na maquininha)
      *  ou false (falhou aqui — volta pra fila). */
     @Throws(IOException::class)

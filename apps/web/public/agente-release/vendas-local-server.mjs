@@ -7061,6 +7061,23 @@ async function totemEmitirNfce(id) {
     console.error(`[totem] ⚠️ pedido ${id}: NFC-e falhou — ${e.message}`);
   }
 }
+/** GET /api/lio/totem/nfce?ticket=ID — recepção sem impressora: a LIO do
+ *  totem imprime o DANFE. Não emite nada novo: espera a nota que o servidor
+ *  já tirou ao pagar (totemEmitirNfce) e devolve os blocos de 32 colunas
+ *  (o central é idempotente por pedido — é reimpressão, não nota nova). */
+async function apiLioTotemNfce(idRaw) {
+  const [t] = await sql`SELECT id, origem, status, pedido_fb, nfce_numero, nfce_erro FROM ticket_venda WHERE id=${Number(idRaw) || 0}`;
+  if (!t || t.origem !== 'totem' || t.status !== 'pago' || !(Number(t.pedido_fb) > 0)) return { ok: false, erro: 'pedido do totem não encontrado' };
+  if (!(await nfceAtiva())) return { ok: true, desligada: true };
+  if (!t.nfce_numero) {
+    const [l] = await sql`SELECT status, erro FROM nfce_log WHERE pedido_fb=${Number(t.pedido_fb)}`;
+    return { ok: true, pronta: false, na_fila: !!(l && l.status === 'PENDENTE_ENVIO'),
+      rejeitada: !!(l && (l.status === 'REJEITADA' || l.status === 'ERRO')), erro: (l && l.erro) || null };
+  }
+  const r = await nfceEmitirCore({ ped: Number(t.pedido_fb), numero: 0, documento: null, destino: 'lio', solicitante: 'totem' });
+  if (!r.ok) return { ok: false, erro: r.erro || 'falhou' };
+  return { ok: true, pronta: true, numero: Number(r.nota?.numero) || null, blocos: r.blocos || [] };
+}
 
 // ---- ESTOQUE DA RECEPÇÃO (totem_estoque) ----
 /** Saldo de cada item controlado: Map codigo_pdv -> saldo. */
@@ -32790,6 +32807,11 @@ const server = http.createServer(async (req, res) => {
       const g = await garcomDaRequisicao(req, u);
       if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
       res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiLioTotemFila(g)));
+    }
+    if (p === '/api/lio/totem/nfce') {
+      const g = await garcomDaRequisicao(req, u);
+      if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiLioTotemNfce(u.searchParams.get('ticket'))));
     }
     if (req.method === 'POST' && p === '/api/lio/totem/liberar') {
       const g = await garcomDaRequisicao(req, u);

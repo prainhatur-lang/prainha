@@ -277,7 +277,7 @@ class TotemActivity : AppCompatActivity() {
                         // impressora da recepção falhou ou não existe: imprime aqui
                         mostrar("✅ Pedido $id pago", "Imprimindo os tickets nesta maquininha…")
                         cobrando = true
-                        Ticket.imprimirComRetomada(this, ped) { fim() }
+                        Ticket.imprimirComRetomada(this, ped) { imprimirNota(id) { fim() } }
                     }
                     else -> {
                         // não imprime aqui: quando o registro passar o servidor
@@ -288,6 +288,37 @@ class TotemActivity : AppCompatActivity() {
                         fim()
                     }
                 }
+            }
+        }.start()
+    }
+
+    /** Recepção sem impressora: a NFC-e (que o servidor emite sozinho ao
+     *  pagar) sai aqui, depois dos tickets. Espera a SEFAZ até ~45 s; se não
+     *  vier, segue — a nota fica na fila da loja e não se perde. */
+    private fun imprimirNota(id: Int, fim: () -> Unit) {
+        val tk = Session.token(this) ?: return fim()
+        val base = Session.servidor(this)
+        mostrar("✅ Pedido $id pago", "🧾 Emitindo a nota fiscal…")
+        Thread {
+            var nota: Api.TotemNfce? = null
+            for (tentativa in 1..15) {
+                try {
+                    val r = Api.totemNfce(base, tk, id)
+                    if (r.pronta || r.fim) { nota = r; break }
+                } catch (_: Exception) { }
+                try { Thread.sleep(3000) } catch (_: InterruptedException) { }
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                val n = nota
+                if (n == null || !n.pronta || n.blocos.isEmpty()) {
+                    mostrar("✅ Pedido $id pago", "Nota fiscal: " + (n?.aviso ?: "ainda sem resposta da SEFAZ — fica na fila da loja") + ".")
+                    fim(); return@runOnUiThread
+                }
+                mostrar("✅ Pedido $id pago", "🧾 Imprimindo a nota fiscal nº ${n.numero ?: ""}…")
+                Pagamento.imprimirBlocos(this, n.blocos,
+                    onOk = { runOnUiThread { mostrar("✅ Pedido $id pago", "Tickets e nota fiscal impressos."); fim() } },
+                    onErro = { m -> runOnUiThread { mostrar("✅ Pedido $id pago", "Nota autorizada, mas a impressão falhou: $m"); fim() } })
             }
         }.start()
     }

@@ -2165,16 +2165,19 @@ class ContaActivity : AppCompatActivity() {
                 .show()
             return
         }
-        val docIn = campo("CPF/CNPJ (vazio = sem CPF)", android.text.InputType.TYPE_CLASS_NUMBER)
+        val docIn = campo("CPF/CNPJ do cliente (vazio = sem CPF)", android.text.InputType.TYPE_CLASS_NUMBER)
         if (!docInicial.isNullOrBlank()) docIn.setText(docInicial)
-        val msg = StringBuilder("Cliente quer nota? Informe o CPF/CNPJ ou deixe vazio.")
+        // Nota OBRIGATÓRIA ao fechar (dono, 02/11/2026): pede o CPF/CNPJ e
+        // emite sempre — sem o botão "Sem nota". Vazio = consumidor sem CPF.
+        val msg = StringBuilder("Qual o CPF/CNPJ do cliente na nota?\nSem CPF? Deixe vazio — a nota sai do mesmo jeito.")
         if (!info.documentoSugerido.isNullOrBlank()) msg.append("\nCPF do cadastro já preenchido — confirme ou apague.")
         if (info.homologacao) msg.append("\n(ambiente de HOMOLOGAÇÃO — sem valor fiscal)")
         AlertDialog.Builder(this)
-            .setTitle("🧾 Emitir nota fiscal (NFC-e)?")
+            .setTitle("🧾 Nota fiscal (NFC-e)")
             .setMessage(msg.toString())
             .setView(caixa(docIn))
-            .setPositiveButton("✓ Emitir nota") { _, _ ->
+            .setCancelable(false)
+            .setPositiveButton("🖨 Emitir e imprimir") { _, _ ->
                 val doc = docIn.text.toString().filter { it.isDigit() }
                 if (doc.isNotEmpty() && !nfceDocValido(doc)) {
                     Toast.makeText(this, "CPF/CNPJ inválido — confira os dígitos", Toast.LENGTH_LONG).show()
@@ -2183,8 +2186,6 @@ class ContaActivity : AppCompatActivity() {
                 }
                 nfceEmitirNota(alvo, doc.ifEmpty { null }, depois)
             }
-            .setNegativeButton("Sem nota") { _, _ -> depois() }
-            .setOnCancelListener { depois() }
             .show()
     }
 
