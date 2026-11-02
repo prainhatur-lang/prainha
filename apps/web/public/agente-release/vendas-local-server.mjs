@@ -740,6 +740,11 @@ async function initSchema() {
     criado_em timestamptz DEFAULT now(), codigo_pdv integer NOT NULL, tipo text NOT NULL,
     qtd numeric NOT NULL, saldo_depois numeric, ticket_id bigint, quem text, obs text)`;
   await addCol('ticket_venda', 'estoque_baixado_em timestamptz');
+  // NFC-e automática do totem (dono, 02/11/2026): pago = nota sai sozinha
+  await addCol('ticket_venda', 'nfce_em timestamptz');
+  await addCol('ticket_venda', 'nfce_numero integer');
+  await addCol('ticket_venda', 'nfce_qr text');
+  await addCol('ticket_venda', 'nfce_erro text');
   // REIMPRESSÃO de ticket só com senha do supervisor (dono, 14/10): quem pediu,
   // quem liberou e quando — ticket repetido vira item retirado duas vezes.
   await sql`CREATE TABLE IF NOT EXISTS ticket_reimpressao (id bigserial PRIMARY KEY,
@@ -6852,7 +6857,7 @@ async function apiTotemStatus(txid, ticket) {
   txid = String(txid || '');
   const cob = (await sql`SELECT txid, origem, pago_em, baixado_em FROM pix_cobranca WHERE txid=${txid}`)[0];
   if (!cob || cob.origem !== 'totem') return { ok: false, erro: 'cobrança não encontrada' };
-  const [t] = await sql`SELECT id FROM ticket_venda WHERE pix_txid=${txid}`;
+  const [t] = await sql`SELECT id, nfce_numero, nfce_qr FROM ticket_venda WHERE pix_txid=${txid}`;
   if (!cob.pago_em) {
     const r = await apiPixConferir(txid);
     if (!r.ok) return { ok: true, pago: false, pedido: t ? Number(t.id) : null };
@@ -6860,7 +6865,13 @@ async function apiTotemStatus(txid, ticket) {
   } else if (!cob.baixado_em) {
     await totemBaixar(txid).catch(() => null);
   }
-  return { ok: true, pago: true, pedido: t ? Number(t.id) : null };
+  return { ok: true, pago: true, pedido: t ? Number(t.id) : null, ...totemNfceTela(t) };
+}
+/** Nota do pedido pra tela do totem: número + QR (imagem) da consulta. */
+function totemNfceTela(t) {
+  if (!t || !t.nfce_qr) return { nfce: null };
+  return { nfce: { numero: Number(t.nfce_numero) || null,
+    imagem: 'data:image/svg+xml;base64,' + Buffer.from(qrSvg(String(t.nfce_qr), 220)).toString('base64') } };
 }
 /** ⚠️ DINHEIRO. Pix do totem CONFIRMADO → monta a conta do ticket (itens +
  *  impressão na praça), lança o Pix Online nela e fecha. Idempotente, como o
@@ -6906,7 +6917,7 @@ async function totemBaixar(txid) {
       let fechou = false;
       try { fechou = (await apiCaixaFechar(0, ped))?.fechada === true; } catch { /* segue aberta, o caixa vê */ }
       await totemEstoqueBaixar(Number(t.id)).catch((e) => console.error('[totem estoque]', e.message));
-      totemImprimirTickets(Number(t.id)).catch(() => {});
+      totemImprimirTickets(Number(t.id)).catch(() => {}).then(() => totemEmitirNfce(Number(t.id)));
       console.log(`[totem] pedido ${t.id} PAGO R$ ${valor.toFixed(2)} (Pix ${txid}) · conta ${ped}${fechou ? ' fechada' : ' — NÃO fechou, conferir no caixa'}`);
       return { ok: true, pedido: Number(t.id), conta: ped, fechou };
     } catch (e) {
@@ -6946,10 +6957,10 @@ let totemLioVisto = 0;
 const totemCartaoOn = () => Date.now() - totemLioVisto < 90 * 1000;
 async function totemStatusTicket(id) {
   id = Number(id) || 0;
-  const [t] = await sql`SELECT id, status, lio_login, origem, impresso_em FROM ticket_venda WHERE id=${id}`;
+  const [t] = await sql`SELECT id, status, lio_login, origem, impresso_em, nfce_numero, nfce_qr FROM ticket_venda WHERE id=${id}`;
   if (!t || t.origem !== 'totem') return { ok: false, erro: 'pedido não encontrado' };
   return { ok: true, pedido: id, pago: t.status === 'pago', desistido: t.status === 'desistido',
-    na_maquininha: !!t.lio_login && t.status === 'aguardando_lio', impresso: !!t.impresso_em };
+    na_maquininha: !!t.lio_login && t.status === 'aguardando_lio', impresso: !!t.impresso_em, ...totemNfceTela(t) };
 }
 /** POST /api/totem/cancelar {pedido} — só enquanto a LIO não pegou. */
 async function apiTotemCancelar(body) {
@@ -7022,6 +7033,32 @@ async function totemImprimirTickets(id) {
     await sql`UPDATE ticket_venda SET impresso_em=NULL, erro=${('impressora da recepção: ' + e.message).slice(0, 300)} WHERE id=${id}`.catch(() => {});
     console.error(`[totem] ⚠️ tickets do pedido ${id} NÃO imprimiram na recepção (${ip}): ${e.message}`);
     return false;
+  }
+}
+
+// ---- NFC-e AUTOMÁTICA do totem (dono, 02/11/2026): pedido pago = nota sai
+// sozinha, sem CPF (consumidor). DANFE na impressora da recepção; a tela do
+// totem mostra o QR da nota. Uma vez por ticket (marca nfce_em antes); SEFAZ
+// fora = fila do nfce_log (loopNfceFila) emite depois e imprime na recepção.
+async function totemNfceGravar(ped, r) {
+  await sql`UPDATE ticket_venda SET nfce_numero=${Number(r?.nota?.numero) || null}, nfce_qr=${r?.nota?.qr || null},
+    nfce_erro=${r?.ok ? (r.imp_erro ? 'DANFE não imprimiu: ' + String(r.imp_erro).slice(0, 200) : null) : String(r?.erro || 'falhou').slice(0, 300)}
+    WHERE pedido_fb=${ped} AND origem='totem'`.catch(() => {});
+}
+async function totemEmitirNfce(id) {
+  try {
+    const [t] = await sql`SELECT id, pedido_fb, status FROM ticket_venda WHERE id=${id} AND origem='totem'`;
+    if (!t || t.status !== 'pago' || !(Number(t.pedido_fb) > 0)) return;
+    if (!(await nfceAtiva())) return;
+    const [c] = await sql`UPDATE ticket_venda SET nfce_em=now() WHERE id=${id} AND nfce_em IS NULL RETURNING id`;
+    if (!c) return;
+    const ped = Number(t.pedido_fb);
+    const r = await nfceEmitirCore({ ped, numero: 0, documento: null, destino: 'totem', solicitante: 'totem' });
+    await totemNfceGravar(ped, r);
+    if (r.ok) console.log(`[totem] pedido ${id}: NFC-e nº ${r.nota?.numero}${r.impresso ? ' impressa na recepção' : r.imp_erro ? ' (DANFE: ' + r.imp_erro + ')' : ''}`);
+    else console.error(`[totem] ⚠️ pedido ${id}: NFC-e ${r.pendente ? 'na fila' : 'NÃO saiu'} — ${r.erro}`);
+  } catch (e) {
+    console.error(`[totem] ⚠️ pedido ${id}: NFC-e falhou — ${e.message}`);
   }
 }
 
@@ -7141,6 +7178,7 @@ async function apiTicketPagar(body, garcom) {
     let impresso_totem = false;
     if (r.ok && t.origem === 'totem' && (r.quitada || r.ja_registrado)) impresso_totem = await totemImprimirTickets(id).catch(() => false);
     if (r.ok && t.origem === 'totem' && (r.quitada || r.ja_registrado)) await totemEstoqueBaixar(id).catch((e) => console.error('[totem estoque]', e.message));
+    if (r.ok && t.origem === 'totem' && (r.quitada || r.ja_registrado)) totemEmitirNfce(id).catch(() => {});
     return { ...r, impresso_totem, ticket_id: id, pedido_fb: ped, itens, total: Number(t.total), servico: t.servico,
       valor_servico: Number(t.valor_servico), loja: LOJA_NOME, criado_em: t.criado_em, garcom: t.nome_usuario || t.login };
   })();
@@ -7789,9 +7827,17 @@ async function nfceEmitirCore({ ped, numero, documento, destino, solicitante }) 
       if (ip) { await imprimirRaw(ip, nfceBlocosEscpos(resp.danfe48 || [], await impOpcoes()), 'DANFE NFC-e ' + rotulo); impresso = true; }
       else impErro = 'sem impressora configurada';
     } catch (e2) { impErro = e2.message; }
+  } else if (destino === 'totem') {
+    // totem da recepção: DANFE na impressora da recepção (a mesma dos tickets)
+    try {
+      const ip = (await cfgGet('totem_impressora_ip', '')).trim();
+      if (ip) { await imprimirRaw(ip, nfceBlocosEscpos(resp.danfe48 || [], await impOpcoes()), 'DANFE NFC-e totem'); impresso = true; }
+      else impErro = 'sem impressora da recepção';
+    } catch (e2) { impErro = e2.message; }
   }
+  const qrNota = ((resp.danfe48 || []).find((b) => b && b.qr) || (resp.danfe32 || []).find((b) => b && b.qr) || {}).qr || null;
   return { ok: true, ja_existia: !!resp.jaExistia, impresso, imp_erro: impErro,
-    nota: { chave: n.chave, numero: n.numero, serie: n.serie, valor: n.valorTotal },
+    nota: { chave: n.chave, numero: n.numero, serie: n.serie, valor: n.valorTotal, qr: qrNota },
     blocos: destino === 'lio' ? (resp.danfe32 || []) : undefined };
 }
 /** Emite (ou reimprime — o central é idempotente por pedido). */
@@ -7829,7 +7875,8 @@ async function loopNfceFila() {
     for (const f of fila) {
       try {
         const r = await nfceEmitirCore({ ped: Number(f.pedido_fb), numero: Number(f.numero),
-          documento: f.dest_documento || null, destino: 'fila', solicitante: f.solicitado_por || 'fila' });
+          documento: f.dest_documento || null, destino: f.solicitado_por === 'totem' ? 'totem' : 'fila', solicitante: f.solicitado_por || 'fila' });
+        if (r.ok && f.solicitado_por === 'totem') await totemNfceGravar(Number(f.pedido_fb), r);
         if (r.ok) console.log(`[nfce] fila: nota do pedido ${f.pedido_fb} saiu (nº ${r.nota?.numero})${r.impresso ? ' e impressa' : ''}`);
         else if (!r.pendente) console.log(`[nfce] fila: pedido ${f.pedido_fb} rejeitado — parou de tentar: ${r.erro}`);
       } catch (e) { console.error('[nfce] fila:', e.message); }
@@ -30073,14 +30120,14 @@ header b{font-size:3.2vmin;flex:1}header button{font-size:2.4vmin;padding:1.4vmi
 <div class="rod"><div class="r" id="resumo">Toque num item para adicionar</div><button class="bt2" id="btVer" onclick="verCarrinho()" disabled>🛒 Ver pedido</button><button class="bt1" id="btCar" onclick="pagar('cartao')" disabled style="display:none">💳 Cartão</button><button class="bt1" id="btPag" onclick="pagar()" disabled>Pagar no Pix</button></div></div>
 <div id="pix" class="tela"><h1>Pague com Pix</h1><div class="v" id="pixV"></div><img id="pixImg" alt="QR do Pix"><p>Abra o app do seu banco, escolha <b>Pix → Ler QR code</b> e aponte para a tela.</p><p><span class="esp"></span>Esperando o pagamento…</p><div class="acoes" style="width:min(80vmin,90vw)"><button class="bt2" onclick="reiniciar()">Cancelar pedido</button></div></div>
 <div id="cartao" class="tela"><h1>Pague na maquininha ao lado</h1><div class="v" id="carV"></div><p style="font-size:3.4vmin">💳 Pedido <b id="carN"></b> — passe ou aproxime o cartão na maquininha</p><p id="carMsg"><span class="esp"></span>Esperando a maquininha…</p><div class="acoes" style="width:min(80vmin,90vw)"><button class="bt2" onclick="cancelarCartao()">Cancelar pedido</button></div></div>
-<div id="ok" class="tela"><p>Pagamento aprovado! Seu pedido é o</p><div class="num" id="okN"></div><p><b>Retire no balcão do bar</b> — fale esse número</p><p id="okImp" style="display:none">🎟️ Seus tickets estão saindo na impressora</p><div class="itens" id="okI"></div><button class="bt2" style="margin-top:3vmin" onclick="reiniciar()">Fazer outro pedido</button></div>
+<div id="ok" class="tela"><p>Pagamento aprovado! Seu pedido é o</p><div class="num" id="okN"></div><p><b>Retire no balcão do bar</b> — fale esse número</p><p id="okImp" style="display:none">🎟️ Seus tickets estão saindo na impressora</p><div class="itens" id="okI"></div><div id="okNf" style="display:none;background:#fff;color:#123;border-radius:2vmin;padding:2vmin 3vmin;align-items:center;gap:2.4vmin;text-align:left"><img id="okNfImg" alt="QR da nota fiscal" style="width:22vmin;height:22vmin"><div style="font-size:2.4vmin"><b style="font-size:2.8vmin">🧾 Nota fiscal <span id="okNfN"></span></b><br>Aponte a câmera do celular pra consultar a sua nota</div></div><p id="okVolta" style="font-size:2.2vmin;opacity:.85"></p><button class="bt2" style="margin-top:3vmin" onclick="reiniciar()">Fazer outro pedido</button></div>
 <div class="modal" id="mItem"><div class="cx"><h2 id="miN"></h2><div id="miD" style="color:var(--mut);font-size:2.2vmin"></div><div id="miE"></div>
 <div class="qtd"><button onclick="mQ(-1)">−</button><span id="miQ">1</span><button onclick="mQ(1)">+</button></div><div class="erro" id="miErr"></div>
 <div class="acoes"><button class="bt2" onclick="fechar('mItem')">Voltar</button><button class="bt1" id="miOk" onclick="addItem()">Adicionar</button></div></div></div>
 <div class="modal" id="mCar"><div class="cx"><h2>Seu pedido</h2><div id="carL"></div><div class="tot"><span>Total</span><span id="carT"></span></div><div class="erro" id="carErr"></div>
 <div class="acoes"><button class="bt2" onclick="fechar('mCar')">Continuar pedindo</button><button class="bt1" id="mCarCartao" style="display:none" onclick="fechar('mCar');pagar('cartao')">💳 Cartão</button><button class="bt1" id="mCarPix" onclick="fechar('mCar');pagar()">Pagar no Pix</button></div></div></div>
 <script>
-var D=null,aba=0,car=[],atual=null,qtd=1,esc={},txid=null,poll=null,ocioso=null,pedCartao=null;
+var D=null,aba=0,car=[],atual=null,qtd=1,esc={},txid=null,poll=null,ocioso=null,pedCartao=null,volta=null,nfPoll=null;
 function R(v){return 'R$ '+Number(v||0).toFixed(2).replace('.',',')}
 function E(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function tela(id){document.querySelectorAll('.tela').forEach(function(t){t.classList.toggle('on',t.id===id)})}
@@ -30093,7 +30140,14 @@ function carregar(){return fetch('/api/totem/cardapio').then(function(r){return 
  document.getElementById('btCar').style.display=d.cartao?'':'none';document.getElementById('mCarCartao').style.display=d.cartao?'':'none'}}).catch(function(){})}
 function comecar(){if(!D||!(D.pix||D.cartao)||!D.grupos.length){carregar();return}aba=0;car=[];desenhar();tela('menu');mexeu()}
 function reiniciar(){if(pedCartao){var pc=pedCartao;fetch('/api/totem/cancelar',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({pedido:pc})}).catch(function(){})}
- pedCartao=null;clearInterval(poll);poll=null;txid=null;car=[];['mItem','mCar'].forEach(fechar);tela('ini');carregar()}
+ pedCartao=null;clearInterval(poll);poll=null;txid=null;car=[];clearInterval(volta);volta=null;clearInterval(nfPoll);nfPoll=null;['mItem','mCar'].forEach(fechar);tela('ini');carregar()}
+function mostraNf(nf){if(!nf||!nf.imagem)return;document.getElementById('okNfImg').src=nf.imagem;document.getElementById('okNfN').textContent=nf.numero?('nº '+nf.numero):'';document.getElementById('okNf').style.display='flex'}
+function pago(q,d){clearInterval(poll);poll=null;car=[];document.getElementById('okNf').style.display='none';tela('ok');clearTimeout(ocioso);
+ var s=10,el=document.getElementById('okVolta');clearInterval(volta);el.textContent='Voltando ao início em '+s+' s';
+ volta=setInterval(function(){s--;if(s<=0){reiniciar();return}el.textContent='Voltando ao início em '+s+' s'},1000);
+ clearInterval(nfPoll);nfPoll=null;if(d&&d.nfce){mostraNf(d.nfce);return}var n=0;
+ nfPoll=setInterval(function(){if(++n>6||!document.getElementById('ok').classList.contains('on')){clearInterval(nfPoll);nfPoll=null;return}
+  fetch('/api/totem/status?'+q).then(function(r){return r.json()}).then(function(x){if(x&&x.nfce){clearInterval(nfPoll);nfPoll=null;mostraNf(x.nfce)}}).catch(function(){})},1500)}
 function desenhar(){var g=D.grupos;document.getElementById('abas').innerHTML=g.map(function(x,i){return '<button class="aba'+(i===aba?' on':'')+'" onclick="aba='+i+';desenhar()">'+E(x.emoji+' '+x.nome)+'</button>'}).join('');
  var it=(g[aba]||{itens:[]}).itens;document.getElementById('grade').innerHTML=it.map(function(p,i){var foto=p.tem_foto&&p.produto_codigo!=null?'style="background-image:url(/produto-foto/'+p.produto_codigo+')"':'';
  return '<button class="prod'+(p.esgotado?' esg':'')+'" onclick="abrir('+i+')"><div class="f" '+foto+'>'+(foto?'':E((g[aba].emoji)||'🥤'))+'</div><div class="t"><div class="n">'+E(p.nome)+(p.tamanho?' <small>'+E(p.tamanho)+'</small>':'')+'</div>'+(p.descricao?'<div class="d">'+E(p.descricao)+'</div>':'')+'<div class="p">'+(p.esgotado?'Acabou':R(p.preco))+'</div></div></button>'}).join('');
@@ -30126,7 +30180,7 @@ function pagar(forma){if(pagando||!car.length)return;if(forma==='cartao')return 
   tela('pix');mexeu();clearInterval(poll);poll=setInterval(conferir,4000)})
  .catch(function(){alert('Sem conexão. Tente de novo.')}).then(function(){pagando=false;b.textContent='Pagar no Pix';rodape()})}
 function conferir(){if(!txid)return;var t=txid;fetch('/api/totem/status?txid='+encodeURIComponent(t)).then(function(r){return r.json()}).then(function(d){
- if(t!==txid||!d.pago)return;clearInterval(poll);poll=null;txid=null;car=[];tela('ok');clearTimeout(ocioso);ocioso=setTimeout(reiniciar,25000)}).catch(function(){})}
+ if(t!==txid||!d.pago)return;txid=null;pago('txid='+encodeURIComponent(t),d)}).catch(function(){})}
 function pagarCartao(){pagando=true;var b=document.getElementById('btCar');b.disabled=true;b.textContent='Enviando…';
  fetch('/api/totem/pedido',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({forma:'cartao',itens:car.map(function(c){return {codigo_pdv:c.codigo_pdv,qtd:c.qtd,respostas:c.respostas}})})})
  .then(function(r){return r.json()}).then(function(d){if(!d.ok){alert(d.erro||'Não deu certo. Tente de novo.');carregar().then(function(){if(D)desenhar()});return}
@@ -30138,7 +30192,7 @@ function pagarCartao(){pagando=true;var b=document.getElementById('btCar');b.dis
  .catch(function(){alert('Sem conexão. Tente de novo.')}).then(function(){pagando=false;b.textContent='💳 Cartão';rodape()})}
 function conferirCartao(){if(!pedCartao)return;var pc=pedCartao;fetch('/api/totem/status?ticket='+pc).then(function(r){return r.json()}).then(function(d){
  if(pc!==pedCartao||!d.ok)return;
- if(d.pago){clearInterval(poll);poll=null;pedCartao=null;car=[];tela('ok');clearTimeout(ocioso);ocioso=setTimeout(reiniciar,25000);return}
+ if(d.pago){pedCartao=null;pago('ticket='+pc,d);return}
  if(d.desistido){clearInterval(poll);poll=null;pedCartao=null;alert('O pagamento não foi feito. Seu pedido continua aqui — tente de novo.');tela('menu');rodape();mexeu();return}
  document.getElementById('carMsg').innerHTML='<span class="esp"></span>'+(d.na_maquininha?'Siga as instruções na maquininha…':'Esperando a maquininha…')}).catch(function(){})}
 function cancelarCartao(){if(!pedCartao){tela('menu');return}var pc=pedCartao;fetch('/api/totem/cancelar',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({pedido:pc})}).then(function(r){return r.json()}).then(function(d){
