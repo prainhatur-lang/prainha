@@ -312,6 +312,16 @@ export const ifoodEntrega = pgTable(
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
     atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
     canceladoEm: timestamp('cancelado_em', { withTimezone: true }),
+    /** Cliente mudou o endereço depois de chamar (evento DAR do iFood).
+     *  { pedidoEm, metadata (o que veio no evento), enderecoAtual } */
+    trocaEndereco: jsonb('troca_endereco'),
+    /** PENDENTE | ACEITA | RECUSADA */
+    trocaEnderecoStatus: varchar('troca_endereco_status', { length: 12 }),
+    trocaEnderecoRespondidaEm: timestamp('troca_endereco_respondida_em', { withTimezone: true }),
+    trocaEnderecoRespondidaPor: uuid('troca_endereco_respondida_por'),
+    /** Código de coleta conferido com o que o entregador falou na loja. */
+    coletaConferidaEm: timestamp('coleta_conferida_em', { withTimezone: true }),
+    coletaConferidaPor: uuid('coleta_conferida_por'),
   },
   (t) => ({
     pedidoIdx: index('ifood_entrega_pedido_idx').on(t.deliveryPedidoId),

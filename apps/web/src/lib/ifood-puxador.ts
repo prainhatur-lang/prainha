@@ -45,6 +45,7 @@ interface EventoIfood {
   orderId?: string;
   merchantId?: string;
   createdAt?: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 /** Pega a trava do client_id. `false` = outra invocação está puxando agora. */
@@ -139,6 +140,7 @@ async function ciclarGrupo(
           codigo: String(codigo).slice(0, 40),
           fullCode: ev.fullCode ? String(ev.fullCode).slice(0, 60) : null,
           ocorridoEm: ev.createdAt ? new Date(ev.createdAt) : null,
+          metadata: ev.metadata && typeof ev.metadata === 'object' ? ev.metadata : null,
         })
         .onConflictDoNothing()
         .returning({ id: schema.ifoodNuvemEvento.id });

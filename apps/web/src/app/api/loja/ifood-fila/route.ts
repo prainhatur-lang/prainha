@@ -4,9 +4,10 @@
 //                                                  + o pedido já baixado
 //   POST ?f=&e=&s=  { feitos: [eventoId] }      → a loja processou estes
 //   POST ?f=&e=&s=  { orderId, acao, extra }    → repassa a ação pro iFood
-//   POST ?f=&e=&s=  { entregaEvento: { orderId, codigo } }
+//   POST ?f=&e=&s=  { entregaEvento: { orderId, codigo, metadata? } }
 //                    → evento do pedido externo criado pela Shipping (entregador
-//                      do pedido do site): atualiza o ifood_entrega
+//                      do pedido do site): atualiza o ifood_entrega. DAR (cliente
+//                      mudou o endereço) fica PENDENTE pra loja aceitar/recusar
 //   acao 'entregador_cotar' | 'entregador_chamar' { quoteId } | 'entregador_cancelar'
 //                    → entregador do iFood pra pedido do iFood com entrega própria
 //
@@ -20,11 +21,11 @@
 import { NextResponse } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { db, schema } from '@concilia/db';
-import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { configIfood } from '@/lib/ifood-credenciais';
 import { ifoodApi, IFOOD_ACOES } from '@/lib/ifood-api';
 import { marcarEntregues } from '@/lib/ifood-puxador';
-import { cotarPedidoIfood, solicitarEntregador, cancelarEntregador, confirmarPedido, erroShipping } from '@/lib/ifood-shipping';
+import { cotarPedidoIfood, solicitarEntregador, cancelarEntregador, confirmarPedido, detalhePedido, erroShipping } from '@/lib/ifood-shipping';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -64,8 +65,51 @@ const STATUS_ENTREGA: Record<string, string> = {
   CANCELLED: 'CANCELADO', CAN: 'CANCELADO',
 };
 const FINAIS = ['ENTREGUE', 'CANCELADO'];
+/** Cliente mudou o endereço depois do entregador chamado: a loja aceita ou recusa. */
+const TROCA_ENDERECO = ['DAR', 'DELIVERY_ADDRESS_CHANGE_REQUESTED'];
 
-async function eventoDaEntrega(filialId: string, orderId: string, codigo: string) {
+/** Guarda o pedido de troca de endereço (com o endereço novo, quando o iFood
+ *  manda no `metadata` do evento) pra tela do pedido mostrar Aceitar/Recusar. */
+async function trocaDeEndereco(
+  filialId: string,
+  e: typeof schema.ifoodEntrega.$inferSelect,
+  orderId: string,
+  metadataLoja: unknown,
+) {
+  let metadata: unknown = metadataLoja && typeof metadataLoja === 'object' ? metadataLoja : null;
+  if (!metadata) {
+    // Modo nuvem: o puxador gravou o evento inteiro aqui.
+    const [ev] = await db
+      .select({ metadata: schema.ifoodNuvemEvento.metadata })
+      .from(schema.ifoodNuvemEvento)
+      .where(and(
+        eq(schema.ifoodNuvemEvento.orderId, orderId),
+        inArray(schema.ifoodNuvemEvento.codigo, TROCA_ENDERECO),
+      ))
+      .orderBy(desc(schema.ifoodNuvemEvento.criadoEm))
+      .limit(1);
+    metadata = ev?.metadata ?? null;
+  }
+  let enderecoAtual: unknown = null;
+  const c = await configIfood(filialId);
+  if (c.clientId && c.clientSecret) {
+    const det = await detalhePedido(c, orderId);
+    enderecoAtual = (det as { delivery?: { deliveryAddress?: unknown } } | null)?.delivery?.deliveryAddress ?? null;
+  }
+  await db
+    .update(schema.ifoodEntrega)
+    .set({
+      trocaEndereco: { pedidoEm: new Date().toISOString(), metadata, enderecoAtual } as unknown as Record<string, unknown>,
+      trocaEnderecoStatus: 'PENDENTE',
+      trocaEnderecoRespondidaEm: null,
+      trocaEnderecoRespondidaPor: null,
+      atualizadoEm: sql`now()`,
+    })
+    .where(eq(schema.ifoodEntrega.id, e.id));
+  console.log('[ifood-shipping] troca de endereço pedida', { orderId, entrega: e.id, temMetadata: !!metadata });
+}
+
+async function eventoDaEntrega(filialId: string, orderId: string, codigo: string, metadata?: unknown) {
   const [e] = await db
     .select()
     .from(schema.ifoodEntrega)
@@ -84,6 +128,13 @@ async function eventoDaEntrega(filialId: string, orderId: string, codigo: string
       ...(status === 'CANCELADO' && !e.canceladoEm ? { canceladoEm: sql`now()` } : {}),
     })
     .where(eq(schema.ifoodEntrega.id, e.id));
+  if (TROCA_ENDERECO.includes(codigo) && !FINAIS.includes(e.status)) {
+    try {
+      await trocaDeEndereco(filialId, e, orderId, metadata);
+    } catch (err) {
+      console.error('[ifood-shipping] troca de endereço:', (err as Error).message);
+    }
+  }
   // Chegou o PLACED e ainda não confirmamos: confirma agora (a confirmação
   // logo depois de criar pode ter chegado antes do pedido existir no iFood).
   if ((codigo === 'PLACED' || codigo === 'PLC') && e.status === 'SOLICITADO') {
@@ -156,9 +207,9 @@ export async function POST(request: Request) {
   }
 
   // 1b) evento do pedido externo da Shipping (entregador do pedido do site)
-  const ev = b?.entregaEvento as { orderId?: unknown; codigo?: unknown } | undefined;
+  const ev = b?.entregaEvento as { orderId?: unknown; codigo?: unknown; metadata?: unknown } | undefined;
   if (ev && typeof ev.orderId === 'string' && typeof ev.codigo === 'string') {
-    return eventoDaEntrega(auth.filialId, ev.orderId, ev.codigo);
+    return eventoDaEntrega(auth.filialId, ev.orderId, ev.codigo, ev.metadata);
   }
 
   // 2) ação do caixa (aceitar, despachar, cancelar…) — quem fala com o iFood

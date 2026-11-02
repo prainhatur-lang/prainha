@@ -275,3 +275,26 @@ export async function detalhePedido(c: CredIfood, orderId: string): Promise<Reco
     return null;
   }
 }
+
+/** Cliente mudou o endereço (evento DAR): a loja aceita — a corrida segue pro novo. */
+export async function aceitarTrocaEndereco(c: CredIfood, orderId: string): Promise<void> {
+  await ifoodApi(c, `${BASE}/orders/${orderId}/acceptDeliveryAddressChange`, {
+    metodo: 'POST',
+    headers: { 'idempotency-key': randomUUID() },
+  });
+}
+
+/** Recusa a troca: a entrega continua no endereço original. */
+export async function recusarTrocaEndereco(c: CredIfood, orderId: string): Promise<void> {
+  await ifoodApi(c, `${BASE}/orders/${orderId}/denyDeliveryAddressChange`, {
+    metodo: 'POST',
+    headers: { 'idempotency-key': randomUUID() },
+  });
+}
+
+/** Código que o entregador tem que falar na loja pra levar o pedido. */
+export function codigoColeta(entregador: unknown): string | null {
+  const d = (entregador as { delivery?: { pickupCode?: unknown } } | null)?.delivery;
+  const v = d?.pickupCode;
+  return v == null || v === '' ? null : String(v);
+}

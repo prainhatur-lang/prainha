@@ -40,6 +40,8 @@ export const ifoodNuvemEvento = pgTable(
     codigo: varchar('codigo', { length: 40 }).notNull(),
     fullCode: varchar('full_code', { length: 60 }),
     ocorridoEm: timestamp('ocorrido_em', { withTimezone: true }),
+    /** `metadata` do evento (ex.: o endereço novo no DELIVERY_ADDRESS_CHANGE_REQUESTED). */
+    metadata: jsonb('metadata'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
     /** Ack mandado pro iFood. O Firefly Audit exige 100% de ack. */
     ackEm: timestamp('ack_em', { withTimezone: true }),

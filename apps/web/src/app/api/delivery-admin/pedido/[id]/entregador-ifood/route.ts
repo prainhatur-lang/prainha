@@ -6,6 +6,10 @@
 //                               → registra o pedido no iFood e o entregador é alocado
 //   POST { acao: 'motivos' }    → motivos de cancelamento aceitos AGORA (do iFood)
 //   POST { acao: 'cancelar', codigo, motivo }
+//   POST { acao: 'endereco_aceitar' | 'endereco_recusar' }
+//                               → resposta à troca de endereço pedida pelo cliente (evento DAR)
+//   POST { acao: 'coleta_conferir', codigo }
+//                               → confere o código que o entregador falou com o pickupCode
 //
 // O pedido continua no painel do mesmo jeito (status, botões, WhatsApp): isto só
 // soma o entregador do iFood ao lado do "Saiu pra entrega".
@@ -25,6 +29,9 @@ import {
   rastreio,
   detalhePedido,
   erroShipping,
+  aceitarTrocaEndereco,
+  recusarTrocaEndereco,
+  codigoColeta,
 } from '@/lib/ifood-shipping';
 
 export const dynamic = 'force-dynamic';
@@ -71,7 +78,9 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
 
   const e = await ultima(id);
   if (!e) return NextResponse.json({ entrega: null });
-  if (!e.ifoodOrderId || !ATIVOS.includes(e.status)) return NextResponse.json({ entrega: e });
+  if (!e.ifoodOrderId || !ATIVOS.includes(e.status)) {
+    return NextResponse.json({ entrega: e, codigoColeta: codigoColeta(e.entregador) });
+  }
 
   // Ainda não confirmado: a confirmação logo depois de criar pode ter chegado
   // antes do pedido existir no iFood. Tenta de novo aqui.
@@ -93,7 +102,8 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
     })
     .where(eq(schema.ifoodEntrega.id, e.id))
     .returning();
-  return NextResponse.json({ entrega: atual ?? e, rastreio: trk });
+  const final = atual ?? e;
+  return NextResponse.json({ entrega: final, rastreio: trk, codigoColeta: codigoColeta(final.entregador) });
 }
 
 export async function POST(request: Request, ctx: { params: Promise<{ id: string }> }) {
@@ -246,6 +256,62 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
     } catch (err) {
       return falha(err);
     }
+  }
+
+  if (acao === 'endereco_aceitar' || acao === 'endereco_recusar') {
+    const e = await ultima(id);
+    if (!e?.ifoodOrderId || e.trocaEnderecoStatus !== 'PENDENTE') {
+      return NextResponse.json({ error: 'não há troca de endereço esperando resposta neste pedido' }, { status: 400 });
+    }
+    const aceita = acao === 'endereco_aceitar';
+    try {
+      if (aceita) await aceitarTrocaEndereco(c, e.ifoodOrderId);
+      else await recusarTrocaEndereco(c, e.ifoodOrderId);
+    } catch (err) {
+      console.error('[ifood-shipping] troca de endereço falhou', { pedido: p.id, orderId: e.ifoodOrderId, aceita, erro: (err as Error).message });
+      return falha(err);
+    }
+    const [atual] = await db
+      .update(schema.ifoodEntrega)
+      .set({
+        trocaEnderecoStatus: aceita ? 'ACEITA' : 'RECUSADA',
+        trocaEnderecoRespondidaEm: sql`now()`,
+        trocaEnderecoRespondidaPor: user.id,
+        atualizadoEm: sql`now()`,
+      })
+      .where(eq(schema.ifoodEntrega.id, e.id))
+      .returning();
+    console.log('[ifood-shipping] troca de endereço respondida', { pedido: p.id, orderId: e.ifoodOrderId, aceita });
+    return NextResponse.json({ ok: true, entrega: atual ?? e });
+  }
+
+  if (acao === 'coleta_conferir') {
+    const e = await ultima(id);
+    if (!e?.ifoodOrderId || !ATIVOS.includes(e.status)) {
+      return NextResponse.json({ error: 'não há entregador do iFood ativo neste pedido' }, { status: 400 });
+    }
+    let certo = codigoColeta(e.entregador);
+    if (!certo) {
+      const det = await detalhePedido(c, e.ifoodOrderId);
+      certo = codigoColeta(det);
+    }
+    if (!certo) {
+      return NextResponse.json({ error: 'o iFood ainda não mandou o código de coleta deste pedido' }, { status: 400 });
+    }
+    const limpa = (x: string) => x.replace(/\s+/g, '').toUpperCase();
+    const falado = limpa(String(b?.codigo ?? ''));
+    if (!falado) return NextResponse.json({ error: 'digite o código que o entregador falou' }, { status: 400 });
+    if (falado !== limpa(certo)) {
+      console.warn('[ifood-shipping] código de coleta NÃO confere', { pedido: p.id, orderId: e.ifoodOrderId });
+      return NextResponse.json({ error: 'código NÃO confere — não entregue o pedido a este entregador', confere: false }, { status: 400 });
+    }
+    const [atual] = await db
+      .update(schema.ifoodEntrega)
+      .set({ coletaConferidaEm: sql`now()`, coletaConferidaPor: user.id, atualizadoEm: sql`now()` })
+      .where(eq(schema.ifoodEntrega.id, e.id))
+      .returning();
+    console.log('[ifood-shipping] código de coleta conferido', { pedido: p.id, orderId: e.ifoodOrderId });
+    return NextResponse.json({ ok: true, confere: true, entrega: atual ?? e });
   }
 
   return NextResponse.json({ error: 'ação inválida' }, { status: 400 });

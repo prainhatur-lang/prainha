@@ -549,6 +549,27 @@ interface EntregaIfood {
   valor: string | null;
   erro: string | null;
   criadoEm: string;
+  trocaEndereco?: { pedidoEm?: string; metadata?: unknown; enderecoAtual?: unknown } | null;
+  trocaEnderecoStatus?: string | null;
+  coletaConferidaEm?: string | null;
+}
+
+/** Endereço vindo do iFood (metadata do evento DAR ou deliveryAddress) em uma linha. */
+function textoEnderecoIfood(x: unknown): string | null {
+  if (!x || typeof x !== 'object') return null;
+  const o = x as Record<string, unknown>;
+  const dentro = (o.deliveryAddress ?? o.address ?? o.newAddress ?? o.newDeliveryAddress) as unknown;
+  if (dentro && typeof dentro === 'object') return textoEnderecoIfood(dentro);
+  if (typeof o.formattedAddress === 'string' && o.formattedAddress) return o.formattedAddress;
+  const partes = [
+    [o.streetName, o.streetNumber].filter(Boolean).join(', '),
+    o.complement,
+    o.neighborhood,
+    o.city,
+  ].filter((v) => typeof v === 'string' && v);
+  if (partes.length) return partes.join(' · ');
+  const j = JSON.stringify(o);
+  return j === '{}' ? null : j.slice(0, 300);
 }
 
 interface Cotacao {
@@ -580,13 +601,18 @@ function EntregadorIfood({ p }: { p: Pedido }) {
   const [preparo, setPreparo] = useState(p.status === 'pronto' ? 0 : 15);
   const [metodo, setMetodo] = useState('');
   const [troco, setTroco] = useState('');
+  const [codigoColeta, setCodigoColeta] = useState<string | null>(null);
+  const [codigoFalado, setCodigoFalado] = useState('');
   const url = `/api/delivery-admin/pedido/${p.id}/entregador-ifood`;
   const naEntrega = p.pagamentoMetodo === 'na_entrega';
 
   async function ler() {
     const r = await fetch(url, { cache: 'no-store' });
     const j = await r.json().catch(() => ({}));
-    if (r.ok) setEntrega(j.entrega ?? null);
+    if (r.ok) {
+      setEntrega(j.entrega ?? null);
+      setCodigoColeta(j.codigoColeta ?? null);
+    }
   }
   useEffect(() => {
     ler();
@@ -661,6 +687,23 @@ function EntregadorIfood({ p }: { p: Pedido }) {
     const ok = await post({ acao: 'cancelar', codigo: m.codigo, motivo: m.descricao });
     if (ok) await ler();
   }
+  async function responderEndereco(aceitar: boolean) {
+    const pergunta = aceitar
+      ? 'Aceitar o endereço novo? O entregador do iFood vai pro endereço que o cliente mudou.'
+      : 'Recusar a troca? O entregador continua indo pro endereço original.';
+    if (!window.confirm(pergunta)) return;
+    const j = await post({ acao: aceitar ? 'endereco_aceitar' : 'endereco_recusar' });
+    if (j?.entrega) setEntrega(j.entrega);
+  }
+  async function conferirColeta() {
+    const j = await post({ acao: 'coleta_conferir', codigo: codigoFalado });
+    if (j?.entrega) {
+      setEntrega(j.entrega);
+      setCodigoFalado('');
+    }
+  }
+  const troca = entrega?.trocaEndereco ?? null;
+  const enderecoNovo = troca ? (textoEnderecoIfood(troca.metadata) ?? textoEnderecoIfood(troca.enderecoAtual)) : null;
 
   return (
     <div className="mt-3 rounded-xl border border-rose-100 bg-rose-50/40 p-3 text-sm">
@@ -701,6 +744,61 @@ function EntregadorIfood({ p }: { p: Pedido }) {
               </button>
             ) : null}
           </div>
+          {entrega.trocaEnderecoStatus === 'PENDENTE' ? (
+            <div className="mt-2 rounded-lg border border-amber-300 bg-amber-50 p-2.5">
+              <p className="font-semibold text-amber-900">📍 Cliente mudou o endereço de entrega</p>
+              <p className="mt-0.5 text-xs text-amber-900">{enderecoNovo ?? 'o iFood não mandou o endereço novo — confira no app do cliente'}</p>
+              <div className="mt-2 flex gap-2">
+                <button
+                  disabled={ocupado}
+                  onClick={() => responderEndereco(true)}
+                  className="rounded-md bg-amber-600 px-3 py-1.5 font-medium text-white hover:bg-amber-700 disabled:opacity-50"
+                >
+                  Aceitar endereço novo
+                </button>
+                <button
+                  disabled={ocupado}
+                  onClick={() => responderEndereco(false)}
+                  className="rounded-md border border-amber-300 bg-white px-3 py-1.5 text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+                >
+                  Recusar
+                </button>
+              </div>
+            </div>
+          ) : entrega.trocaEnderecoStatus === 'ACEITA' || entrega.trocaEnderecoStatus === 'RECUSADA' ? (
+            <p className="text-xs text-slate-600">
+              📍 Troca de endereço {entrega.trocaEnderecoStatus === 'ACEITA' ? 'aceita' : 'recusada'}
+              {enderecoNovo && entrega.trocaEnderecoStatus === 'ACEITA' ? `: ${enderecoNovo}` : ''}
+            </p>
+          ) : null}
+          {ENTREGA_ATIVA.includes(entrega.status) ? (
+            entrega.coletaConferidaEm ? (
+              <p className="text-xs font-medium text-emerald-700">✓ Código de coleta conferido — pode entregar o pedido ao entregador</p>
+            ) : (
+              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-700">
+                {codigoColeta ? (
+                  <span>
+                    Código de coleta: <b className="font-mono text-sm tracking-widest text-rose-800">{codigoColeta}</b>
+                  </span>
+                ) : (
+                  <span className="text-slate-500">Código de coleta: o iFood ainda não mandou</span>
+                )}
+                <input
+                  value={codigoFalado}
+                  onChange={(e) => setCodigoFalado(e.target.value)}
+                  placeholder="código que o entregador falou"
+                  className="w-48 rounded border border-slate-300 px-1.5 py-1"
+                />
+                <button
+                  disabled={ocupado || !codigoFalado.trim()}
+                  onClick={conferirColeta}
+                  className="rounded-md border border-rose-200 bg-white px-3 py-1.5 text-rose-700 hover:bg-rose-50 disabled:opacity-50"
+                >
+                  Conferir
+                </button>
+              </div>
+            )
+          ) : null}
         </div>
       ) : cot ? (
         <div className="space-y-2">
