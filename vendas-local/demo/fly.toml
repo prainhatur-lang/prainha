@@ -4,7 +4,7 @@ app = "concilia-demo"
 primary_region = "gru"
 
 [build]
-  dockerfile = "demo/Dockerfile"
+  dockerfile = "Dockerfile"  # relativo a esta pasta (demo/)
 
 [env]
   BANCO = "proprio"
