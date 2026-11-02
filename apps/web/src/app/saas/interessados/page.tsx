@@ -7,6 +7,8 @@ import { desc } from 'drizzle-orm';
 import { createClient } from '@/lib/supabase/server';
 import { ehAdmin } from '@/lib/usuario-admin';
 import { AppHeader } from '@/components/app-header';
+import { hojeBr } from '@/lib/datas';
+import { formatarDocumento } from '@/lib/nfce/documento';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -44,6 +46,14 @@ export default async function InteressadosPage() {
     .orderBy(desc(schema.saasInteressado.criadoEm))
     .limit(300);
 
+  const contas = await db
+    .select()
+    .from(schema.saasConta)
+    .orderBy(desc(schema.saasConta.criadoEm))
+    .limit(300);
+  const hoje = hojeBr();
+  const br = (ymd: string) => ymd.split('-').reverse().join('/');
+
   return (
     <>
       <AppHeader userEmail={user.email} />
@@ -56,6 +66,74 @@ export default async function InteressadosPage() {
           </a>
           . {linhas.length} no total.
         </p>
+        {contas.length > 0 && (
+          <section className="mt-5">
+            <h2 className="font-bold">Contas de teste (cadastro sozinho) · {contas.length}</h2>
+            <p className="text-sm text-slate-600">
+              Teste de 15 dias com todos os módulos. A loja ainda é criada por nós: chame no WhatsApp e mande o acesso.
+            </p>
+            <div className="mt-2 overflow-x-auto rounded-lg border border-slate-200">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-left text-slate-600">
+                  <tr>
+                    <th className="px-3 py-2">Quando</th>
+                    <th className="px-3 py-2">Restaurante</th>
+                    <th className="px-3 py-2">Documento</th>
+                    <th className="px-3 py-2">Responsável</th>
+                    <th className="px-3 py-2">Teste</th>
+                    <th className="px-3 py-2"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {contas.map((c) => {
+                    const fone = c.whatsapp.replace(/\D/g, '');
+                    const zap = fone.length <= 11 ? `55${fone}` : fone;
+                    const vencido = c.status === 'teste' && c.testeFim < hoje;
+                    return (
+                      <tr key={c.id} className="border-t border-slate-100 align-top">
+                        <td className="whitespace-nowrap px-3 py-2">{quando(c.criadoEm)}</td>
+                        <td className="px-3 py-2">
+                          <div className="font-semibold">{c.nomeFantasia}</div>
+                          {c.razaoSocial && c.razaoSocial !== c.nomeFantasia && (
+                            <div className="text-slate-500">{c.razaoSocial}</div>
+                          )}
+                          {(c.cidade || c.uf) && (
+                            <div className="text-slate-500">{[c.cidade, c.uf].filter(Boolean).join(' - ')}</div>
+                          )}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2">
+                          {c.tipoDocumento} {formatarDocumento(c.documento)}
+                        </td>
+                        <td className="px-3 py-2">
+                          <div>{c.responsavel}</div>
+                          <div className="text-slate-500">{c.whatsapp}</div>
+                          <div className="text-slate-500">{c.email}</div>
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2">
+                          <span className={vencido ? 'font-semibold text-red-700' : ''}>
+                            {vencido ? 'venceu ' : c.status === 'teste' ? 'até ' : `${c.status} · `}
+                            {br(c.testeFim)}
+                          </span>
+                          <div className="text-slate-500">{PLANO[c.planoDesejado ?? ''] ?? '—'}</div>
+                        </td>
+                        <td className="px-3 py-2">
+                          <a
+                            href={`https://wa.me/${zap}`}
+                            target="_blank"
+                            className="whitespace-nowrap rounded bg-green-600 px-3 py-1.5 text-white hover:bg-green-700"
+                          >
+                            WhatsApp
+                          </a>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <h2 className="mt-6 font-bold">Todos os interessados</h2>
+          </section>
+        )}
         {linhas.length === 0 ? (
           <p className="mt-6 rounded-lg bg-slate-50 p-4 text-slate-600">Ninguém ainda.</p>
         ) : (

@@ -8,6 +8,7 @@
 import type { Metadata } from 'next';
 import QRCode from 'qrcode-svg';
 import { FormComecar } from './form';
+import { FormCadastro } from './form-cadastro';
 import { MontePlano } from './monte-plano';
 
 export const dynamic = 'force-dynamic';
@@ -154,7 +155,7 @@ const PERGUNTAS = [
   },
   {
     p: 'Como faço pra contratar?',
-    r: 'Preencha o "Quero começar" aqui embaixo. A gente te chama no WhatsApp, monta o plano com você e manda o link de pagamento.',
+    r: 'Crie sua conta aqui embaixo com CPF ou CNPJ: são 15 dias com todos os módulos, sem cartão. No fim do teste, se quiser continuar, paga a mensalidade por Pix. Prefere conversar antes? Abra "Prefere que a gente te chame?" e a gente monta o plano com você.',
   },
 ];
 
@@ -515,10 +516,18 @@ export default async function ConhecaPage({
         <div className="mx-auto max-w-2xl px-4 py-14">
           <h2 className="text-2xl font-bold sm:text-3xl">Comece grátis</h2>
           <p className="mt-2 text-[#5a6878]">
-            Deixe seu contato. A gente te chama no WhatsApp em até 1 dia útil, cria a sua loja e te ajuda a subir o
-            cardápio. Quer um plano pago? Escolha abaixo que a gente monta com você.
+            Crie sua conta com CPF ou CNPJ e teste <b>todos os módulos por 15 dias</b>, sem cartão. Depois, se quiser
+            continuar, a mensalidade é paga por Pix.
           </p>
-          <FormComecar origem={origem} zap={zap} plano={plano} />
+          <FormCadastro origem={origem} zap={zap} plano={plano} demo={DEMO} />
+          <details className="mt-8 rounded-xl bg-[#f6f4ef] px-5 py-4">
+            <summary className="cursor-pointer font-semibold">Prefere que a gente te chame?</summary>
+            <p className="mt-2 text-[#5a6878]">
+              Deixe seu contato. A gente te chama no WhatsApp em até 1 dia útil, cria a sua loja e te ajuda a subir o
+              cardápio. Quer um plano pago? Escolha abaixo que a gente monta com você.
+            </p>
+            <FormComecar origem={origem} zap={zap} plano={plano} />
+          </details>
         </div>
       </section>
 

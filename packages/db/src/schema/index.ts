@@ -71,3 +71,4 @@ export * from './permuta';
 export * from './revenda';
 export * from './estoque-local';
 export * from './saas-interessado';
+export * from './saas-conta';
