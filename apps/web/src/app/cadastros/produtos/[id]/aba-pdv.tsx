@@ -120,6 +120,9 @@ export interface OndeVende {
   /** código de PDV → grupo do totem, deste produto. */
   totem: Record<number, string>;
   grupos: Array<{ id: string; nome: string }>;
+  /** Códigos de PDV deste produto que saem na praça RECEPÇÃO (bar da
+   *  recepção) quando vendidos pelo Ticket/Totem. */
+  recepcao?: number[];
 }
 
 const ROTULO: Record<string, string> = {
@@ -841,10 +844,11 @@ function QuadroOndeVende({
   const [ticket, setTicket] = useState<Set<number>>(new Set(inicial.ticket));
   const [totem, setTotem] = useState<Record<number, string>>(inicial.totem);
   const [ticketNaCasa, setTicketNaCasa] = useState(inicial.ticketNaCasa);
+  const [recepcao, setRecepcao] = useState<Set<number>>(new Set(inicial.recepcao ?? []));
   const [ocupado, setOcupado] = useState<number | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; texto: string } | null>(null);
 
-  async function gravar(codigo: number, campos: { ticket?: boolean; totem?: string | null }) {
+  async function gravar(codigo: number, campos: { ticket?: boolean; totem?: string | null; recepcao?: boolean }) {
     setOcupado(codigo);
     setMsg(null);
     try {
@@ -861,6 +865,12 @@ function QuadroOndeVende({
         else novo.delete(codigo);
         setTicketNaCasa((n) => n + (campos.ticket ? 1 : -1) * (ticket.has(codigo) === campos.ticket ? 0 : 1));
         setTicket(novo);
+      }
+      if (campos.recepcao !== undefined) {
+        const novo = new Set(recepcao);
+        if (campos.recepcao) novo.add(codigo);
+        else novo.delete(codigo);
+        setRecepcao(novo);
       }
       if (campos.totem !== undefined) {
         const novo = { ...totem };
@@ -896,6 +906,10 @@ function QuadroOndeVende({
           )}
           <br />
           <b>Totem</b>: em qual grupo o item aparece na tela de autoatendimento da recepção.
+          <br />
+          <b>📍 Sai na Recepção</b>: vendido pelo Ticket ou pelo Totem, o item vai pra praça RECEPÇÃO no
+          tablet (bar da recepção) e baixa do estoque da Recepção. Venda na mesa não muda. Deixe
+          desmarcado o que é feito na cozinha.
         </p>
       </div>
       <table className="w-full text-sm">
@@ -904,6 +918,7 @@ function QuadroOndeVende({
             <th className="px-4 py-2">Tamanho</th>
             <th className="px-4 py-2">🎟 Ticket (maquininha)</th>
             <th className="px-4 py-2">Totem</th>
+            <th className="px-4 py-2">📍 Sai na Recepção</th>
           </tr>
         </thead>
         <tbody>
@@ -938,6 +953,17 @@ function QuadroOndeVende({
                     </option>
                   ))}
                 </select>
+              </td>
+              <td className="px-4 py-2">
+                <label className="flex items-center gap-2 text-xs text-slate-700">
+                  <input
+                    type="checkbox"
+                    disabled={ocupado !== null}
+                    checked={recepcao.has(v.codigo)}
+                    onChange={(e) => gravar(v.codigo, { recepcao: e.target.checked })}
+                  />
+                  {recepcao.has(v.codigo) ? <span className="font-medium text-emerald-800">sai na recepção</span> : 'não'}
+                </label>
               </td>
             </tr>
           ))}

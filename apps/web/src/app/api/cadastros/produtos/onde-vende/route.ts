@@ -1,6 +1,6 @@
 // /api/cadastros/produtos/onde-vende — quadro "Onde vende" da aba PDV do
 // cadastro do produto (02/11/2026). Por TAMANHO (código do PDV):
-//   POST { produtoId, codigo, ticket?: boolean, totem?: 'cerveja'|'drinks'|'sem_alcool'|null }
+//   POST { produtoId, codigo, ticket?: boolean, totem?: 'cerveja'|'drinks'|'sem_alcool'|null, recepcao?: boolean }
 // Grava direto na nuvem (não passa pela fila do Consumer); a loja puxa a lista
 // em até 5 min junto com o cardápio do totem.
 import { NextResponse } from 'next/server';
@@ -9,7 +9,7 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
-import { GRUPO_IDS, marcarTicket, marcarTotem } from '@/lib/cardapio-totem';
+import { GRUPO_IDS, marcarRecepcao, marcarTicket, marcarTotem } from '@/lib/cardapio-totem';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -19,6 +19,7 @@ const Entrada = z.object({
   codigo: z.number().int().positive(),
   ticket: z.boolean().optional(),
   totem: z.enum(GRUPO_IDS).nullable().optional(),
+  recepcao: z.boolean().optional(),
 });
 
 export async function POST(request: Request) {
@@ -59,5 +60,6 @@ export async function POST(request: Request) {
   const quem = auth.user.email ?? null;
   if (b.ticket !== undefined) await marcarTicket(prod.filialId, b.codigo, b.ticket, quem);
   if (b.totem !== undefined) await marcarTotem(prod.filialId, b.codigo, b.totem, quem);
+  if (b.recepcao !== undefined) await marcarRecepcao(prod.filialId, b.codigo, b.recepcao, quem);
   return NextResponse.json({ ok: true });
 }

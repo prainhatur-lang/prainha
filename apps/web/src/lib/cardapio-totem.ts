@@ -88,3 +88,55 @@ export async function marcarTicket(filialId: string, codigo: number, vende: bool
     INSERT INTO ticket_item (filial_id, codigo, atualizado_por) VALUES (${filialId}, ${codigo}, ${quem})
     ON CONFLICT (filial_id, codigo) DO UPDATE SET atualizado_por = EXCLUDED.atualizado_por, atualizado_em = now()`);
 }
+
+// ---- SAI NA RECEPÇÃO (02/11/2026) ----
+// Tamanho marcado que é vendido no 🎟 Ticket ou no totem vai pra praça
+// RECEPÇÃO do tablet (a bebida da geladeira da recepção). Venda na mesa não
+// muda. A praça nasce sozinha em `area_producao` na primeira marcação, com o
+// próximo código livre da casa — é a lista que a loja já puxa pro KDS.
+
+/** Códigos de PDV que saem na Recepção. */
+export async function listarRecepcao(filialId: string): Promise<number[]> {
+  try {
+    const rows = (await db.execute(sql`
+      SELECT codigo FROM recepcao_item WHERE filial_id = ${filialId} ORDER BY codigo`)) as unknown as Array<{ codigo: number }>;
+    return rows.map((r) => Number(r.codigo)).filter((n) => n > 0);
+  } catch {
+    return []; // tabela ainda não existe
+  }
+}
+
+/** Código da praça Recepção da casa (cria se não houver). */
+export async function garantirPracaRecepcao(filialId: string): Promise<number> {
+  const achar = async () => {
+    const rows = (await db.execute(sql`
+      SELECT codigo_externo FROM area_producao
+      WHERE filial_id = ${filialId}
+        AND translate(lower(nome), 'çãáâéêíóôõú', 'caaaeeiooou') LIKE 'recepcao%'
+      ORDER BY ativa DESC, codigo_externo LIMIT 1`)) as unknown as Array<{ codigo_externo: number }>;
+    return rows[0] ? Number(rows[0].codigo_externo) : null;
+  };
+  const tem = await achar();
+  if (tem != null) {
+    await db.execute(sql`UPDATE area_producao SET ativa = true WHERE filial_id = ${filialId} AND codigo_externo = ${tem} AND ativa = false`);
+    return tem;
+  }
+  await db.execute(sql`
+    INSERT INTO area_producao (filial_id, codigo_externo, nome, ativa)
+    VALUES (${filialId},
+      (SELECT COALESCE(max(codigo_externo), 0) + 1 FROM area_producao WHERE filial_id = ${filialId}),
+      'RECEPÇÃO', true)
+    ON CONFLICT (filial_id, codigo_externo) DO NOTHING`);
+  return (await achar()) ?? 0;
+}
+
+export async function marcarRecepcao(filialId: string, codigo: number, sai: boolean, quem: string | null) {
+  if (!sai) {
+    await db.execute(sql`DELETE FROM recepcao_item WHERE filial_id = ${filialId} AND codigo = ${codigo}`);
+    return;
+  }
+  await garantirPracaRecepcao(filialId);
+  await db.execute(sql`
+    INSERT INTO recepcao_item (filial_id, codigo, atualizado_por) VALUES (${filialId}, ${codigo}, ${quem})
+    ON CONFLICT (filial_id, codigo) DO UPDATE SET atualizado_por = EXCLUDED.atualizado_por, atualizado_em = now()`);
+}

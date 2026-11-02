@@ -11,6 +11,10 @@
 //  - Setor principal (Depósito): o total da casa menos o que está nos
 //    outros setores. Compra, ajuste e produção caem aqui.
 //  Assim a soma dos setores sempre bate com o saldo da casa.
+//  - RECEPÇÃO (02/11/2026, a recepção tem bar próprio): o que foi vendido
+//    pelo Ticket/Totem (conta "TICKET N") de item marcado "Sai na Recepção"
+//    sai primeiro da Recepção. O resto (venda na mesa, comida do ticket) NÃO
+//    tira da Recepção — sai dos outros setores e, faltando, do principal.
 
 import { db, schema } from '@concilia/db';
 import { and, asc, eq, gte, inArray, isNull, sql } from 'drizzle-orm';
@@ -76,6 +80,8 @@ export async function saldosPorLocal(filialId: string, locais: LocalEstoque[]): 
   if (!principal) return [];
   const setores = locais.filter((l) => l.id !== principal.id);
   const ordemSetor = new Map(setores.map((l, i) => [l.id, i]));
+  const semAcento = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  const recepcao = setores.find((l) => semAcento(l.nome).startsWith('recepcao'))?.id ?? null;
 
   const produtos = await db
     .select({
@@ -116,7 +122,7 @@ export async function saldosPorLocal(filialId: string, locais: LocalEstoque[]): 
   const primeira = new Map<string, Date>();
   for (const t of transf) if (!primeira.has(t.produtoId)) primeira.set(t.produtoId, t.dataHora);
   const ids = [...primeira.keys()];
-  type Ev = { t: number; tipo: 'T' | 'C'; q: number; origem?: string; destino?: string };
+  type Ev = { t: number; tipo: 'T' | 'C'; q: number; origem?: string; destino?: string; recepcao?: boolean };
   const eventos = new Map<string, Ev[]>();
   for (const t of transf) {
     const arr = eventos.get(t.produtoId) ?? [];
@@ -125,10 +131,19 @@ export async function saldosPorLocal(filialId: string, locais: LocalEstoque[]): 
   }
   if (ids.length > 0) {
     const desde = new Date(Math.min(...[...primeira.values()].map((d) => d.getTime())));
+    // venda da recepção: conta "TICKET N" + item marcado "Sai na Recepção"
+    const daRecepcao = recepcao
+      ? sql<boolean>`EXISTS (SELECT 1 FROM pedido_item pi
+          JOIN pedido p ON p.id = pi.pedido_id
+          JOIN recepcao_item r ON r.filial_id = pi.filial_id
+            AND r.codigo = coalesce(pi.codigo_variante_externo, pi.codigo_produto_externo)
+          WHERE pi.id = ${schema.movimentoEstoque.pedidoItemId} AND p.nome_cliente ILIKE 'TICKET %')`
+      : sql<boolean>`false`;
     const consumo = await db
       .select({
         produtoId: schema.movimentoEstoque.produtoId,
         minuto: sql<string>`date_trunc('minute', ${schema.movimentoEstoque.dataHora})`,
+        recepcao: daRecepcao,
         qtd: sql<string>`sum(${schema.movimentoEstoque.quantidade})`,
       })
       .from(schema.movimentoEstoque)
@@ -142,7 +157,7 @@ export async function saldosPorLocal(filialId: string, locais: LocalEstoque[]): 
           sql`(${schema.movimentoEstoque.tipo} <> 'ENTRADA_DEVOLUCAO' OR ${schema.movimentoEstoque.pedidoItemId} IS NOT NULL)`,
         ),
       )
-      .groupBy(schema.movimentoEstoque.produtoId, sql`date_trunc('minute', ${schema.movimentoEstoque.dataHora})`);
+      .groupBy(schema.movimentoEstoque.produtoId, sql`date_trunc('minute', ${schema.movimentoEstoque.dataHora})`, sql`3`);
     for (const c of consumo) {
       const t = new Date(c.minuto).getTime();
       const p = primeira.get(c.produtoId);
@@ -150,7 +165,7 @@ export async function saldosPorLocal(filialId: string, locais: LocalEstoque[]): 
       // movimento negativo = consumo; positivo (estorno) = devolve
       const q = -Number(c.qtd);
       if (!q) continue;
-      eventos.get(c.produtoId)?.push({ t, tipo: 'C', q });
+      eventos.get(c.produtoId)?.push({ t, tipo: 'C', q, recepcao: c.recepcao === true });
     }
   }
 
@@ -172,9 +187,14 @@ export async function saldosPorLocal(filialId: string, locais: LocalEstoque[]): 
         continue;
       }
       let falta = e.q;
+      // venda da recepção: Recepção primeiro; o resto nunca tira da Recepção
       const comSaldo = [...bal.entries()]
-        .filter(([, v]) => v > 0)
-        .sort((a, b) => (ordemSetor.get(a[0]) ?? 99) - (ordemSetor.get(b[0]) ?? 99));
+        .filter(([loc, v]) => v > 0 && (e.recepcao || loc !== recepcao))
+        .sort((a, b) =>
+          e.recepcao && (a[0] === recepcao || b[0] === recepcao)
+            ? (a[0] === recepcao ? -1 : 1)
+            : (ordemSetor.get(a[0]) ?? 99) - (ordemSetor.get(b[0]) ?? 99),
+        );
       for (const [loc, v] of comSaldo) {
         if (falta <= 0) break;
         const tira = Math.min(v, falta);

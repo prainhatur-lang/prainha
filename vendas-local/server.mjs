@@ -115,6 +115,13 @@ function classificar(origem, numero) {
 }
 // Comanda 300-400 = a PESSOA; o rótulo ganha a mesa onde ela está (vínculo mesa_comanda).
 async function rotularComandas(comandas) {
+  // TICKET / TOTEM (02/11/2026): a conta do ticket é "Balcão" (número 0) — no
+  // KDS e na entrega aparece o número do ticket, que é o que o cliente tem na
+  // mão (o garçom leva a comida chamando pelo ticket).
+  for (const c of comandas) {
+    const nm = String(c.nome || '').trim();
+    if (!(Number(c.numero) > 0) && /^TICKET \d+$/i.test(nm)) c.rotulo = '🎟 ' + nm.toUpperCase();
+  }
   if (!COMANDA_ATIVA) return comandas; // loja só com mesa: não há o que rotular
   const nums = comandas.filter((c) => c.numero >= COMANDA_DE && c.numero <= NUMERO_MAX).map((c) => c.numero);
   if (!nums.length) return comandas;
@@ -3128,6 +3135,9 @@ async function pgInserirItem(ped, it) {
   // dobrado caiu em "Sem área"): usa a praça que quem lançou mandou junto
   const areaSemCadastro = !pl && it.area_codigo != null ? Number(it.area_codigo) : null;
   let area = await pgAreaDoItem(nomeItem, pl ? pl.area_codigo : areaSemCadastro);
+  // RECEPÇÃO (02/11/2026): bebida marcada "Sai na Recepção" vendida pelo
+  // Ticket/Totem sai no bar da recepção (ticketCalcular põe a praça no item).
+  if (it.area_recepcao != null && Number(it.tipo ?? 1) !== 2) area = Number(it.area_recepcao);
   // produto que não cobra os 10% (cadastro da nuvem): a marca vai no item
   let semServico = !!pl && pl.sem_servico === true;
   // complemento vai na praça do item-pai, sempre (ver herdarPracaDoPai)
@@ -6641,12 +6651,27 @@ async function apiLioPagarSemTrava(body, garcom) {
 // (NUMERO 0 + pedido explícito, o mesmo caminho da entrega): ticket que o
 // cliente desistiu de pagar não deixa conta aberta nem item no KDS.
 const ticketEmVoo = new Map(); // ticket_id -> promise (reenvio da fila do app espera o primeiro)
+/** Praça RECEPÇÃO + códigos marcados "Sai na Recepção" no cadastro da nuvem.
+ *  null = sem praça RECEPÇÃO na loja ou nada marcado (tudo segue como antes). */
+async function ticketPracaRecepcao() {
+  try {
+    const cods = JSON.parse(await cfgGet('recepcao_cardapio', '[]'));
+    if (!Array.isArray(cods) || !cods.length) return null;
+    const areas = await sql`SELECT codigo, nome FROM area`;
+    const a = areas.find((x) => semAcento(x.nome).trim().startsWith('recepcao'));
+    if (!a) return null;
+    return { area: Number(a.codigo), codigos: new Set(cods.map(Number)) };
+  } catch { return null; }
+}
 async function ticketCalcular(pedidos) {
   const lista = Array.isArray(pedidos) ? pedidos : [];
   if (!lista.length) return { ok: false, erro: 'sem itens' };
   if (lista.length > 40) return { ok: false, erro: 'itens demais num ticket só' };
   const itens = [];
   let soma = 0, base = 0;
+  // RECEPÇÃO (02/11/2026): o que o cadastro marcou "Sai na Recepção" vai pra
+  // praça RECEPÇÃO (bar da recepção). Comida segue pra praça dela (cozinha).
+  const recepcao = await ticketPracaRecepcao();
   for (const p of lista) {
     const cat = (await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, area_codigo, sem_servico
       FROM produto_local WHERE codigo_pdv=${Number(p.codigo_pdv)}`)[0];
@@ -6662,13 +6687,16 @@ async function ticketCalcular(pedidos) {
     }
     let obs = String(p.obs || '').trim().slice(0, 200);
     if (!obs && opcoes.length) obs = opcoes.map((o) => o.nome).join(' | ');
-    const area = nativo() ? await pgAreaDoItem(cat.nome, cat.area_codigo) : cat.area_codigo;
+    const naRecepcao = recepcao && recepcao.codigos.has(Number(cat.codigo_pdv));
+    const area = naRecepcao ? recepcao.area
+      : nativo() ? await pgAreaDoItem(cat.nome, cat.area_codigo) : cat.area_codigo;
     const vt = +((Number(cat.preco) + precoOpc) * qtd).toFixed(2);
     soma += vt;
     if (!(nativo() && cat.sem_servico === true)) base += vt;
     itens.push({ codigo_pdv: Number(cat.codigo_pdv), produto_codigo: cat.produto_codigo, nome: cat.nome,
       tamanho: cat.tamanho, preco: Number(cat.preco), qtd, obs, respostas: cods,
-      opcoes: opcoes.map((o) => o.nome), area_codigo: area == null ? null : Number(area), valor: vt });
+      opcoes: opcoes.map((o) => o.nome), area_codigo: area == null ? null : Number(area), valor: vt,
+      ...(naRecepcao ? { area_recepcao: recepcao.area } : {}) });
   }
   const as = itens.some((i) => i.area_codigo != null)
     ? await sql`SELECT codigo, nome FROM area WHERE codigo = ANY(${[...new Set(itens.map((i) => i.area_codigo).filter((a) => a != null))]})`
@@ -6774,6 +6802,10 @@ async function loopTotemNuvem() {
     // Lista do 🎟 Ticket (servidor antigo da nuvem não manda → não mexe).
     if (Array.isArray(d.ticket)) {
       await cfgSet('ticket_cardapio', JSON.stringify(d.ticket.map(Number).filter((n) => n > 0).slice(0, 2000)));
+    }
+    // "Sai na Recepção" (02/11/2026): bebida do Ticket/Totem que sai no bar da recepção.
+    if (Array.isArray(d.recepcao)) {
+      await cfgSet('recepcao_cardapio', JSON.stringify(d.recepcao.map(Number).filter((n) => n > 0).slice(0, 2000)));
     }
   } catch (e) {
     console.error('[totem]', e.message);

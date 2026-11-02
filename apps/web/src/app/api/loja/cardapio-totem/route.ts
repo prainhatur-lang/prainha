@@ -1,11 +1,12 @@
 // Cardápio do totem de autoatendimento pra loja (vendas-local).
 //   GET ?f=<filial>&e=<expira>&s=<assinatura> → { ok, grupos, itens: [{ codigo, grupo, ordem }], ticket: [codigo] }
 // `ticket` (02/11/2026): o que a maquininha mostra no 🎟 Ticket — vazio = tudo.
+// `recepcao` (02/11/2026): o que sai na praça RECEPÇÃO quando vendido no Ticket/totem.
 // Mesma assinatura HMAC do /api/loja/cardapio-destaques (partes [f, e]).
 
 import { NextResponse } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { GRUPOS_TOTEM, listarTicket, listarTotem } from '@/lib/cardapio-totem';
+import { GRUPOS_TOTEM, listarRecepcao, listarTicket, listarTotem } from '@/lib/cardapio-totem';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -30,6 +31,6 @@ export async function GET(request: Request) {
   }
   if (e * 1000 < Date.now()) return NextResponse.json({ ok: false, error: 'expirado' }, { status: 403 });
   if (!confere([f, String(e)], s)) return NextResponse.json({ ok: false, error: 'assinatura' }, { status: 403 });
-  const [itens, ticket] = await Promise.all([listarTotem(f), listarTicket(f)]);
-  return NextResponse.json({ ok: true, grupos: GRUPOS_TOTEM, itens, ticket });
+  const [itens, ticket, recepcao] = await Promise.all([listarTotem(f), listarTicket(f), listarRecepcao(f)]);
+  return NextResponse.json({ ok: true, grupos: GRUPOS_TOTEM, itens, ticket, recepcao });
 }

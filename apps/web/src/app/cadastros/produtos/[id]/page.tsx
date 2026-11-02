@@ -10,7 +10,7 @@ import { AbaFornecedores } from './aba-fornecedores';
 import { AbaSaldo } from './aba-saldo';
 import { AbaMarcas } from './aba-marcas';
 import { AbaPdv } from './aba-pdv';
-import { GRUPOS_TOTEM, listarTicket, listarTotem } from '@/lib/cardapio-totem';
+import { GRUPOS_TOTEM, listarRecepcao, listarTicket, listarTotem } from '@/lib/cardapio-totem';
 import { TrocarTipoButton } from './trocar-tipo';
 import { ControleEstoque } from './controle-estoque';
 import { ConverterUnidadeButton } from './converter-unidade';
@@ -296,6 +296,9 @@ export default async function ProdutoDetalhePage(props: {
     aba === 'pdv' && produto.codigoExterno != null
       ? await Promise.all([listarTicket(produto.filialId), listarTotem(produto.filialId)])
       : [[] as number[], [] as Awaited<ReturnType<typeof listarTotem>>];
+  // RECEPÇÃO (02/11/2026): o que sai no bar da recepção quando vende pelo Ticket/Totem.
+  const recepcaoCasa =
+    aba === 'pdv' && produto.codigoExterno != null ? await listarRecepcao(produto.filialId) : ([] as number[]);
 
   const etiquetasPdv =
     aba === 'pdv'
@@ -687,6 +690,7 @@ export default async function ProdutoDetalhePage(props: {
                   totemCasa.filter((t) => variantesPdv.some((v) => v.codigo === t.codigo)).map((t) => [t.codigo, t.grupo]),
                 ),
                 grupos: GRUPOS_TOTEM.map((g) => ({ id: g.id, nome: `${g.emoji} ${g.nome}` })),
+                recepcao: recepcaoCasa.filter((c) => variantesPdv.some((v) => v.codigo === c)),
               }}
               perguntas={perguntasPdv.map((q) => ({
                 varianteCodigo: q.varianteCodigo,
