@@ -358,7 +358,7 @@ export default async function ConhecaPage({
       </section>
 
       <footer className="bg-[#0f2a33] px-4 py-8 text-center text-sm text-white/60">
-        Concilia · sistema e consultoria para restaurantes · Aracaju, SE
+        Concilia · sistema e consultoria para restaurantes · Alphaville, SP
       </footer>
     </main>
   );
