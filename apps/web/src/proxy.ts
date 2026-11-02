@@ -48,8 +48,17 @@ const SOEA_HOST = 'soea.prainhabar.com';
 // Idem pro 27º Jipe Show de Sergipe (até 12/10/2026): jipeshow.prainhabar.com → /jipeshow.
 const JIPESHOW_HOST = 'jipeshow.prainhabar.com';
 
+// Domínio do Concilia como produto (SaaS): conciliabr.app (root) abre o site de
+// venda (/conheca). Os outros caminhos seguem o app normal.
+const CONCILIA_HOSTS = new Set(['conciliabr.app', 'www.conciliabr.app']);
+
 export async function proxy(request: NextRequest) {
   const hostname = (request.headers.get('host') ?? '').split(':')[0];
+  if (CONCILIA_HOSTS.has(hostname) && request.nextUrl.pathname === '/') {
+    const url = request.nextUrl.clone();
+    url.pathname = '/conheca';
+    return NextResponse.rewrite(url);
+  }
   if (hostname === SOEA_HOST && request.nextUrl.pathname === '/') {
     const url = request.nextUrl.clone();
     url.pathname = '/soea';
