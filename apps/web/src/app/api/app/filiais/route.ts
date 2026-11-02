@@ -16,9 +16,9 @@ import { and, eq, isNotNull } from 'drizzle-orm';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-// Túnel temporário do servidor de ensaio (02/11/2026, teste do totem na LIO).
-// Vazio = código 'ensaio' some.
-const ENSAIO_URL_PADRAO = 'https://francis-denied-appeals-mall.trycloudflare.com';
+// Túnel temporário do servidor de ensaio (teste do totem na LIO, 02/11/2026 —
+// já desligado). Vazio = código 'ensaio' some.
+const ENSAIO_URL_PADRAO = '';
 
 export async function GET(request: Request) {
   const raw = new URL(request.url).searchParams.get('empresa') ?? '';
