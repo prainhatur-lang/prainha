@@ -6,6 +6,8 @@
 // O JSON é uma lista de:
 //   { filialId, titulo, roteiro?, legenda, legendaTiktok?, musica?, redes?, agendadoPara (ISO),
 //     fotos?: [{ url, nome }] }   ← fotos baixadas da URL e postas no depósito marketing-midia
+//     fotos?: [{ caminho, nome }]  ← ou foto local (JPEG) do disco
+//     video?: { caminho, nome }    ← ou um vídeo MP4 local (vai sozinho no post)
 // Não repete: post da mesma casa com o mesmo título e horário já na fila é pulado.
 
 import { config as loadEnv } from 'dotenv';
@@ -23,7 +25,8 @@ type Entrada = {
   musica?: string;
   redes?: string[];
   agendadoPara: string;
-  fotos?: Array<{ url: string; nome: string }>;
+  fotos?: Array<{ url?: string; caminho?: string; nome: string }>;
+  video?: { caminho: string; nome: string };
 };
 
 const url = process.env.DATABASE_URL_DIRECT ?? process.env.DATABASE_URL;
@@ -38,13 +41,16 @@ async function subirFoto(filialId: string, origem: string, nome: string): Promis
   if (!r.ok) throw new Error(`foto ${origem}: HTTP ${r.status}`);
   const tipo = r.headers.get('content-type') ?? 'image/jpeg';
   if (!tipo.startsWith('image/jpeg')) throw new Error(`foto ${origem}: ${tipo} (o Instagram só aceita JPEG)`);
-  const corpo = Buffer.from(await r.arrayBuffer());
+  return subirArquivo(filialId, Buffer.from(await r.arrayBuffer()), nome, 'image/jpeg');
+}
+
+async function subirArquivo(filialId: string, corpo: Buffer, nome: string, tipoArquivo: string): Promise<string> {
   const seguro = nome.replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 60);
   const path = `${filialId}/claude-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${seguro}`;
   const up = await fetch(`${supa}/storage/v1/object/${BUCKET}/${path}`, {
     method: 'POST',
-    headers: { apikey: chave, Authorization: `Bearer ${chave}`, 'Content-Type': 'image/jpeg', 'x-upsert': 'false' },
-    body: corpo,
+    headers: { apikey: chave, Authorization: `Bearer ${chave}`, 'Content-Type': tipoArquivo, 'x-upsert': 'false' },
+    body: new Uint8Array(corpo),
   });
   if (!up.ok) throw new Error(`depósito ${path}: HTTP ${up.status} ${await up.text()}`);
   return path;
@@ -67,8 +73,18 @@ async function main() {
       console.log(`= já na fila: ${p.titulo}`);
       continue;
     }
-    const midias: Array<{ path: string; tipo: 'foto'; nome: string }> = [];
-    for (const f of p.fotos ?? []) midias.push({ path: await subirFoto(p.filialId, f.url, f.nome), tipo: 'foto', nome: f.nome });
+    if (p.video && p.fotos?.length) throw new Error(`${p.titulo}: vídeo vai sozinho (sem fotos)`);
+    const midias: Array<{ path: string; tipo: 'foto' | 'video'; nome: string }> = [];
+    for (const f of p.fotos ?? []) {
+      const path = f.caminho
+        ? await subirArquivo(p.filialId, readFileSync(resolve(f.caminho)), f.nome, 'image/jpeg')
+        : await subirFoto(p.filialId, String(f.url), f.nome);
+      midias.push({ path, tipo: 'foto', nome: f.nome });
+    }
+    if (p.video) {
+      const path = await subirArquivo(p.filialId, readFileSync(resolve(p.video.caminho)), p.video.nome, 'video/mp4');
+      midias.push({ path, tipo: 'video', nome: p.video.nome });
+    }
     const [novo] = await sql`
       INSERT INTO marketing_post
         (filial_id, midias, legenda, redes, agendado_para, status, origem, titulo, roteiro, legenda_tiktok, musica, criado_por_email)
@@ -76,7 +92,7 @@ async function main() {
         (${p.filialId}, ${sql.json(midias)}, ${p.legenda}, ${sql.json(p.redes ?? ['instagram', 'tiktok'])}, ${quando},
          'AGUARDANDO', 'claude', ${p.titulo}, ${p.roteiro ?? null}, ${p.legendaTiktok ?? null}, ${p.musica ?? null}, 'claude')
       RETURNING id`;
-    console.log(`+ ${p.titulo} (${midias.length} foto(s)) → ${novo.id}`);
+    console.log(`+ ${p.titulo} (${midias.length} mídia(s)) → ${novo.id}`);
   }
 }
 
