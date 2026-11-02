@@ -11,6 +11,27 @@ const IFOOD_BASE = process.env.IFOOD_BASE || 'https://merchant-api.ifood.com.br'
 export interface CredIfood {
   clientId: string;
   clientSecret: string;
+  /** Opcional: recebe cada chamada feita (homologação guarda o log pro
+   *  chamado do iFood). Sem isto, nada muda. Token e segredo vão mascarados. */
+  log?: (r: ChamadaIfood) => Promise<void> | void;
+}
+
+export interface ChamadaIfood {
+  quando: Date;
+  metodo: string;
+  caminho: string;
+  status: number;
+  ms: number;
+  pedido: unknown;
+  resposta: string;
+  /** Número da tentativa (0 = primeira) — mostra o retry/backoff no log. */
+  tentativa: number;
+}
+
+/** Chama o gravador sem nunca derrubar a chamada de verdade. */
+async function anotar(c: CredIfood, r: ChamadaIfood): Promise<void> {
+  if (!c.log) return;
+  try { await c.log(r); } catch { /* log não pode quebrar a operação */ }
 }
 
 /** Cache de token por client_id. Sobrevive entre invocações quentes da mesma
@@ -23,6 +44,7 @@ export async function ifoodToken(c: CredIfood, forcar = false): Promise<string> 
   // 10 min de folga: token não pode vencer no meio de um polling.
   if (!forcar && cache && Date.now() < cache.expira - 10 * 60 * 1000) return cache.token;
 
+  const t0 = new Date();
   const r = await fetch(IFOOD_BASE + '/authentication/v1.0/oauth/token', {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -34,6 +56,12 @@ export async function ifoodToken(c: CredIfood, forcar = false): Promise<string> 
     signal: AbortSignal.timeout(15000),
   });
   const j = (await r.json().catch(() => ({}))) as { accessToken?: string; expiresIn?: number; error?: { message?: string } };
+  await anotar(c, {
+    quando: t0, metodo: 'POST', caminho: '/authentication/v1.0/oauth/token', status: r.status,
+    ms: Date.now() - t0.getTime(), tentativa: 0,
+    pedido: { grantType: 'client_credentials', clientId: c.clientId, clientSecret: '***' },
+    resposta: JSON.stringify({ ...j, accessToken: j.accessToken ? j.accessToken.slice(0, 12) + '…(mascarado)' : undefined }),
+  });
   if (!r.ok || !j.accessToken) {
     // 400 costuma ser client_id cortado (tem que ter 36 chars), 401 é o par errado.
     // IfoodErro (e não Error) pra o status chegar no recado de tela: sem ele
@@ -130,6 +158,7 @@ export async function ifoodApi(c: CredIfood, caminho: string, o: OpcoesApi = {})
     const tk = await ifoodToken(c, forcar);
     forcar = false;
     let r: Response;
+    const t0 = new Date();
     try {
       r = await fetch(IFOOD_BASE + caminho, {
         method: metodo,
@@ -142,10 +171,15 @@ export async function ifoodApi(c: CredIfood, caminho: string, o: OpcoesApi = {})
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (e) {
+      await anotar(c, { quando: t0, metodo, caminho, status: 0, ms: Date.now() - t0.getTime(), pedido: corpo, resposta: 'sem resposta: ' + (e as Error).message, tentativa: n });
       if (n < tentativas) { await dormir(espera(n)); continue; }
       throw new IfoodErro('iFood ' + metodo + ' ' + caminho + ' → sem resposta: ' + (e as Error).message, 0, 'SEM_RESPOSTA', '');
     }
 
+    if (c.log) {
+      const txtLog = await r.clone().text().catch(() => '');
+      await anotar(c, { quando: t0, metodo, caminho, status: r.status, ms: Date.now() - t0.getTime(), pedido: corpo, resposta: txtLog.slice(0, 20000), tentativa: n });
+    }
     if (r.status === 401 && !renovou) {
       // Token revogado/rotacionado: renova e repete sem gastar tentativa.
       renovou = true;

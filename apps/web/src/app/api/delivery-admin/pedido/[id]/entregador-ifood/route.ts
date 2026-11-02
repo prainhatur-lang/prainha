@@ -19,7 +19,9 @@ import { db, schema } from '@concilia/db';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
-import { configIfood } from '@/lib/ifood-credenciais';
+import { configIfood, credShipping } from '@/lib/ifood-credenciais';
+import { comLogHomolog } from '@/lib/ifood-homolog-log';
+import { puxarEventosShippingHomolog } from '@/lib/ifood-shipping-homolog';
 import {
   cotarExterno,
   criarPedidoExterno,
@@ -46,10 +48,14 @@ async function carregar(userId: string, id: string) {
   if (!filiais.some((f) => f.id === p.filialId)) {
     return { erro: NextResponse.json({ error: 'filial não acessível' }, { status: 403 }) };
   }
-  const c = await configIfood(p.filialId);
-  if (!c.configurada || !c.clientId || !c.clientSecret || !c.merchantId) {
+  // credShipping: com a homologação do Shipping desligada devolve a mesma
+  // credencial dos pedidos de sempre; ligada, o app e a loja de teste (e cada
+  // chamada vai pro log da homologação).
+  const cs = credShipping(await configIfood(p.filialId));
+  if (!cs) {
     return { erro: NextResponse.json({ error: 'esta casa não tem credencial do iFood cadastrada' }, { status: 400 }) };
   }
+  const c = cs.homologacao ? comLogHomolog(p.filialId, 'shipping', cs) : cs;
   return { p, c };
 }
 
@@ -74,7 +80,14 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   const { id } = await ctx.params;
   const r = await carregar(user.id, id);
   if ('erro' in r) return r.erro;
-  const { c } = r;
+  const { c, p } = r;
+
+  // Homologação: ninguém puxa a fila do app de teste — puxa aqui (com folga
+  // de 25 s), grava, aplica e dá ack, igual ao puxador de produção.
+  if (c.homologacao) {
+    try { await puxarEventosShippingHomolog(p.filialId, c); }
+    catch (er) { console.error('[entregador-ifood] polling homologação:', (er as Error).message); }
+  }
 
   const e = await ultima(id);
   if (!e) return NextResponse.json({ entrega: null });

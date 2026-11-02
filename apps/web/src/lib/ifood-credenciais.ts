@@ -33,6 +33,10 @@ export const CAMPOS_IFOOD = [
   { chave: 'finClientSecret', rotulo: 'client_secret do app Financeiro', ajuda: 'Fica cifrado; depois de salvar some da tela', segredo: true },
   { chave: 'finMerchantId', rotulo: 'Loja no app Financeiro (merchant_id)', ajuda: 'Em branco = a mesma loja dos pedidos' },
   { chave: 'finHomologacao', rotulo: 'Ambiente de homologação do Financeiro', ajuda: '1 = manda o header x-request-homologation (só durante a homologação)' },
+  // Homologação do Shipping (entregador): com 1, o "Chamar entregador iFood"
+  // usa o app e a loja acima (de teste) em vez da credencial dos pedidos —
+  // nenhum motoboy de verdade é chamado. Desligado = tudo igual a antes.
+  { chave: 'shipHomologacao', rotulo: 'Entregador (Shipping) na homologação', ajuda: '1 = o entregador usa o app e a loja de teste acima (nenhum motoboy de verdade)' },
 ] as const;
 
 export type ChaveIfood = (typeof CAMPOS_IFOOD)[number]['chave'];
@@ -41,7 +45,7 @@ export const CHAVES_IFOOD = CAMPOS_IFOOD.map((c) => c.chave) as ChaveIfood[];
  *  e esconder isso da tela só atrapalharia quem precisa conferir. */
 export const CHAVES_IFOOD_SECRETAS: ChaveIfood[] = ['clientSecret', 'finClientSecret'];
 /** Chaves do app do Financeiro — salvas à parte e fora do "configurada". */
-export const CHAVES_IFOOD_FIN: ChaveIfood[] = ['finClientId', 'finClientSecret', 'finMerchantId', 'finHomologacao'];
+export const CHAVES_IFOOD_FIN: ChaveIfood[] = ['finClientId', 'finClientSecret', 'finMerchantId', 'finHomologacao', 'shipHomologacao'];
 
 export interface ConfigIfood {
   clientId: string;
@@ -68,13 +72,15 @@ export interface ConfigIfoodFin {
   /** Em branco = usa o merchantId dos pedidos. */
   merchantId: string;
   homologacao: boolean;
+  /** Entregador (Shipping) usa este app/loja de teste. */
+  shipHomologacao: boolean;
 }
 
 const VAZIA: ConfigIfood = {
   clientId: '', clientSecret: '', merchantId: '',
   modo: 'centralizado', codigoPdv: 'produto',
   autoConfirmar: true, ativo: false, puxador: 'loja', configurada: false,
-  fin: { clientId: '', clientSecret: '', merchantId: '', homologacao: false },
+  fin: { clientId: '', clientSecret: '', merchantId: '', homologacao: false, shipHomologacao: false },
 };
 
 const CHAVES_PEDIDOS = CHAVES_IFOOD.filter((c) => !CHAVES_IFOOD_FIN.includes(c)) as string[];
@@ -97,6 +103,7 @@ function montar(m: Record<string, string>, chaves: string[]): ConfigIfood {
       clientSecret: m.finClientSecret ?? '',
       merchantId: m.finMerchantId ?? '',
       homologacao: m.finHomologacao === '1',
+      shipHomologacao: m.shipHomologacao === '1',
     },
   };
 }
@@ -117,6 +124,23 @@ export function credFinanceiro(cfg: ConfigIfood): {
   const merchantId = cfg.fin.merchantId || cfg.merchantId;
   if (!clientId || !clientSecret || !merchantId) return null;
   return { clientId, clientSecret, merchantId, homologacao: cfg.fin.homologacao, appProprio: proprio };
+}
+
+/** Credencial que o entregador do iFood (Shipping) usa. Com a homologação do
+ *  Shipping ligada, é o app/loja de teste guardados no bloco do Financeiro;
+ *  senão, a credencial dos pedidos exatamente como sempre foi. */
+export function credShipping(cfg: ConfigIfood): {
+  clientId: string;
+  clientSecret: string;
+  merchantId: string;
+  homologacao: boolean;
+} | null {
+  const mLoja = cfg.fin.merchantId || cfg.merchantId;
+  if (cfg.fin.shipHomologacao && cfg.fin.clientId && cfg.fin.clientSecret && mLoja) {
+    return { clientId: cfg.fin.clientId, clientSecret: cfg.fin.clientSecret, merchantId: mLoja, homologacao: true };
+  }
+  if (!cfg.configurada || !cfg.clientId || !cfg.clientSecret || !cfg.merchantId) return null;
+  return { clientId: cfg.clientId, clientSecret: cfg.clientSecret, merchantId: cfg.merchantId, homologacao: false };
 }
 
 /** Config desta filial, já decifrada. Filial sem cadastro volta VAZIA e

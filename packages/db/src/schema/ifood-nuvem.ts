@@ -79,3 +79,25 @@ export const ifoodNuvemLease = pgTable('ifood_nuvem_lease', {
   ultimoErro: text('ultimo_erro'),
   eventos: integer('eventos').notNull().default(0),
 });
+
+/** Log das chamadas à API do iFood feitas em HOMOLOGAÇÃO (loja/app de teste).
+ *  É o arquivo de logs que o chamado de homologação pede. Só grava quando o
+ *  modo homologação do módulo está ligado; em produção fica vazio. */
+export const ifoodHomologLog = pgTable(
+  'ifood_homolog_log',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    filialId: uuid('filial_id').references(() => filial.id, { onDelete: 'cascade' }),
+    /** shipping, financeiro, … */
+    modulo: varchar('modulo', { length: 20 }).notNull(),
+    quando: timestamp('quando', { withTimezone: true }).notNull(),
+    metodo: varchar('metodo', { length: 8 }).notNull(),
+    caminho: text('caminho').notNull(),
+    status: integer('status').notNull(),
+    ms: integer('ms').notNull(),
+    tentativa: integer('tentativa').notNull().default(0),
+    pedido: jsonb('pedido'),
+    resposta: text('resposta'),
+  },
+  (t) => ({ quandoIdx: index('idx_ifood_homolog_log').on(t.filialId, t.modulo, t.quando) }),
+);

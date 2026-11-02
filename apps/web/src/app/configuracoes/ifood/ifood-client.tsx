@@ -62,6 +62,7 @@ function CardFilial({ filial, podeEditar }: { filial: FilialIfood; podeEditar: b
   const [finPista, setFinPista] = useState(v.finClientSecret ?? '');
   const [finMerchantId, setFinMerchantId] = useState(v.finMerchantId ?? '');
   const [finHomologacao, setFinHomologacao] = useState(v.finHomologacao === '1');
+  const [shipHomologacao, setShipHomologacao] = useState(v.shipHomologacao === '1');
   const [finMsg, setFinMsg] = useState<string | null>(null);
 
   async function salvar(sobrepor?: Record<string, string>) {
@@ -125,6 +126,7 @@ function CardFilial({ filial, podeEditar }: { filial: FilialIfood; podeEditar: b
         finClientId: finClientId.trim(),
         finMerchantId: finMerchantId.trim(),
         finHomologacao: finHomologacao ? '1' : '0',
+        shipHomologacao: shipHomologacao ? '1' : '0',
         ...(finClientSecret.trim() ? { finClientSecret: finClientSecret.trim() } : {}),
       };
       if (!finTem && (!valores.finClientId || !valores.finClientSecret)) {
@@ -157,7 +159,7 @@ function CardFilial({ filial, podeEditar }: { filial: FilialIfood; podeEditar: b
     try {
       const r = await fetch(`/api/configuracoes/ifood?filialId=${filial.id}&escopo=fin`, { method: 'DELETE' });
       if (!r.ok) { const d = await r.json().catch(() => ({})); setFinMsg(d.error ?? `Erro ${r.status}`); return; }
-      setFinTem(false); setFinClientId(''); setFinClientSecret(''); setFinPista(''); setFinMerchantId(''); setFinHomologacao(false);
+      setFinTem(false); setFinClientId(''); setFinClientSecret(''); setFinPista(''); setFinMerchantId(''); setFinHomologacao(false); setShipHomologacao(false);
       setFinMsg('Apagado');
     } finally {
       setSalvando(false);
@@ -300,6 +302,17 @@ function CardFilial({ filial, podeEditar }: { filial: FilialIfood; podeEditar: b
               <span className="block text-xs text-slate-500">
                 Manda o header <code>x-request-homologation</code> que o iFood pede no teste do
                 módulo Financeiro. Desmarque depois de homologado.
+              </span>
+            </span>
+          </label>
+          <label className="mt-2 flex items-start gap-2 text-sm text-slate-700">
+            <input type="checkbox" className="mt-0.5 h-4 w-4" checked={shipHomologacao} disabled={!podeEditar}
+              onChange={(e) => setShipHomologacao(e.target.checked)} />
+            <span>
+              Usar no entregador (Shipping) — homologação
+              <span className="block text-xs text-slate-500">
+                O &quot;Chamar entregador iFood&quot; passa a usar este app e esta loja de teste (nenhum motoboy de
+                verdade) e grava cada chamada no log da homologação. Desmarque depois de homologado.
               </span>
             </span>
           </label>
