@@ -428,7 +428,7 @@ export async function registrar(linha: {
 }
 
 /** Número da casa por onde o destinatário falou com a gente nas últimas 24 h (ou null). */
-async function janelaAberta(organizacaoId: string, telefone: string): Promise<string | null> {
+export async function janelaAberta(organizacaoId: string, telefone: string): Promise<string | null> {
   const [toque] = await db
     .select({ phoneNumberId: schema.relatorioDiarioEnvio.phoneNumberId })
     .from(schema.relatorioDiarioEnvio)
@@ -799,6 +799,8 @@ export interface PedidoRelatorio {
   origem: 'toque' | 'pedido';
   /** a Meta reentregou a mesma mensagem: já respondemos, não manda de novo */
   repetida?: boolean;
+  /** pedido do resultado do MÊS (dia = 1º do mês): toque no aviso mensal ou "relatório do mês" */
+  mensal?: boolean;
 }
 
 /**
@@ -819,7 +821,21 @@ export async function reconhecerPedidoRelatorio(msg: {
 
   let dia: string | null = null;
   let origem: 'toque' | 'pedido' = 'toque';
-  if (msg.payload?.startsWith('relatorio:')) {
+  let mensal = false;
+  if (msg.payload?.startsWith('mensal:')) {
+    // "Ver resumo" do aviso do mês (relatorio-mensal-dono)
+    const d = msg.payload.slice('mensal:'.length);
+    dia = /^\d{4}-\d{2}-01$/.test(d) ? d : `${ultimoDiaFechado().slice(0, 7)}-01`;
+    mensal = true;
+  } else if (!msg.payload && msg.texto && /^relat[oó]rio (do )?m[eê]s( passado| anterior)?[.!]*$/i.test(msg.texto.trim())) {
+    // "relatório do mês" / "relatório do mês passado" = último mês fechado
+    const hoje = somaDias(ultimoDiaFechado(), 1);
+    const a = Number(hoje.slice(0, 4));
+    const m = Number(hoje.slice(5, 7));
+    dia = m === 1 ? `${a - 1}-12-01` : `${a}-${String(m - 1).padStart(2, '0')}-01`;
+    mensal = true;
+    origem = 'pedido';
+  } else if (msg.payload?.startsWith('relatorio:')) {
     const d = msg.payload.slice('relatorio:'.length);
     dia = /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : ultimoDiaFechado();
   } else if (/^ver resumo$/i.test((msg.payload || msg.textoBotao || '').trim())) {
@@ -843,7 +859,7 @@ export async function reconhecerPedidoRelatorio(msg: {
       .from(schema.relatorioDiarioEnvio)
       .where(and(eq(schema.relatorioDiarioEnvio.waMessageId, msg.id), eq(schema.relatorioDiarioEnvio.canal, 'toque')))
       .limit(1);
-    if (repetida) return { ...dest, para: msg.from, phoneNumberId: msg.phoneNumberId, dia, origem, repetida: true };
+    if (repetida) return { ...dest, para: msg.from, phoneNumberId: msg.phoneNumberId, dia, origem, repetida: true, mensal };
   }
   await registrar({
     organizacaoId: dest.organizacaoId,
@@ -855,12 +871,16 @@ export async function reconhecerPedidoRelatorio(msg: {
     waMessageId: msg.id ?? null,
     phoneNumberId: msg.phoneNumberId,
   });
-  return { ...dest, para: msg.from, phoneNumberId: msg.phoneNumberId, dia, origem };
+  return { ...dest, para: msg.from, phoneNumberId: msg.phoneNumberId, dia, origem, mensal };
 }
 
 /** Responde o pedido com o relatório inteiro (roda no after() do webhook). */
 export async function responderPedidoRelatorio(p: PedidoRelatorio): Promise<void> {
   if (p.repetida) return;
+  if (p.mensal) {
+    const { responderPedidoMensal } = await import('./relatorio-mensal-dono');
+    return responderPedidoMensal(p);
+  }
   try {
     const casas = await relatorioConfigurado(p.organizacaoId, p.dia);
     await enviarTextoCompleto(p, p.dia, p.origem, casas);

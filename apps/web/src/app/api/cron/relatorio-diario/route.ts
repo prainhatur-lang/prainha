@@ -6,6 +6,7 @@
 import { NextResponse } from 'next/server';
 import { enviarRelatoriosDoDia } from '@/lib/relatorio-diario-envio';
 import { enviarRelatoriosPorCasa, enviarMesPorCasa } from '@/lib/relatorio-casa-envio';
+import { enviarMesDono } from '@/lib/relatorio-mensal-dono';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -21,5 +22,7 @@ export async function GET(req: Request) {
   const porCasa = await enviarRelatoriosPorCasa('cron').catch((e) => [{ erro: e instanceof Error ? e.message : String(e) }]);
   // Dia 01: o resultado do mês anterior (só sai uma vez por mês e pessoa).
   const mes = await enviarMesPorCasa('cron').catch((e) => [{ erro: e instanceof Error ? e.message : String(e) }]);
-  return NextResponse.json({ ok: true, envios, porCasa, mes });
+  // Dia 01: o mês anterior das casas todas pra quem recebe o relatório completo (dono).
+  const mesDono = await enviarMesDono({ origem: 'cron' }).catch((e) => [{ erro: e instanceof Error ? e.message : String(e) }]);
+  return NextResponse.json({ ok: true, envios, porCasa, mes, mesDono });
 }

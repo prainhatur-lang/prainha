@@ -1585,7 +1585,7 @@ async function pontoEmAbertoDaCasa(filialId: string, dia: string): Promise<Ponto
 }
 
 /** Eventos de ticket cadastrados na casa nesse dia: encerrado vale a foto, aberto conta ao vivo. */
-async function eventosDoDia(filialId: string, dia: string): Promise<EventoDia[]> {
+export async function eventosDoDia(filialId: string, dia: string): Promise<EventoDia[]> {
   const linhas = await q<{
     id: string; nome: string; pagador: string | null; valor_ticket: string; convidados: number | null; status: string;
     produtos: number[] | null; pratos: string | null; valor_tickets: string | null; valor_pdv: string | null; valor_recebido: string | null;
