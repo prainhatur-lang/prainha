@@ -8691,8 +8691,8 @@ async function ehRecepcao(login) {
 // Espaço Kids (/kids) entra na mesma régua: sempre pediu login + PIN e aceitava
 // qualquer login ativo da casa; segue assim até alguém ganhar o check — daí só
 // quem tem o check (ou é gerente) entra (kidsPodeEntrar).
-const ACESSOS_TELA = ['producao', 'etiqueta', 'qrcode', 'reservas', 'ponto', 'kids', 'estoque'];
-const ACESSO_NOME = { producao: 'Produção', etiqueta: 'Etiqueta', qrcode: 'QR Codes das mesas', reservas: 'Reservas', ponto: 'Ponto (cadastro de rosto)', kids: 'Espaço Kids', estoque: 'Transferência de estoque' };
+const ACESSOS_TELA = ['producao', 'etiqueta', 'qrcode', 'reservas', 'ponto', 'kids'];
+const ACESSO_NOME = { producao: 'Produção', etiqueta: 'Etiqueta', qrcode: 'QR Codes das mesas', reservas: 'Reservas', ponto: 'Ponto (cadastro de rosto)', kids: 'Espaço Kids' };
 /** o check existe e a pessoa não está desativada aqui */
 async function acessoMarcado(login, a) {
   try {
@@ -16904,7 +16904,6 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 <div class="prod">Concilia <b>Loja</b><small>${LOJA_NOME} · v${VERSAO}</small></div>
 <a href="/caixa"><i>🧰</i><span>Caixa</span></a>
 <a href="/producao"><i>👨‍🍳</i><span>Produção<small>chef manda fazer pros cozinheiros</small></span></a>
-<a href="/transferencia"><i>📦</i><span>Transferência<small>do depósito pros setores, com foto</small></span></a>
 <a href="/etiqueta"><i>🏷</i><span>Etiqueta</span></a>
 <a href="/qrcodes"><i>🔳</i><span>QR Codes das mesas</span></a>
 <a href="/produtos"><i>🍽</i><span>Produtos<small>pausar, voltar a vender, onde aparece e foto</small></span></a>
@@ -29405,11 +29404,10 @@ var ACS=[['caixa','🧰','Caixa','recebe, desconto, gaveta, fecha o caixa'],['ga
   ['qrcode','🔳','QR Codes das mesas','imprimir os QR das mesas'],['reservas','📅','Reservas','recepção e lista de espera'],
   ['ponto','🕐','Ponto','libera o cadastro de rosto (bater o ponto é livre)'],
   ['kids','🧸','Espaço Kids','monitora: entrada, saída e cobrança das crianças'],
-  ['estoque','📦','Transferência de estoque','tablet: tirar do depósito pros setores, com foto de quem levou'],
   ['gerente','👔','Gerente','autoriza cancelamento, fiado — entra em tudo']];
 var TELAS_PORTA={etiqueta:1,qrcode:1,ponto:1};
 /* o Kids sempre pediu login; sem ninguém marcado, qualquer login da casa entra */
-var TELAS_AVISO={kids:'hoje entra qualquer login da casa; marcar alguém deixa só os marcados (e o gerente)',estoque:'hoje entra qualquer login da casa; marcar alguém deixa só os marcados (e o gerente)'};
+var TELAS_AVISO={kids:'hoje entra qualquer login da casa; marcar alguém deixa só os marcados (e o gerente)'};
 function acsHtml(u){
   var tem={};(u.acessos||[]).forEach(function(a){tem[a]=1});
   if(u.consumer&&u.gerente)tem.gerente=1;
@@ -31112,278 +31110,6 @@ async function producaoNuvem(metodo, body) {
     return j && typeof j === 'object' ? j : { ok: false, erro: 'resposta inválida do Concilia (HTTP ' + r.status + ')' };
   } catch (err) { return { ok: false, erro: 'sem conexão com o Concilia: ' + err.message }; }
 }
-// ================= TRANSFERÊNCIA ENTRE SETORES pelo TABLET (/transferencia) =================
-// Depósito → Bar/Cozinha/Recepção com a foto de quem levou. A transferência
-// nasce no Concilia (/api/loja/estoque-setor, assinado) — a mesma da tela
-// /estoque/locais. Entra com login + PIN da loja; porta igual ao Kids: sem
-// ninguém com o check "Transferência de estoque" entra qualquer login ativo,
-// com alguém marcado só quem tem o check (ou é gerente).
-async function transfPodeEntrar(login) {
-  if (!(await portaFechada('estoque'))) return true;
-  return temAcessoTela(login, 'estoque');
-}
-async function apiTransfEntrar(body) {
-  const login = String(body.login || '').trim().toLowerCase();
-  const pin = String(body.pin || '').replace(/\D/g, '');
-  if (!login) return { ok: false, erro: 'informe o login' };
-  if (!(pin.length >= 4 && pin.length <= 8)) return { ok: false, erro: 'o PIN tem de 4 a 8 números' };
-  let p;
-  try { p = await permsDoUsuario(login); } catch (e) { return { ok: false, erro: e.message }; }
-  if (!p.ok) return { ok: false, erro: 'Login não encontrado. Fale com o gerente.' };
-  if (!(await transfPodeEntrar(login))) return { ok: false, erro: 'Este login não faz transferência de estoque. O administrador marca em Caixa → Usuários.' };
-  const [atual] = await sql`SELECT pin_hash, salt FROM garcom_pin WHERE login=${login}`;
-  if (!atual) {
-    const pin2 = String(body.pin2 || '').replace(/\D/g, '');
-    if (!pin2) return { ok: true, primeira_vez: true, nome: p.nome };
-    if (pin2 !== pin) return { ok: false, primeira_vez: true, erro: 'os dois PINs não são iguais' };
-    const salt = randomBytes(16).toString('hex');
-    await sql`INSERT INTO garcom_pin (login, pin_hash, salt, nome)
-      VALUES (${login}, ${pinHash(pin, salt)}, ${salt}, ${p.nome})
-      ON CONFLICT (login) DO UPDATE SET pin_hash=EXCLUDED.pin_hash, salt=EXCLUDED.salt,
-        nome=EXCLUDED.nome, atualizado_em=now()`;
-    return { ok: true, token: garcomGeraToken(login), login, nome: p.nome };
-  }
-  if (!pinConfere(pin, atual.salt, atual.pin_hash)) return { ok: false, erro: 'PIN incorreto' };
-  return { ok: true, token: garcomGeraToken(login), login, nome: p.nome || login };
-}
-async function transfDaRequisicao(req, u) {
-  const tok = String(req.headers['x-garcom'] || (u && u.searchParams.get('t')) || '');
-  const v = garcomVerificaToken(tok);
-  if (!v) return null;
-  try {
-    const p = await permsDoUsuario(v.login);
-    if (!p.ok) return null;
-    if (!(await transfPodeEntrar(v.login))) return null;
-    return { login: v.login, nome: p.nome || v.login };
-  } catch { return { login: v.login, nome: v.login }; }
-}
-async function estoqueSetorNuvem(metodo, body) {
-  if (!FILIAL_ID || !PAGAR_MESA_SECRET) return { ok: false, erro: 'loja sem chave da nuvem (FILIAL_ID/PAGAR_MESA_SECRET)' };
-  try {
-    const e = Math.floor(Date.now() / 1000) + 120;
-    const s = nfceAssina('estoque-setor', e);
-    const r = metodo === 'GET'
-      ? await fetch(`${PAGAR_MESA_URL}/api/loja/estoque-setor?f=${encodeURIComponent(FILIAL_ID)}&e=${e}&s=${s}`, { signal: AbortSignal.timeout(20000) })
-      : await fetch(`${PAGAR_MESA_URL}/api/loja/estoque-setor`, { method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ f: FILIAL_ID, e, s, ...body }), signal: AbortSignal.timeout(40000) });
-    const j = await r.json().catch(() => null);
-    return j && typeof j === 'object' ? j : { ok: false, erro: 'resposta inválida do Concilia (HTTP ' + r.status + ')' };
-  } catch (err) { return { ok: false, erro: 'sem conexão com o Concilia: ' + err.message }; }
-}
-// /transferencia — tablet da loja: produto, quanto, de onde, pra onde, quem
-// levou (com foto). Fala só com /api/transferencia/*.
-const TRANSF_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>${LOJA_NOME} — Transferência de estoque</title><style>
-:root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a;--red:#dc2626;--amber:#d97706}
-*{box-sizing:border-box}body{margin:0;font-family:'Outfit',-apple-system,system-ui,sans-serif;background:var(--bg);color:var(--ink);padding-bottom:40px}
-header{position:sticky;top:0;z-index:5;background:#fff;border-bottom:1px solid var(--line);padding:10px 14px;display:flex;align-items:center;gap:10px}
-h1{font-size:17px;margin:0;flex:1}h1 b{color:var(--gold2)}
-.back{background:#f0f0f4;border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:6px 11px;font:inherit;font-size:13px;text-decoration:none;cursor:pointer}
-.wrap{max-width:720px;margin:0 auto;padding:12px}
-h2{font-size:13px;color:var(--mut);font-weight:600;margin:18px 0 8px;text-transform:uppercase;letter-spacing:.4px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:8px}
-.mut{color:var(--mut);font-size:13px;line-height:1.5}
-input,textarea,select{width:100%;font:inherit;font-size:17px;padding:12px;border:1px solid var(--line);border-radius:10px;background:#fff}
-input:focus,textarea:focus{outline:none;border-color:var(--gold2)}
-.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
-.chip{font:inherit;font-size:16px;border:1px solid var(--line);background:#fff;border-radius:999px;padding:10px 16px;cursor:pointer}
-.chip.on{background:var(--ink);border-color:var(--ink);color:#fff}
-.chip small{opacity:.7;font-size:12.5px;margin-left:4px}
-.prods{max-height:300px;overflow:auto;margin-top:8px;border-top:1px solid #f1f1f5}
-.prod{display:flex;align-items:center;gap:10px;padding:12px 4px;border-bottom:1px solid #f1f1f5;cursor:pointer;font-size:16px}
-.prod:active{background:#fafafa}.prod .nm{flex:1;min-width:0}.prod small{color:var(--mut);font-size:12.5px}
-.sel{background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;padding:12px;display:flex;align-items:center;gap:10px;font-size:17px}
-.sel b{flex:1}
-.qtd{display:flex;align-items:center;gap:8px;margin-top:10px}
-.qtd input{width:140px;text-align:center;font-size:24px;font-weight:700}
-.qtd button{font:inherit;font-size:26px;width:56px;height:56px;border-radius:12px;border:1px solid var(--line);background:#fff;cursor:pointer}
-.big{width:100%;margin-top:14px;font:inherit;font-size:18px;font-weight:700;padding:16px;border:0;border-radius:12px;background:var(--gold2);color:#fff;cursor:pointer}
-.big:disabled{opacity:.5}
-.big.sec{background:#fff;color:var(--ink);border:1px solid var(--line)}
-.err{color:var(--red);font-size:14px;margin-top:8px;min-height:18px}
-.login{max-width:400px;margin:50px auto;background:#fff;border:1px solid var(--line);border-radius:16px;padding:22px}
-.login input{margin-top:8px}
-.foto{display:flex;gap:12px;align-items:center}
-.foto img{width:120px;height:120px;object-fit:cover;border-radius:12px;border:1px solid var(--line);background:#f6f6f8}
-.foto .vazio{width:120px;height:120px;border-radius:12px;border:2px dashed var(--line);display:flex;align-items:center;justify-content:center;font-size:40px;color:#bbb}
-.fbtn{display:inline-block;font:inherit;font-size:17px;font-weight:600;padding:14px 18px;border-radius:12px;background:var(--ink);color:#fff;cursor:pointer}
-.op{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid #f1f1f5}
-.op:first-child{border-top:0}.op .nm{flex:1;min-width:0}.op .nm small{display:block;color:var(--mut);font-size:12.5px;margin-top:2px}
-.tag{font-size:12px;border-radius:6px;padding:3px 8px;white-space:nowrap;background:#fee2e2;color:#991b1b}
-.ok-card{background:#ecfdf3;border:1px solid #bbf7d0;border-radius:14px;padding:14px;margin-top:10px}
-.aviso{background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:10px;margin-top:8px;font-size:14px;color:#92400e}
-</style></head><body>
-<header><a class="back" href="/">◂ Início</a><h1>📦 <b>Transferência</b> de estoque</h1><span id="eu" class="mut"></span></header>
-<div class="wrap" id="app">carregando…</div>
-<input id="cam" type="file" accept="image/*" capture="user" hidden>
-<script>
-var TOK=null;try{TOK=localStorage.getItem('transf_tok')||null}catch(e){}
-var D=null,PROD=null,ORI=null,DES=null,PES=null,FOTO=null,TIMER=null,ENVIANDO=false;
-function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
-function hdrs(x){var h=x||{};if(TOK)h['x-garcom']=TOK;return h}
-async function jget(u){var r=await fetch(u,{headers:hdrs(),cache:'no-store'});return r.json()}
-async function jpost(u,b){var r=await fetch(u,{method:'POST',headers:hdrs({'content-type':'application/json'}),body:JSON.stringify(b||{})});return r.json()}
-function hm(iso){if(!iso)return '';var d=new Date(iso);return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0')+' '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')}
-function num(v){return Number(v||0).toLocaleString('pt-BR',{maximumFractionDigits:3,useGrouping:false})}
-function $(id){return document.getElementById(id)}
-function semAcento(s){return String(s||'').toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g,'')}
-/* ---- login ---- */
-function telaLogin(msg){
-  $('eu').textContent='';
-  $('app').innerHTML='<div class="login"><div style="font-size:18px;font-weight:700">Entrar pra transferir estoque</div>'+
-    '<div class="mut" style="margin-top:4px">Mesmo login e PIN do caixa/comanda.</div>'+
-    '<input id="lg" placeholder="login" autocapitalize="none" autocomplete="username">'+
-    '<input id="pn" type="password" inputmode="numeric" maxlength="8" placeholder="PIN" autocomplete="off">'+
-    '<div id="p2w" hidden><input id="pn2" type="password" inputmode="numeric" maxlength="8" placeholder="repita o PIN (primeira vez)" autocomplete="off"></div>'+
-    '<button class="big" onclick="entrar()">Entrar</button><div class="err" id="lerr">'+esc(msg||'')+'</div></div>';
-  $('pn').addEventListener('keydown',function(e){if(e.key==='Enter')entrar()});
-}
-async function entrar(){
-  var lg=$('lg').value.trim(),pn=$('pn').value,p2=($('pn2')||{}).value||'';
-  var r;try{r=await jpost('/api/transferencia/entrar',{login:lg,pin:pn,pin2:p2})}catch(x){r={ok:false,erro:'sem rede'}}
-  if(r.ok&&r.primeira_vez&&!r.token){$('p2w').hidden=false;$('lerr').textContent='Primeira vez de '+(r.nome||lg)+': repita o PIN pra criar.';$('pn2').focus();return}
-  if(!r.ok){$('lerr').textContent=r.erro||'não entrou';return}
-  TOK=r.token;try{localStorage.setItem('transf_tok',TOK)}catch(e){}
-  iniciar();
-}
-/* tablet é compartilhado: sair limpa o login (não guarda nem o nome) */
-function sair(){TOK=null;try{localStorage.removeItem('transf_tok')}catch(e){}if(TIMER)clearInterval(TIMER);TIMER=null;limpar();telaLogin()}
-async function iniciar(){
-  var s;try{s=await jget('/api/transferencia/sessao')}catch(x){s={ok:false}}
-  if(!s.ok){telaLogin(TOK?'Sessão venceu — entre de novo.':'');return}
-  $('eu').innerHTML=esc(s.nome)+' · <a href="#" onclick="sair();return false" style="color:var(--gold2)">sair</a>';
-  $('app').innerHTML='<div class="mut">buscando no Concilia…</div>';
-  await carregar();
-  if(TIMER)clearInterval(TIMER);TIMER=setInterval(atualizaLista,30000);
-}
-async function carregar(){
-  var d;try{d=await jget('/api/transferencia/dados')}catch(x){d={ok:false,erro:'sem rede'}}
-  if(d.sem_sessao){telaLogin('Sessão venceu — entre de novo.');return}
-  if(!d.ok){$('app').innerHTML='<div class="card"><b>Não consegui falar com o Concilia.</b><div class="err">'+esc(d.erro||'')+'</div><button class="big" onclick="carregar()">Tentar de novo</button></div>';return}
-  D=d;
-  if(!ORI){var pr=(D.locais||[]).filter(function(l){return l.principal})[0];ORI=pr?pr.id:null}
-  tela();
-}
-async function atualizaLista(){
-  try{var d=await jget('/api/transferencia/dados');if(d.ok){D.recentes=d.recentes;D.produtos=d.produtos;var el=$('lista');if(el)el.innerHTML=listaHtml()}}catch(e){}
-}
-function local(id){return (D.locais||[]).filter(function(l){return l.id===id})[0]}
-function prod(id){return (D.produtos||[]).filter(function(p){return p.id===id})[0]}
-/* ---- tela principal ---- */
-function tela(){
-  var h='<h2>1. Produto</h2><div class="card" id="prodBox"></div>';
-  h+='<h2>2. Quanto?</h2><div class="card"><div class="qtd"><button onclick="passo(-1)">−</button><input id="qtd" inputmode="decimal" value="1"><button onclick="passo(1)">+</button><span class="mut" id="un"></span></div></div>';
-  h+='<h2>3. Sai de</h2><div class="card"><div class="chips" id="oris"></div></div>';
-  h+='<h2>4. Vai para</h2><div class="card"><div class="chips" id="dess"></div></div>';
-  h+='<h2>5. Quem está levando?</h2><div class="card"><input id="pbusca" placeholder="buscar pelo nome…" oninput="pessoas()"><div class="chips" id="pess"></div>'+
-    '<input id="poutro" placeholder="ou escreva o nome (quem não está na lista)" style="margin-top:10px" oninput="PES=null;pessoas(true)"></div>';
-  h+='<h2>6. Foto de quem está levando</h2><div class="card"><div class="foto"><div id="fprev"><div class="vazio">📷</div></div>'+
-    '<div><label class="fbtn" for="cam">📷 Tirar foto</label><div class="mut" style="margin-top:6px">Obrigatória. Vire o tablet pra pessoa.</div></div></div></div>';
-  h+='<h2>Observação <span style="text-transform:none;font-weight:400">(opcional)</span></h2><div class="card"><textarea id="obs" rows="2" placeholder="ex: pro evento da noite"></textarea></div>';
-  h+='<button class="big" id="env" onclick="enviar()">✅ Registrar transferência</button><div class="err" id="eerr"></div><div id="res"></div>';
-  h+='<h2>Últimas transferências</h2><div class="card" id="lista">'+listaHtml()+'</div>';
-  $('app').innerHTML=h;prodBox();locais();pessoas();fotoPrev();
-}
-function prodBox(){
-  var el=$('prodBox');if(!el)return;
-  if(PROD){var p=prod(PROD);
-    el.innerHTML='<div class="sel"><b>'+esc(p?p.nome:'?')+'</b><button class="chip" onclick="PROD=null;prodBox();unidade();locais()">trocar</button></div>'+saldoHtml(p);
-    return}
-  el.innerHTML='<input id="busca" placeholder="buscar produto… (ex: heineken, limão)" oninput="filtraProd()" autocomplete="off"><div class="prods" id="prods"></div>';
-  filtraProd();
-}
-function saldoHtml(p){
-  if(!p)return '';
-  var ls=(D.locais||[]).map(function(l){var v=(p.porLocal||{})[l.id]||0;return esc(l.nome)+': <b>'+num(v)+'</b>'});
-  return '<div class="mut" style="margin-top:8px">No sistema ('+esc(p.unidade||'')+'): '+ls.join(' · ')+'</div>';
-}
-function filtraProd(){
-  var q=semAcento(($('busca')||{}).value||'').trim();var el=$('prods');if(!el)return;
-  var ps=D.produtos||[];
-  var achou=q?ps.filter(function(p){return semAcento(p.nome).indexOf(q)>=0}):ps;
-  var mostra=achou.slice(0,60);
-  el.innerHTML=mostra.map(function(p){var o=ORI?((p.porLocal||{})[ORI]||0):null;
-    return '<div class="prod" onclick="escolheProd(\\''+p.id+'\\')"><span class="nm">'+esc(p.nome)+'</span>'+(o!=null?'<small>'+num(o)+' '+esc(p.unidade||'')+'</small>':'')+'</div>'}).join('')+
-    (achou.length>mostra.length?'<div class="mut" style="padding:10px 4px">… mais '+(achou.length-mostra.length)+' — digite pra achar</div>':'')+
-    (!achou.length?'<div class="mut" style="padding:10px 4px">Nenhum produto com esse nome (só aparece produto que controla estoque).</div>':'');
-}
-function escolheProd(id){PROD=id;prodBox();unidade();locais();var q=$('qtd');if(q){q.value='1';q.focus();q.select()}}
-function unidade(){var p=PROD?prod(PROD):null;var u=$('un');if(u)u.textContent=p?(p.unidade||''):''}
-function lerQtd(){var v=Number(String(($('qtd')||{}).value||'').replace(',','.'));return isFinite(v)?v:0}
-function passo(d){var v=Math.max(0,Math.round((lerQtd()+d)*1000)/1000);$('qtd').value=num(v)}
-function locais(){
-  var p=PROD?prod(PROD):null;
-  function chip(l,sel,fn){var s=p?'<small>'+num((p.porLocal||{})[l.id]||0)+'</small>':'';return '<button class="chip'+(sel===l.id?' on':'')+'" onclick="'+fn+'(\\''+l.id+'\\')">'+esc(l.nome)+s+'</button>'}
-  var o=$('oris'),d=$('dess');if(!o||!d)return;
-  o.innerHTML=(D.locais||[]).map(function(l){return chip(l,ORI,'escOri')}).join('');
-  d.innerHTML=(D.locais||[]).filter(function(l){return l.id!==ORI}).map(function(l){return chip(l,DES,'escDes')}).join('');
-  if(!(D.locais||[]).length)o.innerHTML='<div class="mut">Nenhum setor cadastrado no Concilia.</div>';
-}
-function escOri(id){ORI=id;if(DES===id)DES=null;locais();filtraProd()}
-function escDes(id){DES=id;locais()}
-function pessoas(soLista){
-  var el=$('pess');if(!el)return;
-  var q=semAcento(($('pbusca')||{}).value||'').trim();
-  var ps=(D.pessoas||[]).filter(function(x){return !q||semAcento(x.nome).indexOf(q)>=0});
-  var mostra=q?ps.slice(0,40):ps.slice(0,0);
-  var h='';
-  if(PES){var x=(D.pessoas||[]).filter(function(y){return y.id===PES})[0];if(x&&!q)h+='<button class="chip on">'+esc(x.nome)+'</button>'}
-  h+=mostra.map(function(x){return '<button class="chip'+(PES===x.id?' on':'')+'" onclick="escPes(\\''+x.id+'\\')">'+esc(x.nome)+'</button>'}).join('');
-  if(!q&&!PES)h+='<div class="mut">Digite parte do nome pra achar a pessoa ('+(D.pessoas||[]).length+' no RH).</div>';
-  else if(q&&!ps.length)h+='<div class="mut">Ninguém no RH com esse nome — escreva abaixo.</div>';
-  el.innerHTML=h;
-}
-function escPes(id){PES=id;var o=$('poutro');if(o)o.value='';var b=$('pbusca');if(b)b.value='';pessoas()}
-/* ---- foto: câmera do tablet, reduzida a ~900 px antes de mandar ---- */
-$('cam').addEventListener('change',function(){
-  var f=this.files&&this.files[0];this.value='';if(!f)return;
-  var img=new Image();var url=URL.createObjectURL(f);
-  img.onload=function(){
-    var m=900,w=img.naturalWidth,h=img.naturalHeight,k=Math.min(1,m/Math.max(w,h));
-    var c=document.createElement('canvas');c.width=Math.round(w*k);c.height=Math.round(h*k);
-    c.getContext('2d').drawImage(img,0,0,c.width,c.height);URL.revokeObjectURL(url);
-    var q=0.75,d=c.toDataURL('image/jpeg',q);while(d.length>700000&&q>0.3){q-=0.15;d=c.toDataURL('image/jpeg',q)}
-    FOTO=d;fotoPrev();
-  };
-  img.onerror=function(){URL.revokeObjectURL(url);alert('Não consegui ler a foto. Tente de novo.')};
-  img.src=url;
-});
-function fotoPrev(){var el=$('fprev');if(!el)return;el.innerHTML=FOTO?'<img src="'+FOTO+'">':'<div class="vazio">📷</div>'}
-async function enviar(){
-  if(ENVIANDO)return;
-  var e=$('eerr');e.textContent='';
-  var outro=(($('poutro')||{}).value||'').trim();
-  var body={produtoId:PROD,quantidade:lerQtd(),origemId:ORI,destinoId:DES,funcionarioId:PES||null,pessoaNome:PES?null:outro,observacao:(($('obs')||{}).value||'').trim()||null,foto:FOTO};
-  if(!PROD){e.textContent='Escolha o produto.';return}
-  if(!(body.quantidade>0)){e.textContent='Quantidade inválida.';return}
-  if(!ORI){e.textContent='Escolha de onde sai.';return}
-  if(!DES){e.textContent='Escolha pra onde vai.';return}
-  if(!PES&&outro.length<2){e.textContent='Diga quem está levando.';return}
-  if(!FOTO){e.textContent='Tire a foto de quem está levando.';return}
-  ENVIANDO=true;var b=$('env');b.disabled=true;b.textContent='registrando…';
-  var r;try{r=await jpost('/api/transferencia/enviar',body)}catch(x){r={ok:false,erro:'sem rede'}}
-  ENVIANDO=false;b.disabled=false;b.textContent='✅ Registrar transferência';
-  if(r.sem_sessao){telaLogin('Sessão venceu — entre de novo.');return}
-  if(!r.ok){e.textContent=r.erro||'não registrou';return}
-  var p=prod(PROD),o=local(ORI),d=local(DES);
-  var nomeP=PES?((D.pessoas||[]).filter(function(y){return y.id===PES})[0]||{}).nome:outro;
-  D.recentes=[{id:r.id,produto:p?p.nome:'',quantidade:body.quantidade,unidade:p?p.unidade:'',origem:o?o.nome:'',destino:d?d.nome:'',pessoa:nomeP,quando:new Date().toISOString(),cancelada:false}].concat(r.repetida?[]:[]).concat((D.recentes||[]).filter(function(x){return x.id!==r.id}));
-  limpar();tela();
-  $('res').innerHTML='<div class="ok-card"><b>✅ Registrado:</b> '+num(body.quantidade)+' '+esc(p?p.unidade:'')+' de '+esc(p?p.nome:'')+' · '+esc(o?o.nome:'')+' → '+esc(d?d.nome:'')+' · '+esc(nomeP||'')+
-    (r.aviso?'<div class="aviso">⚠️ '+esc(r.aviso)+'</div>':'')+'</div>';
-  var rr=$('res');if(rr&&rr.scrollIntoView)rr.scrollIntoView({block:'center'});atualizaLista();
-}
-function limpar(){PROD=null;DES=null;PES=null;FOTO=null}
-function listaHtml(){
-  var o=D&&D.recentes||[];
-  if(!o.length)return '<div class="mut">Nenhuma transferência nas últimas 36 h.</div>';
-  return o.map(function(x){
-    return '<div class="op"><div class="nm"><b>'+num(x.quantidade)+' '+esc(x.unidade)+' · '+esc(x.produto)+'</b><small>'+esc(x.origem)+' → '+esc(x.destino)+' · '+esc(x.pessoa||'—')+' · '+hm(x.quando)+'</small></div>'+
-      (x.cancelada?'<span class="tag">cancelada</span>':'')+'</div>';
-  }).join('');
-}
-iniciar();
-</script></body></html>`;
 const gerLimComanda = () => (Number.isFinite(COMANDA_DE) ? COMANDA_DE : 1000000000);
 // MESAS: ocupadas = comanda aberta com número de mesa. O MAPA (quais mesas
 // existem em cada área) vem da reserva_config da nuvem; mesa aberta que não
@@ -32730,33 +32456,6 @@ const server = http.createServer(async (req, res) => {
       }
       return res.end(JSON.stringify({ ok: false, erro: 'rota desconhecida' }));
     }
-    // ---- TRANSFERÊNCIA DE ESTOQUE pelo tablet (/transferencia) ----
-    if (p === '/transferencia') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(TRANSF_HTML); }
-    if (p.startsWith('/api/transferencia/')) {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      if (req.method === 'POST' && p === '/api/transferencia/entrar') return res.end(JSON.stringify(await apiTransfEntrar(await readBody(req))));
-      const tu = await transfDaRequisicao(req, u);
-      if (p === '/api/transferencia/sessao') return res.end(JSON.stringify(tu ? { ok: true, login: tu.login, nome: tu.nome } : { ok: false }));
-      if (!tu) return res.end(JSON.stringify({ ok: false, erro: 'Entre de novo.', sem_sessao: true }));
-      if (p === '/api/transferencia/dados') return res.end(JSON.stringify(await estoqueSetorNuvem('GET')));
-      if (req.method === 'POST' && p === '/api/transferencia/enviar') {
-        const b = await readBody(req);
-        const foto = String(b.foto || '');
-        if (!foto.startsWith('data:image/')) return res.end(JSON.stringify({ ok: false, erro: 'Tire a foto de quem está levando' }));
-        return res.end(JSON.stringify(await estoqueSetorNuvem('POST', {
-          produtoId: b.produtoId || null,
-          quantidade: Number(b.quantidade) > 0 ? Number(b.quantidade) : null,
-          origemId: b.origemId || null,
-          destinoId: b.destinoId || null,
-          funcionarioId: b.funcionarioId || null,
-          pessoaNome: b.pessoaNome ? String(b.pessoaNome).slice(0, 200) : null,
-          observacao: b.observacao ? String(b.observacao).slice(0, 500) : null,
-          foto,
-          lancou: String(tu.nome || tu.login).slice(0, 100),
-        })));
-      }
-      return res.end(JSON.stringify({ ok: false, erro: 'rota desconhecida' }));
-    }
     // ---- PAINEL DO GERENTE (/gerente): entrar, resumo ao vivo e ações ----
     if (p === '/gerente') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(GERENTE_HTML); }
     if (p.startsWith('/api/gerente/')) {
@@ -33622,7 +33321,7 @@ function conferirTelas() {
     '/conta/ver': CONTAVER_HTML, '/pix/comprovante': PIXCOMPROV_HTML, '/produtos': PRODUTOS_HTML, '/baixas': BAIXAS_HTML,
     '/camera': CAMERA_HTML, '/qrcodes': QRCODES_HTML, '/saida': CATRACA_HTML, '/tempos': TEMPOS_HTML,
     '/passe': PASSE_HTML, '/ifood': IFOOD_HTML, '/loja': LOJA_HTML, '/ponto': PONTO_HTML,
-    '/comprovante': COMPROVANTE_HTML, '/comprovantes': COMPROVANTES_HTML, '/gerente': GERENTE_HTML, '/etiqueta': ETIQUETA_HTML, '/producao': PRODUCAO_HTML, '/tv': TV_HTML, '/transferencia': TRANSF_HTML };
+    '/comprovante': COMPROVANTE_HTML, '/comprovantes': COMPROVANTES_HTML, '/gerente': GERENTE_HTML, '/etiqueta': ETIQUETA_HTML, '/producao': PRODUCAO_HTML, '/tv': TV_HTML };
   let ruins = 0;
   for (const [rota, html] of Object.entries(telas)) {
     if (typeof html !== 'string') continue;
