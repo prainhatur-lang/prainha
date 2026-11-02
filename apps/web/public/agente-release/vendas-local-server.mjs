@@ -31279,12 +31279,13 @@ async function entrar(){
   iniciar();
 }
 /* tablet é compartilhado: sair limpa o login (não guarda nem o nome) */
-function sair(){TOK=null;try{localStorage.removeItem('transf_tok')}catch(e){}if(TIMER)clearInterval(TIMER);TIMER=null;limpar();telaLogin()}
+function sair(){TOK=null;try{localStorage.removeItem('transf_tok')}catch(e){}if(TIMER)clearInterval(TIMER);TIMER=null;limpar();desligaCamera();telaLogin()}
 async function iniciar(){
   var s;try{s=await jget('/api/transferencia/sessao')}catch(x){s={ok:false}}
   if(!s.ok){telaLogin(TOK?'Sessão venceu — entre de novo.':'');return}
   $('eu').innerHTML=esc(s.nome)+' · <a href="#" onclick="sair();return false" style="color:var(--gold2)">sair</a>';
   $('app').innerHTML='<div class="mut">buscando no Concilia…</div>';
+  await ligaCamera();
   await carregar();
   if(TIMER)clearInterval(TIMER);TIMER=setInterval(atualizaLista,30000);
 }
@@ -31309,8 +31310,13 @@ function tela(){
   h+='<h2>4. Vai para</h2><div class="card"><div class="chips" id="dess"></div></div>';
   h+='<h2>5. Quem está levando?</h2><div class="card"><input id="pbusca" placeholder="buscar pelo nome…" oninput="pessoas()"><div class="chips" id="pess"></div>'+
     '<input id="poutro" placeholder="ou escreva o nome (quem não está na lista)" style="margin-top:10px" oninput="PES=null;pessoas(true)"></div>';
-  h+='<h2>6. Foto de quem está levando</h2><div class="card"><div class="foto"><div id="fprev"><div class="vazio">📷</div></div>'+
-    '<div><label class="fbtn" for="cam">📷 Tirar foto</label><div class="mut" style="margin-top:6px">Obrigatória. Vire o tablet pra pessoa.</div></div></div></div>';
+  // câmera ligada: a foto sai sozinha no toque do Registrar (igual à baixa do
+  // KDS) e esta parte nem aparece. Só sem câmera é que pede a foto na mão.
+  h+='<div id="fotoSec"'+(CAM.pronta?' hidden':'')+'><h2>6. Foto de quem está levando</h2><div class="card">'+
+    (CAM.erro?'<div class="aviso" style="margin:0 0 10px">A câmera deste tablet não abriu sozinha ('+esc(CAM.erro)+'). '+
+      (location.protocol!=='https:'?'<a href="'+esc(urlSegura())+'" style="color:var(--gold2)">Abrir no endereço seguro</a> pra foto sair sozinha, ou tire na mão:':'Tire na mão:')+'</div>':'')+
+    '<div class="foto"><div id="fprev"><div class="vazio">📷</div></div>'+
+    '<div><label class="fbtn" for="cam">📷 Tirar foto</label><div class="mut" style="margin-top:6px">Obrigatória. Vire o tablet pra pessoa.</div></div></div></div></div>';
   h+='<h2>Observação <span style="text-transform:none;font-weight:400">(opcional)</span></h2><div class="card"><textarea id="obs" rows="2" placeholder="ex: pro evento da noite"></textarea></div>';
   h+='<button class="big" id="env" onclick="enviar()">✅ Registrar transferência</button><div class="err" id="eerr"></div><div id="res"></div>';
   h+='<h2>Últimas transferências</h2><div class="card" id="lista">'+listaHtml()+'</div>';
@@ -31381,6 +31387,43 @@ $('cam').addEventListener('change',function(){
   img.src=url;
 });
 function fotoPrev(){var el=$('fprev');if(!el)return;el.innerHTML=FOTO?'<img src="'+FOTO+'">':'<div class="vazio">📷</div>'}
+/* ---- foto escondida, como na baixa do KDS ----
+   A câmera da frente fica ligada (vídeo fora da tela) desde o login; no toque
+   do Registrar tira um quadro de quem está na frente do tablet. Sem câmera
+   (http pelo IP, permissão negada) cai na foto na mão acima. */
+var CAM={stream:null,video:null,erro:null,pronta:false};
+function urlSegura(){var porta=Number(location.port||80)+1;return 'https://'+location.hostname+':'+porta+location.pathname+location.search}
+async function ligaCamera(){
+  if(CAM.pronta)return;
+  if(!window.isSecureContext){CAM.erro='o endereço não é seguro (http)';return}
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){CAM.erro='este navegador não dá acesso à câmera';return}
+  try{
+    var s=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:'user',width:{ideal:640},height:{ideal:480}}});
+    var v=document.createElement('video');
+    v.playsInline=true;v.muted=true;v.autoplay=true;v.srcObject=s;
+    v.style.cssText='position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0';
+    document.body.appendChild(v);
+    try{await v.play()}catch(e){}
+    CAM.stream=s;CAM.video=v;CAM.pronta=true;CAM.erro=null;
+  }catch(e){
+    CAM.erro=(e&&e.name==='NotAllowedError')?'permissão da câmera negada':'câmera não abriu ('+((e&&e.name)||'erro')+')';
+  }
+}
+function desligaCamera(){
+  try{if(CAM.stream)CAM.stream.getTracks().forEach(function(t){t.stop()})}catch(e){}
+  try{if(CAM.video)CAM.video.remove()}catch(e){}
+  CAM={stream:null,video:null,erro:null,pronta:false};
+}
+function fotoAuto(){
+  if(!CAM.pronta||!CAM.video)return null;
+  try{
+    var v=CAM.video;if(!v.videoWidth)return null;
+    var w=Math.min(480,v.videoWidth),h=Math.round(w*v.videoHeight/v.videoWidth);
+    var c=document.createElement('canvas');c.width=w;c.height=h;
+    c.getContext('2d').drawImage(v,0,0,w,h);
+    return c.toDataURL('image/jpeg',0.7);
+  }catch(e){return null}
+}
 async function enviar(){
   if(ENVIANDO)return;
   var e=$('eerr');e.textContent='';
@@ -31391,7 +31434,11 @@ async function enviar(){
   if(!ORI){e.textContent='Escolha de onde sai.';return}
   if(!DES){e.textContent='Escolha pra onde vai.';return}
   if(!PES&&outro.length<2){e.textContent='Diga quem está levando.';return}
-  if(!FOTO){e.textContent='Tire a foto de quem está levando.';return}
+  // a foto sai no instante do toque; a tirada na mão (sem câmera) vale se houver
+  var fa=fotoAuto();
+  if(!fa&&!FOTO){await ligaCamera();fa=fotoAuto()}
+  if(fa)body.foto=fa;
+  if(!body.foto){var fs=$('fotoSec');if(fs)fs.hidden=false;e.textContent='A câmera não tirou a foto sozinha — tire a foto de quem está levando.';return}
   ENVIANDO=true;var b=$('env');b.disabled=true;b.textContent='registrando…';
   var r;try{r=await jpost('/api/transferencia/enviar',body)}catch(x){r={ok:false,erro:'sem rede'}}
   ENVIANDO=false;b.disabled=false;b.textContent='✅ Registrar transferência';
