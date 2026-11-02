@@ -16,12 +16,30 @@ import { and, eq, isNotNull } from 'drizzle-orm';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+// Túnel temporário do servidor de ensaio (02/11/2026, teste do totem na LIO).
+// Vazio = código 'ensaio' some.
+const ENSAIO_URL_PADRAO = 'https://francis-denied-appeals-mall.trycloudflare.com';
+
 export async function GET(request: Request) {
   const raw = new URL(request.url).searchParams.get('empresa') ?? '';
   const codigo = raw.trim().toLowerCase();
   if (!/^[a-z0-9-]{3,30}$/.test(codigo)) {
     return NextResponse.json({ ok: false, erro: 'código inválido' }, { status: 400 });
   }
+  // Código 'ensaio': servidor de ensaio (teste da LIO da Cielo sem digitar URL
+  // longa na maquininha). Só existe enquanto LIO_ENSAIO_URL estiver definida.
+  if (codigo === 'ensaio') {
+    const url = (process.env.LIO_ENSAIO_URL || ENSAIO_URL_PADRAO).trim().replace(/\/+$/, '');
+    if (!url.startsWith('https://')) {
+      return NextResponse.json({ ok: false, erro: 'empresa não encontrada' }, { status: 404 });
+    }
+    return NextResponse.json({
+      ok: true,
+      empresa: 'Servidor de ensaio',
+      filiais: [{ id: 'ensaio', nome: 'Ensaio', url }],
+    });
+  }
+
   const [org] = await db
     .select({ id: schema.organizacao.id, nome: schema.organizacao.nome })
     .from(schema.organizacao)
