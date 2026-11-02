@@ -102,6 +102,9 @@ const FIDELIDADE_NOME = (process.env.FIDELIDADE_NOME || '').trim() || 'Cartão P
 // Passe de saída (catraca/cancela): só nas casas que trabalham com ele.
 // Sem a env = ligado, como sempre foi nas lojas do Prainha.
 const PASSE_SAIDA = !/^(off|0|false|nao|não)$/i.test(String(process.env.PASSE_SAIDA || 'on').trim());
+// Link do site de venda do Concilia (só na demo): o app mostra "Conheça o sistema completo".
+// Vazio = botão não aparece (lojas do Prainha).
+const CONHECA_URL = /^https:\/\//.test(String(process.env.CONHECA_URL || '').trim()) ? String(process.env.CONHECA_URL).trim() : '';
 // A última palavra sai em destaque, como era o "Prainha <b>Bar</b>".
 const LOJA_HTML = (() => {
   const p = LOJA_NOME.trim().split(/\s+/);
@@ -7393,7 +7396,9 @@ function apiConfig() {
     comanda_so_cpf: COMANDA_SO_CPF,
     // nome do cartão de fidelidade e se a casa usa passe de saída — o app usa
     fidelidade_nome: FIDELIDADE_NOME,
-    passe_saida: PASSE_SAIDA };
+    passe_saida: PASSE_SAIDA,
+    // site de venda (demo) — vazio nas lojas
+    conheca_url: CONHECA_URL };
 }
 
 // ---- status efetivo = timestamp do Firebird OU a nossa marca local ----

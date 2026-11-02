@@ -19,6 +19,7 @@ primary_region = "gru"
   TZ = "America/Sao_Paulo"
   FIDELIDADE_NOME = "Cartão fidelidade"
   PASSE_SAIDA = "off"   # demo não tem catraca/cancela
+  CONHECA_URL = "https://app.prainhabar.com/conheca?origem=app_demo"
 
 [http_service]
   internal_port = 8790
