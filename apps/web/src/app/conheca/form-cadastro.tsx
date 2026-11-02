@@ -36,6 +36,13 @@ function mascaraDoc(v: string): string {
     .replace(/(\d{4})(\d{1,2})$/, '$1-$2');
 }
 
+interface Acesso {
+  loginUrl: string;
+  email: string;
+  senhaProvisoria: string | null;
+  codigoEmpresa: string | null;
+}
+
 const campo =
   'mt-1 w-full rounded-lg border border-black/15 bg-white px-3 py-2.5 text-[16px] outline-none focus:border-[#0b7a83] focus:ring-2 focus:ring-[#0b7a83]/20';
 
@@ -56,6 +63,7 @@ export function FormCadastro({ origem, zap, plano, demo }: { origem: string; zap
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState('');
   const [testeFim, setTesteFim] = useState('');
+  const [acesso, setAcesso] = useState<Acesso | null>(null);
 
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => {
     let v = e.target.value;
@@ -100,8 +108,9 @@ export function FormCadastro({ origem, zap, plano, demo }: { origem: string; zap
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...f, origem }),
       });
-      const j = (await r.json().catch(() => ({}))) as { error?: string; testeFim?: string };
+      const j = (await r.json().catch(() => ({}))) as { error?: string; testeFim?: string; acesso?: Acesso | null };
       if (!r.ok) throw new Error(j.error || 'Não deu pra cadastrar. Tente de novo.');
+      setAcesso(j.acesso ?? null);
       setTesteFim(j.testeFim ?? '');
     } catch (err) {
       setErro(err instanceof Error ? err.message : 'Não deu pra cadastrar.');
@@ -115,6 +124,50 @@ export function FormCadastro({ origem, zap, plano, demo }: { origem: string; zap
     return (
       <div className="mt-6 rounded-xl bg-[#e2f2f3] p-6">
         <h3 className="text-lg font-bold">Conta criada, {f.responsavel.split(' ')[0]}!</h3>
+        {acesso ? (
+          <>
+            <p className="mt-2 text-[#3d4a58]">
+              A loja <b>{f.nomeFantasia}</b> já está pronta, com <b>todos os módulos</b> até <b>{fim}</b>, sem pagar nada.
+            </p>
+            <div className="mt-4 rounded-lg border border-[#0b7a83]/30 bg-white p-4 text-sm">
+              <div>
+                Endereço: <b>{acesso.loginUrl}</b>
+              </div>
+              <div className="mt-1">
+                E-mail: <b>{acesso.email}</b>
+              </div>
+              {acesso.senhaProvisoria ? (
+                <div className="mt-1">
+                  Senha provisória: <b className="font-mono text-base tracking-wide">{acesso.senhaProvisoria}</b>
+                </div>
+              ) : (
+                <div className="mt-1">Senha: a mesma que você já usa no Concilia.</div>
+              )}
+              {acesso.codigoEmpresa && (
+                <div className="mt-1">
+                  Código da empresa (app da maquininha): <b>{acesso.codigoEmpresa}</b>
+                </div>
+              )}
+              <p className="mt-2 text-xs text-[#5a6878]">
+                Anote ou tire um print. No primeiro acesso o sistema pede pra você trocar a senha.
+              </p>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-3">
+              <a href={acesso.loginUrl} className="rounded-lg bg-[#f2b134] px-5 py-3 font-semibold text-[#1b2430] hover:bg-[#f5c158]">
+                Entrar na minha loja
+              </a>
+              {zap && (
+                <a
+                  href={`https://wa.me/${zap}?text=${encodeURIComponent(`Olá! Acabei de criar a conta do ${f.nomeFantasia} no Concilia e quero ajuda pra começar.`)}`}
+                  className="rounded-lg bg-[#1fa855] px-5 py-3 font-semibold text-white hover:bg-[#1b934b]"
+                >
+                  Quero ajuda pra começar
+                </a>
+              )}
+            </div>
+          </>
+        ) : (
+          <>
         <p className="mt-2 text-[#3d4a58]">
           Seu teste com <b>todos os módulos</b> vai até <b>{fim}</b>, sem pagar nada. A loja{' '}
           <b>{f.nomeFantasia}</b> e o seu acesso chegam no WhatsApp {f.whatsapp} e no e-mail {f.email}.
@@ -135,6 +188,8 @@ export function FormCadastro({ origem, zap, plano, demo }: { origem: string; zap
             </a>
           )}
         </div>
+          </>
+        )}
       </div>
     );
   }

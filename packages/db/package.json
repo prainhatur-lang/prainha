@@ -264,7 +264,8 @@
     "migrate:ifood-entrega-endereco": "tsx scripts/migrate-ifood-entrega-endereco.ts",
     "migrate:ifood-homolog-log": "tsx scripts/migrate-ifood-homolog-log.ts",
     "migrate:saas-interessado": "tsx scripts/migrate-saas-interessado.ts",
-    "migrate:saas-conta": "tsx scripts/migrate-saas-conta.ts"
+    "migrate:saas-conta": "tsx scripts/migrate-saas-conta.ts",
+    "instancia:clientes-schema": "tsx scripts/instancia-clientes-schema.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",

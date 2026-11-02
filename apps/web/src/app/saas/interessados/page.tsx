@@ -115,6 +115,10 @@ export default async function InteressadosPage() {
                             {br(c.testeFim)}
                           </span>
                           <div className="text-slate-500">{PLANO[c.planoDesejado ?? ''] ?? '—'}</div>
+                          <div className={c.filialId ? 'text-emerald-700' : 'text-amber-700'}>
+                            {c.filialId ? '✓ loja criada' : 'loja à mão'}
+                          </div>
+                          {c.observacao && <div className="max-w-[220px] whitespace-normal text-xs text-red-700">{c.observacao}</div>}
                         </td>
                         <td className="px-3 py-2">
                           <a

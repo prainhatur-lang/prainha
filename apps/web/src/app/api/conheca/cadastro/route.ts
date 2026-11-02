@@ -12,6 +12,7 @@ import { avisarEquipe } from '@/lib/atendimento/avisos';
 import { validarDocumento, formatarDocumento } from '@/lib/nfce/documento';
 import { buscarCnpjReceita } from '@/lib/receita-cnpj';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
+import { provisionarContaSaas, type AcessoSaas } from '@/lib/saas-provisao';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -77,8 +78,9 @@ export async function POST(request: Request) {
     })
     .returning({ id: schema.saasInteressado.id });
 
+  let contaId: string | null = null;
   try {
-    await db.insert(schema.saasConta).values({
+    const [nova] = await db.insert(schema.saasConta).values({
       documento: doc.doc,
       tipoDocumento: doc.tipo,
       razaoSocial: rf?.razaoSocial ?? (doc.tipo === 'CPF' ? responsavel : null),
@@ -94,7 +96,8 @@ export async function POST(request: Request) {
       testeFim,
       interessadoId: lead?.id ?? null,
       origem,
-    });
+    }).returning({ id: schema.saasConta.id });
+    contaId = nova?.id ?? null;
   } catch (e) {
     // Duas abas ao mesmo tempo: o unique do documento barra o segundo.
     if (String((e as { code?: string }).code) === '23505') {
@@ -116,5 +119,10 @@ export async function POST(request: Request) {
     }).catch(() => {});
   }
 
-  return NextResponse.json({ ok: true, testeFim });
+  // Instância dos clientes ligada (SAAS_INSTANCIA_URL): loja e login nascem
+  // agora, lá — nunca no banco do Prainha. Sem a env, segue à mão como antes.
+  let acesso: AcessoSaas | null = null;
+  if (contaId) acesso = await provisionarContaSaas(contaId).catch(() => null);
+
+  return NextResponse.json({ ok: true, testeFim, acesso });
 }

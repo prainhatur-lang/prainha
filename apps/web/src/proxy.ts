@@ -54,6 +54,11 @@ const CONCILIA_HOSTS = new Set(['conciliabr.app', 'www.conciliabr.app']);
 
 export async function proxy(request: NextRequest) {
   const hostname = (request.headers.get('host') ?? '').split(':')[0];
+  // Instância dos clientes do SaaS (CONCILIA_INSTANCIA=clientes): o vercel.json
+  // é o mesmo do Prainha, então os crons chegariam aqui também. Não rodam.
+  if (process.env.CONCILIA_INSTANCIA === 'clientes' && request.nextUrl.pathname.startsWith('/api/cron/')) {
+    return NextResponse.json({ ok: true, pulado: 'instancia-clientes' });
+  }
   if (CONCILIA_HOSTS.has(hostname) && request.nextUrl.pathname === '/') {
     const url = request.nextUrl.clone();
     url.pathname = '/conheca';
