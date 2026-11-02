@@ -1,0 +1,11 @@
+# Só pro build do servidor de demonstração (demo/Dockerfile). As lojas não usam Docker.
+node_modules
+cert
+fotos
+roku-kds
+deploy-xeon
+docs
+tmp-*.mjs
+server.novo.mjs
+*.ps1
+*.bat

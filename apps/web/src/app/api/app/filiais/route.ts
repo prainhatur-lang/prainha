@@ -40,6 +40,21 @@ export async function GET(request: Request) {
     });
   }
 
+  // Código 'demo': servidor de DEMONSTRAÇÃO pra quem baixa o Concilia na
+  // maquininha e quer testar (vendas-local/demo, cardápio de exemplo, login
+  // teste / PIN 1234). Só existe enquanto LIO_DEMO_URL estiver definida.
+  if (codigo === 'demo') {
+    const url = (process.env.LIO_DEMO_URL || '').trim().replace(/\/+$/, '');
+    if (!url.startsWith('https://')) {
+      return NextResponse.json({ ok: false, erro: 'empresa não encontrada' }, { status: 404 });
+    }
+    return NextResponse.json({
+      ok: true,
+      empresa: 'Concilia — demonstração',
+      filiais: [{ id: 'demo', nome: 'Demonstração', url }],
+    });
+  }
+
   const [org] = await db
     .select({ id: schema.organizacao.id, nome: schema.organizacao.nome })
     .from(schema.organizacao)

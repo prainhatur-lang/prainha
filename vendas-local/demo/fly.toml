@@ -1,0 +1,30 @@
+# Servidor de demonstração do Concilia na Fly.io (São Paulo).
+# Rodar de dentro de vendas-local:  fly deploy . --config demo/fly.toml
+app = "concilia-demo"
+primary_region = "gru"
+
+[build]
+  dockerfile = "demo/Dockerfile"
+
+[env]
+  BANCO = "proprio"
+  PORT = "8790"
+  LOJA_NOME = "Concilia Demonstracao"
+  AUTO_UPDATE = "off"
+  MESA_MAX = "100"
+  COMANDA_MIN = "300"
+  COMANDA_MAX = "400"
+  TAXA_SERVICO = "10"
+  PAGAMENTO_MANUAL = "on"
+  TZ = "America/Sao_Paulo"
+
+[http_service]
+  internal_port = 8790
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
