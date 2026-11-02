@@ -2,12 +2,18 @@
 // o arquivo que o chamado de homologação pede.
 //
 //   GET ?filialId=&modulo=shipping&desde=ISO&ate=ISO  → JSON pra baixar
+//   GET ?filialId=&loja=1  → cadastro da loja de TESTE (endereço e lat/lng),
+//          só com a homologação do Shipping ligada: o pedido de teste tem que
+//          ficar perto dela pra cotação do entregador
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, asc, eq, gte, lte } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { configIfood, credShipping } from '@/lib/ifood-credenciais';
+import { comLogHomolog } from '@/lib/ifood-homolog-log';
+import { ifoodApi, explicarErroIfood } from '@/lib/ifood-api';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -22,6 +28,21 @@ export async function GET(req: Request) {
   if (!filiais.some((f) => f.id === filialId)) {
     return NextResponse.json({ error: 'filial não acessível' }, { status: 403 });
   }
+
+  if (u.searchParams.get('loja') === '1') {
+    const cs = credShipping(await configIfood(filialId));
+    if (!cs?.homologacao) {
+      return NextResponse.json({ error: 'homologação do Shipping desligada nesta casa' }, { status: 400 });
+    }
+    try {
+      const c = comLogHomolog(filialId, 'shipping', cs);
+      const loja = await ifoodApi(c, '/merchant/v1.0/merchants/' + encodeURIComponent(cs.merchantId));
+      return NextResponse.json({ merchantId: cs.merchantId, loja });
+    } catch (e) {
+      return NextResponse.json({ error: explicarErroIfood(e).mensagem }, { status: 502 });
+    }
+  }
+
   const desde = u.searchParams.get('desde');
   const ate = u.searchParams.get('ate');
   const filtros = [eq(schema.ifoodHomologLog.filialId, filialId), eq(schema.ifoodHomologLog.modulo, modulo)];
