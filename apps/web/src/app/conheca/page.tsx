@@ -11,11 +11,11 @@ import { FormComecar } from './form';
 export const dynamic = 'force-dynamic';
 
 export const metadata: Metadata = {
-  title: 'Concilia — o sistema que roda o restaurante inteiro',
+  title: 'Concilia — ERP completo para restaurantes',
   description:
-    'Maquininha, cozinha, nota fiscal, estoque, financeiro, equipe e clientes num lugar só. Comece grátis pela maquininha e conte com consultoria de quem opera restaurante.',
+    'ERP completo para restaurantes: maquininha, cozinha, nota fiscal, estoque, compras, financeiro, RH (ponto, escala e folha), clientes e a infraestrutura da loja num lugar só. Comece grátis pela maquininha e conte com consultoria de quem opera restaurante.',
   openGraph: {
-    title: 'Concilia — o sistema que roda o restaurante inteiro',
+    title: 'Concilia — ERP completo para restaurantes',
     description: 'Comece grátis pela maquininha. Planos a partir de R$ 199/mês.',
     type: 'website',
     locale: 'pt_BR',
@@ -111,6 +111,10 @@ const CONSULTORIA = [
 
 const PERGUNTAS = [
   {
+    p: 'O Concilia é só conciliação financeira?',
+    r: 'Não. O nome vem de onde ele começou, mas hoje é um ERP completo de restaurante: vendas na maquininha e no caixa, cozinha (KDS), nota fiscal, estoque e compras, contas a pagar e receber, conciliação de cartão e banco, RH (ponto facial ou pelo celular, escala, banco de horas e folha), clientes e fidelidade, delivery, atendimento virtual no WhatsApp e a infraestrutura da loja (servidor local, impressoras e rede).',
+  },
+  {
     p: 'Preciso de computador na loja?',
     r: 'Não. O Concilia roda na internet: maquininha, tela da cozinha e caixa no navegador. O computador na loja (Estação local) só entra se você quiser impressora na cozinha, cupom na térmica, ponto facial ou vender com a internet fora.',
   },
@@ -152,12 +156,16 @@ export default async function ConhecaPage({
               Quero começar
             </a>
           </div>
-          <h1 className="mt-12 max-w-3xl text-4xl font-bold leading-tight sm:text-5xl">
+          <p className="mt-12 text-sm font-semibold uppercase tracking-widest text-[#f2b134]">
+            ERP completo para restaurantes
+          </p>
+          <h1 className="mt-3 max-w-3xl text-4xl font-bold leading-tight sm:text-5xl">
             O sistema que roda o restaurante inteiro, da maquininha ao fechamento do mês.
           </h1>
           <p className="mt-5 max-w-2xl text-lg text-white/80">
-            Vendas, cozinha, nota fiscal, estoque, financeiro, equipe e clientes num lugar só. Feito dentro de
-            restaurantes em operação, com consultoria de quem vive o dia a dia do salão.
+            Muito mais que conciliação: vendas, cozinha, nota fiscal, estoque e compras, financeiro, RH com ponto,
+            escala e folha, clientes e a infraestrutura da loja num lugar só. Feito dentro de restaurantes em
+            operação, com consultoria de quem vive o dia a dia do salão.
           </p>
           <div className="mt-8 flex flex-wrap gap-3">
             <a href="#comecar" className="rounded-lg bg-[#f2b134] px-5 py-3 font-semibold text-[#1b2430] hover:bg-[#f5c158]">
