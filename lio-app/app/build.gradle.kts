@@ -161,8 +161,11 @@ android {
         // próprio). Só pra mesa SEM conta; comanda, mesa já aberta, servidor
         // antigo ou rede lenta (2,5 s) abrem direto como antes. No ⋯ da conta
         // entrou "👥 Quantas pessoas na mesa" pra corrigir. Nada saiu.
-        versionCode = 62
-        versionName = "1.10.38"
+        // 1.10.39 (02/11/2026): cabeçalho da tela de mesas reorganizado em 3
+        // linhas — loja + Sair; garçom · conexão · versão; Entregas / Fechamento
+        // do dia. Os mesmos botões, com o mesmo efeito; só não espremem mais o nome.
+        versionCode = 63
+        versionName = "1.10.39"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CONCILIA_BASE", "\"$conciliaBase\"")
     }

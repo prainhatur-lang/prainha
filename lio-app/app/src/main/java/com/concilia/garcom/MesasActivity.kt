@@ -51,6 +51,7 @@ class MesasActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.lojaNome).text = Session.loja(this)
         mostrarRota()
         findViewById<TextView>(R.id.garcomNome).setOnClickListener { dialogRota() }
+        findViewById<TextView>(R.id.rota).setOnClickListener { dialogRota() }
         findViewById<Button>(R.id.sair).setOnClickListener { logout() }
         findViewById<Button>(R.id.fechamentoDia).setOnClickListener { dialogFechamento() }
         // 🛵 só pra quem tem "Pedidos Delivery" no Consumer (ou admin)
@@ -203,11 +204,12 @@ class MesasActivity : AppCompatActivity() {
 
     // ---- por onde o app fala com o servidor (rede local × internet) ----
 
-    /** Cabeçalho: "nome · v1.10.25 · ⚡ rede local" (ou ☁️ internet = túnel). */
+    /** Cabeçalho, 2ª linha: "👤 nome" · "⚡ rede local" (ou ☁️ internet = túnel) · "v1.10.39".
+     *  Toque no nome ou na conexão abre o diálogo da conexão, como antes. */
     private fun mostrarRota() {
-        findViewById<TextView>(R.id.garcomNome).text =
-            (Session.nome(this) ?: Session.login(this) ?: "") + " · v" + BuildConfig.VERSION_NAME +
-                " · " + Session.rotaCurta(this)
+        findViewById<TextView>(R.id.garcomNome).text = "👤 " + (Session.nome(this) ?: Session.login(this) ?: "")
+        findViewById<TextView>(R.id.rota).text = Session.rotaCurta(this)
+        findViewById<TextView>(R.id.versao).text = "v" + BuildConfig.VERSION_NAME
     }
 
     /** Toque no nome: mostra por onde está indo e por quê; "Checar agora"
