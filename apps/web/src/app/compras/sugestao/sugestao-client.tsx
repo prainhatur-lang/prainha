@@ -62,6 +62,31 @@ export function SugestaoClient({ filialId, linhas, fornecedores, fornecedoresPor
     () => Object.fromEntries(linhas.map((l) => [l.produtoId, l.sugestao > 0])),
   );
   const [fornSel, setFornSel] = useState<Set<string>>(new Set());
+  // Marcados como serviço nesta tela (couvert, taxa): somem da lista na hora.
+  const [servicos, setServicos] = useState<Set<string>>(new Set());
+  const [marcando, setMarcando] = useState<string | null>(null);
+
+  async function marcarServico(l: LinhaSugestao) {
+    if (!confirm(`"${l.nome}" é serviço (couvert, taxa)? Ele sai da sugestão de compra.`)) return;
+    setMarcando(l.produtoId);
+    setErro(null);
+    try {
+      const r = await fetch(`/api/produtos/${l.produtoId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tipo: 'SERVICO' }),
+      });
+      if (!r.ok) {
+        const j = (await r.json().catch(() => null)) as { error?: string } | null;
+        setErro(`Não marcou "${l.nome}" como serviço: ${j?.error ?? r.status}`);
+        return;
+      }
+      setSel((p) => ({ ...p, [l.produtoId]: false }));
+      setServicos((p) => new Set(p).add(l.produtoId));
+    } finally {
+      setMarcando(null);
+    }
+  }
   const [buscaForn, setBuscaForn] = useState('');
   const [catForn, setCatForn] = useState('');
   const [duracao, setDuracao] = useState(4);
@@ -189,7 +214,7 @@ export function SugestaoClient({ filialId, linhas, fornecedores, fornecedoresPor
             </tr>
           </thead>
           <tbody>
-            {linhas.map((l) => {
+            {linhas.filter((l) => !servicos.has(l.produtoId)).map((l) => {
               const semMax = l.maximo == null;
               const risco = l.vendido7d > l.atual;
               return (
@@ -206,6 +231,17 @@ export function SugestaoClient({ filialId, linhas, fornecedores, fornecedoresPor
                     <div className="text-[10px] text-slate-400">
                       por {l.unidade}
                       {!l.deCompra && <span className="ml-1 text-amber-600">sem cadastro de compra</span>}
+                      {!l.deCompra && !l.ehInsumo && (
+                        <button
+                          type="button"
+                          onClick={() => marcarServico(l)}
+                          disabled={marcando === l.produtoId}
+                          className="ml-1 rounded border border-slate-300 px-1 text-slate-600 hover:bg-slate-100 disabled:opacity-50"
+                          title="Couvert, taxa, rolha: vende mas não se compra"
+                        >
+                          {marcando === l.produtoId ? '…' : 'é serviço'}
+                        </button>
+                      )}
                       {risco && <span className="ml-1 text-rose-600">⚠ vendeu mais que o estoque</span>}
                     </div>
                     {!l.ehInsumo && (

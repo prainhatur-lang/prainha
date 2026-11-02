@@ -94,6 +94,8 @@ export default async function SugestaoCompraPage(props: { searchParams: Promise<
       and(
         eq(schema.produto.filialId, filial.id),
         sql`COALESCE(${schema.produto.descontinuado}, false) = false`,
+        // Serviço (couvert, gorjeta, taxa) vende mas não se compra (02/11).
+        sql`${schema.produto.tipo} <> 'SERVICO'`,
         codigosVendidos.length > 0
           ? sql`(
               ${inArray(schema.produto.codigoExterno, codigosVendidos)}
