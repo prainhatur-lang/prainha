@@ -214,6 +214,11 @@ export const MENU_AREAS: MenuArea[] = [
             href: '/movimento/transferencias',
             perm: 'nota_compra.read',
           },
+          {
+            label: 'Transferência entre setores',
+            href: '/estoque/locais?aba=transferir',
+            perm: 'produto.read',
+          },
         ],
       },
       {
@@ -245,6 +250,7 @@ export const MENU_AREAS: MenuArea[] = [
         label: 'Estoque',
         links: [
           { label: 'Posição de estoque', href: '/relatorios/estoque', perm: 'relatorio.read' },
+          { label: 'Estoque por setor', href: '/estoque/locais', perm: 'produto.read' },
           {
             label: 'Movimentações de estoque',
             href: '/relatorios/movimentos',
