@@ -160,6 +160,22 @@
                 android:text="🧾 Fechar o dia"
                 android:textSize="13sp" />
         </LinearLayout>
+
+        <!-- Só na demo (/api/config conheca_url): site de venda do Concilia -->
+        <Button
+            android:id="@+id/conhecaSistema"
+            android:layout_width="match_parent"
+            android:layout_height="38dp"
+            android:layout_marginTop="8dp"
+            android:minWidth="0dp"
+            android:minHeight="0dp"
+            android:background="@drawable/btn_cabecalho"
+            android:textAllCaps="false"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold"
+            android:text="🌐 Conheça o sistema completo"
+            android:textSize="13sp"
+            android:visibility="gone" />
     </LinearLayout>
 
     <!-- Baixas pendentes (pagamento capturado sem registro) -->

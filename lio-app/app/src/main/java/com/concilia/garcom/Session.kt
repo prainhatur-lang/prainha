@@ -86,6 +86,7 @@ object Session {
             .putString("adquirente", if (c.adquirente == "rede") "rede" else "cielo")
             .putString("fidelidade_nome", c.fidelidadeNome)
             .putBoolean("passe_saida", c.passeSaida)
+            .putString("conheca_url", c.conhecaUrl)
             .apply()
         saveLan(ctx, c.lan, de) // aprende o IP local da loja (pra preferir local dentro)
         configEm = SystemClock.elapsedRealtime()
@@ -97,6 +98,9 @@ object Session {
 
     /** A casa usa passe de saída (catraca/cancela)? Sem config = sim, como sempre foi. */
     fun passeSaida(ctx: Context): Boolean = prefs(ctx).getBoolean("passe_saida", true)
+
+    /** Link do site de venda do Concilia (só na demo). Vazio = sem botão. */
+    fun conhecaUrl(ctx: Context): String = prefs(ctx).getString("conheca_url", null).orEmpty()
 
     /** Adquirente da maquininha desta filial (do /api/config): cielo | rede. */
     fun adquirente(ctx: Context): String = prefs(ctx).getString("adquirente", null) ?: "cielo"

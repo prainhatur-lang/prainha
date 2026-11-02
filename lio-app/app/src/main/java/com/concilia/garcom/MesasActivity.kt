@@ -64,6 +64,7 @@ class MesasActivity : AppCompatActivity() {
         // ticket por unidade pra retirar no bar/petiscos — sem mesa nenhuma.
         findViewById<Button>(R.id.venderTicket).setOnClickListener { dialogTicket() }
         pendentesBanner.setOnClickListener { dialogPendentes() }
+        findViewById<Button>(R.id.conhecaSistema).setOnClickListener { dialogConheca() }
 
         lista.adapter = adapter
         lista.setOnItemClickListener { _, _, pos, _ -> abrirConta(adapter.itens[pos].numero) }
@@ -73,6 +74,7 @@ class MesasActivity : AppCompatActivity() {
         super.onResume()
         Session.revalidar(this) // voltou pra tela: confere local × internet (se a última checagem é velha)
         mostrarRota()
+        mostrarConheca()
         carregar()
         handler.postDelayed(refreshRunnable, 15000)
         atualizarPendentes()
@@ -210,6 +212,55 @@ class MesasActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.garcomNome).text = "👤 " + (Session.nome(this) ?: Session.login(this) ?: "")
         findViewById<TextView>(R.id.rota).text = Session.rotaCurta(this)
         findViewById<TextView>(R.id.versao).text = "v" + BuildConfig.VERSION_NAME
+    }
+
+    /** Botão "Conheça o sistema completo": só quando o servidor manda o link (demo). */
+    private fun mostrarConheca() {
+        findViewById<Button>(R.id.conhecaSistema).visibility =
+            if (Session.conhecaUrl(this).isNotBlank()) View.VISIBLE else View.GONE
+    }
+
+    /** QR pro celular do dono + tenta abrir no navegador da própria maquininha. */
+    private fun dialogConheca() {
+        val url = Session.conhecaUrl(this)
+        if (url.isBlank()) return
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val caixa = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, 0)
+        }
+        caixa.addView(TextView(this).apply {
+            text = "Vendas, cozinha, nota fiscal, estoque, financeiro, RH e consultoria pra restaurante.\n\nAponte a câmera do celular pro QR pra ver os planos e começar:"
+            textSize = 15f
+        })
+        val lado = (220 * resources.displayMetrics.density).toInt()
+        Qr.bitmap(url, lado)?.let { bmp ->
+            caixa.addView(android.widget.ImageView(this).apply {
+                setImageBitmap(bmp)
+                layoutParams = android.widget.LinearLayout.LayoutParams(lado, lado).apply {
+                    gravity = android.view.Gravity.CENTER_HORIZONTAL
+                    topMargin = pad
+                }
+            })
+        }
+        caixa.addView(TextView(this).apply {
+            text = url.substringBefore('?').removePrefix("https://")
+            textSize = 13f
+            gravity = android.view.Gravity.CENTER
+            setPadding(0, pad / 2, 0, 0)
+        })
+        AlertDialog.Builder(this)
+            .setTitle("🌐 Conheça o sistema completo")
+            .setView(caixa)
+            .setPositiveButton("Fechar", null)
+            .setNeutralButton("Abrir aqui") { _, _ ->
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+                } catch (_: Exception) {
+                    Toast.makeText(this, "Sem navegador na maquininha — use o QR no celular.", Toast.LENGTH_LONG).show()
+                }
+            }
+            .show()
     }
 
     /** Toque no nome: mostra por onde está indo e por quê; "Checar agora"

@@ -81,6 +81,8 @@ object Api {
         val fidelidadeNome: String = "Cartão Prainha",
         /** Casa trabalha com passe de saída (catraca/cancela)? Servidor antigo = sim. */
         val passeSaida: Boolean = true,
+        /** Site de venda do Concilia (só a demo manda) — vazio = sem botão. */
+        val conhecaUrl: String = "",
     )
 
     /** Mesa/comanda aberta na grade (espelho local — rápido). */
@@ -349,6 +351,7 @@ object Api {
                 adquirente = j.optString("adquirente", "cielo"),
                 fidelidadeNome = j.optString("fidelidade_nome", "").ifBlank { "Cartão Prainha" },
                 passeSaida = j.optBoolean("passe_saida", true),
+                conhecaUrl = j.optString("conheca_url", "").let { if (it.startsWith("https://")) it else "" },
             )
         } catch (_: Exception) { null }
     }
