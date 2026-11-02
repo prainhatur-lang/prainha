@@ -164,7 +164,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
                         </td>
                         <td className="px-3 py-2 text-right whitespace-nowrap">
                           {f.qtdLancamentos > 0 ? (
-                            <Link href={`/financeiro/cartoes?fatura=${f.id}`} className="mr-3 text-xs text-sky-700 underline">
+                            <Link href={`/financeiro/cartoes?fatura=${f.id}#lancamentos`} className="mr-3 text-xs text-sky-700 underline">
                               ver lançamentos
                             </Link>
                           ) : null}
@@ -178,7 +178,8 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
             </div>
 
             {aberta ? (
-              <div className="mt-8">
+              // Âncora: a lista de faturas é longa e os lançamentos ficavam escondidos lá embaixo.
+              <div id="lancamentos" className="mt-8 scroll-mt-4">
                 <h2 className="text-lg font-semibold text-slate-900">
                   {aberta.banco ?? 'Fatura'} {aberta.cartaoFinal ? `final ${aberta.cartaoFinal}` : ''}
                   {aberta.vencimento ? ` — vencimento ${formatDate(aberta.vencimento)}` : ''}
