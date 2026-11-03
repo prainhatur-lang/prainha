@@ -8,7 +8,7 @@
 //    audio, debounce de mensagens picadas, IA, ferramentas, envio.
 
 import { db, schema } from '@concilia/db';
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { gerarResposta, NINA_SILENCIO, type MsgHistorico } from './ia';
 import { enviarTexto, enviarAudio, marcarLidaComDigitando, baixarMidia } from './zap';
 import { gerarAudioNina } from './voz';
@@ -31,6 +31,7 @@ import {
 import { consultarCardapio, FILIAL_TABUARA } from './cardapio';
 import { medirOcupacaoHoje } from './ocupacao';
 import { consultarPedidoDelivery } from './pedido-delivery';
+import { consultarSupervisor } from './supervisor';
 import { consultarMareTexto } from './mare';
 import { consultarTempoTexto } from './clima';
 import { consultarCotacoesFornecedor, cadastrarFornecedorProspect } from './fornecedor';
@@ -555,6 +556,36 @@ export async function processarEntrada(params: {
         console.error('[nina] casas cobertas falhou:', e instanceof Error ? e.message : e);
       }
     }
+    // Instagram de cada casa (dono 03/11/2026): pra quem pede foto/vídeo do
+    // ambiente. Vem da ligação em /marketing (pista do @). Best-effort: falhou, segue sem.
+    let instagrams: { filialNome: string; usuario: string }[] = [];
+    if (modo === 'cliente') {
+      try {
+        const casas = [
+          { filialId: entrada.filialId, filialNome },
+          ...outrasCasas.map((c) => ({ filialId: c.filialId, filialNome: c.filialNome })),
+          ...cobertas.map((c) => ({ filialId: c.filialId, filialNome: c.filialNome })),
+        ];
+        // O @ fica aberto na `pista` (o valor cifrado é o mesmo @).
+        const linhas = await db
+          .select({ filialId: schema.filialCredencial.filialId, pista: schema.filialCredencial.pista })
+          .from(schema.filialCredencial)
+          .where(
+            and(
+              inArray(schema.filialCredencial.filialId, [...new Set(casas.map((c) => c.filialId))]),
+              eq(schema.filialCredencial.provedor, 'instagram'),
+              eq(schema.filialCredencial.chave, 'usuario'),
+            ),
+          );
+        const porFilial = new Map(linhas.map((l) => [l.filialId, (l.pista ?? '').trim().replace(/^@/, '')]));
+        instagrams = casas
+          .map((c) => ({ filialNome: c.filialNome, usuario: porFilial.get(c.filialId) ?? '' }))
+          .filter((c) => /^[a-z0-9._]{2,30}$/i.test(c.usuario))
+          .filter((c, i, arr) => c.usuario && arr.findIndex((x) => x.filialNome === c.filialNome) === i);
+      } catch (e) {
+        console.error('[nina] instagram das casas falhou:', e instanceof Error ? e.message : e);
+      }
+    }
     let passouPara: { casa: OutraCasa; link: string } | null = null;
     // Pix da taxa do Lounge criado pela Nina (31/10/2026): sai numa mensagem
     // SÓ com o código, depois da resposta — o cliente copia e cola inteiro.
@@ -876,6 +907,19 @@ export async function processarEntrada(params: {
         });
         return 'Transferido. Avise o cliente, em uma frase gentil, que alguém da equipe já vai falar com ele por aqui mesmo.';
       },
+      // Supervisor (dono 03/11/2026): antes de chamar a equipe, a dúvida vai
+      // pro supervisor, que lê a base, a conversa e a ficha do cliente.
+      consultarSupervisor: (dados: { motivo: string; resumo: string; systemNina: string; historico: MsgHistorico[] }) =>
+        consultarSupervisor({
+          filialId: entrada.filialId,
+          filialNome,
+          telefone: entrada.telefone,
+          nomeAtendente: config.nomeAtendente,
+          systemNina: dados.systemNina,
+          historico: dados.historico,
+          motivo: dados.motivo,
+          resumo: dados.resumo,
+        }),
     };
 
     let texto: string | null = null;
@@ -909,6 +953,7 @@ export async function processarEntrada(params: {
           outrasCasas,
           casasCobertas: cobertas,
           passagem,
+          instagrams,
         });
       } catch (e1) {
         console.error('[nina] geracao tentativa 1 falhou:', e1 instanceof Error ? e1.message : e1);
@@ -938,6 +983,7 @@ export async function processarEntrada(params: {
           outrasCasas,
           casasCobertas: cobertas,
           passagem,
+          instagrams,
         });
         } catch (e2) {
           // FAILOVER DE MOTOR (domingo 06/09: 8 falhas em rajada no pico —
@@ -966,6 +1012,7 @@ export async function processarEntrada(params: {
             outrasCasas,
             casasCobertas: cobertas,
             passagem,
+            instagrams,
           });
         }
       }

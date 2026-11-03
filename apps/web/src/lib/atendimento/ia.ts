@@ -7,6 +7,7 @@
 
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
+import type { ParecerSupervisor } from './supervisor';
 import type { BlocoConhecimento, EspacoEvento } from '@concilia/db/schema';
 import { linkCardapio, FILIAL_TABUARA } from './cardapio';
 import { ENTRADA_ESPACO_PCT } from './orcamento';
@@ -169,6 +170,14 @@ export interface ExecutoresFerramentas {
   montarValePresente?: (dados: DadosValePresente) => Promise<string>;
   /** Pedido de delivery (iFood/site) lido ao vivo na loja: situação, hora que saiu e o que fazer. */
   consultarPedidoDelivery?: (dados: { numero: string | null; nome: string | null }) => Promise<string>;
+  /** Supervisor (dono 03/11/2026): antes de transferir, pergunta a um modelo mais
+   *  forte que lê a base, a conversa e a ficha do cliente. null = transfere. */
+  consultarSupervisor?: (dados: {
+    motivo: string;
+    resumo: string;
+    systemNina: string;
+    historico: MsgHistorico[];
+  }) => Promise<ParecerSupervisor | null>;
 }
 
 export interface DadosValePresente {
@@ -259,6 +268,8 @@ function montarSystemPrompt(params: {
   casasCobertas?: CasaCobertaPrompt[];
   /** A pessoa chegou pelo QR do encontro Sebrae + Embratur (agências e operadores). */
   encontroAgencias?: boolean;
+  /** Instagram de cada casa (a desta conversa e as outras), pra fotos do ambiente. */
+  instagrams?: { filialNome: string; usuario: string }[];
 }): string {
   const { nomeAtendente, filialNome, persona, conhecimento, espacos, primeiraResposta, retomada } = params;
   // Cardápio online da CASA (a Tabuará tem o dela) — nunca o link fixo do Prainha.
@@ -286,6 +297,15 @@ function montarSystemPrompt(params: {
   const blocoForaHorario = params.filialId === FILIAL_PRAINHA_BAR
     ? '- ANTES DAS 9h a casa AINDA VAI ABRIR HOJE: nunca diga "hoje estamos fechados" nem empurre pra amanhã — reserva pra hoje segue normal pela ferramenta. O "amanhã" abaixo vale só pra quem chama DEPOIS das 19h.\n- FORA DO HORÁRIO (depois das 19h ou antes das 9h): o Prainha abre 9h–19h. Se o cliente contacta com problema relacionado ao LOCAL (carro no estacionamento, perdeu algo na mesa, etc), avise com carinho: "A gente funciona 9h–19h — seu carro está seguro no nosso estacionamento, você busca amanhã durante o horário. Se é algo na mesa, a equipe verifica pra você amanhã." Aí transfira SOMENTE se o cliente insistir ou se for algo urgente de verdade (vazamento, incêndio, emergência). Se é só dúvida/informação (cardápio, preço, evento), responda normalmente e ofereça vir durante o horário.'
     : `- HORÁRIO DE FUNCIONAMENTO: o horário do ${filialNome} é o que está escrito nos blocos DESTA casa — o "9h–19h" é só do Prainha Bar e NÃO vale aqui. Antes de dizer que a casa está aberta ou fechada (hoje, agora, amanhã), pegue o dia da semana e a hora de AGORA (fim deste prompt) e confira contra o horário escrito nos blocos. Na dúvida, NUNCA diga "fechado": diga o horário do dia e siga com a reserva.`;
+
+  // FOTOS DO AMBIENTE (dono, 03/11/2026): "sugere o instagram para ver fotos
+  // do ambiente". O @ vem da ligação do Instagram em /marketing de cada casa.
+  const igs = (params.instagrams ?? []).filter((i) => i.usuario.trim());
+  const igDesta = igs.find((i) => i.filialNome === filialNome);
+  const igOutras = igs.filter((i) => i.filialNome !== filialNome);
+  const blocoInstagram = igs.length
+    ? `\n- FOTOS E VÍDEOS DO AMBIENTE ("como é aí?", "tem foto do lugar?", "manda um vídeo do espaço", "quero ver o terraço"): sugira o Instagram da casa, onde tem as fotos e vídeos do ambiente${igDesta ? ` — ${filialNome}: https://instagram.com/${igDesta.usuario.replace(/^@/, '')} (@${igDesta.usuario.replace(/^@/, '')})` : ''}${igOutras.length ? `; se a pessoa fala de outra casa, mande o da casa certa: ${igOutras.map((i) => `${i.filialNome} https://instagram.com/${i.usuario.replace(/^@/, '')}`).join(' · ')}` : ''}. Mande o link junto com a resposta (não em vez dela) e não transfira por causa disso. Foto de PRATO continua sendo o cardápio com fotos.`
+    : '';
 
   // PASSAGEM ENTRE CASAS (dono, 14/10/2026): cada casa com número próprio tem
   // atendente própria; assunto de lá vai pra ela, com o resumo, pelo link.
@@ -418,7 +438,7 @@ REGRAS DE VERDADE:
 - O que está [PENDENTE] você não AFIRMA e não NEGA (ex.: se a cobrança de entrada em data especial está pendente, não responda "não paga nada").
 - Se você disser que vai confirmar/verificar/perguntar algo pra equipe (ou "chamar um colega"), é OBRIGATÓRIO chamar transferir_para_humano nessa mesma resposta — prometer retorno sem transferir é proibido (ninguém seria avisado).
 - RESPOSTA DA EQUIPE NO HISTÓRICO ([UM COLEGA HUMANO DA EQUIPE respondeu...]): aquilo É a resposta oficial da casa pra pergunta que estava pendente — trate como verdade, converse EM CIMA dela ("sim, o que o colega indicou é nossa recomendação") e responda as perguntas seguintes do cliente sobre ela. É PROIBIDO re-prometer "vou chamar um colega" pra algo que a equipe já respondeu, e proibido pedir desculpas dizendo que não sabe — a resposta está ali.
-- Nunca invente preço, horário, promoção nem exceção. Nunca prometa nada em nome da casa.
+- Nunca invente preço, horário, promoção nem exceção. Nunca prometa nada em nome da casa.${blocoInstagram}
 ${blocoForaHorario}
 - PEDIDO DE DELIVERY / iFOOD ("cadê meu pedido", "já saiu?", "o entregador não chegou", "o motoboy não acha minha casa") — vale a qualquer hora, inclusive fora do horário: chame consultar_pedido_delivery ANTES de responder e siga o COMO RESPONDER e a AÇÃO que ela devolver; quando ela mandar transferir, transfira NESSA mesma resposta. É PROIBIDO dizer que não tem como falar com o entregador, ou mandar o cliente resolver no app do iFood, sem ter consultado (caso Cíntya, 14/10: o pedido já tinha saído com o nosso motoboy e ela ouviu que a casa não falava com o entregador). Endereço, telefone e nome do motoboy que a ferramenta marcar como USO INTERNO nunca vão pro cliente — só pro resumo da transferência. Peça o número do pedido só quando a ferramenta pedir.${ehTabuara
     ? ''
@@ -1296,6 +1316,8 @@ export async function gerarResposta(params: {
   casasCobertas?: CasaCobertaPrompt[];
   /** A pessoa chegou pelo link de passagem de outra casa: o fim da conversa de lá. */
   passagem?: { deAtendente: string; deCasa: string; mensagens: MsgHistorico[] } | null;
+  /** Instagram de cada casa (marketing), pra quem pede foto/vídeo do ambiente. */
+  instagrams?: { filialNome: string; usuario: string }[];
 }): Promise<RespostaNina> {
   // Motor por env: ATENDIMENTO_MODELO começando com 'claude' usa a Anthropic
   // (obediência melhor ao prompt longo da Nina — loops e regras ignoradas do
@@ -1503,6 +1525,7 @@ Como usar, SEM EXCEÇÃO:
   }
 
   let transferiu = false;
+  let supervisorConsultado = false;
   let leadRegistrado = false;
   let usouFerramenta = false;
   let usouFerramentaComEfeito = false;
@@ -1771,11 +1794,43 @@ Como usar, SEM EXCEÇÃO:
             ? await params.executores.passarParaOutraCasa!(String(args.casa ?? ''), String(args.resumo ?? ''))
             : 'Passagem indisponível aqui — responda com o que você sabe ou transfira pra equipe.';
         } else if (tc.function.name === 'transferir_para_humano') {
-          resultado = await params.executores.transferir(
-            String(args.motivo ?? 'não informado'),
-            String(args.resumo ?? ''),
-          );
-          transferiu = true;
+          const motivoT = String(args.motivo ?? 'não informado');
+          let resumoT = String(args.resumo ?? '');
+          // Supervisor antes da equipe (dono 03/11/2026): uma consulta por
+          // resposta. Fica de fora quando o cliente pediu gente, no modo
+          // fornecedor e na retomada (a equipe já devolveu a conversa).
+          const ultimasCliente = params.historico
+            .filter((m) => m.direcao === 'entrada')
+            .slice(-3)
+            .map((m) => m.corpo ?? '')
+            .join(' ');
+          const pediuGente = /atendente|humano|pessoa|falar com algu|gerente|dono|propriet/i.test(ultimasCliente);
+          let parecer: ParecerSupervisor | null = null;
+          if (params.executores.consultarSupervisor && !supervisorConsultado && modo === 'cliente' && !params.retomada && !pediuGente) {
+            supervisorConsultado = true;
+            const t0 = Date.now();
+            parecer = await params.executores
+              .consultarSupervisor({ motivo: motivoT, resumo: resumoT, systemNina: system, historico: params.historico })
+              .catch(() => null);
+            console.log(
+              '[nina] supervisor filial=%s motivo=%s -> %s (%dms) %s',
+              params.filialId.slice(0, 8),
+              semDigitosLongos(motivoT).slice(0, 120),
+              parecer?.decisao ?? 'sem parecer',
+              Date.now() - t0,
+              semDigitosLongos(parecer?.motivo ?? '').slice(0, 200),
+            );
+          }
+          if (parecer?.decisao === 'responder') {
+            resultado =
+              `NÃO TRANSFERIDO — consultei o supervisor e ele respondeu: "${parecer.resposta}"` +
+              (parecer.motivo ? ` (fonte: ${parecer.motivo})` : '') +
+              '. Responda o cliente AGORA com essa informação, no seu tom, sem dizer que vai confirmar com a equipe e sem citar o supervisor. Se o cliente pedir uma pessoa depois, aí sim transfira.';
+          } else {
+            if (parecer?.motivo) resumoT = `${resumoT}${resumoT ? ' — ' : ''}Supervisor: ${parecer.motivo}`;
+            resultado = await params.executores.transferir(motivoT, resumoT);
+            transferiu = true;
+          }
         } else {
           resultado = 'ferramenta desconhecida';
         }
