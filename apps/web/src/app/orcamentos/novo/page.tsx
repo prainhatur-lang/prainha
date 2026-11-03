@@ -14,7 +14,7 @@ import { FormOrcamento, type OrcamentoInicial } from '../form-orcamento';
 export const dynamic = 'force-dynamic';
 
 const CONDICOES_PADRAO = [
-  '• Reserva da data mediante pagamento de sinal de 50% do valor total.',
+  '• Reserva da data mediante pagamento de sinal de 30% do valor total, NÃO reembolsável.',
   '• Saldo restante pago no dia do evento.',
   '• Valores válidos para a data e quantidade de pessoas indicadas neste orçamento.',
   '• Bebidas cobradas à parte, conforme consumo.',

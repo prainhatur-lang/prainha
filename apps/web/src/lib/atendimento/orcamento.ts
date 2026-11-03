@@ -37,6 +37,10 @@ const FAIXA_MAX_PESSOA = 400;
 const PACOTE_BEBIDA_SEM_ALCOOL: number | null = 35; // refri, água, água de coco, sucos
 const PACOTE_BEBIDA_COM_ALCOOL: number | null = 70; // + cerveja
 const TAXA_TERRACO = 1000;
+// ENTRADA do aluguel de espaço = 30% NÃO reembolsável (dono 03/11/2026:
+// "em vez de pedir 50%, pede 30%, mas não reembolsável — reservar gasta
+// energia e depois a pessoa cancela"). Vale sobre o % escrito no cadastro.
+export const ENTRADA_ESPACO_PCT = 30;
 // TAXA DE ROLHA por faixa de valor do evento (Elison, 16/08): evento grande
 // não paga; quanto menor a conta, maior a rolha. Cobrada POR GARRAFA de vinho
 // que o cliente traz.
@@ -281,8 +285,8 @@ export async function gerarOrcamentoEvento(p: PedidoOrcamento): Promise<string> 
       'Entradas e pratos servidos à vontade durante o evento. ' +
       'Incluído: mesas e cadeiras, material de serviço (pratos, talheres, taças, guardanapos), pessoal de serviço e de limpeza, estacionamento fechado e gerador em caso de falta de energia. ' +
       'Não incluído: decoração, doces, bolo e bebidas — bebidas servidas por consumo, ou em pacote a combinar com a equipe. ' +
-      `Entrada de R$ ${TAXA_TERRACO},00 (a taxa do espaço) para reservar a data — a data só fica bloqueada após o pagamento. O restante é acertado com a equipe. ` +
-      `Entrada de R$ ${TAXA_TERRACO},00 (a taxa do espaço) para reservar a data — a data só fica bloqueada após a confirmação do pagamento; o restante é acertado com a equipe. ` +
+      `Entrada de R$ ${TAXA_TERRACO},00 (a taxa do espaço) para reservar a data, NÃO reembolsável — a data só fica bloqueada após o pagamento. O restante é acertado com a equipe. ` +
+      `Entrada de R$ ${TAXA_TERRACO},00 (a taxa do espaço) para reservar a data, NÃO reembolsável — a data só fica bloqueada após a confirmação do pagamento; o restante é acertado com a equipe. ` +
       (rolha > 0
         ? `Vinho trazido pelo cliente: taxa de rolha de R$ ${rolha},00 por garrafa. `
         : 'Vinho trazido pelo cliente: taxa de rolha por cortesia da casa. ') +
@@ -303,7 +307,7 @@ export async function gerarOrcamentoEvento(p: PedidoOrcamento): Promise<string> 
     `ORÇAMENTO CRIADO: Terraço, ${p.data.split('-').reverse().join('/')}${p.hora ? ` às ${p.hora}` : ''}, ${pessoas} pessoas, ${sob}. ` +
     `${composicao}. ` +
     `Menu ${rs(valorPessoaDoc)}/pessoa + taxa do espaço ${rs(TAXA_TERRACO)} = total ${rs(totalFinal)} (${rs(porPessoaCheio)} por pessoa com tudo${pisoAplicado ? ` — a conta deu ${rs(calculado)} e foi elevada ao mínimo de ${rs(PISO_POR_PESSOA)}/pessoa` : ''}). ` +
-    `Entrada de R$ ${TAXA_TERRACO},00 (taxa do espaço) reserva a data — enquanto não pagar, a data segue livre pra outro cliente; diga isso ao cliente com naturalidade, sem pressão. ` +
+    `Entrada de R$ ${TAXA_TERRACO},00 (taxa do espaço) reserva a data — enquanto não pagar, a data segue livre pra outro cliente; diga isso ao cliente com naturalidade, sem pressão. A entrada NÃO é reembolsável: diga isso ao cliente junto com o valor. ` +
     (rolha > 0
       ? `Taxa de rolha: R$ ${rolha},00 por garrafa de vinho que o cliente trouxer — diga SÓ esse valor, nunca as faixas. `
       : `Rolha por CORTESIA nesse evento: ofereça como gentileza da casa ("a rolha fica por nossa conta"), sem dizer por que nem citar valor de corte. `) +
@@ -383,7 +387,7 @@ export async function gerarOrcamentoEspaco(p: PedidoOrcamentoEspaco): Promise<st
     return 'Falta o nome do cliente — PERGUNTE agora, numa frase curta ("pra deixar o orçamento no seu nome, como você se chama?"), e chame gerar_orcamento_espaco de novo. NÃO registre lead nem transfira por isso, e NÃO use o nome do perfil do WhatsApp.';
   }
 
-  const pct = percentualEntrada(cad.condicoes);
+  const pct = ENTRADA_ESPACO_PCT;
   const entrada = Math.round((taxa * pct) / 100);
   const comVaranda = pessoas > CAP_TERRACO;
   const descEspaco = await descontoEspacoMembro(p.filialId, p.telefone, taxa, null).catch(() => null);
@@ -418,8 +422,8 @@ export async function gerarOrcamentoEspaco(p: PedidoOrcamentoEspaco): Promise<st
       'O aluguel abre o Terraço exclusivo para o grupo, com garçom e barman exclusivos atendendo só o evento; o valor do aluguel não é convertido em consumo. ' +
       'O consumo é à parte e o cliente escolhe: comanda individual, consumação livre (conta única) ou pacote fechado de comidas e bebidas (orçamento à parte). ' +
       'O cliente pode trazer decoração, bolo e doces. ' +
-      `Entrada de ${pct}% (${rs(entrada)}) por Pix para reservar a data — a data só fica bloqueada após a confirmação do pagamento. ` +
-      `Saldo do aluguel até o dia do evento. ${cad.condicoes ? `Condição cadastrada: ${cad.condicoes}.` : ''}`.trim(),
+      `Entrada de ${pct}% (${rs(entrada)}) por Pix para reservar a data, NÃO reembolsável — a data só fica bloqueada após a confirmação do pagamento. ` +
+      `Saldo do aluguel até o dia do evento. ${cad.condicoes && !/%/.test(cad.condicoes) ? `Condição cadastrada: ${cad.condicoes}.` : ''}`.trim(),
     validoAte: diasAtrasBr(-VALIDADE_DIAS),
     aceiteToken,
     criadoPor: 'nina-whatsapp',
@@ -429,7 +433,7 @@ export async function gerarOrcamentoEspaco(p: PedidoOrcamentoEspaco): Promise<st
     `ORÇAMENTO DE ESPAÇO CRIADO: Terraço${comVaranda ? ' + varandinha' : ''} fechado pro grupo, ${p.data.split('-').reverse().join('/')}${p.hora ? ` a partir das ${p.hora}` : ''}, ${pessoas} pessoas${tipo ? ` (${tipo})` : ''}. ` +
     `Aluguel do espaço ${rs(taxa)}; comida e bebida por consumo do cardápio, em comanda individual. Pode trazer decoração, bolo e doces. ` +
     `O aluguel abre o Terraço exclusivo pro grupo, com garçom e barman exclusivos só pra eles, e NÃO vira consumação. O consumo é à parte e o cliente escolhe: comanda individual, consumação livre (conta única) ou pacote de comidas e bebidas (aí é orçamento de menu à parte). Se perguntarem se o valor vira consumo, responda isso você mesma, sem transferir. ` +
-    `Entrada de ${pct}% = ${rs(entrada)} por Pix na própria página do link: é ela que reserva a data (enquanto não pagar, o dia segue livre pra outro cliente — diga com naturalidade, sem pressão). Saldo do aluguel até o dia do evento. ` +
+    `Entrada de ${pct}% = ${rs(entrada)} por Pix na própria página do link: é ela que reserva a data (enquanto não pagar, o dia segue livre pra outro cliente — diga com naturalidade, sem pressão). A entrada NÃO é reembolsável: diga isso ao cliente junto com o valor. Saldo do aluguel até o dia do evento. ` +
     (descEspaco
       ? `O cliente é ${descEspaco.motivo}: ganhou ${rs(descEspaco.desconto)} de desconto no aluguel, já abatido no documento — conte como benefício do cartão. `
       : '') +

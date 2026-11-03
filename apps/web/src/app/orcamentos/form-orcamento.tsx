@@ -577,6 +577,18 @@ export function FormOrcamento({ locais, inicial }: Props) {
                   <button
                     type="button"
                     onClick={() =>
+                      setEntradaValor(((totais.total ?? 0) * 0.3).toFixed(2).replace('.', ','))
+                    }
+                    className="rounded-md border border-emerald-300 bg-emerald-50 px-2.5 py-1.5 text-xs text-emerald-800 hover:bg-emerald-100"
+                    title="Regra do dono (03/11/2026): entrada de 30%, não reembolsável"
+                  >
+                    usar 30% ({brl((totais.total ?? 0) * 0.3)})
+                  </button>
+                )}
+                {totais.total != null && (
+                  <button
+                    type="button"
+                    onClick={() =>
                       setEntradaValor(((totais.total ?? 0) / 2).toFixed(2).replace('.', ','))
                     }
                     className="rounded-md border border-slate-300 px-2.5 py-1.5 text-xs text-slate-600 hover:bg-slate-50"

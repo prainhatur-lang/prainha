@@ -9,6 +9,7 @@ import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import type { BlocoConhecimento, EspacoEvento } from '@concilia/db/schema';
 import { linkCardapio, FILIAL_TABUARA } from './cardapio';
+import { ENTRADA_ESPACO_PCT } from './orcamento';
 const FILIAL_PRAINHA_BAR = '7c5c66ce-cceb-4e89-9c6d-d0785255c4f9';
 const RECUSA_ORCAMENTO_EVENTO =
   'NÃO É ORÇAMENTO DE EVENTO: o menu de evento (3-4 entradas, 3 principais, massa) é só pro Terraço do Prainha Bar, pra grupo de 3 a 60 pessoas. NÃO liste esse menu. ' +
@@ -333,7 +334,7 @@ ${cobertas
     .filter((e) => e.ativo)
     .map((e) => {
       const preco = e.preco.trim()
-        ? `Preço/condições: ${e.preco}${e.condicoes.trim() ? ` — ${e.condicoes}` : ''}`
+        ? `Preço/condições: ${e.preco}${e.condicoes.trim() ? ` — ${e.condicoes}` : ''} (ENTRADA pra reservar a data: ${ENTRADA_ESPACO_PCT}%, NÃO reembolsável — regra do dono 03/11/2026, vale sobre qualquer % escrito aqui; avise o cliente)`
         : 'Preço: NÃO INFORMADO (diga que a equipe confirma o valor — nunca invente)';
       return `- ${e.nome} (${e.capacidade}): ${e.descricao} ${preco}`;
     })
