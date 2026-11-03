@@ -293,6 +293,9 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
     nf_real: boolean | null;
     nf_pagamento: { parcelas?: number; formas?: { tPag?: string }[] } | null;
     nf_dups: number | null;
+    // Conta à mão só com o número e sem nota achada: o fornecedor (CNPJ, grupo
+    // ou as 2 primeiras palavras do nome) já mandou nota com boleto?
+    forn_fatura: boolean | null;
   };
   const origens = new Map<string, Origem>();
   if (linhas.length > 0) {
@@ -315,7 +318,22 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
                (coalesce(n.origem_importacao, nn.origem_importacao) NOT IN ('PEDIDO_FOTO', 'NFSE_PDF')) AS nf_real,
                coalesce(n.pagamento_xml, nn.pagamento_xml) AS nf_pagamento,
                (SELECT count(*)::int FROM nota_compra_duplicata d2
-                 WHERE d2.nota_compra_id = coalesce(n.id, nn.id)) AS nf_dups
+                 WHERE d2.nota_compra_id = coalesce(n.id, nn.id)) AS nf_dups,
+               CASE WHEN n.id IS NULL AND nn.id IS NULL AND c.origem = 'MANUAL' THEN EXISTS (
+                 SELECT 1 FROM nota_compra n4
+                   JOIN fornecedor f4 ON f4.id = n4.fornecedor_id
+                  WHERE n4.filial_id = c.filial_id
+                    AND n4.origem_importacao NOT IN ('PEDIDO_FOTO', 'NFSE_PDF')
+                    AND (f4.id = c.fornecedor_id
+                         OR (fc.cnpj_ou_cpf IS NOT NULL AND left(f4.cnpj_ou_cpf, 8) = left(fc.cnpj_ou_cpf, 8))
+                         OR (fc.grupo_economico_id IS NOT NULL AND f4.grupo_economico_id = fc.grupo_economico_id)
+                         OR (array_length(regexp_split_to_array(trim(lower(regexp_replace(fc.nome, '[^[:alnum:]]+', ' ', 'g'))), ' '), 1) >= 2
+                             AND (regexp_split_to_array(trim(lower(regexp_replace(f4.nome, '[^[:alnum:]]+', ' ', 'g'))), ' '))[1:2]
+                               = (regexp_split_to_array(trim(lower(regexp_replace(fc.nome, '[^[:alnum:]]+', ' ', 'g'))), ' '))[1:2]))
+                    AND (EXISTS (SELECT 1 FROM jsonb_array_elements(coalesce(n4.pagamento_xml->'formas', '[]'::jsonb)) x
+                                  WHERE x->>'tPag' IN ('14', '15'))
+                         OR (SELECT count(*) FROM nota_compra_duplicata d4 WHERE d4.nota_compra_id = n4.id) >= 2))
+               END AS forn_fatura
           FROM conta_pagar c
           LEFT JOIN usuario uc ON uc.id = c.criado_por
           LEFT JOIN fornecedor fc ON fc.id = c.fornecedor_id
@@ -372,9 +390,11 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
     // nf_real: true = NF-e da SEFAZ/upload; false = foto do pedido ou recibo
     // (conta deles também nasce com origem NFE); null = sem nota achada.
     const soNumero = l.origem === 'MANUAL' && RE_NUMERO_NOTA.test(descricao);
+    // Só o número sem nota achada (GUGA, dono 03/11/2026: é Pix) segue o jeito
+    // antigo, menos quando o fornecedor fatura com boleto (SET SISTEMAS 18010).
     const ehNota = o
-      ? o.nf_real === true || (o.nf_real == null && (l.origem === 'NFE' || soNumero))
-      : (l.origem === 'NFE' && !semNota) || soNumero;
+      ? o.nf_real === true || (o.nf_real == null && (l.origem === 'NFE' || (soNumero && o.forn_fatura === true)))
+      : l.origem === 'NFE' && !semNota;
     const ehPix =
       !!rescisao ||
       l.origem === 'BORDERO' ||
