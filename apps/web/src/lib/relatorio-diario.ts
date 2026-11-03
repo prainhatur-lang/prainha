@@ -19,6 +19,7 @@ import { contarEvento } from './evento-ticket';
 import { pendenciasEscala, totalPendencias, type PendenciasEscala } from './rh/escala-pendencias';
 import { calcularDia, faltaIntervalo } from './rh/calcular-ponto';
 import { googleDoDia, tripadvisorDoDia, type GoogleDia, type TripadvisorDia } from './avaliacoes-publicas-dia';
+import { eventosNoPeriodo, fraseEvento, type EventoCalendario } from './eventos-calendario';
 
 const TZ = 'America/Sao_Paulo';
 const DIA_MS = 24 * 3600 * 1000;
@@ -297,8 +298,13 @@ export interface RelatorioCasa {
   tripadvisor?: TripadvisorDia | null;
   /** Google: avaliações do dia, lidas ao vivo (só com a conta ligada) */
   google?: GoogleDia | null;
+  /** Calendário: eventos (orçamento/pedido) de hoje até 14 dias, com status (03/11/2026) */
+  proximosEventos?: EventoCalendario[];
   atencao: string[];
 }
+
+/** Janela do calendário de eventos no relatório diário (a partir de hoje). */
+export const DIAS_PROXIMOS_EVENTOS = 14;
 
 export interface DocVencendo {
   titulo: string;
@@ -1657,6 +1663,11 @@ export async function montarRelatorioFiliais(
         console.error('[relatorio-diario] google:', e);
         return null;
       });
+      // Calendário de eventos (03/11/2026, dono): de hoje até 14 dias, com status. Extra — falhou, sai sem.
+      casa.proximosEventos = await eventosNoPeriodo([f.id], hojeBr(), somaDias(hojeBr(), DIAS_PROXIMOS_EVENTOS)).catch((e) => {
+        console.error('[relatorio-diario] calendário de eventos:', e);
+        return [] as EventoCalendario[];
+      });
       const taBaixas = [1, 2, 3].reduce((s, n) => s + (casa.tripadvisor?.porNota[n] ?? 0), 0);
       if (taBaixas) {
         casa.atencao.push(`TripAdvisor: ${taBaixas} ${taBaixas === 1 ? 'avaliação nova' : 'avaliações novas'} com nota 3 ou menos — ver em /avaliacoes`);
@@ -1775,6 +1786,18 @@ function linhasDocumentos(c: RelatorioCasa): string[] {
   const L = [`📄 Documentos (${lista.length}) — vencido ou vencendo em até 30 dias:`];
   for (const d of lista) L.push(`• ${d.dias < 0 ? '🔴' : d.dias <= 7 ? '🟠' : '🟡'} ${d.titulo} — ${fraseDocVencendo(d)}`);
   L.push(`Renovar: https://app.prainhabar.com/empresa/documentos?${new URLSearchParams({ filialId: c.filialId }).toString()}`);
+  return L;
+}
+
+/** Próximos eventos pro texto do WhatsApp (vazio = nenhum). */
+function linhasProximosEventos(c: RelatorioCasa): string[] {
+  const lista = (c.proximosEventos ?? []).filter((e) => e.status !== 'cancelado');
+  if (!lista.length) return [];
+  const MAX = 12;
+  const L = [`🗓️ Eventos nos próximos ${DIAS_PROXIMOS_EVENTOS} dias (${lista.length}):`];
+  for (const e of lista.slice(0, MAX)) L.push(`• ${fraseEvento(e)}`);
+  if (lista.length > MAX) L.push(`• e mais ${lista.length - MAX}`);
+  L.push(`Calendário: https://app.prainhabar.com/dashboard?${new URLSearchParams({ filialId: c.filialId }).toString()}`);
   return L;
 }
 
@@ -1917,6 +1940,7 @@ function textoCasa(c: RelatorioCasa): string {
     L.push(...linhasPontoAberto(c));
     L.push(...linhasEscala(c));
     L.push(...linhasDocumentos(c));
+    L.push(...linhasProximosEventos(c));
     return L.join('\n');
   }
   const m = c.movimento;
@@ -1979,6 +2003,7 @@ function textoCasa(c: RelatorioCasa): string {
   L.push(...linhasPontoAberto(c));
   L.push(...linhasEscala(c));
   L.push(...linhasDocumentos(c));
+  L.push(...linhasProximosEventos(c));
   if (c.atencao.length) {
     L.push('⚠️ Atenção:');
     for (const a of c.atencao) L.push(`• ${a}`);

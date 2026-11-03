@@ -13,6 +13,7 @@ import { filiaisDoUsuario } from '@/lib/filiais';
 import { AppHeader } from '@/components/app-header';
 import { brl, int } from '@/lib/format';
 import { dateToBrYmd } from '@/lib/datas';
+import { STATUS_EVENTO_CAL, rotuloDiaCurto } from '@/lib/eventos-calendario';
 import {
   faturamentoDoDia,
   faturamentoSemServico,
@@ -22,6 +23,7 @@ import {
   rotuloDia,
   somaDias,
   ticketsDeEvento,
+  DIAS_PROXIMOS_EVENTOS,
   ultimoDiaFechado,
   type CaixaDia,
   type RelatorioCasa,
@@ -341,6 +343,42 @@ function FolhaDoMes({ ff }: { ff: FolhaFaturamentoMes }) {
   );
 }
 
+/** Calendário de eventos (03/11/2026): de hoje até 14 dias, com a situação de cada um. */
+function ProximosEventos({ c }: { c: RelatorioCasa }) {
+  const lista = c.proximosEventos ?? [];
+  if (!lista.length) return null;
+  return (
+    <div className="mt-3 rounded-lg border border-violet-200 bg-violet-50/60 p-4">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-violet-800">
+          🗓️ Eventos nos próximos {DIAS_PROXIMOS_EVENTOS} dias ({lista.length})
+        </h3>
+        <Link href={`/dashboard?filialId=${c.filialId}`} className="text-xs text-violet-800 underline">
+          Ver calendário
+        </Link>
+      </div>
+      <ul className="mt-2 space-y-1">
+        {lista.map((e) => (
+          <li key={e.id} className="flex flex-wrap items-center gap-2 text-sm text-slate-800">
+            <span className="w-24 shrink-0 font-medium tabular-nums">
+              {rotuloDiaCurto(e.data)}
+              {e.hora ? ` ${e.hora}` : ''}
+            </span>
+            <Link href={e.href} className="hover:underline">
+              {e.cliente}
+              {e.pessoas ? ` · ${e.pessoas} pessoas` : ''}
+              {e.local ? ` · ${e.local.replace(/\s*\([^)]*\)\s*$/, '')}` : ''}
+            </Link>
+            <span className={`rounded border px-1.5 py-px text-[11px] ${STATUS_EVENTO_CAL[e.status].chip}`}>
+              {STATUS_EVENTO_CAL[e.status].label}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function Casa({ c, ff }: { c: RelatorioCasa; ff?: FolhaFaturamentoMes | null }) {
   if (!c.temMovimento) {
     return (
@@ -355,6 +393,7 @@ function Casa({ c, ff }: { c: RelatorioCasa; ff?: FolhaFaturamentoMes | null }) 
             <CaixaDoDia cx={c.caixa} />
           </div>
         )}
+        <ProximosEventos c={c} />
       </section>
     );
   }
@@ -445,6 +484,8 @@ function Casa({ c, ff }: { c: RelatorioCasa; ff?: FolhaFaturamentoMes | null }) 
           </a>
         </div>
       )}
+
+      <ProximosEventos c={c} />
 
       {c.atencao.length > 0 && (
         <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-4">

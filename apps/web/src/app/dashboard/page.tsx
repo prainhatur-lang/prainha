@@ -10,12 +10,16 @@ import { TAXAS_DEFAULT } from '@/lib/conciliacao-banco';
 import { brl, formatDateTime, int, relativeTime, statusFromPing } from '@/lib/format';
 import { AppHeader } from '@/components/app-header';
 import { brDateEnd, brDateStart, hojeBr } from '@/lib/datas';
+import { eventosNoPeriodo } from '@/lib/eventos-calendario';
+import { CalendarioEventos, limitesDoMes } from '@/components/calendario-eventos';
 
 export const dynamic = 'force-dynamic';
 
 interface SP {
   filialId?: string;
   periodo?: string;
+  /** mês do calendário de eventos (YYYY-MM) */
+  mesEv?: string;
 }
 
 type Periodo = 'atual' | '1m' | '3m' | '6m';
@@ -111,12 +115,23 @@ export default async function DashboardPage(props: { searchParams: Promise<SP> }
 
   const filialMap = new Map(filiais.map((f) => [f.id, f]));
 
+  // ---- Calendário de eventos (03/11/2026): orçamentos + pedidos, com status ----
+  const hojeEv = hojeBr();
+  const mesEv = /^\d{4}-\d{2}$/.test(sp.mesEv ?? '') ? (sp.mesEv as string) : hojeEv.slice(0, 7);
+  const limEv = limitesDoMes(mesEv);
+  const eventosMes = await eventosNoPeriodo(filialFiltro, limEv.de, limEv.ate).catch((e) => {
+    console.error('[dashboard] calendário de eventos:', e);
+    return [];
+  });
+
   const hrefFiltro = (novo: Partial<SP>) => {
     const qs = new URLSearchParams();
     const filialAtual = novo.filialId ?? sp.filialId;
     const periodoAtual = novo.periodo ?? sp.periodo ?? periodo;
     if (filialAtual) qs.set('filialId', filialAtual);
     if (periodoAtual) qs.set('periodo', periodoAtual);
+    const mesEvAtual = novo.mesEv ?? sp.mesEv;
+    if (mesEvAtual) qs.set('mesEv', mesEvAtual);
     return `/dashboard?${qs.toString()}`;
   };
 
@@ -174,6 +189,22 @@ export default async function DashboardPage(props: { searchParams: Promise<SP> }
             ))}
           </div>
         </div>
+
+        {filialFiltro.length > 0 && (
+          <div className="mt-6">
+            <CalendarioEventos
+              mes={mesEv}
+              hoje={hojeEv}
+              eventos={eventosMes}
+              nomeCasa={
+                filialFiltro.length > 1
+                  ? (id) => (filialMap.get(id)?.nome ?? '').replace('Prainha Turismo - ', '') || null
+                  : undefined
+              }
+              hrefMes={(m) => hrefFiltro({ mesEv: m })}
+            />
+          </div>
+        )}
 
         {!dados ? (
           <p className="mt-10 text-sm text-slate-500">Nenhuma filial acessível.</p>
