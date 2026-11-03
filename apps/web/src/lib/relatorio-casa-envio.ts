@@ -92,13 +92,13 @@ async function organizacoesComDestino(): Promise<string[]> {
 
 const MAX_POR_RODADA = 20;
 
-/** Uma casa num dia, com o que foi escolhido. "Prainha Mar — faturamento líquido (sem os 10%): R$ 13.065 · 52 contas · Almoço 23 contas R$ 6.787 (pico 10 mesas às 14:30) · …" */
+/** Uma casa num dia, com o que foi escolhido. "Prainha Mar — faturamento líquido: R$ 13.065 · 52 contas · Almoço 23 contas R$ 6.787 (pico 10 mesas às 14:30) · …" */
 export function linhaCasa(c: RelatorioCasa, comServico: boolean, itens: ItensCasa = ITENS_TODOS): string {
   if (!c.temMovimento || !c.movimento.contas) return `${c.nome} — sem movimento no dia.`;
   const valor = comServico ? faturamentoDoDia(c) : faturamentoSemServico(c);
   const partes: string[] = [];
   if (itens.faturamento) {
-    partes.push(comServico ? `faturamento (com os 10%): ${reais(valor, false)}` : `faturamento líquido (sem os 10%): ${reais(valor, false)}`);
+    partes.push(comServico ? `faturamento (com os 10%): ${reais(valor, false)}` : `faturamento líquido: ${reais(valor, false)}`);
   }
   if (itens.contas) partes.push(`${c.movimento.contas} ${c.movimento.contas === 1 ? 'conta' : 'contas'}`);
   if (itens.periodos || itens.picos) {
@@ -257,7 +257,7 @@ function mesAnterior(dia: string): string {
   return m === 1 ? `${a - 1}-12-01` : `${a}-${String(m - 1).padStart(2, '0')}-01`;
 }
 
-/** "Prainha Mar — setembro: faturamento líquido (sem os 10%) R$ 250.000 · 1.400 contas · 30 dias com movimento · média R$ 8.333/dia · melhor dia … · Almoço … · Tarde … · Noite …" */
+/** "Prainha Mar — setembro: faturamento líquido R$ 250.000 · 1.400 contas · 30 dias com movimento · média R$ 8.333/dia · melhor dia … · Almoço … · Tarde … · Noite …" */
 export async function linhaMes(
   filial: { id: string; nome: string },
   primeiroDia: string,
@@ -296,7 +296,7 @@ export async function linhaMes(
   const fmtN = (n: number) => n.toLocaleString('pt-BR');
   const partes: string[] = [];
   if (itens.faturamento) {
-    partes.push(`${comServico ? 'faturamento (com os 10%)' : 'faturamento líquido (sem os 10%)'} ${reais(valor, false)}`);
+    partes.push(`${comServico ? 'faturamento (com os 10%)' : 'faturamento líquido'} ${reais(valor, false)}`);
   }
   if (itens.contas) partes.push(`${fmtN(contas)} contas`);
   partes.push(`${diasAbertos} dias com movimento`);
