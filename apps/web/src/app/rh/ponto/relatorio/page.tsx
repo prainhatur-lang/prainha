@@ -602,6 +602,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
           <div className="flex flex-wrap gap-2 print:hidden">
             <a href={`/rh/ponto?filialId=${filial.id}`} className={btn}>Ponto da semana</a>
             <a href={`/rh/banco-horas?filialId=${filial.id}`} className={btn}>Banco de horas</a>
+            <a href={`/rh/ponto/ajustes?filialId=${filial.id}&mes=${mes}${pessoaSel ? `&pessoa=${pessoaSel}` : ''}`} className={btn}>✏️ Histórico de ajustes</a>
             <a href={view === 'sintetico' ? csvSintetico : csvAnalitico} download={`ponto-${view}-${mes}.csv`} className={btn}>⬇ Planilha (CSV)</a>
             <BotaoImprimir />
           </div>
@@ -729,7 +730,19 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
                     </td>
                     <td className={`px-2 py-2 text-right ${r.atestadoDias ? 'text-violet-700' : 'text-slate-300'}`}>{r.atestadoDias || '0'}</td>
                     <td className="px-2 py-2 text-right text-slate-500">{r.porCelular || ''}</td>
-                    <td className={`px-2 py-2 text-right ${r.ajustes ? 'text-orange-600' : 'text-slate-300'}`}>{r.ajustes || ''}</td>
+                    <td className={`px-2 py-2 text-right ${r.ajustes ? 'text-orange-600' : 'text-slate-300'}`}>
+                      {r.ajustes ? (
+                        <a
+                          href={`/rh/ponto/ajustes?filialId=${filial.id}&mes=${mes}&pessoa=${r.id}`}
+                          title="Ver quem fez cada ajuste"
+                          className="underline decoration-dotted hover:text-orange-800"
+                        >
+                          {r.ajustes}
+                        </a>
+                      ) : (
+                        ''
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
