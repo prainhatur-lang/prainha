@@ -35,6 +35,7 @@ import { consultarMareTexto } from './mare';
 import { consultarTempoTexto } from './clima';
 import { consultarCotacoesFornecedor, cadastrarFornecedorProspect } from './fornecedor';
 import { listarOpcoesOrcamento, gerarOrcamentoEvento, gerarOrcamentoEspaco } from './orcamento';
+import { gerarOrcamentoTabuara } from './orcamento-tabuara';
 import { criarValePresente } from '@/lib/vale-presente';
 import { casasComAtendente, casasCitadas, acharCasa, linkPassagem, passagemRecebida, casasCobertas, acharCasaCoberta, type OutraCasa, type PassagemRecebida, type CasaCoberta } from './outras-casas';
 
@@ -682,6 +683,36 @@ export async function processarEntrada(params: {
           const [a, m, d] = String(dados.data ?? '').split('-');
           void avisarEquipe(numerosEquipe, {
             motivo: `Aluguel do ${dados.espaco || 'Terraço'}: orçamento enviado — ${d}/${m}/${a}${dados.hora ? ` ${dados.hora}` : ''}, ${dados.pessoas} pessoas${dados.tipoEvento ? `, ${dados.tipoEvento}` : ''}`,
+            nomeCliente: dados.nomeCliente || conversa.nomeCliente || '-',
+            telefone: entrada.telefone,
+            filial: filialNome,
+          }).catch(() => {});
+        }
+        return r;
+      },
+      // Orçamento de evento da Tabuará (regra do dono 03/11/2026): espaço com
+      // taxa de R$ 35 por lugar vazio + pacote por pessoa. Avisa a equipe.
+      gerarOrcamentoTabuara: async (dados: import('./ia').DadosOrcamentoTabuara) => {
+        const r = await gerarOrcamentoTabuara({
+          filialId: entrada.filialId,
+          filialNome,
+          telefone: entrada.telefone,
+          nomeCliente: dados.nomeCliente,
+          espaco: dados.espaco,
+          pacote: dados.pacote,
+          data: dados.data,
+          hora: dados.hora,
+          pessoas: dados.pessoas,
+          entradas: dados.entradas,
+          principais: dados.principais,
+          sobremesa: dados.sobremesa,
+          tipoEvento: dados.tipoEvento,
+          observacoes: dados.observacoes,
+        });
+        if (/\/orcamento\//.test(r)) {
+          const [a, m, d] = String(dados.data ?? '').split('-');
+          void avisarEquipe(numerosEquipe, {
+            motivo: `Evento na Tabuará: orçamento enviado — ${d}/${m}/${a}${dados.hora ? ` ${dados.hora}` : ''}, ${dados.pessoas} pessoas, ${dados.espaco}, ${dados.pacote}${dados.tipoEvento ? `, ${dados.tipoEvento}` : ''}`,
             nomeCliente: dados.nomeCliente || conversa.nomeCliente || '-',
             telefone: entrada.telefone,
             filial: filialNome,

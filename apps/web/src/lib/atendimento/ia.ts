@@ -16,6 +16,19 @@ const RECUSA_ORCAMENTO_EVENTO =
   'Na Tabuará, agência ou empresa querendo pagar antes (premiação, voucher, incentivo): diga que a casa aceita pagamento antecipado de agência, anote data, nº de pessoas, o que incluir, valor, nome e empresa, e chame transferir_para_humano nesta resposta pra equipe fechar. ' +
   'Evento de grupo fora do Terraço do Bar: registre o lead e ofereça visita.';
 import { horarioFoiCombinado, jaAvisouDiaCheio } from './horario-combinado';
+// Orçamento automático da Tabuará (regra do dono 03/11/2026).
+const RECUSA_ORCAMENTO_TABUARA =
+  'NA TABUARÁ O ORÇAMENTO DE EVENTO É OUTRO: não use o menu do Terraço do Bar. Use gerar_orcamento_tabuara (espaço + pacote por pessoa). ' +
+  'Jantar de casal ou mesa pequena (até 2 pessoas) é consumo do cardápio, não evento.';
+const RECADO_EVENTO_TABUARA =
+  'ESTA CASA NÃO TEM TERRAÇO. Terraço, Gramado, Varandinha, Deck Superior e AquaArena são do Prainha Bar: nunca ofereça, cite ou orce esses espaços aqui. ' +
+  'EVENTO NA TABUARÁ = ORÇAMENTO NA HORA com gerar_orcamento_tabuara (regra do dono 03/11/2026 — vale no lugar de qualquer regra antiga de valor mínimo pra exclusividade, inclusive o piso de R$ 12.000, que não existe mais). ' +
+  'ESPAÇOS: salão interno (60 lugares), área externa (10 mesas de 4 = 40 lugares) ou a casa toda (100). O cliente escolhe: sem fechar (mesas reservadas com a casa aberta, sem taxa), fechar só o interno, só o externo, ou a casa toda. ' +
+  'TAXA DE FECHAMENTO: R$ 35 por LUGAR VAZIO do espaço fechado (ex.: interno com 40 pessoas = 20 vazios × 35 = R$ 700). Se o grupo lota o espaço, não tem taxa. ' +
+  'PACOTES por pessoa: ECONÔMICO R$ 200 (menu convidativo da casa + bebidas sem álcool); PREMIUM R$ 275 (os melhores pratos à escolha do cliente, entradas livres, bebidas sem álcool); PREMIUM COM ÁLCOOL R$ 360 (o premium + bebidas alcoólicas). ' +
+  'Colete: data, horário, nº de pessoas (estimativa serve), qual espaço, qual pacote e o NOME de quem contrata. Faltou espaço ou pacote → apresente as opções em poucas linhas e pergunte. No premium, o cliente pode já dizer entradas e pratos (consultar_cardapio ajuda); se não souber ainda, gere assim mesmo — a escolha fica pra depois. ' +
+  'Com tudo isso, chame gerar_orcamento_tabuara NESTA resposta e mande o resumo + link. Não registre lead nem transfira um evento que cabe nessas regras. Acima de 100 pessoas, decoração contratada ou pedido fora disso → registre o lead e transfira. ' +
+  'Fotos do espaço: você não tem fotos pra mandar — convide pra conhecer a casa ou diga que a equipe manda.';
 const RECADO_SEM_TERRACO =
   'ESTA CASA NÃO TEM TERRAÇO. Terraço, Gramado, Varandinha, Deck Superior e AquaArena são do Prainha Bar, não desta casa: nunca ofereça, cite ou orce esses espaços aqui. ' +
   'O espaço de evento desta casa é só o que está nos blocos de conhecimento (na Prainha Mar: o salão de eventos, até 60 pessoas). ' +
@@ -56,6 +69,20 @@ export interface DadosOrcamentoEvento {
 }
 
 /** Terraço fechado pro grupo + consumo do cardápio por comanda (sem menu). */
+export interface DadosOrcamentoTabuara {
+  espaco: 'sem_fechar' | 'interno' | 'externo' | 'casa_toda';
+  pacote: 'economico' | 'premium' | 'premium_alcool';
+  data: string;
+  hora: string | null;
+  pessoas: number;
+  nomeCliente: string;
+  entradas: string[];
+  principais: string[];
+  sobremesa: string | null;
+  tipoEvento: string | null;
+  observacoes: string | null;
+}
+
 export interface DadosOrcamentoEspaco {
   espaco: string;
   data: string; // YYYY-MM-DD
@@ -135,6 +162,8 @@ export interface ExecutoresFerramentas {
   gerarOrcamento: (dados: DadosOrcamentoEvento) => Promise<string>;
   /** Espaço fechado + consumo por comanda, com preço do cadastro de espaços. */
   gerarOrcamentoEspaco?: (dados: DadosOrcamentoEspaco) => Promise<string>;
+  /** Tabuará: espaço (taxa de R$ 35 por lugar vazio) + pacote por pessoa. */
+  gerarOrcamentoTabuara?: (dados: DadosOrcamentoTabuara) => Promise<string>;
   /** Vale-presente pré-pago (jantar de presente): itens do cardápio + 10%, Pix e voucher. */
   montarValePresente?: (dados: DadosValePresente) => Promise<string>;
   /** Pedido de delivery (iFood/site) lido ao vivo na loja: situação, hora que saiu e o que fazer. */
@@ -619,6 +648,31 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
           observacoes: { type: 'string', description: 'pedidos do cliente (mesa decorada, pôr do sol, etc.)' },
         },
         required: ['espaco', 'data', 'pessoas', 'nomeCliente'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'gerar_orcamento_tabuara',
+      description:
+        'SÓ NA TABUARÁ: gera o orçamento de evento (aniversário, casamento, confraternização, grupo) com espaço + pacote por pessoa e devolve o total e o link de aceite. Taxa de fechamento = R$ 35 por lugar vazio do espaço fechado (interno 60, externo 40, casa toda 100). Pacotes: economico R$ 200, premium R$ 275, premium_alcool R$ 360 por pessoa.',
+      parameters: {
+        type: 'object',
+        properties: {
+          espaco: { type: 'string', enum: ['sem_fechar', 'interno', 'externo', 'casa_toda'], description: 'sem_fechar = mesas reservadas com a casa aberta (sem taxa); interno = salão interno só pro grupo; externo = área externa só pro grupo; casa_toda = os dois' },
+          pacote: { type: 'string', enum: ['economico', 'premium', 'premium_alcool'], description: 'economico R$ 200 (menu da casa + bebidas sem álcool); premium R$ 275 (pratos à escolha, entradas livres, sem álcool); premium_alcool R$ 360 (premium + bebidas alcoólicas)' },
+          data: { type: 'string', description: 'YYYY-MM-DD' },
+          hora: { type: 'string', description: 'HH:MM de início (opcional)' },
+          pessoas: { type: 'number', description: 'número estimado de convidados (se disser 30 a 40, use o maior)' },
+          nomeCliente: { type: 'string', description: 'nome que o cliente escreveu (nunca o do perfil do WhatsApp)' },
+          entradas: { type: 'array', items: { type: 'string' }, description: 'só no premium, se o cliente já escolheu: entradas (livres)' },
+          principais: { type: 'array', items: { type: 'string' }, description: 'só no premium, se o cliente já escolheu: pratos principais' },
+          sobremesa: { type: 'string', description: 'só no premium, se o cliente quiser' },
+          tipoEvento: { type: 'string', description: 'ex.: casamento, aniversário, confraternização' },
+          observacoes: { type: 'string', description: 'pedidos do cliente' },
+        },
+        required: ['espaco', 'pacote', 'data', 'pessoas', 'nomeCliente'],
       },
     },
   },
@@ -1359,7 +1413,9 @@ Como usar, SEM EXCEÇÃO:
   // Marina inventou "Terraço exclusivo pra eventos" na Mar, puxando das regras
   // de evento do Bar. Fora do Bar, recado por último em qualquer modo.
   if (params.filialId !== FILIAL_PRAINHA_BAR) {
-    mensagens.push({ role: 'system', content: RECADO_SEM_TERRACO });
+    // Tabuará orça evento sozinha desde 03/11/2026; a Mar segue com lead.
+    const orcaTabuara = params.filialId === FILIAL_TABUARA && !!params.executores.gerarOrcamentoTabuara;
+    mensagens.push({ role: 'system', content: orcaTabuara ? RECADO_EVENTO_TABUARA : RECADO_SEM_TERRACO });
     // HORÁRIO DESTA CASA (21/10/2026, caso Moisés na Tabuará às 19:46 de
     // quarta): recado por último, com a hora de agora, pra não puxar o
     // "9h–19h" do Prainha Bar.
@@ -1458,11 +1514,14 @@ Como usar, SEM EXCEÇÃO:
   const podeAchados = modo === 'cliente' && !!params.executores.registrarAchadoPerdido;
   // Fila de espera só onde a casa tem fila na recepção (executor presente).
   const podeFila = modo === 'cliente' && !!params.executores.consultarFilaEspera;
+  // Orçamento da Tabuará só na Tabuará (executor presente).
+  const podeOrcarTabuara = modo === 'cliente' && params.filialId === FILIAL_TABUARA && !!params.executores.gerarOrcamentoTabuara;
   const ferramentas = ferramentasBase.filter(
     (f) =>
       !(f.type === 'function' && f.function.name === 'passar_para_outra_casa' && !podePassar) &&
       !(f.type === 'function' && f.function.name === 'registrar_achado_perdido' && !podeAchados) &&
-      !(f.type === 'function' && f.function.name === 'consultar_minha_fila_espera' && !podeFila),
+      !(f.type === 'function' && f.function.name === 'consultar_minha_fila_espera' && !podeFila) &&
+      !(f.type === 'function' && f.function.name === 'gerar_orcamento_tabuara' && !podeOrcarTabuara),
   );
 
   // 5 rodadas: da pra consultar disponibilidade, criar a reserva e ainda
@@ -1547,11 +1606,34 @@ Como usar, SEM EXCEÇÃO:
                 pertoPassarela: params.filialId === FILIAL_PRAINHA_BAR && args.perto_passarela === true,
               })
             : `NÃO CRIEI A RESERVA AINDA — falta combinar o horário. O cliente não disse nem aceitou ${horaPedida} nesta conversa (você citou uma faixa ou escolheu sozinha). NÃO diga que a reserva está feita. Nesta resposta, pergunte a que horas ele pretende chegar OU proponha UM horário só ("posso marcar pras ${horaPedida.replace(':', 'h')}?") e espere a resposta dele; os outros dados você já tem, não peça de novo. Quando ele responder, chame criar_reserva com o horário que ELE confirmou.`;
+        } else if (tc.function.name === 'gerar_orcamento_tabuara') {
+          const espacoArg = String(args.espaco ?? '');
+          const pacoteArg = String(args.pacote ?? '');
+          const lista = (v: unknown) => (Array.isArray(v) ? v.map(String).filter((x) => x.trim()) : []);
+          resultado = !podeOrcarTabuara
+            ? 'Orçamento da Tabuará indisponível aqui: registre o lead e transfira pra equipe.'
+            : !(['sem_fechar', 'interno', 'externo', 'casa_toda'] as const).includes(espacoArg as never)
+              ? 'Falta o ESPAÇO: pergunte se o cliente quer sem fechar (mesas reservadas, sem taxa), só o salão interno, só a área externa ou a casa toda.'
+              : !(['economico', 'premium', 'premium_alcool'] as const).includes(pacoteArg as never)
+                ? 'Falta o PACOTE: apresente econômico (R$ 200), premium (R$ 275) e premium com álcool (R$ 360) por pessoa e pergunte.'
+                : await params.executores.gerarOrcamentoTabuara!({
+                    espaco: espacoArg as DadosOrcamentoTabuara['espaco'],
+                    pacote: pacoteArg as DadosOrcamentoTabuara['pacote'],
+                    data: String(args.data ?? ''),
+                    hora: String(args.hora ?? '') || null,
+                    pessoas: Number(args.pessoas) || 0,
+                    nomeCliente: String(args.nomeCliente ?? ''),
+                    entradas: lista(args.entradas),
+                    principais: lista(args.principais),
+                    sobremesa: String(args.sobremesa ?? '') || null,
+                    tipoEvento: String(args.tipoEvento ?? '') || null,
+                    observacoes: String(args.observacoes ?? '') || null,
+                  });
         } else if (tc.function.name === 'listar_opcoes_orcamento_evento' && params.filialId !== FILIAL_PRAINHA_BAR) {
           // Trava 20/10 (caso Flytour na Tabuará): o menu de evento é só do Terraço do Bar.
-          resultado = RECUSA_ORCAMENTO_EVENTO;
+          resultado = params.filialId === FILIAL_TABUARA && params.executores.gerarOrcamentoTabuara ? RECUSA_ORCAMENTO_TABUARA : RECUSA_ORCAMENTO_EVENTO;
         } else if (tc.function.name === 'gerar_orcamento_evento' && (params.filialId !== FILIAL_PRAINHA_BAR || (Number(args.pessoas) > 0 && Number(args.pessoas) < 3))) {
-          resultado = RECUSA_ORCAMENTO_EVENTO;
+          resultado = params.filialId === FILIAL_TABUARA && params.executores.gerarOrcamentoTabuara ? RECUSA_ORCAMENTO_TABUARA : RECUSA_ORCAMENTO_EVENTO;
         } else if (tc.function.name === 'listar_opcoes_orcamento_evento') {
           resultado = await params.executores.listarOpcoesOrcamento();
         } else if (tc.function.name === 'gerar_orcamento_evento') {
@@ -1571,7 +1653,7 @@ Como usar, SEM EXCEÇÃO:
             observacoes: String(args.observacoes ?? '') || null,
           });
         } else if (tc.function.name === 'gerar_orcamento_espaco' && params.filialId !== FILIAL_PRAINHA_BAR) {
-          resultado = RECADO_SEM_TERRACO;
+          resultado = params.filialId === FILIAL_TABUARA && params.executores.gerarOrcamentoTabuara ? RECUSA_ORCAMENTO_TABUARA : RECADO_SEM_TERRACO;
         } else if (tc.function.name === 'gerar_orcamento_espaco') {
           resultado = params.executores.gerarOrcamentoEspaco
             ? await params.executores.gerarOrcamentoEspaco({
