@@ -175,13 +175,22 @@ async function getAccessToken(cred: InterCredenciais, scope = 'extrato.read'): P
     scope,
   }).toString();
 
-  const { status, data } = await requestJson<{ access_token: string; expires_in: number; error?: string }>({
-    method: 'POST',
-    path: '/oauth/v2/token',
-    body,
-    contentType: 'application/x-www-form-urlencoded',
-    cred,
-  });
+  // 429 = o Inter limita quantos tokens se pede por minuto (vários Pix pagos
+  // seguidos, cada um num servidor diferente, estouravam — 03/11/2026).
+  // Espera e tenta de novo em vez de falhar na hora.
+  let status = 0;
+  let data = {} as { access_token: string; expires_in: number; error?: string };
+  for (let tentativa = 0; tentativa < 4; tentativa++) {
+    if (tentativa > 0) await new Promise((r) => setTimeout(r, 3000 * tentativa));
+    ({ status, data } = await requestJson<{ access_token: string; expires_in: number; error?: string }>({
+      method: 'POST',
+      path: '/oauth/v2/token',
+      body,
+      contentType: 'application/x-www-form-urlencoded',
+      cred,
+    }));
+    if (status !== 429) break;
+  }
   if (status !== 200 || !data.access_token) {
     throw new Error(`Inter OAuth erro (${status}): ${JSON.stringify(data)}`);
   }
