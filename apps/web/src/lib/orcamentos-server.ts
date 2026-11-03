@@ -81,6 +81,9 @@ export async function eventoQueSeguraData(params: {
     .trim()
     .split(/\s+/)[0];
   if (!chave) return null;
+  // Tabuará "Mesas reservadas sem fechar": não fecha espaço — vários grupos de
+  // mesas cabem no mesmo dia (a casa toda paga já é barrada no orçamento).
+  if (/sem fechar/i.test(params.local)) return null;
 
   const rows = await db
     .select({
