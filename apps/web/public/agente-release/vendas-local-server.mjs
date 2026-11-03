@@ -11297,7 +11297,8 @@ async function apiPontoBaterFacial(body) {
     const passou = agora.getTime() - new Date(ultimaGeral.quando).getTime();
     if (passou < PONTO_COOLDOWN_MS) {
       const restamMin = Math.ceil((PONTO_COOLDOWN_MS - passou) / 60000);
-      return { ok: false, cooldown: true, erro: `${pessoa.nome}, aguarde ${restamMin} min pra bater de novo.` };
+      return { ok: false, cooldown: true, erro: `${pessoa.nome}, aguarde ${restamMin} min pra bater de novo.`,
+        ultimo_tipo: ultimaGeral.tipo, ultimo_quando: ultimaGeral.quando };
     }
   }
 
@@ -16943,6 +16944,18 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 .pfconfirm{font-size:27px;font-weight:800;text-align:center;border:3px solid currentColor;border-radius:16px;padding:14px 22px}
 .pfconfirm .pfbig{font-size:44px;letter-spacing:1px}.pfconfirm .pfhora{font-size:18px;font-weight:600;opacity:.85;margin-top:4px}
 .pfconfirm.saida{color:#b45309}.pfconfirm.entrada{color:#15803d}
+/* RESULTADO EM TELA CHEIA (03/11/2026, dono: "bate e não tem confirmação, aí
+   bate de novo"): verde com ✓ = ponto batido; vermelho com ✗ = não registrou,
+   bata de novo. Cobre tudo por alguns segundos (toque fecha antes) e depois
+   mostra a tela de sempre, com o "Não sou … — desfazer" e o intervalo. */
+#pfRes{position:absolute;inset:0;z-index:5;display:none;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px;color:#fff;cursor:pointer}
+#pfRes.on{display:flex}
+#pfRes.ok{background:#15803d}#pfRes.erro{background:#b91c1c}#pfRes.ja{background:#1d4ed8}
+#pfRes .pfrico{font-size:min(38vh,60vw,260px);line-height:1;font-weight:900}
+#pfRes .pfrtit{font-size:min(7vh,9vw,54px);font-weight:900;line-height:1.1;margin-top:8px;text-transform:uppercase}
+#pfRes .pfrl1{font-size:min(5vh,7vw,38px);font-weight:800;margin-top:14px}
+#pfRes .pfrl2{font-size:min(3.4vh,5vw,24px);font-weight:600;margin-top:10px;opacity:.92;max-width:760px}
+#pfRes .pfrtoq{position:absolute;bottom:18px;left:0;right:0;font-size:14px;opacity:.7}
 .pfbusca{width:min(88vw,460px);padding:13px;border-radius:10px;border:1px solid #b4b4be;background:#fff;color:#111;font-size:15px;margin-top:14px}
 /* gêmeos: "Quem é você?" — molde pequeno e um botão grande por irmão */
 #pfModal.pfgemeo .pfoval{width:min(18vh,30vw,130px);height:min(24vh,40vw,172px);border-width:5px}
@@ -17006,6 +17019,7 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
   <div class="pfstatus" id="pfStatus">Carregando…</div>
   <div class="pfsub" id="pfSub"></div>
   <div id="pfExtra"></div>
+  <div id="pfRes" onclick="pfResFecha()"></div>
 </div>
 <script>
 var ENTREGA = location.pathname.replace(/\\/+$/,'')==='/entrega';
@@ -17553,6 +17567,39 @@ async function pfTick(){
     }
   }
 }
+/* Tela cheia do resultado (ver #pfRes no CSS). tipo: 'ok' | 'erro' | 'ja'.
+   depois() roda quando some (tempo ou toque) — só se o Ponto ainda está aberto. */
+var PF_RES_T=null, PF_RES_DEPOIS=null, PF_RES_MS=3500;
+function pfResSom(tipo){
+  try {
+    _ctx=_ctx||new (window.AudioContext||window.webkitAudioContext)();
+    if (_ctx.state==='suspended') _ctx.resume();
+    var t=_ctx.currentTime;
+    if (tipo==='erro') { _tone(t,220,0,0.35); _tone(t,180,0.4,0.5); }
+    else { _tone(t,988,0,0.18); _tone(t,1319,0.16,0.32); }
+  } catch(x) {}
+}
+function pfResMostra(tipo, icone, titulo, l1, l2, ms, depois){
+  var el=document.getElementById('pfRes'); if (!el) { if (depois) depois(); return; }
+  clearTimeout(PF_RES_T);
+  el.className='on '+tipo;
+  el.innerHTML='<div class="pfrico">'+icone+'</div><div class="pfrtit">'+esc(titulo)+'</div>'+
+    (l1?'<div class="pfrl1">'+esc(l1)+'</div>':'')+(l2?'<div class="pfrl2">'+esc(l2)+'</div>':'')+
+    '<div class="pfrtoq">toque pra fechar</div>';
+  PF_RES_DEPOIS=depois||null;
+  pfResSom(tipo);
+  PF_RES_T=setTimeout(pfResFecha, ms||PF_RES_MS);
+}
+function pfResFecha(){
+  clearTimeout(PF_RES_T); PF_RES_T=null;
+  var el=document.getElementById('pfRes'); if (el) { el.className=''; el.innerHTML=''; }
+  var fn=PF_RES_DEPOIS; PF_RES_DEPOIS=null;
+  var m=document.getElementById('pfModal');
+  if (fn && m && m.classList.contains('on')) { try { fn(); } catch(x) {} }
+}
+function pfResHora(q){
+  try { return new Date(q).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); } catch(x) { return ''; }
+}
 async function pfBater(pessoa){
   clearInterval(PF_LOOP); PF_LOOP=null;
   var dg=null; try { dg=pfDiag(); } catch(x) {}
@@ -17584,12 +17631,24 @@ async function pfBater(pessoa){
     // Intervalo obrigatório (03/11/2026): saída sem intervalo batido no dia
     // pergunta se é intervalo ou fim do expediente.
     if (!ent && r.pergunta_intervalo) pfPerguntaIntervalo(r, pessoa);
+    pfResMostra('ok','✓','Ponto batido com sucesso',(ent?'ENTRADA':'SAÍDA')+' às '+hora, pessoa.nome);
   } else {
     document.getElementById('pfStatus').textContent=r.erro||'Não deu pra registrar — tente de novo';
-    if (!r.cooldown) { clearInterval(PF_LOOP); PF_LOOP=setInterval(pfTick,250); return; }
+    if (!r.cooldown) {
+      // não registrou: tela vermelha e só depois volta a olhar a câmera
+      pfResMostra('erro','✗','Ponto NÃO registrado','Bata o ponto novamente', r.erro||'', 4000, function(){
+        clearInterval(PF_LOOP); PF_LOOP=setInterval(pfTick,250);
+      });
+      return r;
+    }
+    if (r.bloqueio) pfResMostra('erro','✗','Ponto NÃO registrado','', r.erro||'', 6000);
+    else if (r.ultimo_quando) pfResMostra('ja','✓','Seu ponto já está batido',
+      (r.ultimo_tipo==='saida'?'SAÍDA':'ENTRADA')+' às '+pfResHora(r.ultimo_quando),
+      'Não precisa bater de novo. '+(r.erro||''), 5000);
   }
   clearTimeout(PF_FECHA_T);
-  PF_FECHA_T=setTimeout(fecharPontoFacial, (r.ok&&r.batida_id)||r.bloqueio?8000:4500);
+  // a tela cheia cobre os primeiros segundos: o fechamento conta depois dela
+  PF_FECHA_T=setTimeout(fecharPontoFacial, ((r.ok&&r.batida_id)||r.bloqueio?8000:4500)+(PF_RES_T?PF_RES_MS:0));
   return r; // só a escolha entre gêmeos lê (pfGemeoEscolhe)
 }
 function pfPerguntaIntervalo(r, pessoa){
@@ -18043,6 +18102,7 @@ function fecharPontoFacial(){
     }
   } catch(x) {}
   PF_CAD_OK=null;
+  PF_RES_DEPOIS=null; pfResFecha();
   pfGemeoSai(); // pergunta "Quem é você?" na tela: solta o relógio e o molde pequeno
   clearInterval(PF_LOOP); PF_LOOP=null; PF_OCUPADO=false; PF_PROCESSANDO=false; PF_CADASTRANDO=null;
   clearTimeout(PF_FECHA_T); PF_SEQ=null; PF_INCERTO=0; PF_AMOSTRAS=[];

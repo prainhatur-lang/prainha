@@ -93,6 +93,8 @@ export function PontoCelularCliente({ token }: { token: string }) {
   const [erroLink, setErroLink] = useState<string | null>(null);
   const [fase, setFase] = useState<'inicio' | 'camera' | 'enviando'>('inicio');
   const [aviso, setAviso] = useState<{ ok: boolean; texto: string } | null>(null);
+  // Resultado em tela cheia (03/11/2026): verde ✓ batido, vermelho ✗ bata de novo.
+  const [telaCheia, setTelaCheia] = useState<{ ok: boolean; titulo: string; linha: string } | null>(null);
   const [status, setStatus] = useState('');
   const video = useRef<HTMLVideoElement>(null);
   const stream = useRef<MediaStream | null>(null);
@@ -139,6 +141,12 @@ export function PontoCelularCliente({ token }: { token: string }) {
     stream.current?.getTracks().forEach((t) => t.stop());
     stream.current = null;
   }
+
+  useEffect(() => {
+    if (!telaCheia) return;
+    const t = setTimeout(() => setTelaCheia(null), telaCheia.ok ? 4000 : 6000);
+    return () => clearTimeout(t);
+  }, [telaCheia]);
 
   async function abrirCamera(m: 'sair' | 'voltar' | null = null) {
     modo.current = m;
@@ -226,15 +234,18 @@ export function PontoCelularCliente({ token }: { token: string }) {
         const rot =
           j.intervalo === 'sair' ? 'Saída pro intervalo' : j.intervalo === 'voltar' ? 'Volta do intervalo' : j.tipo === 'entrada' ? 'Entrada' : 'Saída';
         setAviso({ ok: true, texto: `${rot} registrada às ${hora(j.quando)} — ${j.casa}.` });
+        setTelaCheia({ ok: true, titulo: 'Ponto batido com sucesso', linha: `${rot} às ${hora(j.quando)}` });
         carregar();
       } else {
         setAviso({ ok: false, texto: j.erro ?? 'Não deu certo. Tente de novo ou bata no tablet.' });
+        setTelaCheia({ ok: false, titulo: 'Ponto NÃO registrado', linha: j.erro ?? 'Não deu certo.' });
       }
     } catch (e) {
       pararCamera();
       setFase('inicio');
       setStatus('');
       setAviso({ ok: false, texto: e instanceof Error ? e.message : 'Não deu certo. Tente de novo.' });
+      setTelaCheia({ ok: false, titulo: 'Ponto NÃO registrado', linha: e instanceof Error ? e.message : 'Não deu certo.' });
     }
   }
 
@@ -259,6 +270,19 @@ export function PontoCelularCliente({ token }: { token: string }) {
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6">
+      {telaCheia && (
+        <button
+          type="button"
+          onClick={() => setTelaCheia(null)}
+          className={`fixed inset-0 z-50 flex flex-col items-center justify-center px-6 text-center text-white ${telaCheia.ok ? 'bg-green-700' : 'bg-red-700'}`}
+        >
+          <span className="text-[min(45vw,220px)] font-black leading-none">{telaCheia.ok ? '✓' : '✗'}</span>
+          <span className="mt-2 text-4xl font-black uppercase leading-tight">{telaCheia.titulo}</span>
+          <span className="mt-4 text-2xl font-bold">{telaCheia.linha}</span>
+          {!telaCheia.ok && <span className="mt-3 text-xl font-semibold opacity-90">Bata o ponto novamente.</span>}
+          <span className="absolute bottom-6 text-sm opacity-70">toque pra fechar</span>
+        </button>
+      )}
       <div className="mx-auto max-w-sm space-y-4">
         <div>
           <h1 className="text-xl font-bold text-slate-900">Olá, {estado.nome}</h1>
