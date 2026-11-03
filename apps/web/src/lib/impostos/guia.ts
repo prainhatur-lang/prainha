@@ -14,6 +14,7 @@ import { db, schema } from '@concilia/db';
 import { and, desc, eq, inArray, isNull, lte, sql } from 'drizzle-orm';
 import { hojeBr } from '@/lib/datas';
 import { EB_CNPJ } from '@/lib/eb/faturas';
+import { proporcaoPelasHoras, type ProporcaoHoras } from '@/lib/eb/rateio-horas';
 
 export const BUCKET_IMPOSTO = 'producao-fotos';
 export const PERM_IMPOSTO_LER = 'conta_pagar.read';
@@ -318,6 +319,8 @@ export interface Proposta {
   /** Valor exato de cada casa (rateio que o contador mandou), quando bate com a guia. */
   valores?: Array<{ filialId: string; valor: number }> | null;
   explicacao: string;
+  /** Opção: % pelas horas que cada pessoa trabalhou em cada casa (só E.B.). */
+  porHoras?: ProporcaoHoras | null;
 }
 
 /** Filial cujo CNPJ é o informado (E.B., ou um estabelecimento da Prainha). */
@@ -342,6 +345,8 @@ export async function proporRateio(g: {
     const eb = doc === EB_CNPJ;
     const pagadora = eb ? await filialDoCnpj(EB_CNPJ) : null;
     const nome = eb ? 'E.B. Serviços' : 'Lelis';
+    // opção a mais (não muda a proposta padrão): % pelas horas de cada casa
+    const porHoras = eb ? await proporcaoPelasHoras(doc, g.competencia, g.tipo).catch(() => null) : null;
     // 1º: o rateio que o contador mandou pra essa competência (valor de cada casa)
     const doContador = await rateioDoContador(doc, g.competencia, g.tipo);
     if (doContador) {
@@ -353,6 +358,7 @@ export async function proporRateio(g: {
         folha: null,
         percentuais: doContador.percentuais,
         valores: doContador.valores,
+        porHoras,
         explicacao: `Guia da ${nome}: cada casa repassa por Pix a parte dela e a ${nome} paga a guia inteira. Valores do RATEIO do contador de ${g.competencia!.slice(5)}/${g.competencia!.slice(0, 4)} (total R$ ${doContador.total.toFixed(2).replace('.', ',')}).`,
       };
     }
@@ -364,6 +370,7 @@ export async function proporRateio(g: {
       cnpjFolha: doc,
       folha,
       percentuais: folha.partes.map((p) => ({ filialId: p.filialId, percentual: p.percentual })),
+      porHoras,
       explicacao: folha.competenciaUsada
         ? `Guia da ${nome}: cada casa repassa por Pix a parte dela e a ${nome} paga a guia inteira. Proporção pelo ${folha.base === 'fgts' ? 'FGTS' : 'bruto'} da folha do contador de ${folha.competenciaUsada.slice(5)}/${folha.competenciaUsada.slice(0, 4)}${g.competencia && folha.competenciaUsada !== g.competencia ? ' (a folha desta competência ainda não foi importada — usei a última)' : ''}.`
         : `Guia da ${nome}, mas a folha do contador ainda não foi importada — digite o % de cada casa.`,

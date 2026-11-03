@@ -35,6 +35,12 @@ interface Proposta {
   percentuais: Array<{ filialId: string; percentual: number }>;
   folha: { partes: Array<{ filialId: string; departamento: string; valor: number; percentual: number }> } | null;
   valores?: Array<{ filialId: string; valor: number }> | null;
+  porHoras?: {
+    competenciaUsada: string;
+    base: 'fgts' | 'inss' | 'proventos';
+    percentuais: Array<{ filialId: string; percentual: number }>;
+    divididos: number;
+  } | null;
 }
 
 export interface GuiaPendente {
@@ -416,6 +422,33 @@ export function GuiaImpostoForm({
 
           <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
             <p className="text-sm text-slate-700">{proposta.explicacao}</p>
+            {proposta.porHoras && proposta.porHoras.percentuais.length > 0 && (() => {
+              const ph = proposta.porHoras;
+              const nomeCasa = (id: string) => filiais.find((f) => f.id === id)?.nome ?? 'outra casa';
+              return (
+                <div className="mt-2 rounded-md border border-sky-200 bg-sky-50 p-2 text-xs text-sky-900">
+                  <p>
+                    Pelas horas trabalhadas em cada casa ({ph.base === 'fgts' ? 'FGTS' : ph.base === 'inss' ? 'base do INSS' : 'bruto'} de cada
+                    pessoa dividido pelo ponto de {ph.competenciaUsada.slice(5)}/{ph.competenciaUsada.slice(0, 4)}
+                    {ph.divididos > 0 ? ` — ${ph.divididos} pessoa(s) trabalharam fora da casa do cadastro` : ''}):{' '}
+                    {ph.percentuais.map((p) => `${nomeCasa(p.filialId)} ${p.percentual.toLocaleString('pt-BR')}%`).join(' · ')}
+                  </p>
+                  <button
+                    type="button"
+                    className="mt-1 rounded-md bg-sky-700 px-2 py-1 font-medium text-white hover:bg-sky-800"
+                    onClick={() => {
+                      const m: Record<string, string> = {};
+                      for (const f of filiais) m[f.id] = '';
+                      for (const x of ph.percentuais) m[x.filialId] = String(x.percentual).replace('.', ',');
+                      setPct(m);
+                      setVals({});
+                    }}
+                  >
+                    Usar a divisão pelas horas
+                  </button>
+                </div>
+              );
+            })()}
             <div className="mt-3 space-y-2">
               {filiais.map((f) => {
                 const p = numPct(pct[f.id]);
