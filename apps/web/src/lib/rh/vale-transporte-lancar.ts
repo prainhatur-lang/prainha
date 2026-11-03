@@ -19,7 +19,7 @@ export async function lancarQuinzenaVt(
   if (vt.paga) return { ok: false, motivo: 'paga' };
 
   const itens = vt.linhas
-    .filter((l) => l.vt?.ativo && l.vt.valorDia > 0)
+    .filter((l) => l.vt?.ativo && l.vt.valorDia > 0 && !l.desligado)
     .map((l) => {
       const valorDia = l.vt!.valorDia;
       const dias = d.dias?.[l.funcionarioId] ?? l.diasPrevistos;

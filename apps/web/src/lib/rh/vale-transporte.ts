@@ -119,6 +119,9 @@ export interface LinhaVt {
   } | null;
   /** Declaração assinada de que não quer VT (documento da ficha), se subiu. */
   declaracaoNaoVt: { id: string; em: Date } | null;
+  /** Saiu da empresa antes desta quinzena (ou cadastro inativo): não recebe VT novo;
+   *  só aparece pra mostrar o que recebeu a mais na quinzena anterior. */
+  desligado: boolean;
 }
 
 export interface QuinzenaVt {
@@ -201,6 +204,7 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
       regime: schema.funcionario.regimeSalarial,
       dataAdmissao: schema.funcionario.dataAdmissao,
       dataDesligamento: schema.funcionario.dataDesligamento,
+      ativo: schema.funcionario.ativo,
       salarioBase: schema.funcionario.salarioBase,
       filialCadastro: schema.funcionario.filialId,
     })
@@ -343,7 +347,8 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
     // Mudou de casa (cadastro em outra filial): aqui só acerta a sobra da
     // quinzena anterior; os dias novos quem prevê é a casa nova.
     const transferido = f.filialCadastro !== filialId && !f.dataDesligamento;
-    if (transferido) {
+    const desligado = !f.ativo || (!!f.dataDesligamento && f.dataDesligamento < q.inicio);
+    if (transferido || desligado) {
       diasPrevistos = 0;
     } else if (esc && esc.comLinha > 0) {
       diasPrevistos = diasQ.filter((d) => naCasa(d) && esc.trabalho.has(d)).length;
@@ -431,6 +436,7 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
       origemPrevisao,
       anterior,
       diasPontoAtual: contar(f.id, q),
+      desligado,
       baseDesconto,
       paga: ip
         ? {

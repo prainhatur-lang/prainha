@@ -49,8 +49,11 @@ export function ValeTransporteManager(p: Props) {
   const [erro, setErro] = useState<string | null>(null);
   const [mostrarSemVt, setMostrarSemVt] = useState(false);
 
-  const comVt = p.linhas.filter((l) => (p.paga ? !!l.paga : l.vt?.ativo && l.vt.valorDia > 0));
-  const semVt = p.linhas.filter((l) => !comVt.includes(l));
+  // Quem saiu antes da quinzena não recebe VT novo (item de R$ 0 lançado antes da trava também sai da lista).
+  const saiu = (l: LinhaVt) => l.desligado && !(l.paga && l.paga.valorPago > 0);
+  const saidos = p.linhas.filter(saiu);
+  const comVt = p.linhas.filter((l) => !saiu(l) && (p.paga ? !!l.paga : l.vt?.ativo && l.vt.valorDia > 0));
+  const semVt = p.linhas.filter((l) => !saiu(l) && !comVt.includes(l));
 
   const calc = (l: LinhaVt) => {
     if (l.paga) {
@@ -120,6 +123,12 @@ export function ValeTransporteManager(p: Props) {
           }</td><td class="c">ponto: ${l.diasPontoAtual} dia(s)</td></tr>`,
       )
       .join('');
+    const sai = saidos
+      .map((l) => {
+        const aMais = l.anterior && l.anterior.saldo < 0 ? -l.anterior.saldo : 0;
+        return `<tr><td>${esc(l.nome)}</td><td>${aMais > 0 ? `recebeu ${brl(aMais)} a mais na quinzena anterior — descontar na rescisão` : 'sem diferença a acertar'}</td></tr>`;
+      })
+      .join('');
     const html = `<!doctype html><html><head><meta charset="utf-8"><title>VT ${esc(p.filialNome ?? '')} ${esc(p.nomeQuinzena)}</title>
 <style>
 @page{size:A4 landscape;margin:8mm}
@@ -141,6 +150,7 @@ tfoot td{font-weight:bold;background:#f5f5f5}
 <tbody>${linhas}</tbody>
 <tfoot><tr><td colspan="7" class="r">Total</td><td class="r">${brl(total)}</td><td class="r">${brl(totalDesconto)}</td><td colspan="3"></td></tr></tfoot></table>
 ${sem ? `<p class="s"><b>Sem VT nesta quinzena (${semVt.length})</b></p><table><tbody>${sem}</tbody></table>` : ''}
+${sai ? `<p class="s"><b>Saíram da empresa — sem VT (${saidos.length})</b></p><table><tbody>${sai}</tbody></table>` : ''}
 <script>window.onload=function(){window.print()}</` + `script></body></html>`;
     const w = window.open('', '_blank');
     if (!w) {
@@ -531,6 +541,34 @@ ${sem ? `<p class="s"><b>Sem VT nesta quinzena (${semVt.length})</b></p><table><
               </tbody>
             </table>
           )}
+        </div>
+      )}
+
+      {saidos.length > 0 && (
+        <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm">
+          <div className="font-medium text-rose-900">
+            Saíram da empresa — não recebem VT nesta quinzena ({saidos.length})
+          </div>
+          <ul className="mt-1 space-y-0.5 text-rose-900">
+            {saidos.map((l) => {
+              const aMais = l.anterior && l.anterior.saldo < 0 ? -l.anterior.saldo : 0;
+              return (
+                <li key={l.funcionarioId}>
+                  <a href={`/rh/funcionarios/${l.funcionarioId}`} className="hover:underline">
+                    {l.nome}
+                  </a>
+                  {aMais > 0 ? (
+                    <span className="ml-2 text-xs">
+                      recebeu {brl(aMais)} a mais na quinzena anterior ({l.anterior!.diasPagos} dia(s) pagos ×{' '}
+                      {l.anterior!.diasPonto} no ponto) — descontar na rescisão
+                    </span>
+                  ) : (
+                    <span className="ml-2 text-xs text-rose-700">sem diferença a acertar</span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
         </div>
       )}
 
