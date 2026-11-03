@@ -21,6 +21,7 @@ import {
   extensaoDoc,
   pastaDocRh,
   tipoValido,
+  TIPO_DOC_NAO_QUER_VT,
 } from '@/lib/rh/documento-vinculo';
 
 export const dynamic = 'force-dynamic';
@@ -143,7 +144,21 @@ export async function POST(req: Request) {
       usuarioId: user.id,
     })
     .returning({ id: schema.funcionarioDocumento.id });
-  return NextResponse.json({ ok: true, id: criado?.id });
+
+  // Declaração de que não quer VT (dono 03/11/2026): subiu, desliga o VT.
+  // Mantém valor/dia e forma de quem já tinha; quem não tinha entra desligado.
+  let vtDesligado = false;
+  if (d.tipo === TIPO_DOC_NAO_QUER_VT) {
+    await db
+      .insert(schema.vtPessoa)
+      .values({ funcionarioId: d.funcionarioId, ativo: false, valorDia: '0', atualizadoEm: new Date(), atualizadoPor: user.id })
+      .onConflictDoUpdate({
+        target: schema.vtPessoa.funcionarioId,
+        set: { ativo: false, atualizadoEm: new Date(), atualizadoPor: user.id },
+      });
+    vtDesligado = true;
+  }
+  return NextResponse.json({ ok: true, id: criado?.id, vtDesligado });
 }
 
 export async function GET(req: Request) {

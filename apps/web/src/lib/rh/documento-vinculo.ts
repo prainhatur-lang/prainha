@@ -28,6 +28,7 @@ export const DOCS_ADMISSAO: TipoDoc[] = [
   { tipo: 'ctps', rotulo: 'Carteira de trabalho (digital ou foto)', clt: true, semCarteira: false },
   { tipo: 'ficha_registro', rotulo: 'Ficha de registro do contador', clt: false, semCarteira: false },
   { tipo: 'opcao_vt', rotulo: 'Opção de vale-transporte assinada', clt: false, semCarteira: false },
+  { tipo: 'nao_opta_vt', rotulo: 'Declaração de que NÃO quer vale-transporte', clt: false, semCarteira: false, dica: 'ao subir, o VT da pessoa é desligado na hora' },
   { tipo: 'termo_diaria', rotulo: 'Termo de trabalho por diária/chamado', clt: false, semCarteira: true },
   { tipo: 'outro_admissao', rotulo: 'Outro documento de entrada', clt: false, semCarteira: false },
 ];
@@ -53,6 +54,9 @@ export const MOTIVOS_SAIDA = [
   'Abandono de emprego',
   'Parou de ser chamado (sem carteira)',
 ];
+
+/** Tipo que, ao subir, desliga o VT da pessoa (pedido do dono 03/11/2026). */
+export const TIPO_DOC_NAO_QUER_VT = 'nao_opta_vt';
 
 export function tiposDoMomento(m: MomentoDoc): TipoDoc[] {
   return m === 'admissao' ? DOCS_ADMISSAO : DOCS_DESLIGAMENTO;

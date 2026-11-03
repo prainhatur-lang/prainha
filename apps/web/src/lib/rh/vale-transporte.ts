@@ -21,7 +21,7 @@
 // Quem recebe em DINHEIRO (ajuda de custo) não tem desconto.
 
 import { db, schema } from '@concilia/db';
-import { and, asc, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
 import { jornadaNoDia, minutosPrevistos, type VigenciaJornada } from '@/lib/rh/banco-horas';
 import { somarDias } from '@/lib/rh/dia-operacional';
 import { calcularDia } from '@/lib/rh/calcular-ponto';
@@ -117,6 +117,8 @@ export interface LinhaVt {
     forma: FormaVt;
     descontoValor: number | null;
   } | null;
+  /** Declaração assinada de que não quer VT (documento da ficha), se subiu. */
+  declaracaoNaoVt: { id: string; em: Date } | null;
 }
 
 export interface QuinzenaVt {
@@ -213,6 +215,20 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
   if (!ids.length) {
     return { quinzena: q, anterior: ant, paga: pagaInfo, anteriorPaga: !!qAnt, seguintePaga: !!qSeg, linhas: [] };
   }
+
+  const declaracoes = await db
+    .select({ id: schema.funcionarioDocumento.id, funcionarioId: schema.funcionarioDocumento.funcionarioId, em: schema.funcionarioDocumento.criadoEm })
+    .from(schema.funcionarioDocumento)
+    .where(
+      and(
+        inArray(schema.funcionarioDocumento.funcionarioId, ids),
+        eq(schema.funcionarioDocumento.tipo, 'nao_opta_vt'),
+        isNull(schema.funcionarioDocumento.canceladoEm),
+      ),
+    )
+    .orderBy(desc(schema.funcionarioDocumento.criadoEm));
+  const declaracaoPor = new Map<string, { id: string; em: Date }>();
+  for (const dcl of declaracoes) if (!declaracaoPor.has(dcl.funcionarioId)) declaracaoPor.set(dcl.funcionarioId, { id: dcl.id, em: dcl.em });
 
   const [vts, vigRows, batidas, stelanto, batidasQ, escalaMes] = await Promise.all([
     db.select().from(schema.vtPessoa).where(inArray(schema.vtPessoa.funcionarioId, ids)),
@@ -432,6 +448,7 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
             descontoValor: ip.descontoValor != null ? Number(ip.descontoValor) : null,
           }
         : null,
+      declaracaoNaoVt: declaracaoPor.get(f.id) ?? null,
     };
   });
 

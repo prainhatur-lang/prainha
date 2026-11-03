@@ -114,7 +114,9 @@ export function ValeTransporteManager(p: Props) {
       .map(
         (l) =>
           `<tr><td>${esc(l.nome)}</td><td class="m">${esc([l.cargo, l.jornadaNome].filter(Boolean).join(' · '))}</td><td>${
-            l.vt && !l.vt.ativo ? 'VT desligado' : 'sem VT cadastrado'
+            l.vt && !l.vt.ativo
+              ? `VT desligado${l.declaracaoNaoVt ? ' · declaração assinada' : ' · SEM declaração'}`
+              : 'sem VT cadastrado'
           }</td><td class="c">ponto: ${l.diasPontoAtual} dia(s)</td></tr>`,
       )
       .join('');
@@ -493,6 +495,27 @@ ${sem ? `<p class="s"><b>Sem VT nesta quinzena (${semVt.length})</b></p><table><
                         {[l.cargo, l.jornadaNome].filter(Boolean).join(' · ')}
                         {l.vt && !l.vt.ativo && ' · VT desligado'}
                       </span>
+                      {l.declaracaoNaoVt ? (
+                        <a
+                          href={`/api/rh/documento?id=${l.declaracaoNaoVt.id}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="ml-2 text-xs text-emerald-700 hover:underline"
+                        >
+                          ✓ declaração assinada
+                        </a>
+                      ) : (
+                        l.vt &&
+                        !l.vt.ativo && (
+                          <a
+                            href={`/rh/funcionarios/${l.funcionarioId}`}
+                            className="ml-2 text-xs text-amber-700 hover:underline"
+                            title="Na ficha, Documentos de entrada → 'Declaração de que NÃO quer vale-transporte'"
+                          >
+                            ⚠ falta declaração (subir na ficha)
+                          </a>
+                        )
+                      )}
                     </td>
                     <td className="px-4 py-2 text-right text-xs text-slate-500">
                       ponto: {l.diasPontoAtual} dia(s)

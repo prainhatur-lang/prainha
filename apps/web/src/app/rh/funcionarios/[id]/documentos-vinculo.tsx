@@ -87,7 +87,8 @@ export function DocumentosVinculo(props: {
         .storage.from(String(p.bucket))
         .uploadToSignedUrl(String(p.path), String(p.token), arquivo, { contentType: arquivo.type || 'application/octet-stream' });
       if (up.error) throw new Error(`não consegui guardar o arquivo: ${up.error.message}`);
-      await chamar({ acao: 'criar', funcionarioId, momento, tipo, arquivoPath: String(p.path), arquivoNome: arquivo.name });
+      const r = await chamar({ acao: 'criar', funcionarioId, momento, tipo, arquivoPath: String(p.path), arquivoNome: arquivo.name });
+      if (r.vtDesligado) window.alert('Declaração guardada. O vale-transporte desta pessoa foi desligado.');
       router.refresh();
     } catch (e) {
       setErro(e instanceof Error ? e.message : String(e));
