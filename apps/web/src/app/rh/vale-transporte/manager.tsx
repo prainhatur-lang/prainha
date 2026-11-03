@@ -22,6 +22,8 @@ interface Props {
   nomeQuinzena: string;
   nomeAnterior: string;
   paga: string | null;
+  /** Baixa das contas a pagar da quinzena lançada: "lançada" não é "paga". */
+  situacao?: { automatico: boolean; contas: number; contasPagas: number; valorEmAberto: number } | null;
   anteriorPaga: boolean;
   seguintePaga: boolean;
   podePagar: boolean;
@@ -205,9 +207,30 @@ export function ValeTransporteManager(p: Props) {
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white p-4">
         <div className="text-sm">
           {p.paga ? (
-            <span className="font-medium text-emerald-700">
-              ✓ Paga em {new Date(p.paga).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
-            </span>
+            (() => {
+              const dataLanc = new Date(p.paga).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+              const st = p.situacao;
+              // Sem contas (quinzenas antigas, antes de 19/10): mantém o texto de antes.
+              if (!st || st.contas === 0) return <span className="font-medium text-emerald-700">✓ Paga em {dataLanc}</span>;
+              if (st.contasPagas >= st.contas)
+                return (
+                  <span className="font-medium text-emerald-700">
+                    ✓ Paga · {st.contas} conta(s) com baixa · lançada em {dataLanc}
+                  </span>
+                );
+              return (
+                <span>
+                  <span className="font-medium text-amber-700">
+                    ⏳ Lançada em {dataLanc}
+                    {st.automatico ? ' (automático)' : ''} · NÃO PAGA
+                  </span>
+                  <span className="ml-1 text-slate-600">
+                    · {st.contasPagas} de {st.contas} conta(s) com baixa · falta pagar{' '}
+                    <b className="tabular-nums">{brl(st.valorEmAberto)}</b>
+                  </span>
+                </span>
+              );
+            })()
           ) : (
             <span className="text-slate-600">
               Previsão da quinzena {emAndamento ? '(em andamento)' : ''} · acerto pela quinzena {p.nomeAnterior}
@@ -339,7 +362,11 @@ export function ValeTransporteManager(p: Props) {
                       <span className="text-xs text-slate-400">sem quinzena anterior paga</span>
                     )}
                   </td>
-                  <td className="px-3 py-2 text-right font-semibold tabular-nums">{brl(c.pagar)}</td>
+                  <td className="px-3 py-2 text-right font-semibold tabular-nums">
+                    {brl(c.pagar)}
+                    {l.paga?.contaPaga === true && <div className="text-[11px] font-normal text-emerald-700">✓ pago</div>}
+                    {l.paga?.contaPaga === false && <div className="text-[11px] font-normal text-amber-700">em aberto</div>}
+                  </td>
                   <td className="px-3 py-2 text-right">
                     {(() => {
                       const ds = desconto(l);

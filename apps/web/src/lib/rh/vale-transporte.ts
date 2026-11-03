@@ -112,6 +112,8 @@ export interface LinhaVt {
     valorPrevisto: number;
     acertoAnterior: number;
     valorPago: number;
+    /** Conta a pagar desta pessoa: true = baixada (dinheiro saiu), false = em aberto, null = sem conta. */
+    contaPaga: boolean | null;
     forma: FormaVt;
     descontoValor: number | null;
   } | null;
@@ -120,7 +122,16 @@ export interface LinhaVt {
 export interface QuinzenaVt {
   quinzena: Quinzena;
   anterior: Quinzena;
-  paga: { id: string; pagaEm: Date } | null;
+  /** Quinzena LANÇADA (gravada). Só está paga de fato quando as contas tiverem baixa. */
+  paga: {
+    id: string;
+    pagaEm: Date;
+    /** null = lançada pelo cron automático. */
+    automatico: boolean;
+    contas: number;
+    contasPagas: number;
+    valorEmAberto: number;
+  } | null;
   anteriorPaga: boolean;
   seguintePaga: boolean;
   linhas: LinhaVt[];
@@ -131,7 +142,12 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
   const seg = quinzenaSeguinte(q);
 
   const quinzenas = await db
-    .select({ id: schema.vtQuinzena.id, inicio: schema.vtQuinzena.dataInicio, pagaEm: schema.vtQuinzena.pagaEm })
+    .select({
+      id: schema.vtQuinzena.id,
+      inicio: schema.vtQuinzena.dataInicio,
+      pagaEm: schema.vtQuinzena.pagaEm,
+      pagaPor: schema.vtQuinzena.pagaPor,
+    })
     .from(schema.vtQuinzena)
     .where(
       and(
@@ -150,6 +166,27 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
         .where(inArray(schema.vtQuinzenaItem.quinzenaId, quinzenas.map((x) => x.id)))
     : [];
   const itemAtual = new Map(itens.filter((i) => i.quinzenaId === qAtual?.id).map((i) => [i.funcionarioId, i]));
+  // Situação das contas a pagar da quinzena atual (baixa = dinheiro saiu).
+  const idsConta = itens
+    .filter((i) => i.quinzenaId === qAtual?.id && i.contaPagarId)
+    .map((i) => i.contaPagarId as string);
+  const contas = idsConta.length
+    ? await db
+        .select({ id: schema.contaPagar.id, dataPagamento: schema.contaPagar.dataPagamento, valor: schema.contaPagar.valor })
+        .from(schema.contaPagar)
+        .where(inArray(schema.contaPagar.id, idsConta))
+    : [];
+  const contaPorId = new Map(contas.map((c) => [c.id, c]));
+  const pagaInfo: QuinzenaVt['paga'] = qAtual
+    ? {
+        id: qAtual.id,
+        pagaEm: qAtual.pagaEm,
+        automatico: !qAtual.pagaPor,
+        contas: contas.length,
+        contasPagas: contas.filter((c) => c.dataPagamento != null).length,
+        valorEmAberto: contas.filter((c) => c.dataPagamento == null).reduce((a, c) => a + Number(c.valor), 0),
+      }
+    : null;
   const itemAnt = new Map(itens.filter((i) => i.quinzenaId === qAnt?.id).map((i) => [i.funcionarioId, i]));
 
   // Ativos da casa (lotação do cadastro) + quem já tem VT pago aqui e saiu depois.
@@ -174,7 +211,7 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
     .orderBy(asc(schema.funcionario.nome));
   const ids = funcionarios.map((f) => f.id);
   if (!ids.length) {
-    return { quinzena: q, anterior: ant, paga: qAtual, anteriorPaga: !!qAnt, seguintePaga: !!qSeg, linhas: [] };
+    return { quinzena: q, anterior: ant, paga: pagaInfo, anteriorPaga: !!qAnt, seguintePaga: !!qSeg, linhas: [] };
   }
 
   const [vts, vigRows, batidas, stelanto, batidasQ, escalaMes] = await Promise.all([
@@ -386,6 +423,11 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
             valorPrevisto: Number(ip.valorPrevisto),
             acertoAnterior: Number(ip.acertoAnterior),
             valorPago: Number(ip.valorPago),
+            contaPaga: ip.contaPagarId
+              ? contaPorId.has(ip.contaPagarId)
+                ? contaPorId.get(ip.contaPagarId)!.dataPagamento != null
+                : null
+              : null,
             forma: ip.forma as FormaVt,
             descontoValor: ip.descontoValor != null ? Number(ip.descontoValor) : null,
           }
@@ -396,7 +438,7 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
   return {
     quinzena: q,
     anterior: ant,
-    paga: qAtual ? { id: qAtual.id, pagaEm: qAtual.pagaEm } : null,
+    paga: pagaInfo,
     anteriorPaga: !!qAnt,
     seguintePaga: !!qSeg,
     linhas,
