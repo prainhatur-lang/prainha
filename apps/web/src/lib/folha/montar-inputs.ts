@@ -28,6 +28,7 @@ export interface InputsFolha {
     bonusFixoSemanal: string | null;
     bonusPorDia: string | null;
     dezPctCasas?: number | null;
+    diaristaAte?: string | null;
     nome: string | null;
     cpf?: string | null;
     bancoNome?: string | null;
@@ -73,6 +74,7 @@ export async function montarInputsFolha(folhaSemanaId: string, filialId: string)
       bonusFixoSemanal: schema.fornecedorFolha.bonusFixoSemanal,
       bonusPorDia: schema.fornecedorFolha.bonusPorDia,
       dezPctCasas: schema.fornecedorFolha.dezPctCasas,
+      diaristaAte: schema.fornecedorFolha.diaristaAte,
       nome: schema.fornecedor.nome,
       cpf: schema.fornecedor.cnpjOuCpf,
       bancoNome: schema.fornecedor.bancoNome,
@@ -259,6 +261,7 @@ export async function montarInputsFolha(folhaSemanaId: string, filialId: string)
       p.dezPctCasas && p.dezPctCasas > 1 && p.cpf
         ? horasDezPctPorCpf.get(String(p.cpf).replace(/\D/g, '')) ?? null
         : null,
+    diaristaAte: p.diaristaAte ?? null,
   }));
 
   const noturno = folhaRow

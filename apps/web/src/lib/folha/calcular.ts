@@ -35,6 +35,9 @@ export interface PessoaInput {
    *  numa casa só, mas a parte de cada casa sai sobre as horas todas.
    *  Diária, transporte e bônus seguem com as horas DESTA casa. */
   horasDezPct?: Record<string, number> | null;
+  /** Registrado no meio da semana: papel 'funcionario', mas os dias até
+   *  esta data ('YYYY-MM-DD', inclusive) pagam diária como diarista. */
+  diaristaAte?: string | null;
 }
 
 export interface HorasInput {
@@ -293,6 +296,42 @@ export function calcularFolha(args: {
           descricao: `Diária semana — ${p.nome}`,
           detalhe,
         });
+      }
+    }
+
+    // Diária até a data do registro (diarista → funcionário no meio da
+    // semana): só os dias <= diaristaAte, pelo mesmo modelo do diarista.
+    if (p.papel === 'funcionario' && p.diaristaAte) {
+      const ate = p.diaristaAte;
+      const diasAntes = Object.entries(horasMap.get(p.fornecedorId) ?? {}).filter(
+        ([d, m]) => d <= ate && m > 0,
+      );
+      const minAntes = diasAntes.reduce((acc, [, m]) => acc + m, 0);
+      if (minAntes > 0) {
+        const ateBr = `${ate.slice(8, 10)}/${ate.slice(5, 7)}`;
+        let dia = 0;
+        let detalhe = '';
+        if (p.diaristaModelo === 'fixo_por_dia' && p.diaristaValorFixoDia && p.diaristaValorFixoDia > 0) {
+          dia = diasAntes.length * p.diaristaValorFixoDia;
+          detalhe = `${diasAntes.length} dia(s) × R$ ${p.diaristaValorFixoDia.toFixed(2)}/dia (diarista até ${ateBr})`;
+        } else {
+          const taxa = p.diaristaTaxaHoraOverride ?? config.taxaDiaristaHora;
+          dia = (minAntes / 60) * taxa;
+          detalhe = `${minutosToHM(minAntes)} × R$ ${taxa.toFixed(2)}/h (diarista até ${ateBr})`;
+        }
+        if (dia > 0) {
+          lancamentos.push({
+            fornecedorId: p.fornecedorId,
+            pessoaNome: p.nome,
+            papel: p.papel,
+            tipo: 'diaria',
+            valorBruto: round2(dia),
+            desconto: 0,
+            valorLiquido: round2(dia),
+            descricao: `Diária semana — ${p.nome}`,
+            detalhe,
+          });
+        }
       }
     }
 

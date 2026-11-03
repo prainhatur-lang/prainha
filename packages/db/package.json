@@ -265,6 +265,7 @@
     "migrate:ifood-homolog-log": "tsx scripts/migrate-ifood-homolog-log.ts",
     "migrate:saas-interessado": "tsx scripts/migrate-saas-interessado.ts",
     "migrate:saas-conta": "tsx scripts/migrate-saas-conta.ts",
+    "migrate:diarista-ate": "tsx scripts/migrate-diarista-ate.ts",
     "instancia:clientes-schema": "tsx scripts/instancia-clientes-schema.ts"
   },
   "dependencies": {

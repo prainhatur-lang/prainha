@@ -18,6 +18,8 @@ interface Pagamento {
   bonusPorDia: string | null;
   /** Divide a parte do 10% por N casas (null/1 = inteira). */
   dezPctCasas?: number | null;
+  /** Registrado no meio da semana: diária até esta data (YYYY-MM-DD). */
+  diaristaAte?: string | null;
   chavePix: string | null;
   bancoNome: string | null;
   bancoAgencia: string | null;
@@ -144,6 +146,8 @@ function resumoAcordo(pg: Pagamento): string {
   if (pg.bonusPorDia && Number(pg.bonusPorDia) > 0) partes.push(`🗓 R$${fmtReais(pg.bonusPorDia)}/dia`);
   if (pg.bonusFixoSemanal && Number(pg.bonusFixoSemanal) > 0) partes.push(`💰 R$${fmtReais(pg.bonusFixoSemanal)}/sem`);
   if (pg.dezPctCasas && pg.dezPctCasas > 1) partes.push(`🏠 1/${pg.dezPctCasas} do 10%`);
+  if (pg.papel === 'funcionario' && pg.diaristaAte)
+    partes.push(`📅 diária até ${pg.diaristaAte.slice(8, 10)}/${pg.diaristaAte.slice(5, 7)}`);
   return partes.join(' · ');
 }
 
@@ -528,6 +532,7 @@ function FuncionarioForm({
   const [bonusSemanal, setBonusSemanal] = useState(pg?.bonusFixoSemanal ?? '');
   const [bonusDia, setBonusDia] = useState(pg?.bonusPorDia ?? '');
   const [dezPctCasas, setDezPctCasas] = useState<number>(pg?.dezPctCasas ?? 1);
+  const [diaristaAte, setDiaristaAte] = useState(pg?.diaristaAte ?? '');
   const [chavePix, setChavePix] = useState(contaIni?.chavePix ?? '');
   const [bancoNome, setBancoNome] = useState(contaIni?.bancoNome ?? '');
   const [bancoAgencia, setBancoAgencia] = useState(contaIni?.bancoAgencia ?? '');
@@ -631,6 +636,10 @@ function FuncionarioForm({
               bonusPorDia: num(bonusDia),
               // Só manda quando mexeu ou já tinha: quem nunca usou segue igual.
               ...(dezPctCasas > 1 || (pg?.dezPctCasas ?? 1) > 1 ? { dezPctCasas } : {}),
+              // Idem: só manda quando preencheu ou já tinha.
+              ...(diaristaAte || pg?.diaristaAte
+                ? { diaristaAte: papel === 'funcionario' && diaristaAte ? diaristaAte : null }
+                : {}),
               tambemCliente,
               formaPagamento,
               chavePix: formaPagamento === 'pix' ? chavePix.trim() || null : null,
@@ -968,6 +977,20 @@ function FuncionarioForm({
                   className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono"
                 />
               </label>
+              {papel === 'funcionario' && (
+                <label
+                  className="text-xs text-slate-500"
+                  title="Registrado no meio da semana: os dias até esta data (inclusive) saem na folha como diária de diarista (horas × taxa da casa). Os dias depois, só o 10%. Deixe vazio quando não houver."
+                >
+                  Diarista até (registro no meio da semana)
+                  <input
+                    type="date"
+                    value={diaristaAte}
+                    onChange={(e) => setDiaristaAte(e.target.value)}
+                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                  />
+                </label>
+              )}
               <label
                 className="text-xs text-slate-500"
                 title="Quem trabalha pra várias casas (ex.: funcionário da Lelis) recebe uma fração do 10% em cada casa, sobre as horas batidas em todas. O resto fica com a empresa desta casa."

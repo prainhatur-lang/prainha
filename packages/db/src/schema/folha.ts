@@ -79,6 +79,10 @@ export const fornecedorFolha = pgTable(
      *  três casas (funcionário da Lelis) recebe 1/N da fatia dele em cada uma;
      *  o resto fica com a empresa desta casa. NULL/1 = parte inteira. */
     dezPctCasas: integer('dez_pct_casas'),
+    /** Registrado no meio da semana (03/11/2026): papel já é funcionário,
+     *  mas os dias até esta data (inclusive) ainda pagam diária
+     *  (horas × taxa, ou fixo por dia). NULL = sem diária. */
+    diaristaAte: date('diarista_ate'),
     /** Codigo do colaborador no Consumer (PEDIDOS.CODIGOCOLABORADOR) — pra
      *  vincular automaticamente a comissao gerada via PDV (Consumer ja
      *  atribui o garcom ao pedido). */
