@@ -9,7 +9,7 @@
 
 import { db, schema } from '@concilia/db';
 import { and, eq, gte, lte, sql } from 'drizzle-orm';
-import { calcularDia, type Batida } from './calcular-ponto';
+import { calcularDia, minutosParaFolha, type Batida } from './calcular-ponto';
 import { semanaContemDia } from '@/lib/folha/semana';
 import { diaDoPontoProprio } from './ponto-vigencia';
 
@@ -94,9 +94,11 @@ export async function projetarPontoEmFolhaHoras(
       .limit(1);
     if (!folha || folha.status !== 'aberta') continue;
 
+    // Intervalo obrigatório (03/11/2026): dia > 6h sem intervalo batido entra
+    // com 0 (pendente) até o gestor lançar o intervalo; a correção reprojeta.
     await db
       .insert(schema.folhaHoras)
-      .values({ folhaSemanaId: folha.id, fornecedorId, dia, totalMin: calc.totalMin, origem: 'ponto_proprio' })
+      .values({ folhaSemanaId: folha.id, fornecedorId, dia, totalMin: minutosParaFolha(dia, calc), origem: 'ponto_proprio' })
       .onConflictDoUpdate({
         target: [schema.folhaHoras.folhaSemanaId, schema.folhaHoras.fornecedorId, schema.folhaHoras.dia],
         set: { totalMin: sql`excluded.total_min`, origem: sql`excluded.origem` },

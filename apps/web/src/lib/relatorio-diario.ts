@@ -17,6 +17,7 @@ import { diasEntre, rotuloTipoDoc } from './empresa-documento';
 import { chamarLojaCaixa } from './caixa-loja';
 import { contarEvento } from './evento-ticket';
 import { pendenciasEscala, totalPendencias, type PendenciasEscala } from './rh/escala-pendencias';
+import { calcularDia, faltaIntervalo } from './rh/calcular-ponto';
 import { googleDoDia, tripadvisorDoDia, type GoogleDia, type TripadvisorDia } from './avaliacoes-publicas-dia';
 
 const TZ = 'America/Sao_Paulo';
@@ -1552,11 +1553,12 @@ const DIAS_PONTO_ABERTO = 7;
  */
 async function pontoEmAbertoDaCasa(filialId: string, dia: string): Promise<PontoAberto[]> {
   const desde = somaDias(dia, -(DIAS_PONTO_ABERTO - 1));
-  const rows = await q<{ funcionario_id: string; nome: string; dia: string; batidas: Array<{ h: string; t: string }> }>(sql`
+  const rows = await q<{ funcionario_id: string; nome: string; dia: string; batidas: Array<{ h: string; t: string; q: string }> }>(sql`
     SELECT b.funcionario_id, f.nome, b.dia_operacional::text AS dia,
            json_agg(json_build_object(
              'h', to_char(b.quando AT TIME ZONE ${TZ}, 'HH24:MI'),
-             't', b.tipo) ORDER BY b.quando) AS batidas
+             't', b.tipo,
+             'q', b.quando) ORDER BY b.quando) AS batidas
       FROM ponto_batida b
       JOIN funcionario f ON f.id = b.funcionario_id
      WHERE b.filial_id = ${filialId}
@@ -1578,6 +1580,14 @@ async function pontoEmAbertoDaCasa(filialId: string, dia: string): Promise<Ponto
       }
     }
     if (aberta != null) falta.push(`entrou ${aberta}, sem saída`);
+    // Intervalo obrigatório (03/11/2026): mais de 6h sem bater o intervalo
+    // também é pendência — o dia fica fora da folha até lançar o intervalo.
+    if (!falta.length) {
+      const calc = calcularDia((r.batidas ?? []).map((b) => ({ quando: new Date(b.q), tipo: b.t === 'saida' ? 'saida' : 'entrada' })));
+      if (faltaIntervalo(r.dia, calc)) {
+        falta.push(`${Math.floor(calc.totalMin / 60)}h${String(calc.totalMin % 60).padStart(2, '0')} sem bater o intervalo (fora da folha)`);
+      }
+    }
     if (falta.length) out.push({ funcionarioId: r.funcionario_id, nome: r.nome, dia: r.dia, falta });
   }
   // Mais recente primeiro; no mesmo dia, por nome.
@@ -1817,7 +1827,7 @@ function linhasPontoAberto(c: RelatorioCasa): string[] {
   const lista = c.pontoEmAberto ?? [];
   if (!lista.length) return [];
   const MAX = 15;
-  const L = [`🕘 Ponto em aberto (${lista.length}) — sem saída ou sem entrada, falta corrigir:`];
+  const L = [`🕘 Ponto em aberto (${lista.length}) — sem saída, sem entrada ou sem intervalo, falta corrigir:`];
   for (const p of lista.slice(0, MAX)) {
     const [, mm, dd] = p.dia.split('-');
     L.push(`• ${p.nome} — ${dd}/${mm}: ${p.falta.join('; ')}`);

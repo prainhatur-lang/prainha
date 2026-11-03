@@ -13,7 +13,7 @@ import { db, schema } from '@concilia/db';
 import { and, asc, gte, inArray, isNull, lte, eq } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { hojeBr } from '@/lib/datas';
-import { calcularDia, minutosNoturnos } from '@/lib/rh/calcular-ponto';
+import { calcularDia, faltaIntervalo, minutosNoturnos } from '@/lib/rh/calcular-ponto';
 import { pontoProprioDesde } from '@/lib/rh/ponto-vigencia';
 import { horaMinutoBr, somarDias } from '@/lib/rh/dia-operacional';
 import { diaDaSemana, fmtHoras, fmtSaldo, jornadaNoDia, minutosPrevistos, type VigenciaJornada } from '@/lib/rh/banco-horas';
@@ -35,7 +35,7 @@ const TOLERANCIA_ATRASO_MIN = 5;
 const SEMANA = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
 const MESES = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
 
-type Situacao = 'ok' | 'falta' | 'incompleto' | 'atestado' | 'folga' | 'hoje' | 'fora' | 'extra' | 'menos';
+type Situacao = 'ok' | 'falta' | 'incompleto' | 'sem_intervalo' | 'atestado' | 'folga' | 'hoje' | 'fora' | 'extra' | 'menos';
 /** Diferença do dia que não vira aviso (CLT art. 58 §1º: até 10 min por dia). */
 const TOLERANCIA_DIA_MIN = 10;
 
@@ -131,6 +131,7 @@ const ROTULO: Record<Situacao, { txt: string; cls: string }> = {
   menos: { txt: 'horas a menos', cls: 'bg-red-50 text-red-600' },
   falta: { txt: 'falta', cls: 'bg-red-100 text-red-700' },
   incompleto: { txt: 'incompleto', cls: 'bg-amber-100 text-amber-800' },
+  sem_intervalo: { txt: 'sem intervalo (fora da folha)', cls: 'bg-red-100 text-red-700' },
   atestado: { txt: 'atestado', cls: 'bg-violet-100 text-violet-700' },
   folga: { txt: 'folga', cls: 'bg-slate-100 text-slate-500' },
   hoje: { txt: 'hoje (em andamento)', cls: 'bg-slate-100 text-slate-500' },
@@ -374,8 +375,10 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
       let notReal = 0;
       let notFicto = 0;
       let incompleto = false;
+      let semIntervalo = false;
       for (const l of porCasa.values()) {
         const c = calcularDia(l);
+        if (faltaIntervalo(dia, c)) semIntervalo = true;
         trab += c.totalMin;
         const n = minutosNoturnos(c.pares);
         notReal += n.reais;
@@ -408,6 +411,9 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
         if (incompleto && dia !== hoje) {
           situacoes.push('incompleto');
           r.incompletos++;
+        } else if (semIntervalo && dia !== hoje) {
+          // Intervalo obrigatório (03/11/2026): > 6h sem intervalo = pendente.
+          situacoes.push('sem_intervalo');
         }
         const primeiraEntrada = lista.find((b) => b.tipo === 'entrada');
         if (f.horaEntrada && primeiraEntrada && diaDeTrabalho) {
@@ -815,7 +821,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
                           <td className="px-4 py-1.5">
                             <div className="flex flex-wrap gap-1">
                               {d.situacoes.map((s) =>
-                                s === 'incompleto' || s === 'falta' ? (
+                                s === 'incompleto' || s === 'falta' || s === 'sem_intervalo' ? (
                                   <a
                                     key={s}
                                     href={ajustarHref(r.id, d.dia)}

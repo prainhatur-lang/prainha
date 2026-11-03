@@ -75,3 +75,40 @@ export function minutosNoturnos(pares: { entrada: string; saida: string }[]): { 
   const reais = Math.round(reaisMs / 60000);
   return { reais, fictos: Math.round((reaisMs / 60000) * 60 / 52.5) };
 }
+
+// ── Intervalo obrigatório (regra do dono, 03/11/2026) ─────────────────────
+// Acabou o "desconta 30 min da convenção": quem trabalha mais de 6h no dia
+// TEM que bater a saída e a volta do intervalo. Sem isso o dia fica PENDENTE
+// — as horas não entram na folha (mensal, semanal) até o gestor lançar o
+// horário real do intervalo em /rh/ponto (correção com justificativa).
+// Vale a partir de INTERVALO_OBRIGATORIO_DESDE; outubro e antes ficam como
+// estavam.
+export const INTERVALO_OBRIGATORIO_DESDE = '2026-11-04';
+/** Jornada acima disso exige intervalo (CLT art. 71). */
+export const JORNADA_EXIGE_INTERVALO_MIN = 6 * 60;
+/** Menor saída→volta que conta como intervalo batido. */
+export const INTERVALO_MINIMO_MIN = 15;
+
+/** Maior intervalo batido no dia (saída de um par → entrada do próximo), em minutos. */
+export function maiorIntervaloMin(pares: { entrada: string; saida: string }[]): number {
+  let maior = 0;
+  const ord = [...pares].sort((a, b) => a.entrada.localeCompare(b.entrada));
+  for (let i = 1; i < ord.length; i++) {
+    const gap = Math.round((new Date(ord[i].entrada).getTime() - new Date(ord[i - 1].saida).getTime()) / 60000);
+    if (gap > maior) maior = gap;
+  }
+  return maior;
+}
+
+/** Dia (operacional, YYYY-MM-DD) com mais de 6h trabalhadas e nenhum
+ *  intervalo de pelo menos 15 min batido, a partir da vigência da regra. */
+export function faltaIntervalo(dia: string, calc: { totalMin: number; pares: { entrada: string; saida: string }[] }): boolean {
+  if (dia < INTERVALO_OBRIGATORIO_DESDE) return false;
+  if (calc.totalMin <= JORNADA_EXIGE_INTERVALO_MIN) return false;
+  return maiorIntervaloMin(calc.pares) < INTERVALO_MINIMO_MIN;
+}
+
+/** Minutos que vão pra folha: dia sem intervalo fica pendente (0). */
+export function minutosParaFolha(dia: string, calc: { totalMin: number; pares: { entrada: string; saida: string }[] }): number {
+  return faltaIntervalo(dia, calc) ? 0 : calc.totalMin;
+}

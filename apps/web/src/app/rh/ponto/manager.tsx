@@ -29,6 +29,8 @@ interface Celula {
   batidas: BatidaCrua[];
   totalMin: number;
   status: string;
+  /** Intervalo obrigatório (03/11/2026): > 6h sem intervalo = pendente, fora da folha. */
+  semIntervalo?: boolean;
 }
 interface Props {
   /** Casa aberta na tela: a correção grava nela, não na casa do cadastro. */
@@ -273,14 +275,16 @@ export function PontoManager({ filialId, dias, funcionarios, grade, gemeos = [],
                     const cel = byChave.get(`${f.id}|${d.iso}`);
                     totalSemana += cel?.totalMin ?? 0;
                     const incompleto = cel?.status === 'incompleto';
+                    const semIntervalo = !incompleto && !!cel?.semIntervalo;
                     const atestado = atestadoDe.get(`${f.id}|${d.iso}`);
                     return (
                       <td
                         key={d.iso}
                         onClick={() => setModal({ funcionarioId: f.id, funcionarioNome: f.nome, dia: d.iso })}
                         className={`cursor-pointer px-3 py-2 text-center text-xs hover:bg-blue-50 ${
-                          incompleto ? 'bg-amber-50' : ''
+                          incompleto ? 'bg-amber-50' : semIntervalo ? 'bg-red-50' : ''
                         }`}
+                        title={semIntervalo ? 'Mais de 6h sem bater o intervalo: o dia fica fora da folha até lançar a saída e a volta do intervalo (clique pra corrigir)' : undefined}
                       >
                         {atestado && (
                           <div
@@ -302,6 +306,9 @@ export function PontoManager({ filialId, dias, funcionarios, grade, gemeos = [],
                             <div className={incompleto ? 'font-semibold text-amber-700' : 'text-slate-500'}>
                               {incompleto ? '⚠ incompleto' : fmtHM(cel.totalMin)}
                             </div>
+                            {semIntervalo && (
+                              <div className="font-semibold text-red-700">⚠ sem intervalo</div>
+                            )}
                           </div>
                         )}
                       </td>

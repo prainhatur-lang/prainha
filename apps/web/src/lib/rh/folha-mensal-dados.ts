@@ -8,7 +8,7 @@
 
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, gte, inArray, isNull, lt, lte } from 'drizzle-orm';
-import { calcularDia, minutosNoturnos, type Batida } from './calcular-ponto';
+import { calcularDia, faltaIntervalo, minutosNoturnos, type Batida } from './calcular-ponto';
 import type { DiaHoras } from './folha-mensal';
 
 export async function horasDoMesPorCpf(cpfs: string[], ini: string, fim: string): Promise<Map<string, DiaHoras[]>> {
@@ -52,6 +52,9 @@ export async function horasDoMesPorCpf(cpfs: string[], ini: string, fim: string)
       const [funcId, , dia] = k.split('|');
       const calc = calcularDia(lista);
       if (calc.totalMin <= 0) continue;
+      // Intervalo obrigatório (03/11/2026): dia > 6h sem intervalo batido fica
+      // pendente — não paga até o gestor lançar o intervalo em /rh/ponto.
+      if (faltaIntervalo(dia, calc)) continue;
       const kk = `${cpfDoFunc.get(funcId)}|${dia}`;
       const atual = ponto.get(kk) ?? { min: 0, noturnoMin: 0 };
       atual.min += calc.totalMin;

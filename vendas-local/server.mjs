@@ -11241,6 +11241,42 @@ function pontoFacialTempos(diag, r) {
     console.log(`[ponto] facial ${x.ok ? x.tipo : x.cooldown ? 'cooldown' : x.via === 'sem_batida' ? 'sem batida' : 'erro'}: motor ${x.motor ?? '?'}, ${x.quadros ?? '?'} quadro(s), detector ${x.ms_detector ?? '?'} ms, redes ${x.ms_redes ?? '?'} ms, rosto→batida ${x.ms_rosto_ate_bater ?? '?'} ms, abrir ${x.ms_abrir ?? '?'} ms`);
   } catch {}
 }
+// Intervalo obrigatório (regra do dono, 03/11/2026): acabou o "desconta 30
+// min da convenção". Quem passa de 6h no dia TEM que bater saída e volta do
+// intervalo; sem isso o dia fica PENDENTE na nuvem (fora da folha) até o
+// gerente lançar o intervalo em /rh/ponto. Aqui o tablet só avisa: na saída
+// sem intervalo batido pergunta "intervalo ou fim do expediente?" e, se for
+// fim com mais de 6h, mostra que o dia vai ficar pendente. Mesmos números da
+// nuvem (lib/rh/calcular-ponto.ts).
+const PONTO_INTERVALO_DESDE = '2026-11-04';
+const PONTO_JORNADA_EXIGE_INTERVALO_MIN = 360;
+const PONTO_INTERVALO_MINIMO_MIN = 15;
+function pontoResumoDia(batidasHoje, dia) {
+  let totalMin = 0, entradaAberta = null, ultimaSaida = null, maiorIntervalo = 0;
+  for (const b of batidasHoje) {
+    if (b.tipo === 'entrada') {
+      if (!entradaAberta && ultimaSaida) {
+        const gap = Math.round((new Date(b.quando) - new Date(ultimaSaida)) / 60000);
+        if (gap > maiorIntervalo) maiorIntervalo = gap;
+      }
+      entradaAberta = b.quando;
+    } else if (b.tipo === 'saida' && entradaAberta) {
+      totalMin += Math.round((new Date(b.quando) - new Date(entradaAberta)) / 60000);
+      entradaAberta = null;
+      ultimaSaida = b.quando;
+    }
+  }
+  const intervalo = maiorIntervalo >= PONTO_INTERVALO_MINIMO_MIN;
+  const vale = String(dia) >= PONTO_INTERVALO_DESDE;
+  return {
+    total_min_hoje: totalMin,
+    intervalo_hoje: intervalo,
+    // vale a pergunta: saída e ainda sem intervalo de 15 min no dia
+    pergunta_intervalo: vale && !intervalo,
+    // se for fim do expediente agora, o dia fica pendente na nuvem
+    pendente_se_fim: vale && !intervalo && totalMin > PONTO_JORNADA_EXIGE_INTERVALO_MIN,
+  };
+}
 // POST /api/ponto/bater-facial {funcionario_id} — sem PIN: o reconhecimento
 // JÁ aconteceu no navegador. Tipo (entrada/saída) é decidido AQUI, no
 // servidor, a partir da última batida real — nunca confia no que o cliente
@@ -11284,15 +11320,8 @@ async function apiPontoBaterFacial(body) {
 
   const batidasHoje = await sql`SELECT tipo, quando FROM ponto_batida
     WHERE funcionario_id=${funcionarioId} AND dia_operacional=${dia} AND anulada_em IS NULL ORDER BY quando`;
-  let totalMin = 0, entradaAberta = null;
-  for (const b of batidasHoje) {
-    if (b.tipo === 'entrada') entradaAberta = b.quando;
-    else if (b.tipo === 'saida' && entradaAberta) {
-      totalMin += Math.round((new Date(b.quando) - new Date(entradaAberta)) / 60000);
-      entradaAberta = null;
-    }
-  }
-  return { ok: true, nome: pessoa.nome, tipo, quando: agora, total_min_hoje: totalMin, batida_id: Number(nova.id) };
+  const resumo = pontoResumoDia(batidasHoje, dia);
+  return { ok: true, nome: pessoa.nome, tipo, quando: agora, ...resumo, pergunta_intervalo: tipo === 'saida' && resumo.pergunta_intervalo, batida_id: Number(nova.id) };
 }
 // POST /api/ponto/anular {batida_id} — botão "Não sou eu" da tela de
 // confirmação do ponto facial (27/09/2026: a Mayara foi cadastrar o rosto e
@@ -11416,15 +11445,8 @@ async function apiPontoBater(body) {
 
   const batidasHoje = await sql`SELECT tipo, quando FROM ponto_batida
     WHERE funcionario_id=${funcionarioId} AND dia_operacional=${dia} AND anulada_em IS NULL ORDER BY quando`;
-  let totalMin = 0, entradaAberta = null;
-  for (const b of batidasHoje) {
-    if (b.tipo === 'entrada') entradaAberta = b.quando;
-    else if (b.tipo === 'saida' && entradaAberta) {
-      totalMin += Math.round((new Date(b.quando) - new Date(entradaAberta)) / 60000);
-      entradaAberta = null;
-    }
-  }
-  return { ok: true, nome: pessoa.nome, tipo, quando: agora, total_min_hoje: totalMin, criado };
+  const resumo = pontoResumoDia(batidasHoje, dia);
+  return { ok: true, nome: pessoa.nome, tipo, quando: agora, ...resumo, pergunta_intervalo: tipo === 'saida' && resumo.pergunta_intervalo, criado };
 }
 // GET /api/ponto/meu-dia?f=<funcionario_id> — a própria pessoa confere as batidas de hoje
 async function apiPontoMeuDia(funcionarioId) {
@@ -17559,6 +17581,9 @@ async function pfBater(pessoa){
         '<button class="pfbusca" id="pfNaoSou" style="cursor:pointer;font-weight:700;background:#7f1d1d;color:#fff;border-color:#b91c1c">✋ Não sou '+esc(primeiro)+' — desfazer</button>';
       document.getElementById('pfNaoSou').onclick=function(){ pfNaoSouEu(r.batida_id); };
     }
+    // Intervalo obrigatório (03/11/2026): saída sem intervalo batido no dia
+    // pergunta se é intervalo ou fim do expediente.
+    if (!ent && r.pergunta_intervalo) pfPerguntaIntervalo(r, pessoa);
   } else {
     document.getElementById('pfStatus').textContent=r.erro||'Não deu pra registrar — tente de novo';
     if (!r.cooldown) { clearInterval(PF_LOOP); PF_LOOP=setInterval(pfTick,250); return; }
@@ -17566,6 +17591,33 @@ async function pfBater(pessoa){
   clearTimeout(PF_FECHA_T);
   PF_FECHA_T=setTimeout(fecharPontoFacial, (r.ok&&r.batida_id)||r.bloqueio?8000:4500);
   return r; // só a escolha entre gêmeos lê (pfGemeoEscolhe)
+}
+function pfPerguntaIntervalo(r, pessoa){
+  var ex=document.getElementById('pfExtra');
+  var box=document.createElement('div');
+  box.id='pfIntBox';
+  box.style.cssText='margin-top:14px;display:flex;flex-direction:column;gap:10px;align-items:stretch';
+  box.innerHTML='<div style="font-size:20px;font-weight:700;color:#fff;text-align:center">Essa saída é…</div>'+
+    '<button id="pfIntSim" style="cursor:pointer;font:inherit;font-size:22px;font-weight:700;padding:16px;border-radius:14px;border:0;background:#2563eb;color:#fff">☕ Saindo pro intervalo</button>'+
+    '<button id="pfIntFim" style="cursor:pointer;font:inherit;font-size:22px;font-weight:700;padding:16px;border-radius:14px;border:0;background:#334155;color:#fff">🏠 Fim do expediente</button>';
+  ex.appendChild(box);
+  clearTimeout(PF_FECHA_T);
+  PF_FECHA_T=setTimeout(fecharPontoFacial, 20000);
+  function fim(html, ms){
+    box.innerHTML=html;
+    clearTimeout(PF_FECHA_T);
+    PF_FECHA_T=setTimeout(fecharPontoFacial, ms);
+  }
+  document.getElementById('pfIntSim').onclick=function(){
+    fim('<div style="font-size:22px;font-weight:700;color:#bfdbfe;text-align:center">Bom intervalo! ☕<br>Na volta, bata o ponto de novo (ENTRADA).</div>', 5000);
+  };
+  document.getElementById('pfIntFim').onclick=function(){
+    if (r.pendente_se_fim) {
+      fim('<div style="font-size:21px;font-weight:700;color:#fff;background:#b91c1c;border-radius:14px;padding:16px;text-align:center">⚠️ Você trabalhou mais de 6h hoje e NÃO bateu o intervalo.<br>O seu dia vai ficar PENDENTE e as horas não entram na folha até o gerente lançar o horário do intervalo.<br><span style="font-weight:500">A partir de agora: bata a saída e a volta do intervalo.</span></div>', 12000);
+    } else {
+      fim('<div style="font-size:22px;font-weight:700;color:#bbf7d0;text-align:center">Bom descanso! 👋</div>', 4000);
+    }
+  };
 }
 /* GÊMEOS (10/10/2026, Prainha Bar: "temos gêmeos trabalhando na casa; quando um
    bate, reconhece a outra pessoa"). O número do rosto de gêmeos idênticos sai
@@ -23778,7 +23830,32 @@ function mostraConfirmacao(r){
     ? 'Entrada '+horaCurta(r.quando)
     : 'Sa' + String.fromCharCode(237) + 'da '+horaCurta(r.quando)+(r.total_min_hoje ? ' — '+Math.floor(r.total_min_hoje/60)+'h'+String(r.total_min_hoje%60).padStart(2,'0')+' hoje' : '');
   ov.innerHTML = '<div class="confirm">'+saudacao+esc(r.nome)+'.<b>'+linha2+'</b></div>';
+  // Intervalo obrigatório (03/11/2026): saída sem intervalo batido pergunta
+  // se é intervalo ou fim do expediente.
+  if (r.tipo==='saida' && r.pergunta_intervalo) { perguntaIntervalo(r); return; }
   setTimeout(function(){ fecharPin(); carrega(); }, 3500);
+}
+var INT_T=null;
+function perguntaIntervalo(r){
+  var ov = document.getElementById('ov');
+  var box = document.createElement('div');
+  box.style.cssText='margin-top:18px;display:flex;flex-direction:column;gap:12px;width:100%;max-width:420px';
+  box.innerHTML='<div style="font-size:20px;font-weight:700;text-align:center">Essa sa&iacute;da &eacute;&hellip;</div>'+
+    '<button id="intSim" style="cursor:pointer;font:inherit;font-size:21px;font-weight:700;padding:16px;border-radius:14px;border:0;background:#2563eb;color:#fff">&#9749; Saindo pro intervalo</button>'+
+    '<button id="intFim" style="cursor:pointer;font:inherit;font-size:21px;font-weight:700;padding:16px;border-radius:14px;border:0;background:#334155;color:#fff">&#127968; Fim do expediente</button>';
+  ov.appendChild(box);
+  function fecha(ms){ clearTimeout(INT_T); INT_T=setTimeout(function(){ fecharPin(); carrega(); }, ms); }
+  fecha(20000);
+  document.getElementById('intSim').onclick=function(){
+    box.innerHTML='<div style="font-size:21px;font-weight:700;color:#1d4ed8;text-align:center">Bom intervalo! Na volta, bata o ponto de novo (ENTRADA).</div>';
+    fecha(5000);
+  };
+  document.getElementById('intFim').onclick=function(){
+    box.innerHTML = r.pendente_se_fim
+      ? '<div style="font-size:20px;font-weight:700;color:#fff;background:#b91c1c;border-radius:14px;padding:16px;text-align:center">&#9888;&#65039; Voc&ecirc; trabalhou mais de 6h hoje e N&Atilde;O bateu o intervalo.<br>O seu dia vai ficar PENDENTE e as horas n&atilde;o entram na folha at&eacute; o gerente lan&ccedil;ar o hor&aacute;rio do intervalo.<br><span style="font-weight:500">A partir de agora: bata a sa&iacute;da e a volta do intervalo.</span></div>'
+      : '<div style="font-size:21px;font-weight:700;color:#15803d;text-align:center">Bom descanso!</div>';
+    fecha(r.pendente_se_fim ? 12000 : 4000);
+  };
 }
 carrega();setInterval(carrega,20000);
 </script></body></html>`;

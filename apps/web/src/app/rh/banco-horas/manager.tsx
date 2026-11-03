@@ -28,6 +28,8 @@ export interface LinhaPessoa {
   semBatidaDias: number;
   semBatidaMin: number;
   incompletos: number;
+  /** Intervalo obrigatório (03/11/2026): dias > 6h sem intervalo, pendentes (contam 0). */
+  semIntervaloDias?: number;
   movimentoMin: number;
   saldoMin: number;
   /** Atestado (21/10/2026): minutos abonados no banco e dias cobertos desde a virada. */
@@ -320,6 +322,11 @@ export function BancoHorasManager({ filialId, hoje, podeLancar, podeAtestado: po
                           {l.incompletos > 0 && (
                             <div className="text-[11px] text-amber-700">
                               {l.incompletos} dia{l.incompletos > 1 ? 's' : ''} sem saída
+                            </div>
+                          )}
+                          {(l.semIntervaloDias ?? 0) > 0 && (
+                            <div className="text-[11px] text-red-700" title="Mais de 6h sem bater o intervalo: o dia conta 0 até lançar o intervalo em RH → Ponto">
+                              {l.semIntervaloDias} dia{(l.semIntervaloDias ?? 0) > 1 ? 's' : ''} sem intervalo (pendente)
                             </div>
                           )}
                           {(l.atestadoDias ?? 0) > 0 && (

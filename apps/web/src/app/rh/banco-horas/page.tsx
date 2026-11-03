@@ -14,7 +14,7 @@ import { db, schema } from '@concilia/db';
 import { and, asc, eq, gte, inArray, isNull, lt, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { hojeBr } from '@/lib/datas';
-import { calcularDia } from '@/lib/rh/calcular-ponto';
+import { calcularDia, faltaIntervalo } from '@/lib/rh/calcular-ponto';
 import { pontoProprioDesde } from '@/lib/rh/ponto-vigencia';
 import { somarDias } from '@/lib/rh/dia-operacional';
 import { MIN_DIA_ESCALA_MES, jornadaNoDia, minutosPrevistos, type VigenciaJornada } from '@/lib/rh/banco-horas';
@@ -164,13 +164,15 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
     lista.push({ quando: b.quando, tipo: b.tipo as 'entrada' | 'saida' });
     porCasaDia.set(k, lista);
   }
-  const trabalhado = new Map<string, { min: number; incompleto: boolean }>();
+  const trabalhado = new Map<string, { min: number; incompleto: boolean; semIntervalo?: boolean }>();
   for (const [k, lista] of porCasaDia) {
     const [fid, dia] = k.split('|');
     const calc = calcularDia(lista);
     const chave = `${fid}|${dia}`;
     const at = trabalhado.get(chave) ?? { min: 0, incompleto: false };
-    at.min += calc.totalMin;
+    // Intervalo obrigatório (03/11/2026): dia > 6h sem intervalo fica pendente (0).
+    if (faltaIntervalo(dia, calc)) at.semIntervalo = true;
+    else at.min += calc.totalMin;
     if (calc.status === 'incompleto' || calc.orfas > 0) at.incompleto = true;
     trabalhado.set(chave, at);
   }
@@ -213,6 +215,7 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
     let semBatidaDias = 0;
     let semBatidaMin = 0;
     let incompletos = 0;
+    let semIntervaloDias = 0;
     let abonadoMin = 0;
     let atestadoDias = 0;
     for (let dia = virada; dia <= ontem; dia = somarDias(dia, 1)) {
@@ -220,6 +223,7 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
       if (t) {
         trabalhadoMin += t.min;
         if (t.incompleto) incompletos++;
+        if (t.semIntervalo) semIntervaloDias++;
       }
       if (dia < inicio) continue;
       if (t) trabalhadoNaContaMin += t.min;
@@ -268,6 +272,7 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
       semBatidaDias,
       semBatidaMin,
       incompletos,
+      semIntervaloDias,
       abonadoMin: temBanco ? abonadoMin : 0,
       atestadoDias,
       atestados: atestados
