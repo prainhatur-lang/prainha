@@ -385,6 +385,24 @@ ${sai ? `<p class="s"><b>Saíram da empresa — sem VT (${saidos.length})</b></p
 
       {erro && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{erro}</p>}
 
+      {p.paga ? (
+        <BorderoVt
+          filialId={p.filialId}
+          filialNome={p.filialNome}
+          inicio={p.quinzena.inicio}
+          nomeQuinzena={p.nomeQuinzena}
+          hoje={p.hoje}
+          onMudou={() => router.refresh()}
+        />
+      ) : (
+        comVt.length > 0 && (
+          <p className="rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-2 text-sm text-indigo-800">
+            📦 <b>Borderô pra lotérica:</b> clique em <b>Gravar como paga</b> (ou ⚡ Gerar VT) pra lançar a quinzena — aí
+            aparece aqui o botão <b>Gerar borderô</b> e a impressão da lista pra lotérica.
+          </p>
+        )
+      )}
+
       <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
@@ -595,17 +613,6 @@ ${sai ? `<p class="s"><b>Saíram da empresa — sem VT (${saidos.length})</b></p
             })}
           </ul>
         </div>
-      )}
-
-      {p.paga && (
-        <BorderoVt
-          filialId={p.filialId}
-          filialNome={p.filialNome}
-          inicio={p.quinzena.inicio}
-          nomeQuinzena={p.nomeQuinzena}
-          hoje={p.hoje}
-          onMudou={() => router.refresh()}
-        />
       )}
 
       <p className="text-xs text-slate-500">
