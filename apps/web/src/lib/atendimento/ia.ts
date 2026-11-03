@@ -905,7 +905,7 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'consultar_estorno_reserva',
       description:
-        'Consulta o ESTORNO/reembolso de reserva paga (Lounge) do telefone DESTA conversa: acha a reserva, diz se o estorno já saiu, o valor e COMO o dinheiro volta (cartão = estorno na fatura; Pix = volta pra conta de origem). Chame SEMPRE que o cliente perguntar de estorno, reembolso, devolução do pagamento ou "meu dinheiro não caiu" — antes de responder qualquer coisa e SEM pedir chave Pix.',
+        'Consulta o ESTORNO/reembolso de reserva paga (Lounge) ou da ENTRADA paga de evento (Terraço, salão) do telefone DESTA conversa: acha a reserva, diz se o estorno já saiu, o valor e COMO o dinheiro volta (cartão = estorno na fatura; Pix = volta pra conta de origem). Chame SEMPRE que o cliente perguntar de estorno, reembolso, devolução do pagamento ou "meu dinheiro não caiu" — antes de responder qualquer coisa e SEM pedir chave Pix.',
       parameters: { type: 'object', properties: {} },
     },
   },

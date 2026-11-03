@@ -526,6 +526,8 @@ export async function cancelarReservaWhatsApp(p: {
   if (ativas.length === 0) {
     const outra = await avisoReservaOutraCasa(p.filialId, { telefoneConversa: p.telefone, telefoneReserva: p.telefoneReserva, cpfReserva: p.cpfReserva });
     if (outra) return outra;
+    const evento = await avisoEventoPago(p.filialId, p.telefone).catch(() => null);
+    if (evento) return evento;
     return 'Nenhuma reserva ativa encontrada neste telefone (pode já ter sido cancelada ou liberada por atraso). Se o cliente garantir que tem, transfira pra equipe.';
   }
 
@@ -566,6 +568,42 @@ export async function cancelarReservaWhatsApp(p: {
   return `RESERVA CANCELADA: ${dataBr(String(alvo.data))} às ${alvo.hora}, ${alvo.area} (${mesas}), em nome de ${alvo.nome ?? 'cliente'}. A mesa foi liberada.${linhaEstorno} Confirme ao cliente com carinho e diga que quando quiser voltar é só chamar aqui que você reserva na hora.`;
 }
 
+/** Entrada de EVENTO paga (orcamento_evento) deste telefone — Terraço, salão
+ *  da Tabuará etc. O estorno/cancelar só olhava `reserva` e a Nina dizia "não
+ *  encontrei pagamento" pra quem pagou a entrada do evento (caso Tatiane,
+ *  Terraço 11/11, 03/11/2026). Devolve o texto pra Nina, ou null. */
+async function avisoEventoPago(filialId: string, telefone: string): Promise<string | null> {
+  const suf = telefone.replace(/\D/g, '').slice(-8);
+  if (suf.length < 8) return null;
+  const rows = (await db.execute(sql`
+    SELECT numero, data_evento::text AS data, hora, local, cliente_nome, entrada_valor,
+           pagamento_status, pago_em
+      FROM orcamento_evento
+     WHERE filial_id = ${filialId}
+       AND right(regexp_replace(coalesce(cliente_telefone, ''), '\\D', '', 'g'), 8) = ${suf}
+       AND pagamento_status IS NOT NULL AND pagamento_status <> 'aguardando'
+       AND pago_em IS NOT NULL
+       AND data_evento >= current_date - interval '90 days'
+     ORDER BY data_evento DESC
+     LIMIT 3
+  `)) as unknown as Array<{
+    numero: number; data: string; hora: string | null; local: string | null; cliente_nome: string;
+    entrada_valor: string | null; pagamento_status: string;
+  }>;
+  if (!rows.length) return null;
+  const linhas = rows.map((r) => {
+    const valor = Number(r.entrada_valor ?? 0).toFixed(2);
+    const sit =
+      r.pagamento_status === 'pago'
+        ? 'entrada PAGA (o pagamento consta no sistema)'
+        : r.pagamento_status === 'reembolsado' || r.pagamento_status.startsWith('estornado')
+          ? 'entrada JÁ DEVOLVIDA'
+          : `pagamento: ${r.pagamento_status}`;
+    return `Orçamento de evento nº ${r.numero}: ${r.local ?? 'evento'}, ${dataBr(r.data)}${r.hora ? ` às ${r.hora}` : ''}, em nome de ${r.cliente_nome} — R$ ${valor} de ${sit}.`;
+  });
+  return `${linhas.join('\n')}\nISSO É EVENTO, NÃO RESERVA DE MESA: confirme ao cliente que o pagamento ESTÁ registrado (não diga que não encontrou). Cancelar evento ou devolver a entrada é decisão da EQUIPE — não prometa devolução nem negue; diga que vai passar pra um colega resolver e chame transferir_para_humano com o resumo (nº do orçamento, data, valor pago e o que o cliente quer).`;
+}
+
 /** Estorno de reserva paga (Lounge): acha a reserva COM pagamento deste
  *  telefone (inclui canceladas, últimos 90 dias), consulta a Cielo pra saber
  *  o MEIO do pagamento (cartão volta na fatura; Pix volta na conta de origem)
@@ -600,6 +638,8 @@ export async function consultarEstornoWhatsApp(filialId: string, telefone: strin
     .limit(3);
 
   if (pagas.length === 0) {
+    const evento = await avisoEventoPago(filialId, telefone).catch(() => null);
+    if (evento) return evento;
     return 'Não encontrei reserva com pagamento neste telefone (estorno só existe pra reserva de Lounge, que é paga). Se o cliente garantir que pagou, transfira pra equipe com os dados que ele passar.';
   }
 
