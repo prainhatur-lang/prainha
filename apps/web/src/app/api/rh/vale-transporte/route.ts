@@ -113,6 +113,23 @@ export async function POST(req: Request) {
     if (pagaSeg) {
       return NextResponse.json({ error: 'a quinzena seguinte já foi paga; reabra ela primeiro' }, { status: 409 });
     }
+    // Borderô ativo (03/11/2026): a conta da lotérica soma as contas daqui;
+    // reabrir apagaria as contas e deixaria a da lotérica órfã.
+    const [comBordero] = await db
+      .select({ id: schema.bordero.id })
+      .from(schema.bordero)
+      .innerJoin(schema.vtQuinzena, eq(schema.vtQuinzena.id, schema.bordero.vtQuinzenaId))
+      .where(
+        and(
+          eq(schema.vtQuinzena.filialId, d.filialId),
+          eq(schema.vtQuinzena.dataInicio, q.inicio),
+          eq(schema.bordero.status, 'ATIVO'),
+        ),
+      )
+      .limit(1);
+    if (comBordero) {
+      return NextResponse.json({ error: 'essa quinzena tem borderô da lotérica; desfaça o borderô antes de reabrir' }, { status: 409 });
+    }
     const ant = quinzenaAnterior(q);
     const contas = (
       await db

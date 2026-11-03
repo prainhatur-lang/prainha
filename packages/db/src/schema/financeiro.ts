@@ -370,6 +370,8 @@ export const bordero = pgTable(
     id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
     filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
     folhaSemanaId: uuid('folha_semana_id'),
+    /** Borderô do vale transporte (03/11/2026): quinzena do VT em vez de folha. */
+    vtQuinzenaId: uuid('vt_quinzena_id'),
     intermediarioId: uuid('intermediario_id').notNull(),
     contaPagarId: uuid('conta_pagar_id'),
     valor: numeric('valor', { precision: 14, scale: 2 }).notNull(),
@@ -384,6 +386,7 @@ export const bordero = pgTable(
   },
   (t) => ({
     folhaIdx: index('bordero_folha_idx').on(t.folhaSemanaId),
+    vtIdx: index('bordero_vt_idx').on(t.vtQuinzenaId),
     filialIdx: index('bordero_filial_idx').on(t.filialId, t.status),
   }),
 );

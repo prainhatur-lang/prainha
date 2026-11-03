@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { FormaVt, LinhaVt, OrigemPrevisao, Quinzena } from '@/lib/rh/vale-transporte';
+import { BorderoVt } from './bordero-vt';
 
 const brl = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const sinal = (n: number) => (n > 0 ? `+${brl(n)}` : n < 0 ? `−${brl(-n)}` : brl(0));
@@ -594,6 +595,17 @@ ${sai ? `<p class="s"><b>Saíram da empresa — sem VT (${saidos.length})</b></p
             })}
           </ul>
         </div>
+      )}
+
+      {p.paga && (
+        <BorderoVt
+          filialId={p.filialId}
+          filialNome={p.filialNome}
+          inicio={p.quinzena.inicio}
+          nomeQuinzena={p.nomeQuinzena}
+          hoje={p.hoje}
+          onMudou={() => router.refresh()}
+        />
       )}
 
       <p className="text-xs text-slate-500">
