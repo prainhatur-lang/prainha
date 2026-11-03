@@ -114,6 +114,7 @@ export default async function ValeTransportePage(props: { searchParams: Promise<
         <ValeTransporteManager
           key={`${filial.id}-${q.inicio}`}
           filialId={filial.id}
+          filialNome={filial.nome}
           hoje={hoje}
           quinzena={q}
           nomeQuinzena={nomeQuinzena(q)}

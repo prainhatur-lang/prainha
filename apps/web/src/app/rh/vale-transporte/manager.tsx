@@ -17,6 +17,8 @@ const ORIGEM: Record<OrigemPrevisao, string> = {
 
 interface Props {
   filialId: string;
+  /** Nome da casa no cabeçalho da impressão. */
+  filialNome?: string;
   hoje: string;
   quinzena: Quinzena;
   nomeQuinzena: string;
@@ -81,6 +83,71 @@ export function ValeTransporteManager(p: Props) {
   const total = comVt.reduce((s, l) => s + calc(l).pagar, 0);
   const totalDesconto = comVt.reduce((s, l) => s + desconto(l).valor, 0);
   const totalDinheiro = comVt.filter((l) => formaDe(l) === 'dinheiro').reduce((s, l) => s + calc(l).pagar, 0);
+
+  // Folha de conferência: abre numa janela limpa (sem menu) e manda imprimir.
+  function imprimir() {
+    const esc = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const st = p.situacao;
+    const dataLanc = p.paga ? new Date(p.paga).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : '';
+    const situacao = !p.paga
+      ? 'PREVISÃO — ainda não lançada'
+      : !st || st.contas === 0
+        ? `Gravada em ${dataLanc}`
+        : st.contasPagas >= st.contas
+          ? `PAGA — ${st.contas} conta(s) com baixa`
+          : `LANÇADA em ${dataLanc}${st.automatico ? ' (automático)' : ''} — NÃO PAGA · ${st.contasPagas} de ${st.contas} com baixa · falta ${brl(st.valorEmAberto)}`;
+    const linhas = comVt
+      .map((l, i) => {
+        const c = calc(l);
+        const ds = desconto(l);
+        const sit = l.paga?.contaPaga === true ? 'pago' : l.paga?.contaPaga === false ? 'em aberto' : '';
+        const ac = l.anterior
+          ? `${sinal(c.acerto)}<div class="m">pagou ${l.anterior.diasPagos}, ponto ${l.anterior.diasPonto}</div>`
+          : '<span class="m">—</span>';
+        return `<tr><td>${i + 1}</td><td><b>${esc(l.nome)}</b><div class="m">${esc([l.cargo, l.jornadaNome].filter(Boolean).join(' · '))}</div></td>
+<td>${formaDe(l) === 'dinheiro' ? 'dinheiro' : 'folha'}</td><td class="r">${brl(c.valorDia)}</td><td class="c">${c.dias}</td>
+<td class="r">${brl(c.previsto)}</td><td class="r">${ac}</td><td class="r"><b>${brl(c.pagar)}</b></td>
+<td class="r">${brl(ds.valor)}</td><td class="c">${l.diasPontoAtual}</td><td class="c">${sit}</td><td class="sig"></td></tr>`;
+      })
+      .join('');
+    const sem = semVt
+      .map(
+        (l) =>
+          `<tr><td>${esc(l.nome)}</td><td class="m">${esc([l.cargo, l.jornadaNome].filter(Boolean).join(' · '))}</td><td>${
+            l.vt && !l.vt.ativo ? 'VT desligado' : 'sem VT cadastrado'
+          }</td><td class="c">ponto: ${l.diasPontoAtual} dia(s)</td></tr>`,
+      )
+      .join('');
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>VT ${esc(p.filialNome ?? '')} ${esc(p.nomeQuinzena)}</title>
+<style>
+@page{size:A4 landscape;margin:8mm}
+body{font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#111;margin:0}
+h1{font-size:16px;margin:0 0 2px}
+.s{margin:0 0 8px;font-size:12px}
+table{width:100%;border-collapse:collapse;margin-bottom:10px}
+th,td{border:1px solid #999;padding:3px 5px;vertical-align:middle}
+th{background:#eee;font-size:10px;text-transform:uppercase}
+.r{text-align:right;white-space:nowrap}.c{text-align:center}
+.m{color:#555;font-size:9.5px}
+.sig{width:150px}
+tr{page-break-inside:avoid}
+tfoot td{font-weight:bold;background:#f5f5f5}
+</style></head><body>
+<h1>Vale-transporte — ${esc(p.filialNome ?? '')} — ${esc(p.nomeQuinzena)}</h1>
+<p class="s"><b>${esc(situacao)}</b> · ${comVt.length} pessoa(s) · Total ${brl(total)} (folha ${brl(total - totalDinheiro)} · dinheiro ${brl(totalDinheiro)}) · desconto 6% ${brl(totalDesconto)} · impresso em ${new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}</p>
+<table><thead><tr><th>#</th><th>Pessoa</th><th>Forma</th><th>VT/dia</th><th>Dias</th><th>Previsto</th><th>Acerto anterior</th><th>A pagar</th><th>Desc. 6%</th><th>Ponto</th><th>Situação</th><th>Assinatura</th></tr></thead>
+<tbody>${linhas}</tbody>
+<tfoot><tr><td colspan="7" class="r">Total</td><td class="r">${brl(total)}</td><td class="r">${brl(totalDesconto)}</td><td colspan="3"></td></tr></tfoot></table>
+${sem ? `<p class="s"><b>Sem VT nesta quinzena (${semVt.length})</b></p><table><tbody>${sem}</tbody></table>` : ''}
+<script>window.onload=function(){window.print()}</` + `script></body></html>`;
+    const w = window.open('', '_blank');
+    if (!w) {
+      setErro('O navegador bloqueou a janela de impressão — libere pop-ups deste site.');
+      return;
+    }
+    w.document.write(html);
+    w.document.close();
+  }
 
   async function enviar(body: unknown) {
     setSalvando(true);
@@ -250,6 +317,13 @@ export function ValeTransporteManager(p: Props) {
             {emAndamento && <span className="text-slate-400"> · intermitente parcial até o fim da quinzena</span>}
           </div>
         </div>
+        <button
+          onClick={imprimir}
+          className="ml-auto rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
+          title="Folha de conferência com todas as pessoas, valores e campo de assinatura"
+        >
+          🖨 Imprimir
+        </button>
         {p.podePagar && (
           <div className="flex gap-2">
             {p.paga ? (
