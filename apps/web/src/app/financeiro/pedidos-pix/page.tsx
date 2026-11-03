@@ -7,7 +7,12 @@
 // O que entra (padrão): conta em aberto com "Pedido sem nota" na descrição, ou
 // lançada à mão (MANUAL), ou de fornecedor com chave Pix — menos o que tem
 // cara de boleto/guia (parcela "2/4", DARF/FGTS/INSS, boleto anexado). "Todas"
-// mostra também essas e as NF-e. Folha, transferência, encontro de contas e
+// mostra também essas e as NF-e.
+// Desde 03/11/2026 (dono): nota faturada com boleto NÃO entra. NF-e (ligada à
+// conta, ou conta à mão que é só o número da nota) só entra se o XML diz Pix
+// à vista (tPag 17/20, ou dinheiro 01 sem duplicata); boleto, duplicata,
+// várias parcelas ou XML sem forma = fica de fora, mesmo com "Pedido sem nota"
+// na descrição. Pedido sem nota de verdade (foto), borderô e rescisão seguem. Folha, transferência, encontro de contas e
 // conta do Consumer ficam de fora (têm fluxo próprio).
 // Nada aqui manda dinheiro: a baixa usa a rota de sempre
 // (/api/financeiro/contas/[id]/baixas) e a chave, a do cadastro de fornecedor.
@@ -74,6 +79,22 @@ function pareceBoleto(descricao: string, fornecedor: string, temBoleto: boolean)
   }
   if (/^receita\b/i.test(fornecedor.trim())) return true;
   return false;
+}
+
+/** Conta à mão cuja descrição é o número da nota: "18010", "0008850", "NF 2560 1/2". */
+const RE_NUMERO_NOTA = /^\s*(?:nf-?e?\s*(?:n[º°o.]?\s*)?)?0*\d{3,}\b/i;
+
+/**
+ * NF-e paga à vista no Pix (17/20) ou dinheiro (01), pela forma do XML.
+ * Boleto (15), duplicata (14), mais de uma parcela ou XML não lido = faturada.
+ */
+function notaAVistaPix(pag: { parcelas?: number; formas?: { tPag?: string }[] } | null, dups: number) {
+  if (!pag) return false;
+  const t = new Set((pag.formas ?? []).map((f) => String(f.tPag ?? '').padStart(2, '0')));
+  if (t.has('14') || t.has('15')) return false;
+  if ((pag.parcelas ?? 0) > 1 || dups > 1) return false;
+  if (t.has('17') || t.has('20')) return true;
+  return t.has('01') && dups === 0;
 }
 
 export default async function PedidosPixPage(props: { searchParams: Promise<SP> }) {
@@ -266,6 +287,12 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
     foto_pedido: string | null;
     fotos_extras: string[] | null;
     foto_boleto: string | null;
+    // Forma de pagamento da NF-e (03/11/2026): da nota ligada ou, na conta
+    // lançada à mão só com o número ("18010"), da nota da SEFAZ com esse
+    // número do mesmo CNPJ.
+    nf_real: boolean | null;
+    nf_pagamento: { parcelas?: number; formas?: { tPag?: string }[] } | null;
+    nf_dups: number | null;
   };
   const origens = new Map<string, Origem>();
   if (linhas.length > 0) {
@@ -284,12 +311,28 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
                coalesce(ucf.nome, ucf.email) AS conferiu,
                CASE WHEN n.origem_importacao IN ('PEDIDO_FOTO', 'NFSE_PDF') THEN n.xml_storage_path END AS foto_pedido,
                CASE WHEN n.origem_importacao = 'PEDIDO_FOTO' THEN n.fotos_extras END AS fotos_extras,
-               c.boleto_storage_path AS foto_boleto
+               c.boleto_storage_path AS foto_boleto,
+               (coalesce(n.origem_importacao, nn.origem_importacao) NOT IN ('PEDIDO_FOTO', 'NFSE_PDF')) AS nf_real,
+               coalesce(n.pagamento_xml, nn.pagamento_xml) AS nf_pagamento,
+               (SELECT count(*)::int FROM nota_compra_duplicata d2
+                 WHERE d2.nota_compra_id = coalesce(n.id, nn.id)) AS nf_dups
           FROM conta_pagar c
           LEFT JOIN usuario uc ON uc.id = c.criado_por
+          LEFT JOIN fornecedor fc ON fc.id = c.fornecedor_id
           LEFT JOIN nota_compra n ON n.id = coalesce(
                  c.nota_compra_id,
                  (SELECT d.nota_compra_id FROM nota_compra_duplicata d WHERE d.conta_pagar_id = c.id LIMIT 1))
+          LEFT JOIN LATERAL (
+                 SELECT n3.id, n3.origem_importacao, n3.pagamento_xml
+                   FROM nota_compra n3
+                   JOIN fornecedor f3 ON f3.id = n3.fornecedor_id
+                  WHERE n.id IS NULL
+                    AND fc.cnpj_ou_cpf IS NOT NULL
+                    AND left(f3.cnpj_ou_cpf, 8) = left(fc.cnpj_ou_cpf, 8)
+                    AND n3.numero::text = substring(lower(coalesce(c.descricao, ''))
+                          FROM '^[[:space:]]*(?:nf-?e?[[:space:]]*(?:n[º°o.]?[[:space:]]*)?)?0*([0-9]{3,})')
+                  ORDER BY n3.data_emissao DESC NULLS LAST
+                  LIMIT 1) nn ON true
           LEFT JOIN usuario ucf ON ucf.id = n.conferida_por
          WHERE c.id IN (${sql.join(
            linhas.map((l) => sql`${l.id}::uuid`),
@@ -321,7 +364,23 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
     // máximo 30 dias (nem em "Todas"): as mais velhas do Bar (Pescados 2022,
     // bandas de jun/jul) já foram pagas fora e iam virar Pix em dobro.
     if (l.origem === 'CONSUMER' && !rescisao && (!FORNECEDORES_CONSUMER_NO_PIX.includes(l.fornecedorId ?? '') || !temChave || boleto || l.venc < diasAtrasBr(30))) continue;
-    const ehPix = !!rescisao || l.origem === 'BORDERO' || semNota || (!boleto && (l.origem === 'MANUAL' || temChave));
+    // Dono 03/11/2026: nota faturada (boleto/duplicata) não entra aqui. NF-e
+    // só entra se foi paga à vista no Pix (ou dinheiro); "Pedido sem nota" com
+    // NF-e da SEFAZ ligada ou com boleto anexado também sai. Conta à mão que é
+    // só o número da nota ("18010") é nota: sem forma Pix conhecida, sai.
+    const o = origens.get(l.id);
+    // nf_real: true = NF-e da SEFAZ/upload; false = foto do pedido ou recibo
+    // (conta deles também nasce com origem NFE); null = sem nota achada.
+    const soNumero = l.origem === 'MANUAL' && RE_NUMERO_NOTA.test(descricao);
+    const ehNota = o
+      ? o.nf_real === true || (o.nf_real == null && (l.origem === 'NFE' || soNumero))
+      : (l.origem === 'NFE' && !semNota) || soNumero;
+    const ehPix =
+      !!rescisao ||
+      l.origem === 'BORDERO' ||
+      (ehNota
+        ? !l.temBoleto && notaAVistaPix(o?.nf_pagamento ?? null, o?.nf_dups ?? 0)
+        : (semNota && !l.temBoleto) || (!boleto && (l.origem === 'MANUAL' || temChave)));
     if (!ehPix && !verTodas) {
       escondidas += 1;
       continue;
@@ -537,7 +596,7 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
         {pagaPix && temInterPix && <SaldoInterFaixa filialId={escolhida.id} />}
         {!verTodas && escondidas > 0 && (
           <p className="mt-2 text-xs text-slate-500">
-            {escondidas} conta(s) com cara de boleto, guia ou NF-e ficaram de fora —{' '}
+            {escondidas} conta(s) de boleto, guia ou nota faturada ficaram de fora —{' '}
             <Link href={href({ ver: 'todas' })} className="underline">
               ver todas
             </Link>
