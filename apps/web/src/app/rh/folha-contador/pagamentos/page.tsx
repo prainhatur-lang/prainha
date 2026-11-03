@@ -13,7 +13,7 @@ import { filiaisDoUsuario } from '@/lib/filiais';
 import { AppHeader } from '@/components/app-header';
 import { brl } from '@/lib/format';
 import { db, schema } from '@concilia/db';
-import { desc, eq } from 'drizzle-orm';
+import { desc, eq, inArray } from 'drizzle-orm';
 import {
   EMPRESAS_EXTRATO,
   conferirFolhaComExtrato,
@@ -22,6 +22,7 @@ import {
   type SituacaoPagamento,
 } from '@/lib/extrato-empresa';
 import { BuscarExtrato } from './buscar-extrato';
+import { rateioFolhaPelasHoras } from '@/lib/eb/rateio-horas';
 
 export const dynamic = 'force-dynamic';
 
@@ -72,6 +73,18 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
   const configurado = extratoEmpresaConfigurado(sigla);
   const resumo = await resumoExtratoEmpresa(sigla);
   const conf = comp ? await conferirFolhaComExtrato(sigla, comp, filialIds) : null;
+  const rateioHoras = comp ? await rateioFolhaPelasHoras(empresa.cnpj, comp, filialIds) : null;
+  // Hora batida em casa fora da lista do usuário ainda precisa de nome.
+  const idsHoras = [...new Set((rateioHoras?.casas ?? []).map((c) => c.filialId))].filter((id) => !nomeFilial.has(id));
+  if (idsHoras.length) {
+    const extras = await db.select({ id: schema.filial.id, nome: schema.filial.nome }).from(schema.filial).where(inArray(schema.filial.id, idsHoras));
+    for (const f of extras) nomeFilial.set(f.id, f.nome);
+  }
+  const divididos = (rateioHoras?.pessoas ?? []).filter(
+    (p) => p.casas.length > 1 || (p.casas.length === 1 && p.casas[0]!.filialId !== p.cadastroFilialId),
+  );
+  const semPonto = (rateioHoras?.pessoas ?? []).filter((p) => p.casas.length === 0);
+  const fmtHoras = (min: number) => `${Math.floor(min / 60)}h${String(Math.round(min % 60)).padStart(2, '0')}`;
 
   const linhas = conf?.linhas ?? [];
   const comLiquido = linhas.filter((l) => l.situacao !== 'sem_liquido');
@@ -252,6 +265,79 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
                     </tr>
                   </tbody>
                 </table>
+              </div>
+            )}
+
+            {rateioHoras && rateioHoras.casas.length > 0 && (
+              <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+                <p className="px-4 pt-3 text-sm font-medium text-slate-900">Rateio pelas horas de cada casa</p>
+                <p className="px-4 text-[11px] text-slate-500">
+                  Quem trabalhou em mais de uma casa tem o líquido dividido pelas horas batidas no ponto em cada uma.
+                  Quem não tem ponto no mês fica 100% na casa do cadastro. Antes do ponto próprio (até o fim de setembro/2026)
+                  a casa vem da equipe da pessoa no Stelanto. Só conta — não muda repasse nem conta.
+                </p>
+                <table className="mt-2 w-full text-sm">
+                  <thead className="bg-slate-50 text-left text-[11px] uppercase text-slate-500">
+                    <tr>
+                      <th className="px-4 py-2">Casa</th>
+                      <th className="px-3 py-2 text-right">Pela casa do cadastro</th>
+                      <th className="px-3 py-2 text-right">Pelas horas</th>
+                      <th className="px-3 py-2 text-right">Acerto</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rateioHoras.casas.map((c) => (
+                      <tr key={c.filialId} className="border-t border-slate-100">
+                        <td className="px-4 py-2">{nomeFilial.get(c.filialId) ?? '—'}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{brl(c.peloCadastro)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums font-medium">{brl(c.pelasHoras)}</td>
+                        <td className={`px-3 py-2 text-right tabular-nums ${c.diferenca > 0.004 ? 'text-red-700' : c.diferenca < -0.004 ? 'text-emerald-700' : 'text-slate-400'}`}>
+                          {Math.abs(c.diferenca) < 0.005 ? '—' : `${c.diferenca > 0 ? 'paga a mais ' : 'recebe '}${brl(Math.abs(c.diferenca))}`}
+                        </td>
+                      </tr>
+                    ))}
+                    <tr className="border-t border-slate-200 bg-slate-50 font-medium">
+                      <td className="px-4 py-2">Total</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{brl(rateioHoras.casas.reduce((t, c) => t + c.peloCadastro, 0))}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{brl(rateioHoras.casas.reduce((t, c) => t + c.pelasHoras, 0))}</td>
+                      <td className="px-3 py-2" />
+                    </tr>
+                  </tbody>
+                </table>
+                {divididos.length > 0 && (
+                  <details className="border-t border-slate-100 px-4 py-3">
+                    <summary className="cursor-pointer text-xs font-medium text-slate-700">
+                      {divididos.length} {divididos.length === 1 ? 'pessoa trabalhou' : 'pessoas trabalharam'} fora da casa do cadastro
+                    </summary>
+                    <table className="mt-2 w-full text-xs">
+                      <tbody className="divide-y divide-slate-100">
+                        {divididos.map((p) => (
+                          <tr key={p.folhaId} className="align-top">
+                            <td className="py-1.5 pr-3 text-slate-900">
+                              {p.nome}
+                              <div className="text-[11px] text-slate-400">cadastro: {nomeFilial.get(p.cadastroFilialId) ?? '—'} · {brl(p.liquido)}</div>
+                            </td>
+                            <td className="py-1.5 text-slate-700">
+                              {p.casas.map((c) => {
+                                const tot = p.casas.reduce((t, x) => t + x.min, 0);
+                                return (
+                                  <div key={c.filialId}>
+                                    {nomeFilial.get(c.filialId) ?? '—'}: {fmtHoras(c.min)} ({Math.round((c.min / tot) * 100)}%) → <b>{brl(c.valor)}</b>
+                                  </div>
+                                );
+                              })}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </details>
+                )}
+                {semPonto.length > 0 && (
+                  <p className="border-t border-slate-100 px-4 py-2 text-[11px] text-slate-500">
+                    Sem ponto no mês (ficam na casa do cadastro): {semPonto.map((p) => p.nome).join(', ')}.
+                  </p>
+                )}
               </div>
             )}
 

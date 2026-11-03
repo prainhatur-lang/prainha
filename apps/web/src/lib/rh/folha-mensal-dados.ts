@@ -130,3 +130,91 @@ export async function salarioFamiliaPorCpf(cpfs: string[], comp: string): Promis
   }
   return saida;
 }
+
+/**
+ * Minutos do mês por CPF e por casa — pra dividir o custo de quem trabalha em
+ * mais de uma casa (rateio da E.B. pelas horas). Mesma regra de
+ * horasDoMesPorCpf: no dia em que o Stelanto tem hora vale ele (casa = equipe
+ * do Stelanto); nos outros, o ponto próprio. Conta o dia mesmo sem intervalo
+ * batido: aqui importa ONDE a pessoa trabalhou, não se o dia já está liberado.
+ */
+export async function minutosPorCasaDoMes(cpfs: string[], ini: string, fim: string): Promise<Map<string, Map<string, number>>> {
+  const saida = new Map<string, Map<string, number>>();
+  if (cpfs.length === 0) return saida;
+  // chave cpf|dia → casa → minutos
+  const doPonto = new Map<string, Map<string, number>>();
+  const doStelanto = new Map<string, Map<string, number>>();
+  const somar = (m: Map<string, Map<string, number>>, k: string, filialId: string, min: number) => {
+    const c = m.get(k) ?? new Map<string, number>();
+    c.set(filialId, (c.get(filialId) ?? 0) + min);
+    m.set(k, c);
+  };
+
+  const funcs = await db
+    .select({ id: schema.funcionario.id, cpf: schema.funcionario.cpf })
+    .from(schema.funcionario)
+    .where(inArray(schema.funcionario.cpf, cpfs));
+  if (funcs.length) {
+    const cpfDoFunc = new Map(funcs.map((f) => [f.id, f.cpf as string]));
+    const batidas = await db
+      .select({
+        funcionarioId: schema.pontoBatida.funcionarioId,
+        filialId: schema.pontoBatida.filialId,
+        dia: schema.pontoBatida.diaOperacional,
+        quando: schema.pontoBatida.quando,
+        tipo: schema.pontoBatida.tipo,
+      })
+      .from(schema.pontoBatida)
+      .where(
+        and(
+          inArray(schema.pontoBatida.funcionarioId, funcs.map((f) => f.id)),
+          gte(schema.pontoBatida.diaOperacional, ini),
+          lte(schema.pontoBatida.diaOperacional, fim),
+          isNull(schema.pontoBatida.excluidaEm),
+        ),
+      );
+    const grupos = new Map<string, Batida[]>();
+    for (const b of batidas) {
+      const k = `${b.funcionarioId}|${b.filialId}|${b.dia}`;
+      const lista = grupos.get(k) ?? [];
+      lista.push({ quando: b.quando, tipo: b.tipo === 'saida' ? 'saida' : 'entrada' });
+      grupos.set(k, lista);
+    }
+    for (const [k, lista] of grupos) {
+      const [funcId, filialId, dia] = k.split('|') as [string, string, string];
+      const min = calcularDia(lista).totalMin;
+      const cpf = cpfDoFunc.get(funcId);
+      if (min > 0 && cpf) somar(doPonto, `${cpf}|${dia}`, filialId, min);
+    }
+  }
+
+  const dias = await db
+    .select({
+      cpf: schema.stelantoColaborador.cpf,
+      filialId: schema.stelantoColaborador.filialId,
+      dia: schema.stelantoDia.dia,
+      trabalhadoSeg: schema.stelantoDia.trabalhadoSeg,
+    })
+    .from(schema.stelantoDia)
+    .innerJoin(schema.stelantoColaborador, eq(schema.stelantoColaborador.id, schema.stelantoDia.colaboradorId))
+    .where(
+      and(
+        inArray(schema.stelantoColaborador.cpf, cpfs),
+        gte(schema.stelantoDia.dia, ini),
+        lte(schema.stelantoDia.dia, fim),
+      ),
+    );
+  for (const d of dias) {
+    if (!d.cpf || !d.filialId || d.trabalhadoSeg <= 0) continue;
+    somar(doStelanto, `${d.cpf}|${d.dia}`, d.filialId, d.trabalhadoSeg / 60);
+  }
+
+  for (const k of new Set([...doPonto.keys(), ...doStelanto.keys()])) {
+    const cpf = k.split('|')[0]!;
+    const casas = doStelanto.get(k) ?? doPonto.get(k)!;
+    const porCasa = saida.get(cpf) ?? new Map<string, number>();
+    for (const [filialId, min] of casas) porCasa.set(filialId, (porCasa.get(filialId) ?? 0) + min);
+    saida.set(cpf, porCasa);
+  }
+  return saida;
+}
