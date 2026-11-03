@@ -15,9 +15,8 @@
 //      premium R$ 275 — melhores pratos à escolha do cliente, entradas livres,
 //                       bebidas sem álcool;
 //      premium com álcool R$ 360 — o premium + bebidas alcoólicas.
-//  - Entrada (Pix pelo link) = a taxa de fechamento. Sem fechar → a equipe
-//    combina a entrada. Espaço fechado ISENTO da taxa (grupo grande) → entrada
-//    de 30% do total (dono, 03/11).
+//  - Entrada (Pix pelo link) = 30% do total do evento, em qualquer espaço
+//    (dono, 03/11), NÃO reembolsável.
 //  - Esta regra substitui o piso interno de R$ 12.000 pra exclusividade.
 
 import { db, schema } from '@concilia/db';
@@ -35,7 +34,7 @@ export const TABUARA_ISENTA_INTERNO = 40;
 export const TABUARA_ISENTA_EXTERNO = 25;
 const MINIMO_PESSOAS = 3;
 const VALIDADE_DIAS = 7;
-export const TABUARA_ENTRADA_ISENTO_PCT = 0.3;
+export const TABUARA_ENTRADA_PCT = 0.3;
 
 export type EspacoTabuara = 'sem_fechar' | 'interno' | 'externo' | 'casa_toda';
 export type PacoteTabuara = 'economico' | 'premium' | 'premium_alcool';
@@ -189,10 +188,9 @@ export async function gerarOrcamentoTabuara(p: PedidoOrcamentoTabuara): Promise<
   const taxaLiquida = Math.max(taxa - (descEspaco?.desconto ?? 0), 0);
   const subtotal = pac.valor * pessoas;
   const totalGeral = subtotal + taxaLiquida;
-  const entrada = isento
-    ? Math.round(totalGeral * TABUARA_ENTRADA_ISENTO_PCT * 100) / 100
-    : taxaLiquida >= 1 ? Math.round(taxaLiquida * 100) / 100 : null;
-  const origemEntrada = isento ? `${Math.round(TABUARA_ENTRADA_ISENTO_PCT * 100)}% do total` : 'a taxa de fechamento';
+  const entradaCalc = Math.round(totalGeral * TABUARA_ENTRADA_PCT * 100) / 100;
+  const entrada = entradaCalc >= 1 ? entradaCalc : null;
+  const origemEntrada = `${Math.round(TABUARA_ENTRADA_PCT * 100)}% do total`;
   const aceiteToken = randomBytes(32).toString('hex');
   const rs = (v: number) => `R$ ${v.toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.')}`;
   const tipo = p.tipoEvento?.trim() ? p.tipoEvento.trim().slice(0, 120) : null;
@@ -235,7 +233,7 @@ export async function gerarOrcamentoTabuara(p: PedidoOrcamentoTabuara): Promise<
       condTaxa +
       'Incluído: mesas e cadeiras, material de serviço, pessoal de serviço e de limpeza. ' +
       (entrada != null
-        ? `Entrada de ${rs(entrada)} (${origemEntrada}) por Pix para reservar a data — a data só fica bloqueada após a confirmação do pagamento. Saldo até o dia do evento.`
+        ? `Entrada de ${rs(entrada)} (${origemEntrada}) por Pix para reservar a data, NÃO reembolsável — a data só fica bloqueada após a confirmação do pagamento. Saldo até o dia do evento.`
         : 'Entrada e forma de pagamento combinadas com a equipe; o saldo é acertado até o dia do evento.'),
     validoAte: diasAtrasBr(-VALIDADE_DIAS),
     aceiteToken,
@@ -255,7 +253,7 @@ export async function gerarOrcamentoTabuara(p: PedidoOrcamentoTabuara): Promise<
       : '') +
     `Total do evento: ${rs(totalGeral)}. ` +
     (entrada != null
-      ? `Entrada de ${rs(entrada)} (${origemEntrada}) por Pix na própria página do link: é ela que reserva a data (enquanto não pagar, o dia segue livre — diga com naturalidade, sem pressão). Saldo até o dia do evento. `
+      ? `Entrada de ${rs(entrada)} (${origemEntrada}) por Pix na própria página do link: é ela que reserva a data (enquanto não pagar, o dia segue livre — diga com naturalidade, sem pressão). A entrada NÃO é reembolsável: diga isso ao cliente junto com o valor. Saldo até o dia do evento. `
       : 'Sem entrada automática: diga que a equipe confirma a reserva e a forma de pagamento. ') +
     (premium && pratos.filter((x) => x.secao === 'principal').length === 0
       ? 'Os pratos do premium ficam a escolher: ofereça mandar as opções ou deixar pra equipe. '
