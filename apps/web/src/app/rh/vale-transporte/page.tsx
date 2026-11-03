@@ -119,6 +119,7 @@ export default async function ValeTransportePage(props: { searchParams: Promise<
           quinzena={q}
           nomeQuinzena={nomeQuinzena(q)}
           nomeAnterior={nomeQuinzena(ant)}
+          seguinte={{ inicio: seg.inicio, nome: nomeQuinzena(seg) }}
           paga={vt.paga ? vt.paga.pagaEm.toISOString() : null}
           situacao={
             vt.paga

@@ -3,6 +3,8 @@
 //   pagar    grava a quinzena como paga (o servidor recalcula previsto e acerto;
 //            da tela só vêm os dias previstos de cada um)
 //            e congela o desconto de 6% da quinzena anterior (já terminada)
+//   gerar    igual a pagar, sem dias da tela (escala) — botão "Gerar VT" da
+//            próxima quinzena, pra pagar na véspera (03/11/2026)
 //   reabrir  apaga a quinzena paga — só se a seguinte ainda não foi paga,
 //            senão o acerto da seguinte perde a base; o desconto da anterior
 //            volta a ser lido ao vivo
@@ -40,6 +42,13 @@ const Body = z.discriminatedUnion('acao', [
     filialId: z.string().uuid(),
     inicio: Dia,
     dias: z.record(z.string().uuid(), z.number().int().min(0).max(16)),
+  }),
+  // Gerar VT da próxima quinzena antes de ela começar (pagar na véspera):
+  // dias da escala, sem edição da tela.
+  z.object({
+    acao: z.literal('gerar'),
+    filialId: z.string().uuid(),
+    inicio: Dia,
   }),
   z.object({
     acao: z.literal('reabrir'),
@@ -162,8 +171,11 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true });
   }
 
-  // pagar
-  const r = await lancarQuinzenaVt({ filialId: d.filialId, dias: d.dias, por: user.id }, q);
+  // pagar / gerar
+  const r = await lancarQuinzenaVt(
+    { filialId: d.filialId, dias: d.acao === 'pagar' ? d.dias : undefined, por: user.id },
+    q,
+  );
   if (!r.ok && r.motivo === 'paga') return NextResponse.json({ error: 'quinzena já está paga' }, { status: 409 });
   if (!r.ok) return NextResponse.json({ error: 'ninguém com VT cadastrado nessa casa' }, { status: 400 });
   return NextResponse.json(r);

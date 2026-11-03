@@ -6,6 +6,8 @@
 import { db, schema } from '@concilia/db';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { montarQuinzenaVt, nomeQuinzena, valorPagar, type Quinzena } from '@/lib/rh/vale-transporte';
+import { hojeBr } from '@/lib/datas';
+import { somarDias } from '@/lib/rh/dia-operacional';
 
 export type ResultadoLancarVt =
   | { ok: true; pessoas: number; total: number; semConta: string[] }
@@ -33,6 +35,7 @@ export async function lancarQuinzenaVt(
         acertoAnterior: acerto.toFixed(2),
         valorPago: valorPagar(previsto, acerto).toFixed(2),
         forma: l.vt!.forma,
+        diasPontoAnterior: l.anterior?.diasPonto ?? null,
       };
     });
   if (!itens.length) return { ok: false, motivo: 'ninguem' };
@@ -51,6 +54,10 @@ export async function lancarQuinzenaVt(
   const semConta = itens
     .filter((i) => Number(i.valorPago) > 0 && !pessoaDe.get(i.funcionarioId)?.fornecedorId)
     .map((i) => pessoaDe.get(i.funcionarioId)?.nome ?? i.funcionarioId);
+
+  // Gerado antes de a quinzena começar (último dia da anterior, 03/11/2026):
+  // paga na véspera, então vence no dia anterior ao início.
+  const vencimento = hojeBr() < q.inicio ? somarDias(q.inicio, -1) : q.inicio;
 
   const total = await db.transaction(async (tx) => {
     const [criada] = await tx
@@ -72,7 +79,7 @@ export async function lancarQuinzenaVt(
           codigoExterno: null,
           fornecedorId: pessoa.fornecedorId,
           categoriaId: cfg?.categoriaId ?? null,
-          dataVencimento: q.inicio,
+          dataVencimento: vencimento,
           valor: i.valorPago,
           descricao: `Vale transporte ${nomeQuinzena(q)} — ${pessoa.nome}`,
           observacao: `${i.diasPrevistos} dia(s) × R$ ${i.valorDia}${Number(i.acertoAnterior) ? ` + acerto ${i.acertoAnterior}` : ''} · ${i.forma === 'dinheiro' ? 'ajuda de custo' : 'VT na folha'}`,

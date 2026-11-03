@@ -23,6 +23,8 @@ interface Props {
   quinzena: Quinzena;
   nomeQuinzena: string;
   nomeAnterior: string;
+  /** Próxima quinzena — botão "Gerar VT" (paga na véspera, 03/11/2026). */
+  seguinte?: { inicio: string; nome: string };
   paga: string | null;
   /** Baixa das contas a pagar da quinzena lançada: "lançada" não é "paga". */
   situacao?: { automatico: boolean; contas: number; contasPagas: number; valorEmAberto: number } | null;
@@ -216,6 +218,16 @@ ${sai ? `<p class="s"><b>Saíram da empresa — sem VT (${saidos.length})</b></p
     });
   }
 
+  // Gera (lança) o VT da próxima quinzena com a previsão da escala e o acerto
+  // do ponto até agora; o que o ponto mostrar depois corrige na seguinte.
+  async function gerarSeguinte() {
+    const sg = p.seguinte;
+    if (!sg) return;
+    if (!confirm(`Gerar o VT de ${sg.nome} agora? Usa os dias da escala e o acerto do ponto até hoje; gera uma conta a pagar por pessoa com vencimento na véspera (${sg.inicio.split('-').reverse().slice(0, 2).join('/')} − 1 dia). O ponto que faltar desta quinzena entra como correção na próxima.`)) return;
+    const ok = await enviar({ acao: 'gerar', filialId: p.filialId, inicio: sg.inicio });
+    if (ok) router.push(`?filialId=${p.filialId}&q=${sg.inicio}`);
+  }
+
   async function reabrir() {
     if (!confirm(`Reabrir a quinzena ${p.nomeQuinzena}? Os valores gravados são apagados e recalculados, e as contas a pagar do VT ainda em aberto são apagadas.`)) return;
     await enviar({ acao: 'reabrir', filialId: p.filialId, inicio: p.quinzena.inicio });
@@ -338,6 +350,16 @@ ${sai ? `<p class="s"><b>Saíram da empresa — sem VT (${saidos.length})</b></p
         </button>
         {p.podePagar && (
           <div className="flex gap-2">
+            {p.seguinte && !p.seguintePaga && p.hoje >= p.quinzena.inicio && p.hoje <= p.quinzena.fim && (
+              <button
+                disabled={salvando}
+                onClick={gerarSeguinte}
+                title="Lança o VT da próxima quinzena pela escala, pra pagar na véspera. O sistema também gera sozinho no último dia da quinzena, às 21h."
+                className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                ⚡ Gerar VT de {p.seguinte.nome}
+              </button>
+            )}
             {p.paga ? (
               <button
                 disabled={salvando || p.seguintePaga}
@@ -442,6 +464,8 @@ ${sai ? `<p class="s"><b>Saíram da empresa — sem VT (${saidos.length})</b></p
                         <div className="text-[11px] text-slate-500">
                           pagou {l.anterior.diasPagos} dia(s), ponto {l.anterior.diasPonto}
                           {l.anterior.acertoQueVinha !== 0 && ` · vinha ${sinal(l.anterior.acertoQueVinha)}`}
+                          {l.anterior.correcao !== 0 &&
+                            ` · correção do último dia ${sinal(l.anterior.correcao)} (${l.anterior.correcaoDias > 0 ? '+' : ''}${l.anterior.correcaoDias} dia)`}
                         </div>
                       </div>
                     ) : (

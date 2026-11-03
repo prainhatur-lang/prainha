@@ -97,6 +97,10 @@ export interface LinhaVt {
     acertoQueVinha: number;
     valorPago: number;
     saldo: number;
+    /** VT gerado antes de a quinzena anterior terminar (último dia): dias do
+     *  ponto dela que ficaram de fora do acerto × valor do dia. Já está no saldo. */
+    correcao: number;
+    correcaoDias: number;
     /** 6% sobre a quinzena anterior (já terminada). */
     desconto: number;
     baseDesconto: { valor: number; como: string } | null;
@@ -144,6 +148,7 @@ export interface QuinzenaVt {
 
 export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<QuinzenaVt> {
   const ant = quinzenaAnterior(q);
+  const ant2 = quinzenaAnterior(ant);
   const seg = quinzenaSeguinte(q);
 
   const quinzenas = await db
@@ -157,12 +162,13 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
     .where(
       and(
         eq(schema.vtQuinzena.filialId, filialId),
-        inArray(schema.vtQuinzena.dataInicio, [ant.inicio, q.inicio, seg.inicio]),
+        inArray(schema.vtQuinzena.dataInicio, [ant2.inicio, ant.inicio, q.inicio, seg.inicio]),
       ),
     );
   const qAtual = quinzenas.find((x) => x.inicio === q.inicio) ?? null;
   const qAnt = quinzenas.find((x) => x.inicio === ant.inicio) ?? null;
   const qSeg = quinzenas.find((x) => x.inicio === seg.inicio) ?? null;
+  const qAnt2 = quinzenas.find((x) => x.inicio === ant2.inicio) ?? null;
 
   const itens = quinzenas.length
     ? await db
@@ -193,6 +199,7 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
       }
     : null;
   const itemAnt = new Map(itens.filter((i) => i.quinzenaId === qAnt?.id).map((i) => [i.funcionarioId, i]));
+  const itemAnt2 = new Map(itens.filter((i) => i.quinzenaId === qAnt2?.id).map((i) => [i.funcionarioId, i]));
 
   // Ativos da casa (lotação do cadastro) + quem já tem VT pago aqui e saiu depois.
   const idsComItem = [...new Set([...itemAtual.keys(), ...itemAnt.keys()])];
@@ -261,7 +268,7 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
       .where(
         and(
           inArray(schema.pontoBatida.funcionarioId, ids),
-          gte(schema.pontoBatida.diaOperacional, ant.inicio),
+          gte(schema.pontoBatida.diaOperacional, ant2.inicio),
           lte(schema.pontoBatida.diaOperacional, q.fim),
           isNull(schema.pontoBatida.excluidaEm),
         ),
@@ -274,7 +281,7 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
       .where(
         and(
           inArray(schema.stelantoColaborador.funcionarioId, ids),
-          gte(schema.stelantoDia.dia, ant.inicio),
+          gte(schema.stelantoDia.dia, ant2.inicio),
           lte(schema.stelantoDia.dia, q.fim),
           sql`${schema.stelantoDia.trabalhadoSeg} > 0`,
         ),
@@ -400,13 +407,21 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
           const diasPonto = contar(f.id, ant);
           const acertoQueVinha = Number(ia.acertoAnterior);
           const valorPago = Number(ia.valorPago);
+          // Quinzena anterior lançada no último dia da dela (antes do ponto fechar):
+          // o que o ponto mostrou depois entra aqui.
+          const i2 = itemAnt2.get(f.id);
+          const correcaoDias =
+            ia.diasPontoAnterior != null && i2 ? contar(f.id, ant2) - ia.diasPontoAnterior : 0;
+          const correcao = i2 ? r2(correcaoDias * Number(i2.valorDia)) : 0;
           return {
             valorDia,
             diasPagos: ia.diasPrevistos,
             diasPonto,
             acertoQueVinha,
             valorPago,
-            saldo: r2(acertoQueVinha + diasPonto * valorDia - valorPago),
+            saldo: r2(acertoQueVinha + diasPonto * valorDia - valorPago + correcao),
+            correcao,
+            correcaoDias,
             // Gravado quando a quinzena atual foi paga; até lá, ao vivo.
             desconto:
               ia.descontoValor != null

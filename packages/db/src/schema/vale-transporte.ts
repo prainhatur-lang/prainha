@@ -75,6 +75,10 @@ export const vtQuinzenaItem = pgTable(
     /** Conta a pagar (origem FOLHA, sem folha semanal) gerada ao gravar a
      *  quinzena — é com ela que o comprovante da lotérica casa (19/10/2026). */
     contaPagarId: uuid('conta_pagar_id').references(() => contaPagar.id, { onDelete: 'set null' }),
+    /** Dias do ponto da quinzena anterior que entraram no acerto ao lançar.
+     *  Lançada no último dia (03/11/2026) o ponto desse dia ainda não fechou:
+     *  a seguinte corrige a diferença. NULL = antes disso, sem correção. */
+    diasPontoAnterior: integer('dias_ponto_anterior'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
