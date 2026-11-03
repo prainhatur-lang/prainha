@@ -357,6 +357,7 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
           notaId: o.nota_id,
           notaNumero: o.nota_numero,
           ehPedidoFoto: o.nota_origem === 'PEDIDO_FOTO',
+          ehBordero: l.origem === 'BORDERO',
           lancouConta: o.lancou_conta,
           lancouEstoque: o.lancou_estoque,
           conferidaEm: o.conferida_em,

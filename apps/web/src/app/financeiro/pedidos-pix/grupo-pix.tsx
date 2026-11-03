@@ -39,6 +39,8 @@ export interface PedidoPix {
     notaId: string | null;
     notaNumero: number | null;
     ehPedidoFoto: boolean;
+    /** Conta gerada pelo borderô da folha (03/11/2026) — não é lançamento à mão. */
+    ehBordero?: boolean;
     lancouConta: string | null;
     lancouEstoque: string | null;
     conferidaEm: string | null;
@@ -181,6 +183,8 @@ function LinhaOrigem({ o }: { o: NonNullable<PedidoPix['origem']> }) {
           📄 Ver {o.ehPedidoFoto ? 'pedido' : 'nota'}
           {o.notaNumero ? ` nº ${o.notaNumero}` : ''}
         </a>
+      ) : o.ehBordero ? (
+        <span className="font-medium text-indigo-700">📋 Borderô da folha (gerado pelo sistema)</span>
       ) : (
         <span className="text-amber-700">⚠ sem pedido no sistema (lançada à mão)</span>
       )}
