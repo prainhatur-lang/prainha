@@ -10,6 +10,7 @@ import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
 import { and, eq, isNull } from 'drizzle-orm';
 import { CAMPOS_PRODUTO, normalizaValor } from '@/lib/produto-campos';
+import { precoManualComHorario } from '@/lib/preco-horario';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -144,7 +145,23 @@ export async function POST(request: Request) {
   };
 
   const linhas: Array<typeof schema.produtoAlteracao.$inferInsert> = [];
-  for (const [campo, bruto] of Object.entries(campos)) {
+  let aviso: string | null = null;
+  for (const [campo, brutoOriginal] of Object.entries(campos)) {
+    let bruto = brutoOriginal;
+    // Preço de tamanho com happy hour: o digitado vira o preço normal da regra
+    // e, dentro do horário, o PDV segue com o preço do happy hour.
+    if (campo === 'preco_venda' && varianteCodigo) {
+      const nPre = normalizaValor(campo, bruto);
+      if (nPre.ok && nPre.valor != null && Number.isFinite(Number(nPre.valor))) {
+        try {
+          const t = await precoManualComHorario(prod.filialId, varianteCodigo, Number(nPre.valor));
+          bruto = t.valor;
+          aviso = t.aviso;
+        } catch {
+          /* sem a trava, segue como antes */
+        }
+      }
+    }
     const def = CAMPOS_PRODUTO[campo];
     if (!def) return NextResponse.json({ ok: false, erro: `campo ${campo} não pode ser alterado` }, { status: 400 });
     if (def.alvo === 'variante' && !varianteCodigo) {
@@ -198,8 +215,8 @@ export async function POST(request: Request) {
       criadoPor: auth.user.email ?? null,
     });
   }
-  if (linhas.length === 0) return NextResponse.json({ ok: true, nada: true });
+  if (linhas.length === 0) return NextResponse.json({ ok: true, nada: true, aviso });
 
   await db.insert(schema.produtoAlteracao).values(linhas);
-  return NextResponse.json({ ok: true, enfileirados: linhas.length, aguardando: true });
+  return NextResponse.json({ ok: true, enfileirados: linhas.length, aguardando: true, aviso });
 }

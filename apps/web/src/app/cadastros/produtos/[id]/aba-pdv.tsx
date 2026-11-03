@@ -292,9 +292,9 @@ export function AbaPdv(p: Props) {
       });
       const j = await r.json();
       if (!r.ok || !j.ok) setMsg({ ok: false, texto: j.erro || 'não deu pra salvar' });
-      else if (j.nada) setMsg({ ok: true, texto: 'Nada mudou.' });
+      else if (j.nada) setMsg({ ok: true, texto: j.aviso ? `Nada mudou no PDV. ${j.aviso}` : 'Nada mudou.' });
       else {
-        setMsg({ ok: true, texto: `${j.enfileirados} alteração(ões) na fila — a loja aplica em até 1 minuto.` });
+        setMsg({ ok: true, texto: `${j.enfileirados} alteração(ões) na fila — a loja aplica em até 1 minuto.` + (j.aviso ? ` ${j.aviso}` : '') });
         setTimeout(() => router.refresh(), 3000);
       }
     } catch {

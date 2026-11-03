@@ -171,6 +171,13 @@ export async function salvarPrecoHorario(filialId: string, r: RegraPreco, por: s
       dias_semana = EXCLUDED.dias_semana, hora_inicio = EXCLUDED.hora_inicio, hora_fim = EXCLUDED.hora_fim,
       exceto_feriados = EXCLUDED.exceto_feriados,
       atualizado_por = EXCLUDED.atualizado_por, atualizado_em = now()`);
+  if (r.ativa) {
+    try {
+      await incluirNoCardHappyHour(filialId, r.codigo);
+    } catch {
+      /* card do QR é extra: não trava o salvar */
+    }
+  }
   return aplicarPrecosHorario({ filialId, codigo: r.codigo, forcar: true });
 }
 
@@ -249,4 +256,47 @@ export async function aplicarPrecosHorario(opts: { filialId?: string; codigo?: n
     feitos.push({ filialId, codigo: r.codigo, estado, acao });
   }
   return feitos;
+}
+
+/**
+ * TRAVA NO CADASTRO (03/11/2026): alguém mudou o preço do tamanho na mão.
+ * Caso Picanha da Mar: às 12h o happy hour pôs R$ 49 e às 12:48 um gerente
+ * digitou R$ 79,90 no cadastro — o cron só age na virada, então o resto do
+ * happy hour saiu cheio. Agora o valor digitado vira o PREÇO NORMAL da regra:
+ * - dentro do horário: grava o novo normal e mantém o preço do horário no PDV
+ *   (o valor normal volta sozinho na saída);
+ * - fora do horário: grava o novo normal e o PDV fica com o valor digitado
+ *   (igual era antes).
+ * Digitou exatamente o preço do horário → não mexe na regra.
+ * Sem regra ativa pro tamanho → devolve o valor como veio.
+ */
+export async function precoManualComHorario(
+  filialId: string,
+  codigo: number,
+  novo: number,
+): Promise<{ valor: number; aviso: string | null }> {
+  const [l] = await db.execute<Linha>(sql`${SELECT} WHERE filial_id = ${filialId} AND codigo_variante_externo = ${codigo}`);
+  if (!l) return { valor: novo, aviso: null };
+  const r = deLinha(l);
+  if (!r.ativa || igual(novo, r.precoHorario)) return { valor: novo, aviso: null };
+  const brl = (n: number) => `R$ ${n.toFixed(2).replace('.', ',')}`;
+  await db.execute(sql`UPDATE preco_horario SET preco_normal = ${novo}
+                        WHERE filial_id = ${filialId} AND codigo_variante_externo = ${codigo}`);
+  const dentro = precoHorarioValeAgora(r, await feriadosPerto());
+  if (dentro) {
+    return {
+      valor: r.precoHorario,
+      aviso: `Está no happy hour: o PDV segue com ${brl(r.precoHorario)} e ${brl(novo)} vira o preço normal (volta no fim do horário). Pra mudar o preço do happy hour, use Cardápio → Preço por horário.`,
+    };
+  }
+  return { valor: novo, aviso: `${brl(novo)} virou o preço normal do happy hour também.` };
+}
+
+/** Item com preço por horário entra no card "Happy hour" do QR da casa (se houver). */
+export async function incluirNoCardHappyHour(filialId: string, codigo: number) {
+  await db.execute(sql`
+    UPDATE cardapio_destaque
+       SET codigos = array_append(COALESCE(codigos, '{}'::int[]), ${codigo}::int), atualizado_em = now()
+     WHERE filial_id = ${filialId} AND titulo ILIKE '%happy%'
+       AND NOT (${codigo}::int = ANY(COALESCE(codigos, '{}'::int[])))`);
 }
