@@ -7,6 +7,9 @@
 //    o interno com 20 pessoas → (60 − 20) × 35. Fechar os dois → o vazio de
 //    fora também paga R$ 35 por lugar. Sem fechar nada → sem taxa (mesas
 //    reservadas com a casa aberta).
+//  - Isenção (dono, 03/11): a partir de 40 pessoas no salão interno não cobra
+//    a diferença; a partir de 25 na área externa (varanda), idem. Casa toda:
+//    isenta a partir de 65 (40 + 25).
 //  - Pacotes por pessoa:
 //      econômico R$ 200 — menu convidativo da casa + bebidas sem álcool;
 //      premium R$ 275 — melhores pratos à escolha do cliente, entradas livres,
@@ -27,6 +30,8 @@ import type { PratoOrcamento } from '@concilia/db/schema';
 export const TABUARA_LUGARES_INTERNO = 60;
 export const TABUARA_LUGARES_EXTERNO = 40;
 export const TABUARA_TAXA_LUGAR_VAZIO = 35;
+export const TABUARA_ISENTA_INTERNO = 40;
+export const TABUARA_ISENTA_EXTERNO = 25;
 const MINIMO_PESSOAS = 3;
 const VALIDADE_DIAS = 7;
 
@@ -53,16 +58,17 @@ export const PACOTES_TABUARA: Record<PacoteTabuara, { nome: string; valor: numbe
 
 // O primeiro termo do local é a chave que a rota do Pix usa pra barrar duas
 // entradas no mesmo dia (eventoQueSeguraData) — por isso nomes distintos.
-const ESPACOS: Record<EspacoTabuara, { local: string; rotulo: string; lugares: number }> = {
-  sem_fechar: { local: 'Mesas reservadas sem fechar', rotulo: 'mesas reservadas, sem fechar a casa', lugares: TABUARA_LUGARES_INTERNO + TABUARA_LUGARES_EXTERNO },
-  interno: { local: 'Salão interno fechado', rotulo: 'salão interno fechado só pro grupo', lugares: TABUARA_LUGARES_INTERNO },
-  externo: { local: 'Área externa fechada', rotulo: 'área externa fechada só pro grupo', lugares: TABUARA_LUGARES_EXTERNO },
-  casa_toda: { local: 'Salão interno + área externa (casa toda)', rotulo: 'casa toda fechada só pro grupo (salão interno + área externa)', lugares: TABUARA_LUGARES_INTERNO + TABUARA_LUGARES_EXTERNO },
+const ESPACOS: Record<EspacoTabuara, { local: string; rotulo: string; lugares: number; isentaAPartir: number }> = {
+  sem_fechar: { local: 'Mesas reservadas sem fechar', rotulo: 'mesas reservadas, sem fechar a casa', lugares: TABUARA_LUGARES_INTERNO + TABUARA_LUGARES_EXTERNO, isentaAPartir: 0 },
+  interno: { local: 'Salão interno fechado', rotulo: 'salão interno fechado só pro grupo', lugares: TABUARA_LUGARES_INTERNO, isentaAPartir: TABUARA_ISENTA_INTERNO },
+  externo: { local: 'Área externa fechada', rotulo: 'área externa fechada só pro grupo', lugares: TABUARA_LUGARES_EXTERNO, isentaAPartir: TABUARA_ISENTA_EXTERNO },
+  casa_toda: { local: 'Salão interno + área externa (casa toda)', rotulo: 'casa toda fechada só pro grupo (salão interno + área externa)', lugares: TABUARA_LUGARES_INTERNO + TABUARA_LUGARES_EXTERNO, isentaAPartir: TABUARA_ISENTA_INTERNO + TABUARA_ISENTA_EXTERNO },
 };
 
-/** Taxa de fechamento: R$ 35 por lugar vazio do espaço fechado. */
+/** Taxa de fechamento: R$ 35 por lugar vazio do espaço fechado (isento a partir do mínimo do espaço). */
 export function taxaFechamentoTabuara(espaco: EspacoTabuara, pessoas: number): number {
   if (espaco === 'sem_fechar') return 0;
+  if (pessoas >= ESPACOS[espaco].isentaAPartir) return 0;
   return Math.max(ESPACOS[espaco].lugares - pessoas, 0) * TABUARA_TAXA_LUGAR_VAZIO;
 }
 
@@ -176,6 +182,7 @@ export async function gerarOrcamentoTabuara(p: PedidoOrcamentoTabuara): Promise<
 
   const taxa = taxaFechamentoTabuara(p.espaco, pessoas);
   const vazios = p.espaco === 'sem_fechar' ? 0 : esp.lugares - pessoas;
+  const isento = p.espaco !== 'sem_fechar' && taxa === 0;
   const descEspaco = taxa > 0 ? await descontoEspacoMembro(p.filialId, p.telefone, null, taxa).catch(() => null) : null;
   const taxaLiquida = Math.max(taxa - (descEspaco?.desconto ?? 0), 0);
   const entrada = taxaLiquida >= 1 ? Math.round(taxaLiquida * 100) / 100 : null;
@@ -189,7 +196,9 @@ export async function gerarOrcamentoTabuara(p: PedidoOrcamentoTabuara): Promise<
   const condTaxa =
     p.espaco === 'sem_fechar'
       ? 'Mesas reservadas pro grupo com a casa aberta ao público (sem taxa de fechamento). '
-      : `Taxa de fechamento: R$ ${TABUARA_TAXA_LUGAR_VAZIO} por lugar vazio do espaço fechado (${esp.lugares} lugares − ${pessoas} pessoas = ${vazios} lugares vazios = ${rs(taxa)}). `;
+      : isento
+        ? `Sem taxa de fechamento: grupo a partir de ${esp.isentaAPartir} pessoas não paga os lugares vazios deste espaço. `
+        : `Taxa de fechamento: R$ ${TABUARA_TAXA_LUGAR_VAZIO} por lugar vazio do espaço fechado (${esp.lugares} lugares − ${pessoas} pessoas = ${vazios} lugares vazios = ${rs(taxa)}). `;
 
   await db.insert(schema.orcamentoEvento).values({
     filialId: p.filialId,
@@ -233,7 +242,9 @@ export async function gerarOrcamentoTabuara(p: PedidoOrcamentoTabuara): Promise<
     `${pac.nome}: ${rs(pac.valor)} por pessoa (${pac.descricao}) = ${rs(subtotal)}. ` +
     (p.espaco === 'sem_fechar'
       ? 'Sem taxa de fechamento: as mesas ficam reservadas pro grupo com a casa aberta. '
-      : `Taxa de fechamento do espaço: ${vazios} lugares vazios × R$ ${TABUARA_TAXA_LUGAR_VAZIO} = ${rs(taxa)}${vazios === 0 ? ' (grupo lota o espaço, sem taxa)' : ''}. `) +
+      : isento
+        ? `Sem taxa de fechamento: com ${pessoas} pessoas (a partir de ${esp.isentaAPartir} neste espaço) não se cobra lugar vazio. `
+        : `Taxa de fechamento do espaço: ${vazios} lugares vazios × R$ ${TABUARA_TAXA_LUGAR_VAZIO} = ${rs(taxa)}. `) +
     (descEspaco
       ? `O cliente é ${descEspaco.motivo}: ganhou ${rs(descEspaco.desconto)} de desconto na taxa, já abatido no documento — conte como benefício do cartão. `
       : '') +
