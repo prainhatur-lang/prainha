@@ -91,7 +91,31 @@ export function ValeTransporteManager(p: Props) {
   const totalDinheiro = comVt.filter((l) => formaDe(l) === 'dinheiro').reduce((s, l) => s + calc(l).pagar, 0);
 
   // Folha de conferência: abre numa janela limpa (sem menu) e manda imprimir.
-  function imprimir() {
+  async function imprimir() {
+    // Abre a janela antes do fetch (senão o navegador bloqueia o pop-up).
+    const w = window.open('', '_blank');
+    if (!w) {
+      setErro('O navegador bloqueou a janela de impressão — libere pop-ups deste site.');
+      return;
+    }
+    // Conta de cada pessoa (banco/agência/conta/Pix), igual à folha — vem das
+    // contas a pagar da quinzena lançada (03/11/2026).
+    const contaPorNome = new Map<string, string>();
+    if (p.paga) {
+      try {
+        const r = await fetch(`/api/rh/vale-transporte/bordero?filialId=${p.filialId}&inicio=${p.quinzena.inicio}`, { cache: 'no-store' });
+        const j = await r.json();
+        for (const x of (j.pessoas ?? []) as Array<{ nome: string; bancoNome: string | null; bancoAgencia: string | null; bancoConta: string | null; chavePix: string | null }>) {
+          const partes = [
+            x.bancoNome || x.bancoAgencia || x.bancoConta ? `${x.bancoNome ?? '—'} · ag ${x.bancoAgencia ?? '—'} · cc ${x.bancoConta ?? '—'}` : '',
+            x.chavePix ? `Pix ${x.chavePix}` : '',
+          ].filter(Boolean);
+          contaPorNome.set(x.nome, partes.length ? partes.join(' · ') : '⚠ sem conta cadastrada');
+        }
+      } catch {
+        /* imprime sem as contas */
+      }
+    }
     const esc = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const st = p.situacao;
     const dataLanc = p.paga ? new Date(p.paga).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : '';
@@ -110,7 +134,8 @@ export function ValeTransporteManager(p: Props) {
         const ac = l.anterior
           ? `${sinal(c.acerto)}<div class="m">pagou ${l.anterior.diasPagos}, ponto ${l.anterior.diasPonto}</div>`
           : '<span class="m">—</span>';
-        return `<tr><td>${i + 1}</td><td><b>${esc(l.nome)}</b><div class="m">${esc([l.cargo, l.jornadaNome].filter(Boolean).join(' · '))}</div></td>
+        const conta = contaPorNome.get(l.nome);
+        return `<tr><td>${i + 1}</td><td><b>${esc(l.nome)}</b><div class="m">${esc([l.cargo, l.jornadaNome].filter(Boolean).join(' · '))}</div>${conta ? `<div class="cb">${esc(conta)}</div>` : ''}</td>
 <td>${formaDe(l) === 'dinheiro' ? 'dinheiro' : 'folha'}</td><td class="r">${brl(c.valorDia)}</td><td class="c">${c.dias}</td>
 <td class="r">${brl(c.previsto)}</td><td class="r">${ac}</td><td class="r"><b>${brl(c.pagar)}</b></td>
 <td class="r">${brl(ds.valor)}</td><td class="c">${l.diasPontoAtual}</td><td class="c">${sit}</td><td class="sig"></td></tr>`;
@@ -143,6 +168,7 @@ th,td{border:1px solid #999;padding:3px 5px;vertical-align:middle}
 th{background:#eee;font-size:10px;text-transform:uppercase}
 .r{text-align:right;white-space:nowrap}.c{text-align:center}
 .m{color:#555;font-size:9.5px}
+.cb{font-size:10px;margin-top:1px}
 .sig{width:150px}
 tr{page-break-inside:avoid}
 tfoot td{font-weight:bold;background:#f5f5f5}
@@ -155,11 +181,6 @@ tfoot td{font-weight:bold;background:#f5f5f5}
 ${sem ? `<p class="s"><b>Sem VT nesta quinzena (${semVt.length})</b></p><table><tbody>${sem}</tbody></table>` : ''}
 ${sai ? `<p class="s"><b>Saíram da empresa — sem VT (${saidos.length})</b></p><table><tbody>${sai}</tbody></table>` : ''}
 <script>window.onload=function(){window.print()}</` + `script></body></html>`;
-    const w = window.open('', '_blank');
-    if (!w) {
-      setErro('O navegador bloqueou a janela de impressão — libere pop-ups deste site.');
-      return;
-    }
     w.document.write(html);
     w.document.close();
   }
