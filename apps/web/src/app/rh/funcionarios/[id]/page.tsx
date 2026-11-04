@@ -700,6 +700,14 @@ export default async function FichaFuncionarioPage(props: { params: Promise<{ id
             podeAdmissao={podeAdmissaoDoc}
             podeDesligar={podeDesligarDoc}
           />
+          {veFolha && temCarteira(f) && (
+            <a
+              href={`/rh/funcionarios/${f.id}/rescisao`}
+              className="mt-3 inline-block text-sm font-medium text-blue-700 hover:underline"
+            >
+              🧮 Fazer o TRCT pelo sistema
+            </a>
+          )}
         </Bloco>
 
         {veFolha && (
