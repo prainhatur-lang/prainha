@@ -280,7 +280,6 @@ export function TrctForm(props: {
           <Secao titulo="Empregador">
             <Linha r="CNPJ" v={fmtCnpj(pessoa.cnpj)} />
             <Linha r="Razão social" v={pessoa.empresa} />
-            <Linha r="Local de trabalho" v={pessoa.casa} />
           </Secao>
 
           <Secao titulo="Trabalhador">

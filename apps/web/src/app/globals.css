@@ -33,3 +33,14 @@ body {
     padding-left: 18rem;
   }
 }
+
+/* Na impressão não tem sidebar: tira o recuo (empurrava o TRCT e cortava a
+   direita da folha). */
+@media print {
+  body:has([data-app-sidebar]) {
+    padding-left: 0;
+  }
+  [data-app-sidebar] {
+    display: none !important;
+  }
+}
