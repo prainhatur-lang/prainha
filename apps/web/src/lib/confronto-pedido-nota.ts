@@ -96,10 +96,18 @@ export interface LinhaConfronto {
   porValor: boolean;
   notaPreco: number;
   notaTotal: number;
-  /** Mesmo item do pedido faturado também em outras notas */
+  /** Mesmo item do pedido faturado também em outras notas LIGADAS a este
+   *  pedido (pedido.nota_compra_id ou item do pedido apontando pro item da
+   *  outra nota) — entram na diferença. */
   outrasNotas: number[];
   outrasTotal: number;
-  /** (esta nota + outras) − pedido. Positivo = cobraram a mais. */
+  /** Mesmo insumo em outras notas do fornecedor que NÃO estão ligadas a este
+   *  pedido — só informativo, fora da diferença. Caso Asa Branca 03/11: NF
+   *  3800336 somava os Buchanan's das NF 3802889 e 3805191 (compras à parte,
+   *  uma delas do pedido #68) e acusava +R$ 633 no pedido #60. */
+  outrasSoltasNotas: number[];
+  outrasSoltasTotal: number;
+  /** (esta nota + outras ligadas) − pedido. Positivo = cobraram a mais. */
   diferenca: number;
   situacao: SituacaoConfronto;
 }
@@ -190,6 +198,7 @@ export async function confrontoDaNota(notaId: string): Promise<ConfrontoNota | n
       status: schema.pedidoCompra.status,
       valorTotal: schema.pedidoCompra.valorTotal,
       criadoEm: schema.pedidoCompra.criadoEm,
+      notaCompraId: schema.pedidoCompra.notaCompraId,
       fornecedorNome: schema.fornecedor.nome,
       fornecedorFone: foneParaWhatsapp(),
     })
@@ -221,6 +230,7 @@ export async function confrontoDaNota(notaId: string): Promise<ConfrontoNota | n
       unidade: schema.pedidoCompraItem.unidade,
       precoUnitario: schema.pedidoCompraItem.precoUnitario,
       valorTotal: schema.pedidoCompraItem.valorTotal,
+      notaCompraItemId: schema.pedidoCompraItem.notaCompraItemId,
     })
     .from(schema.pedidoCompraItem)
     .innerJoin(schema.produto, eq(schema.produto.id, schema.pedidoCompraItem.produtoId))
@@ -373,8 +383,11 @@ export async function confrontoDaNota(notaId: string): Promise<ConfrontoNota | n
     const partes = caiu.get(ip.id) ?? [];
     const desta = partes.filter((p) => p.notaId === nota.id);
     if (desta.length === 0) continue;
-    const outras = partes.filter((p) => p.notaId !== nota.id);
     const ped = pedidoPorId.get(ip.pedidoId)!;
+    const outrasTodas = partes.filter((p) => p.notaId !== nota.id);
+    const ligada = (p: Parte) => ped.notaCompraId === p.notaId || ip.notaCompraItemId === p.notaItemId;
+    const outras = outrasTodas.filter(ligada);
+    const outrasSoltas = outrasTodas.filter((p) => !ligada(p));
     envolvidos.add(ped.id);
     const pedQtd = Number(ip.quantidade);
     const pedPreco = Number(ip.precoUnitario);
@@ -410,6 +423,8 @@ export async function confrontoDaNota(notaId: string): Promise<ConfrontoNota | n
       notaTotal,
       outrasNotas: [...new Set(outras.map((p) => notaPorId.get(p.notaId)?.numero).filter((x): x is number => x != null))],
       outrasTotal,
+      outrasSoltasNotas: [...new Set(outrasSoltas.map((p) => notaPorId.get(p.notaId)?.numero).filter((x): x is number => x != null))],
+      outrasSoltasTotal: outrasSoltas.reduce((a, p) => a + p.total, 0),
       diferenca,
       situacao,
     });

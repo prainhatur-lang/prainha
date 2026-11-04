@@ -166,6 +166,11 @@ export function ConfrontoPedido({
                       + {brl(l.outrasTotal)} na NF {l.outrasNotas.join(', ')}
                     </div>
                   )}
+                  {l.outrasSoltasNotas.length > 0 && (
+                    <div className="text-[10px] text-slate-400" title="Outras notas do fornecedor com o mesmo insumo, sem vínculo com este pedido — não entram na diferença">
+                      também na NF {l.outrasSoltasNotas.join(', ')} ({brl(l.outrasSoltasTotal)}) · fora da conta
+                    </div>
+                  )}
                 </td>
                 <td className="px-3 py-2 text-right">
                   {l.situacao === 'OK' ? (
