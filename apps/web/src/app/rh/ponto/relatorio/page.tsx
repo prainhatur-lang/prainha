@@ -28,7 +28,23 @@ interface SP {
   mes?: string;
   view?: string;
   pessoa?: string;
+  /** Filtro por tipo de pessoa (04/11/2026), ex. "intermitente,diarista". Vazio = todos. */
+  tipos?: string;
 }
+
+/** Tipo da pessoa pro filtro do relatório (pedido do dono 04/11/2026). Mesma
+ *  regra do /rh/horas-regime e da trava de dias (lib/rh/trava-semana):
+ *  registrado = contracheque na folha do contador ou registro no cadastro;
+ *  vínculo "Intermitente" separa intermitente de CLT; 12x36 pelo nome da
+ *  jornada; diarista pelo papel na folha (fornecedor_folha). */
+type TipoPessoa = 'intermitente' | 'clt' | '12x36' | 'diarista' | 'outros';
+const TIPOS: { id: TipoPessoa; txt: string; dica: string }[] = [
+  { id: 'intermitente', txt: 'Registrado intermitente', dica: 'carteira assinada, contrato intermitente' },
+  { id: 'clt', txt: 'Registrado CLT', dica: 'carteira assinada, mensalista' },
+  { id: '12x36', txt: '12x36', dica: 'jornada com 12x36 no nome' },
+  { id: 'diarista', txt: 'Diarista', dica: 'papel diarista na folha' },
+  { id: 'outros', txt: 'Sem registro / outros', dica: 'não é registrado nem diarista (ex.: sem folha do contador)' },
+];
 
 /** Tolerância de atraso na entrada (CLT art. 58 §1º: 5 min por marcação). */
 const TOLERANCIA_ATRASO_MIN = 5;
@@ -69,6 +85,7 @@ interface Resumo {
   nome: string;
   cargo: string | null;
   jornada: string | null;
+  tipo: TipoPessoa;
   temBanco: boolean;
   horaEntrada: string | null;
   diasTrabalhados: number;
@@ -173,6 +190,11 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
       dataDesligamento: schema.funcionario.dataDesligamento,
       ativo: schema.funcionario.ativo,
       horaEntrada: schema.funcionario.pontoHoraEntrada,
+      regimeSalarial: schema.funcionario.regimeSalarial,
+      empresaRegistro: schema.funcionario.empresaRegistro,
+      cnpjRegistro: schema.funcionario.cnpjRegistro,
+      matriculaFolha: schema.funcionario.matriculaFolha,
+      fornecedorId: schema.funcionario.fornecedorId,
     })
     .from(schema.funcionario)
     .where(eq(schema.funcionario.filialId, filial.id))
@@ -249,6 +271,30 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
   const [atestados, escala] = await Promise.all([atestadosNoPeriodo(ids, ini, fim), diasTrabalhoEscala(ids, ini, fim)]);
   const diaAtestado = diasDeAtestado(atestados, ini, fim);
 
+  // Tipo de cada pessoa (filtro por checkbox).
+  const fornIds = pessoas.map((p) => p.fornecedorId).filter((x): x is string => !!x);
+  const [folhaRows, papelRows] = ids.length
+    ? await Promise.all([
+        db
+          .select({ funcionarioId: schema.folhaContador.funcionarioId, competencia: schema.folhaContador.competencia, vinculo: schema.folhaContador.vinculo })
+          .from(schema.folhaContador)
+          .where(and(inArray(schema.folhaContador.funcionarioId, ids), isNull(schema.folhaContador.demitidoEm))),
+        fornIds.length
+          ? db
+              .select({ fornecedorId: schema.fornecedorFolha.fornecedorId, papel: schema.fornecedorFolha.papel })
+              .from(schema.fornecedorFolha)
+              .where(inArray(schema.fornecedorFolha.fornecedorId, fornIds))
+          : Promise.resolve([]),
+      ])
+    : [[], []];
+  const vinculoPor = new Map<string, { competencia: string; vinculo: string | null }>();
+  for (const r of folhaRows) {
+    if (!r.funcionarioId) continue;
+    const atual = vinculoPor.get(r.funcionarioId);
+    if (!atual || r.competencia > atual.competencia) vinculoPor.set(r.funcionarioId, { competencia: r.competencia, vinculo: r.vinculo });
+  }
+  const papelPor = new Map(papelRows.map((r) => [r.fornecedorId, r.papel]));
+
   const batPorDia = new Map<string, typeof batidas>();
   for (const b of batidas) {
     const k = `${b.funcionarioId}|${b.dia}`;
@@ -315,7 +361,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
   const diasMes: string[] = [];
   for (let d = ini; d <= fim; d = somarDias(d, 1)) diasMes.push(d);
 
-  const resumos: Resumo[] = pessoas.map((f) => {
+  const todosResumos: Resumo[] = pessoas.map((f) => {
     const vigencias: VigenciaJornada[] = vigRows
       .filter((v) => v.funcionarioId === f.id)
       .flatMap((v) => {
@@ -324,6 +370,19 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
       });
     const jAtual = jornadaNoDia(vigencias, fim < hoje ? fim : hoje);
     const esc = escala.get(f.id);
+    const folhaC = vinculoPor.get(f.id);
+    const registrado = !!folhaC || !!(f.empresaRegistro || f.cnpjRegistro || f.matriculaFolha);
+    const tipo: TipoPessoa = /12\s*x\s*36/i.test(jAtual?.nome ?? '')
+      ? '12x36'
+      : registrado
+        ? folhaC
+          ? /intermit/i.test(folhaC.vinculo ?? '') ? 'intermitente' : 'clt'
+          : jAtual?.tipo === 'intermitente' || (jAtual?.tipo !== 'fixa' && f.regimeSalarial === 'intermitente_hora')
+            ? 'intermitente'
+            : 'clt'
+        : f.fornecedorId && papelPor.get(f.fornecedorId) === 'diarista'
+          ? 'diarista'
+          : 'outros';
     let inicio = virada;
     if (f.dataAdmissao && f.dataAdmissao > inicio) inicio = f.dataAdmissao;
 
@@ -332,6 +391,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
       nome: f.nome,
       cargo: f.cargo,
       jornada: jAtual?.nome ?? null,
+      tipo,
       temBanco: jAtual?.tipo === 'fixa',
       horaEntrada: f.horaEntrada,
       diasTrabalhados: 0,
@@ -503,8 +563,16 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
     return r;
   });
 
-  const pessoaSel = sp.pessoa && resumos.some((r) => r.id === sp.pessoa) ? sp.pessoa : null;
-  const doAnalitico = pessoaSel ? resumos.filter((r) => r.id === pessoaSel) : resumos;
+  // Filtro por tipo: nenhum ou todos marcados = todo mundo (igual era antes).
+  const tiposSel = (sp.tipos ?? '').split(',').filter((t): t is TipoPessoa => TIPOS.some((x) => x.id === t));
+  const filtrando = tiposSel.length > 0 && tiposSel.length < TIPOS.length;
+  const tiposParam = filtrando ? TIPOS.map((t) => t.id).filter((t) => tiposSel.includes(t)).join(',') : '';
+  const porTipo = new Map<TipoPessoa, number>();
+  for (const r of todosResumos) porTipo.set(r.tipo, (porTipo.get(r.tipo) ?? 0) + 1);
+  const resumos = filtrando ? todosResumos.filter((r) => tiposSel.includes(r.tipo)) : todosResumos;
+
+  const pessoaSel = sp.pessoa && todosResumos.some((r) => r.id === sp.pessoa) ? sp.pessoa : null;
+  const doAnalitico = pessoaSel ? todosResumos.filter((r) => r.id === pessoaSel) : resumos;
 
   const tot = resumos.reduce(
     (a, r) => ({
@@ -522,7 +590,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
   const [ano, mm] = mes.split('-').map(Number);
   const nomeMes = `${MESES[mm - 1]} de ${ano}`;
   const url = (p: Partial<SP>) => {
-    const q = new URLSearchParams({ filialId: filial.id, mes, view, ...(pessoaSel ? { pessoa: pessoaSel } : {}) });
+    const q = new URLSearchParams({ filialId: filial.id, mes, view, ...(pessoaSel ? { pessoa: pessoaSel } : {}), ...(tiposParam ? { tipos: tiposParam } : {}) });
     for (const [k, v] of Object.entries(p)) {
       if (v === undefined || v === '') q.delete(k);
       else q.set(k, v);
@@ -531,7 +599,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
   };
 
   const csvSintetico = csvHref([
-    ['Pessoa', 'Cargo', 'Jornada', 'Dias trabalhados', 'Horas trabalhadas', 'Horas previstas', 'Saldo do mês', 'Saldo anterior', 'Acertos do mês', 'Saldo geral', 'Hora extra', 'Noturno 22h–5h (relógio)', 'Noturno (hora reduzida 52min30s)', 'Faltas', 'Horas de falta', 'Incompletos', 'Atrasos', 'Min de atraso', 'Dias de atestado', 'Batidas pelo celular', 'Ajustes à mão (inclusão, alteração, exclusão)'],
+    ['Pessoa', 'Cargo', 'Jornada', 'Dias trabalhados', 'Horas trabalhadas', 'Horas previstas', 'Saldo do mês', 'Saldo anterior', 'Acertos do mês', 'Saldo geral', 'Hora extra', 'Noturno 22h–5h (relógio)', 'Noturno (hora reduzida 52min30s)', 'Faltas', 'Horas de falta', 'Incompletos', 'Atrasos', 'Min de atraso', 'Dias de atestado', 'Batidas pelo celular', 'Ajustes à mão (inclusão, alteração, exclusão)', 'Tipo'],
     ...resumos.map((r) => [
       r.nome,
       r.cargo ?? '',
@@ -554,6 +622,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
       r.atestadoDias,
       r.porCelular,
       r.ajustes,
+      TIPOS.find((t) => t.id === r.tipo)?.txt ?? '',
     ]),
   ]);
   const csvAnalitico = csvHref([
@@ -581,6 +650,14 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
   const ajustarHref = (funcionarioId: string, dia: string) =>
     `/rh/ponto?${new URLSearchParams({ filialId: filial.id, inicio: dia, abrir: funcionarioId }).toString()}`;
 
+  // Marca/desmarca um tipo (link, sem JS). Marcar todos = sem filtro.
+  const urlTipo = (t: TipoPessoa) => {
+    const atual = filtrando ? tiposSel : [];
+    const novo = atual.includes(t) ? atual.filter((x) => x !== t) : [...atual, t];
+    const lista = TIPOS.map((x) => x.id).filter((x) => novo.includes(x));
+    return url({ tipos: lista.length === TIPOS.length ? '' : lista.join(',') });
+  };
+
   const btn = 'rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50';
 
   return (
@@ -595,7 +672,8 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
             <h1 className="text-2xl font-bold text-slate-900">Relatório do ponto — {nomeMes}</h1>
             <p className="mt-1 text-sm text-slate-600">
               {filial.nome} · {view === 'sintetico' ? 'sintético (por pessoa)' : 'analítico (dia a dia)'}
-              {pessoaSel ? ` · ${resumos.find((r) => r.id === pessoaSel)?.nome}` : ''}
+              {pessoaSel ? ` · ${todosResumos.find((r) => r.id === pessoaSel)?.nome}` : ''}
+              {filtrando ? ` · só ${TIPOS.filter((t) => tiposSel.includes(t.id)).map((t) => t.txt.toLowerCase()).join(' + ')}` : ''}
               {mes === hoje.slice(0, 7) ? ' · mês em andamento, conta até ontem' : ''}
             </p>
           </div>
@@ -603,7 +681,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
             <a href={`/rh/ponto?filialId=${filial.id}`} className={btn}>Ponto da semana</a>
             <a href={`/rh/banco-horas?filialId=${filial.id}`} className={btn}>Banco de horas</a>
             <a href={`/rh/ponto/ajustes?filialId=${filial.id}&mes=${mes}${pessoaSel ? `&pessoa=${pessoaSel}` : ''}`} className={btn}>✏️ Histórico de ajustes</a>
-            <a href={view === 'sintetico' ? csvSintetico : csvAnalitico} download={`ponto-${view}-${mes}.csv`} className={btn}>⬇ Planilha (CSV)</a>
+            <a href={view === 'sintetico' ? csvSintetico : csvAnalitico} download={`ponto-${view}-${mes}${tiposParam ? `-${tiposParam.replace(/,/g, '-')}` : ''}.csv`} className={btn}>⬇ Planilha (CSV)</a>
             <BotaoImprimir />
           </div>
         </div>
@@ -614,7 +692,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
               {filiais.map((f) => (
                 <a
                   key={f.id}
-                  href={`?filialId=${f.id}&mes=${mes}&view=${view}`}
+                  href={`?filialId=${f.id}&mes=${mes}&view=${view}${tiposParam ? `&tipos=${tiposParam}` : ''}`}
                   className={`rounded-md border px-3 py-1.5 text-sm ${
                     f.id === filial.id ? 'border-blue-500 bg-blue-50 font-medium text-blue-700' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
                   }`}
@@ -638,6 +716,38 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
           )}
         </div>
 
+        <div className="-mt-2 mb-5 flex flex-wrap items-center gap-x-4 gap-y-2 print:hidden">
+          <span className="text-xs font-medium uppercase tracking-wide text-slate-400">Mostrar</span>
+          {TIPOS.map((t) => {
+            const marcado = filtrando && tiposSel.includes(t.id);
+            const n = porTipo.get(t.id) ?? 0;
+            return (
+              <a
+                key={t.id}
+                href={urlTipo(t.id)}
+                title={t.dica}
+                role="checkbox"
+                aria-checked={marcado}
+                className={`flex items-center gap-1.5 text-sm ${n ? 'text-slate-700' : 'text-slate-400'} hover:text-slate-900`}
+              >
+                <span
+                  className={`flex h-4 w-4 items-center justify-center rounded border text-[11px] leading-none ${
+                    marcado ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-300 bg-white'
+                  }`}
+                >
+                  {marcado ? '✓' : ''}
+                </span>
+                {t.txt} <span className="text-xs text-slate-400">({n})</span>
+              </a>
+            );
+          })}
+          {filtrando ? (
+            <a href={url({ tipos: '' })} className="text-sm text-blue-600 hover:underline">limpar (todos)</a>
+          ) : (
+            <span className="text-xs text-slate-400">nenhum marcado = todos</span>
+          )}
+        </div>
+
         <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
           {[
             ['Pessoas', String(resumos.length), 'text-slate-900'],
@@ -655,7 +765,9 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
           ))}
         </div>
 
-        {resumos.length === 0 && <p className="text-sm text-slate-500">Ninguém cadastrado nesta casa.</p>}
+        {resumos.length === 0 && (
+          <p className="text-sm text-slate-500">{filtrando ? 'Ninguém desse tipo nesta casa.' : 'Ninguém cadastrado nesta casa.'}</p>
+        )}
 
         {view === 'sintetico' && resumos.length > 0 && (
           <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
