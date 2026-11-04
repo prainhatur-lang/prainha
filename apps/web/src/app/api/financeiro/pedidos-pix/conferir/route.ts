@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
 import { exigirPermApi } from '@/lib/exigir-perm';
+import { ebLiberadaNoFinanceiro } from '@/lib/eb/acesso-financeiro';
 import { classificarStatusPixInter, consultarPagamentoPixInter, resolverCredenciaisInterPagamentos } from '@/lib/inter';
 import { baixarContasDoPix, podePagarPix } from '@/lib/pix-pagamento';
 import { dateToBrYmd } from '@/lib/datas';
@@ -36,7 +37,7 @@ export async function POST(req: Request) {
     .from(schema.usuarioFilial)
     .where(and(eq(schema.usuarioFilial.usuarioId, user.id), eq(schema.usuarioFilial.filialId, p.filialId)))
     .limit(1);
-  if (!acesso) return NextResponse.json({ error: 'sem acesso à casa' }, { status: 403 });
+  if (!acesso && !(await ebLiberadaNoFinanceiro(user.id, p.filialId))) return NextResponse.json({ error: 'sem acesso à casa' }, { status: 403 });
   if (p.baixadoEm) return NextResponse.json({ ok: true, status: 'PAGO', mensagem: 'Já está pago e baixado.' });
 
   const marcarPor = `${user.email ?? user.id} em ${new Date().toISOString()}`;

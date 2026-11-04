@@ -7,6 +7,7 @@ import { NextResponse } from 'next/server';
 import { and, eq } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
 import { exigirPermApi } from '@/lib/exigir-perm';
+import { ebLiberadaNoFinanceiro } from '@/lib/eb/acesso-financeiro';
 import { InterSaldoErro, resolverCredenciaisInterPagamentos } from '@/lib/inter';
 import { lerSaldoParaPix, podePagarPix, sincronizarPixAbertos } from '@/lib/pix-pagamento';
 
@@ -27,7 +28,7 @@ export async function GET(req: Request) {
     .from(schema.usuarioFilial)
     .where(and(eq(schema.usuarioFilial.usuarioId, user.id), eq(schema.usuarioFilial.filialId, filialId)))
     .limit(1);
-  if (!acesso) return NextResponse.json({ error: 'sem acesso à casa' }, { status: 403 });
+  if (!acesso && !(await ebLiberadaNoFinanceiro(user.id, filialId))) return NextResponse.json({ error: 'sem acesso à casa' }, { status: 403 });
 
   const cred = resolverCredenciaisInterPagamentos(filialId);
   if (!cred) {

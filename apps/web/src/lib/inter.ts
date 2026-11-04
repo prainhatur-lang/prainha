@@ -89,6 +89,25 @@ export function resolverCredenciaisInterPagamentos(filialId: string): InterCrede
       return { clientId, clientSecret, certB64, keyB64 };
     }
   }
+  // Empresas fora das casas (E.B. Serviços, Lelis): pagam Pix pela integração
+  // `INTER_<SIGLA>_PAG_*`; sem ela, tentam a de extrato `INTER_<SIGLA>_*` (se a
+  // integração no Inter tiver o escopo de Pix, paga; senão o Inter recusa e a
+  // tela mostra o erro). Filial pelo `INTER_<SIGLA>_FILIAL_ID` ou o id fixo.
+  const EMPRESAS: { sigla: string; filial: string }[] = [
+    { sigla: 'EB', filial: '69717762-31ef-4134-9b0c-6e1cd6e56d01' },
+    { sigla: 'LELIS', filial: '90cad0c0-1404-49d2-884e-4d6554fc10f8' },
+  ];
+  for (const e of EMPRESAS) {
+    const p = `INTER_${e.sigla}`;
+    const dona = process.env[`${p}_FILIAL_ID`]?.trim() || e.filial;
+    if (dona !== filialId) continue;
+    const clientId = process.env[`${p}_PAG_CLIENT_ID`]?.trim();
+    const clientSecret = process.env[`${p}_PAG_CLIENT_SECRET`]?.trim();
+    const certB64 = process.env[`${p}_PAG_CERT_B64`]?.trim();
+    const keyB64 = process.env[`${p}_PAG_KEY_B64`]?.trim();
+    if (clientId && clientSecret && certB64 && keyB64) return { clientId, clientSecret, certB64, keyB64 };
+    return credenciaisInterEmpresa(e.sigla);
+  }
   return null;
 }
 

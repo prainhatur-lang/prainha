@@ -25,7 +25,7 @@ import Link from 'next/link';
 import { exigirPerm } from '@/lib/exigir-perm';
 import { podeUsuario } from '@/lib/permissoes-runtime';
 import { createClient } from '@/lib/supabase/server';
-import { filiaisDoUsuario } from '@/lib/filiais';
+import { filiaisDoFinanceiro } from '@/lib/eb/acesso-financeiro';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
 import { and, eq, isNull, lte, notInArray, or, sql } from 'drizzle-orm';
@@ -106,7 +106,9 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
   await exigirPerm(user.id, 'conta_pagar.read');
 
   const sp = await props.searchParams;
-  const filiais = await filiaisDoUsuario(user.id);
+  // Casas do usuário + E.B. e Lelis no fim, só pro Admin (rescisão de quem é
+  // registrado na E.B.: a casa repassa pra E.B. e a E.B. paga a pessoa daqui).
+  const filiais = await filiaisDoFinanceiro(user.id);
   const escolhidaX = await escolherFilial(filiais, sp.filialId);
 
   const hoje = hojeBr();

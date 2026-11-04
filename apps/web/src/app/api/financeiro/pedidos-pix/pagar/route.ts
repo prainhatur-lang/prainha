@@ -21,6 +21,7 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
 import { sql } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
+import { ebLiberadaNoFinanceiro } from '@/lib/eb/acesso-financeiro';
 import { consultarPagamentoPixInter, incluirPagamentoPixInter, InterPixRecusado, InterSaldoErro, resolverCredenciaisInterPagamentos } from '@/lib/inter';
 import { conferirChavePix, recebedorBate } from '@/lib/pix-titular';
 import { rescisoesDasContas } from '@/lib/rh/rescisao-pix';
@@ -58,7 +59,7 @@ export async function POST(req: Request) {
     .from(schema.usuarioFilial)
     .where(and(eq(schema.usuarioFilial.usuarioId, user.id), eq(schema.usuarioFilial.filialId, filialId)))
     .limit(1);
-  if (!acesso) return NextResponse.json({ error: 'sem acesso à casa' }, { status: 403 });
+  if (!acesso && !(await ebLiberadaNoFinanceiro(user.id, filialId))) return NextResponse.json({ error: 'sem acesso à casa' }, { status: 403 });
 
   const cred = resolverCredenciaisInterPagamentos(filialId);
   if (!cred) {
