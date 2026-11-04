@@ -20,6 +20,8 @@ import {
   extratosDoMes,
 } from '@/lib/extratos-fechamento';
 import { ExtratosMes } from './extratos-mes';
+import { indicadoresFechamento, custoCltPorSetor } from '@/lib/fechamento-indicadores';
+import { IndicadoresCalculados } from './indicadores-calculados';
 
 export const dynamic = 'force-dynamic';
 
@@ -125,6 +127,15 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
     metasDaCompetencia(filial.id, competencia),
   ]);
 
+  // Indicadores que já têm dado (04/11/2026). Se falhar, a tela abre igual sem o bloco.
+  const [indicadores, custoSetores] = await Promise.all([
+    indicadoresFechamento(filial.id, ano, mes).catch((e) => {
+      console.error('[fechamento] indicadores calculados:', e);
+      return null;
+    }),
+    custoCltPorSetor(filial.id, custoClt.linhas).catch(() => null),
+  ]);
+
   // Extratos bancários do mês (arquivo de cada conta, pra o contador baixar).
   // Vale pra todas as casas que o usuário acessa, não só a que está aberta.
   // Se esta parte falhar, o resto do fechamento continua abrindo igual.
@@ -182,35 +193,32 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
   // Indicadores que ainda faltam dados (da auditoria) — exibidos no painel.
   const faltam: Array<{ grupo: string; itens: string[] }> = [
     { grupo: 'Margem e custo', itens: [
-      'CMV (custo da mercadoria vendida) e margem bruta — falta custo confiável nos itens vendidos (~12-15% sem preço de custo).',
-      'Prime Cost (CMV + folha) — depende do CMV e dos encargos de pessoal.',
-      'Split bebida × comida (food cost vs beverage cost) — exige classificar produtos por grupo.',
-      'Ponto de equilíbrio / custo fixo vs variável — falta classificar categorias (FIXO|VARIÁVEL).',
+      'CMV e Prime Cost do Bar e da Tabuará — o cálculo já está em "Indicadores calculados", mas pouca venda tem baixa de estoque com custo (falta ficha técnica e preço de custo nos produtos). A Mar já passa de 60%.',
+      'Ponto de equilíbrio / custo fixo vs variável — falta marcar cada categoria de despesa como FIXA ou VARIÁVEL.',
     ] },
     { grupo: 'Delivery', itens: [
-      'Comissão de plataforma (iFood/MenuDino) e receita líquida de delivery — não há dado de comissão/repasse no sistema.',
+      'Comissão do iFood e receita líquida de delivery — falta homologar o módulo Financeiro do iFood.',
       'Custo de entrega / margem do frete — falta custo do entregador por pedido.',
     ] },
     { grupo: 'Pessoal (folha)', itens: [
-      'Custo por setor (cozinha/salão/bar) — turnover e custo CLT já têm tela própria (/rh/turnover, card abaixo), falta abrir por setor.',
-      'Faturamento/gorjeta por garçom — só há código do colaborador, sem o nome espelhado.',
+      'Faturamento/gorjeta por garçom — falta o vendas-local mandar quem lançou cada item pra nuvem.',
+      'Custo por setor de quem não tem setor no cadastro do RH aparece como "(sem setor)".',
     ] },
     { grupo: 'Fiscal', itens: [
-      'DAS / Simples Nacional do mês — falta regime tributário da filial e apuração.',
-      'ICMS destacado nas vendas e NFe pendentes de manifestação (SEFAZ).',
+      'ICMS destacado nas vendas — as NFC-e saem com CRT 1 (Lucro Real), falta conferir o destaque com o contador.',
+      'Guias de imposto: só aparecem as lidas em Financeiro → Impostos com a casa pagadora marcada.',
     ] },
     { grupo: 'Recebíveis e caixa', itens: [
-      'Contas a receber / fiado em aberto, aging e PDD — estrutura improvisada (cliente "PREJUÍZO").',
-      'Recebíveis de cartão a receber (agenda Cielo) e taxas de cartão pagas — parcial.',
-      'Fluxo de caixa projetado (30/60/90 dias) — falta consolidar a vencer + a receber.',
+      'Fiado: aging e provisão de perda (PDD) — o total em aberto já aparece; falta a idade de cada dívida.',
+      'Cartão da Prainha Mar — a Cielo da Mar não está no extrato automático (EDI), então as taxas ficam incompletas.',
     ] },
     { grupo: 'Clientes e ocupação', itens: [
-      'No-show e conversão reserva → consumo — falta check-in e vínculo reserva↔comanda.',
-      'Ocupação efetiva / faturamento por mesa ou m² — falta capacidade (lugares, mesas, horário).',
-      'Lista de espera (tempo, conversão) — tabela pronta, falta a recepção usar.',
+      'No-show confiável — a recepção precisa marcar "sentou" em quem chegou; hoje o no-show sai alto.',
+      'Faturamento por m² — falta a área de cada casa.',
+      'Lista de espera da Tabuará e da Mar — só o Bar usa.',
     ] },
     { grupo: 'Marketing', itens: [
-      'Custo de marketing / CAC e ROI de mídia (Meta Ads) — gasto não classificado no sistema.',
+      'CAC e ROI de mídia — o gasto da Meta já aparece em Marketing → Anúncios, falta trazer pro fechamento.',
     ] },
   ];
 
@@ -638,11 +646,21 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
           </div>
         </Secao>
 
+        {/* Indicadores calculados (04/11/2026) */}
+        <Secao titulo="Indicadores calculados" className="mb-5">
+          <IndicadoresCalculados
+            ind={indicadores}
+            setores={custoSetores}
+            faturamento={d.vendas.faturamento}
+            custoCltTotal={custoClt.totalGeral}
+          />
+        </Secao>
+
         {/* Indicadores que faltam dados */}
         <Secao titulo="Indicadores que faltam (precisam de dados)" className="mb-5">
           <p className="mb-3 text-xs text-slate-500">
-            Levantamento de 118 indicadores de fechamento: ~47 já dá pra calcular, ~54 ficam parciais e ~17 faltam dados.
-            Abaixo o que ainda não dá pra mostrar com confiança e o que precisaria pra habilitar.
+            O que ainda não dá pra mostrar com confiança e o que precisaria pra habilitar.
+            Os que já têm dado estão no bloco &quot;Indicadores calculados&quot; acima.
           </p>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             {faltam.map((g) => (
