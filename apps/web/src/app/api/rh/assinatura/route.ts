@@ -4,6 +4,7 @@
 //      (se já tem um pedido aguardando e dentro do prazo, devolve o mesmo)
 // POST { acao: 'cancelar', id }         → cancela um pedido aguardando
 // GET  ?id=<assinatura>&selfie=1        → redireciona pra selfie do aceite
+// GET  ?id=<assinatura>&rubrica=1       → rubrica feita com o dedo (se tiver)
 // Pedir/cancelar = mesma permissão de subir o documento (entrada =
 // funcionario.update, saída = funcionario.desligar); ver = funcionario.read.
 
@@ -15,7 +16,7 @@ import { createAdminClient } from '@/lib/supabase/server';
 import { exigirPermApi, negarSemPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { BUCKET_DOC_RH, rotuloTipo } from '@/lib/rh/documento-vinculo';
-import { ASSINATURA_VALIDADE_DIAS, hashArquivoRh, novoTokenAssinatura } from '@/lib/rh/assinatura';
+import { ASSINATURA_VALIDADE_DIAS, caminhoRubricaAssinatura, hashArquivoRh, novoTokenAssinatura } from '@/lib/rh/assinatura';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -163,9 +164,27 @@ export async function POST(req: Request) {
 export async function GET(req: Request) {
   const auth = await exigirPermApi('funcionario.read');
   if (auth.error) return auth.error;
-  const id = new URL(req.url).searchParams.get('id') ?? '';
+  const sp = new URL(req.url).searchParams;
+  const id = sp.get('id') ?? '';
   if (!UUID.test(id)) return NextResponse.json({ error: 'id inválido' }, { status: 400 });
   const A = schema.funcionarioAssinatura;
+  // ?rubrica=1 → rubrica feita com o dedo (TRCT gerado pelo sistema, 04/11/2026)
+  if (sp.get('rubrica')) {
+    const [r] = await db
+      .select({ funcionarioId: A.funcionarioId, filialId: A.filialId, status: A.status })
+      .from(A)
+      .where(and(eq(A.id, id), isNull(A.canceladoEm)))
+      .limit(1);
+    if (!r || r.status !== 'assinado') return NextResponse.json({ error: 'sem rubrica' }, { status: 404 });
+    const foraR = await enxergaPessoa(auth.user.id, r.funcionarioId);
+    if (foraR) return foraR;
+    const adminR = await createAdminClient();
+    const { data, error } = await adminR.storage
+      .from(BUCKET_DOC_RH)
+      .createSignedUrl(caminhoRubricaAssinatura(r.filialId, r.funcionarioId, id), 60);
+    if (error || !data) return NextResponse.json({ error: 'sem rubrica' }, { status: 404 });
+    return NextResponse.redirect(data.signedUrl);
+  }
   const [a] = await db
     .select({ funcionarioId: A.funcionarioId, selfiePath: A.selfiePath })
     .from(A)

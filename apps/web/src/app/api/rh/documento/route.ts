@@ -23,6 +23,7 @@ import {
   tipoValido,
   TIPO_DOC_NAO_QUER_VT,
 } from '@/lib/rh/documento-vinculo';
+import { ehDocHtml, responderDocHtml } from '@/lib/rh/documento-html';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -168,13 +169,15 @@ export async function GET(req: Request) {
   if (!UUID.test(id)) return NextResponse.json({ error: 'id inválido' }, { status: 400 });
   const t = schema.funcionarioDocumento;
   const [a] = await db
-    .select({ funcionarioId: t.funcionarioId, arquivoPath: t.arquivoPath })
+    .select({ funcionarioId: t.funcionarioId, arquivoPath: t.arquivoPath, arquivoNome: t.arquivoNome })
     .from(t)
     .where(eq(t.id, id))
     .limit(1);
   if (!a) return NextResponse.json({ error: 'documento não encontrado' }, { status: 404 });
   const casa = await casaDaPessoa(auth.user.id, a.funcionarioId);
   if (casa instanceof NextResponse) return casa;
+  // TRCT gerado pelo sistema (HTML): servido aqui, travado (o bucket não mostra HTML).
+  if (ehDocHtml(a.arquivoPath)) return responderDocHtml(a.arquivoPath);
   const admin = await createAdminClient();
   const { data, error } = await admin.storage.from(BUCKET_DOC_RH).createSignedUrl(a.arquivoPath, 60);
   if (error || !data) return NextResponse.json({ error: `storage: ${error?.message ?? 'sem resposta'}` }, { status: 500 });

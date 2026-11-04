@@ -12,11 +12,16 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { createAdminClient } from '@/lib/supabase/server';
 import { BUCKET_DOC_RH, extensaoDoc, rotuloTipo } from '@/lib/rh/documento-vinculo';
 import { distanciaFacial } from '@/lib/rh/ponto-celular';
+import { ehDocHtml, responderDocHtml } from '@/lib/rh/documento-html';
+import { TIPOS_DOC_RESCISAO } from '@/lib/rh/rescisao';
+import { lancarContaRescisao } from '@/lib/rh/rescisao-lancar';
 import {
+  caminhoRubricaAssinatura,
   caminhoSelfieAssinatura,
   descritorRosto,
   hashArquivoRh,
   ipDoPedido,
+  rubricaDoAceite,
   selfieDoAceite,
   textoAceite,
 } from '@/lib/rh/assinatura';
@@ -39,13 +44,21 @@ async function pedidoDoToken(token: string | null | undefined) {
       expiraEm: A.expiraEm,
       abertoEm: A.abertoEm,
       assinadoEm: A.assinadoEm,
+      enviadoPor: A.enviadoPor,
+      documentoId: A.documentoId,
       tipo: D.tipo,
+      momento: D.momento,
       descricao: D.descricao,
+      dados: D.dados,
+      contaPagarId: D.contaPagarId,
       arquivoPath: D.arquivoPath,
       arquivoNome: D.arquivoNome,
       docCancelado: D.canceladoEm,
       nome: F.nome,
       cpf: F.cpf,
+      lotacao: F.filialId,
+      fornecedorId: F.fornecedorId,
+      dataDesligamento: F.dataDesligamento,
       faceDescriptor: F.faceDescriptor,
       casa: schema.filial.nome,
     })
@@ -59,6 +72,16 @@ async function pedidoDoToken(token: string | null | undefined) {
 }
 
 type Pedido = NonNullable<Awaited<ReturnType<typeof pedidoDoToken>>>;
+
+/** TRCT gerado pelo sistema (04/11/2026): pede a rubrica com o dedo e, assinado, vira conta a pagar. */
+const dadosSistema = (p: Pedido) =>
+  ((p.dados && typeof p.dados === 'object' ? p.dados : {}) as {
+    origem?: string;
+    lancarAoAssinar?: boolean;
+    liquido?: number | null;
+    vencimento?: string | null;
+  });
+const exigeRubrica = (p: Pedido) => dadosSistema(p).origem === 'sistema';
 
 const nomeDoc = (p: Pedido) => rotuloTipo(p.tipo) + (p.descricao ? ` — ${p.descricao}` : '');
 
@@ -78,6 +101,16 @@ export async function GET(req: Request) {
   if (!s.ok) return NextResponse.json(s, { status: 410 });
 
   if (sp.get('arquivo')) {
+    // TRCT gerado pelo sistema (HTML): servido aqui, travado (o bucket não mostra HTML).
+    if (ehDocHtml(p.arquivoPath)) {
+      if (!p.abertoEm) {
+        await db
+          .update(schema.funcionarioAssinatura)
+          .set({ abertoEm: new Date() })
+          .where(and(eq(schema.funcionarioAssinatura.id, p.id), isNull(schema.funcionarioAssinatura.abertoEm)));
+      }
+      return responderDocHtml(p.arquivoPath);
+    }
     const admin = await createAdminClient();
     const { data, error } = await admin.storage.from(BUCKET_DOC_RH).createSignedUrl(p.arquivoPath, 300);
     if (error || !data) return NextResponse.json({ ok: false, erro: 'Não consegui abrir o arquivo.' }, { status: 500 });
@@ -96,6 +129,8 @@ export async function GET(req: Request) {
     casa: p.casa,
     documento: nomeDoc(p),
     ehPdf: extensaoDoc(p.arquivoNome ?? p.arquivoPath) === 'pdf',
+    ehHtml: ehDocHtml(p.arquivoPath),
+    exigeRubrica: exigeRubrica(p),
     status: p.status,
     assinadoEm: p.assinadoEm?.toISOString() ?? null,
     pedeCpf: !!p.cpf,
@@ -110,6 +145,7 @@ export async function POST(req: Request) {
     aceite?: boolean;
     selfie?: string;
     descriptor?: unknown;
+    rubrica?: string;
   } | null;
   const p = await pedidoDoToken(body?.token);
   if (!p) return NextResponse.json({ ok: false, erro: 'Link inválido.' }, { status: 404 });
@@ -126,6 +162,10 @@ export async function POST(req: Request) {
 
   const selfie = selfieDoAceite(body.selfie);
   if (!selfie) return NextResponse.json({ ok: false, erro: 'Tire a selfie para assinar.' }, { status: 400 });
+  const rubrica = rubricaDoAceite(body.rubrica);
+  if (exigeRubrica(p) && !rubrica) {
+    return NextResponse.json({ ok: false, erro: 'Faça a sua rubrica com o dedo no quadro.' }, { status: 400 });
+  }
 
   // O arquivo tem que ser o mesmo de quando a empresa pediu a assinatura.
   let hash: string;
@@ -149,6 +189,12 @@ export async function POST(req: Request) {
   const admin = await createAdminClient();
   const up = await admin.storage.from(BUCKET_DOC_RH).upload(path, selfie.buf, { contentType: selfie.mime, upsert: true });
   if (up.error) return NextResponse.json({ ok: false, erro: 'Não consegui guardar a selfie. Tente de novo.' }, { status: 500 });
+  if (rubrica) {
+    const upR = await admin.storage
+      .from(BUCKET_DOC_RH)
+      .upload(caminhoRubricaAssinatura(p.filialId, p.funcionarioId, p.id), rubrica, { contentType: 'image/png', upsert: true });
+    if (upR.error) return NextResponse.json({ ok: false, erro: 'Não consegui guardar a rubrica. Tente de novo.' }, { status: 500 });
+  }
 
   const agora = new Date();
   const A = schema.funcionarioAssinatura;
@@ -169,5 +215,38 @@ export async function POST(req: Request) {
     .where(and(eq(A.id, p.id), eq(A.status, 'pendente')))
     .returning({ id: A.id });
   if (!feitos.length) return NextResponse.json({ ok: false, erro: 'Este pedido já não está aguardando.' }, { status: 409 });
+
+  // TRCT gerado pelo sistema: assinou → conta a pagar da rescisão (aparece no
+  // Pix a pagar). Erro aqui não desfaz a assinatura: dá pra lançar pela ficha.
+  const ds = dadosSistema(p);
+  if (
+    ds.lancarAoAssinar &&
+    p.momento === 'desligamento' &&
+    TIPOS_DOC_RESCISAO.includes(p.tipo) &&
+    !p.contaPagarId &&
+    p.enviadoPor &&
+    typeof ds.liquido === 'number' &&
+    ds.liquido > 0 &&
+    ds.vencimento &&
+    /^\d{4}-\d{2}-\d{2}$/.test(ds.vencimento)
+  ) {
+    try {
+      await lancarContaRescisao(
+        {
+          id: p.documentoId,
+          funcionarioId: p.funcionarioId,
+          filialId: p.lotacao,
+          nome: p.nome,
+          cpf: p.cpf,
+          fornecedorId: p.fornecedorId,
+          dataDesligamento: p.dataDesligamento,
+          dados: p.dados,
+        },
+        { valor: Math.round(ds.liquido * 100) / 100, vencimento: ds.vencimento, usuarioId: p.enviadoPor },
+      );
+    } catch (e) {
+      if ((e as Error).message !== 'JA_LANCADA') console.error('[assinatura] rescisão não lançou', p.documentoId, e);
+    }
+  }
   return NextResponse.json({ ok: true, assinadoEm: agora.toISOString() });
 }

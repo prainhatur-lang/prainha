@@ -14,6 +14,9 @@ interface Estado {
   casa: string;
   documento: string;
   ehPdf: boolean;
+  /** TRCT gerado pelo sistema (04/11/2026): página HTML e rubrica com o dedo. */
+  ehHtml?: boolean;
+  exigeRubrica?: boolean;
   status: string;
   assinadoEm: string | null;
   pedeCpf: boolean;
@@ -96,6 +99,7 @@ export function AssinarCliente({ token }: { token: string }) {
   const [abriuDoc, setAbriuDoc] = useState(false);
   const [fase, setFase] = useState<'form' | 'camera' | 'enviando' | 'feito'>('form');
   const [selfie, setSelfie] = useState<string | null>(null);
+  const [rubrica, setRubrica] = useState<string | null>(null);
   const [descritor, setDescritor] = useState<number[] | null>(null);
   const [aviso, setAviso] = useState<string | null>(null);
   const [status, setStatus] = useState('');
@@ -200,7 +204,7 @@ export function AssinarCliente({ token }: { token: string }) {
       const r = await fetch('/api/assinatura-publica', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ token, cpf, aceite: leu, selfie, descriptor: descritor }),
+        body: JSON.stringify({ token, cpf, aceite: leu, selfie, descriptor: descritor, rubrica: rubrica ?? undefined }),
       });
       const j = await r.json().catch(() => ({}));
       if (j.ok) {
@@ -233,7 +237,8 @@ export function AssinarCliente({ token }: { token: string }) {
 
   const cpfOk = !estado.pedeCpf || cpf.replace(/\D/g, '').length === 11;
   const cpfDigitado = cpf.replace(/\D/g, '').length === 11;
-  const pode = leu && cpfDigitado && cpfOk && !!selfie && fase === 'form';
+  const faltaRubrica = !!estado.exigeRubrica && !rubrica;
+  const pode = leu && cpfDigitado && cpfOk && !!selfie && !faltaRubrica && fase === 'form';
 
   return (
     <main className="min-h-screen bg-slate-50 px-4 py-6">
@@ -248,7 +253,14 @@ export function AssinarCliente({ token }: { token: string }) {
 
         <section className="rounded-lg border border-slate-200 bg-white p-3">
           <p className="mb-2 text-sm font-medium text-slate-800">1. Leia o documento</p>
-          {estado.ehPdf ? null : (
+          {estado.ehHtml ? (
+            <iframe
+              src={urlArquivo}
+              sandbox=""
+              title="Documento"
+              className="mb-2 h-[70vh] w-full rounded border border-slate-200 bg-white"
+            />
+          ) : estado.ehPdf ? null : (
             // eslint-disable-next-line @next/next/no-img-element
             <img src={urlArquivo} alt="Documento" className="mb-2 w-full rounded border border-slate-200" />
           )}
@@ -326,6 +338,13 @@ export function AssinarCliente({ token }: { token: string }) {
               )}
             </section>
 
+            {estado.exigeRubrica ? (
+              <section className="rounded-lg border border-slate-200 bg-white p-3">
+                <p className="mb-2 text-sm font-medium text-slate-800">4. Sua rubrica (assine com o dedo)</p>
+                <QuadroRubrica onChange={setRubrica} />
+              </section>
+            ) : null}
+
             <section className="rounded-lg border border-slate-200 bg-white p-3">
               <label className="flex items-start gap-2 text-sm text-slate-700">
                 <input type="checkbox" checked={leu} onChange={(e) => setLeu(e.target.checked)} className="mt-1 h-5 w-5" />
@@ -345,12 +364,93 @@ export function AssinarCliente({ token }: { token: string }) {
             </button>
             {!pode && fase === 'form' ? (
               <p className="text-center text-xs text-slate-500">
-                Falta: {[!cpfDigitado && 'CPF', !selfie && 'selfie', !leu && 'marcar que leu e concorda'].filter(Boolean).join(', ')}
+                Falta: {[!cpfDigitado && 'CPF', !selfie && 'selfie', faltaRubrica && 'rubrica', !leu && 'marcar que leu e concorda'].filter(Boolean).join(', ')}
               </p>
             ) : null}
           </>
         )}
       </div>
     </main>
+  );
+}
+
+/** Quadro pra rubrica com o dedo (ou mouse). Devolve PNG em data URL, ou null se vazio. */
+function QuadroRubrica({ onChange }: { onChange: (png: string | null) => void }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  const desenhando = useRef(false);
+  const tracos = useRef(0);
+
+  useEffect(() => {
+    const cv = ref.current;
+    if (!cv) return;
+    const r = cv.getBoundingClientRect();
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    cv.width = Math.round(r.width * dpr);
+    cv.height = Math.round(r.height * dpr);
+    const ctx = cv.getContext('2d');
+    if (!ctx) return;
+    ctx.scale(dpr, dpr);
+    ctx.lineWidth = 2.2;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#0f172a';
+  }, []);
+
+  const ponto = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  };
+
+  return (
+    <div>
+      <canvas
+        ref={ref}
+        className="h-40 w-full touch-none rounded-md border border-dashed border-slate-400 bg-slate-50"
+        onPointerDown={(e) => {
+          e.currentTarget.setPointerCapture(e.pointerId);
+          const ctx = e.currentTarget.getContext('2d');
+          if (!ctx) return;
+          const p = ponto(e);
+          desenhando.current = true;
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+        }}
+        onPointerMove={(e) => {
+          if (!desenhando.current) return;
+          const ctx = e.currentTarget.getContext('2d');
+          if (!ctx) return;
+          const p = ponto(e);
+          ctx.lineTo(p.x, p.y);
+          ctx.stroke();
+          tracos.current += 1;
+        }}
+        onPointerUp={(e) => {
+          if (!desenhando.current) return;
+          desenhando.current = false;
+          onChange(tracos.current >= 8 ? e.currentTarget.toDataURL('image/png') : null);
+        }}
+      />
+      <div className="mt-1 flex justify-between text-xs text-slate-500">
+        <span>Assine dentro do quadro.</span>
+        <button
+          type="button"
+          className="text-sky-700 underline"
+          onClick={() => {
+            const cv = ref.current;
+            const ctx = cv?.getContext('2d');
+            if (cv && ctx) {
+              ctx.save();
+              ctx.setTransform(1, 0, 0, 1, 0, 0);
+              ctx.clearRect(0, 0, cv.width, cv.height);
+              ctx.restore();
+            }
+            tracos.current = 0;
+            onChange(null);
+          }}
+        >
+          limpar
+        </button>
+      </div>
+    </div>
   );
 }

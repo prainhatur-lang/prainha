@@ -69,6 +69,7 @@ export default async function ComprovanteAssinaturaPage(props: { params: Promise
       tipo: D.tipo,
       descricao: D.descricao,
       arquivoNome: D.arquivoNome,
+      dadosDoc: D.dados,
       nome: F.nome,
       cpfCadastro: F.cpf,
       casa: schema.filial.nome,
@@ -217,6 +218,16 @@ export default async function ComprovanteAssinaturaPage(props: { params: Promise
                 '—'
               )}
             </Linha>
+            {(a.dadosDoc as { origem?: string } | null)?.origem === 'sistema' && a.assinadoEm ? (
+              <Linha r="Rubrica">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={`/api/rh/assinatura?id=${a.id}&rubrica=1`}
+                  alt="Rubrica"
+                  className="mt-1 h-24 w-auto rounded border border-slate-200 bg-white"
+                />
+              </Linha>
+            ) : null}
           </dl>
 
           {a.textoAceite && (

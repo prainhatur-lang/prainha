@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, Fragment } from 'react';
+import { useEffect, useMemo, useRef, useState, Fragment } from 'react';
 import {
   AVISO_LABEL,
   CAUSA_AFASTAMENTO,
@@ -283,6 +283,82 @@ export function TrctForm(props: {
     if (admissao <= ini) return num(salario);
     return Math.round((num(salario) / 30) * (diasEntre(admissao, fim) + 1) * 100) / 100;
   }, [admissao, afastamento, salario]);
+
+  // Enviar pra assinar pelo WhatsApp (04/11/2026): guarda o termo como está na
+  // tela, gera o link de assinatura e, quando a pessoa assina, a conta da
+  // rescisão entra sozinha no contas a pagar (Pix a pagar).
+  const termoRef = useRef<HTMLDivElement>(null);
+  const [envio, setEnvio] = useState<
+    { fase: 'idle' } | { fase: 'enviando' } | { fase: 'ok'; link: string; whatsapp: string; semCpf: boolean } | { fase: 'erro'; msg: string }
+  >({ fase: 'idle' });
+
+  async function enviarPraAssinar() {
+    if (!calc || !termoRef.current) return;
+    const vencimento = dados.pagamento || calc.dataLimite;
+    if (!(calc.liquido > 0)) {
+      setEnvio({ fase: 'erro', msg: 'O líquido está zerado: não tem o que pagar pela assinatura.' });
+      return;
+    }
+    if (
+      !window.confirm(
+        `Enviar o termo pra ${pessoa.nome} assinar?\n\nQuando a pessoa assinar, entra sozinha a conta a pagar de ` +
+          `${calc.liquido.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} (vence ${fmtData(vencimento)}) ` +
+          `e ela aparece no Pix a pagar.`,
+      )
+    )
+      return;
+    const janela = window.open('', '_blank');
+    setEnvio({ fase: 'enviando' });
+    try {
+      let css = '';
+      for (const folha of Array.from(document.styleSheets)) {
+        try {
+          for (const r of Array.from(folha.cssRules)) css += r.cssText + '\n';
+        } catch {
+          /* folha de outro domínio: ignora */
+        }
+      }
+      const html =
+        '<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">' +
+        '<meta name="viewport" content="width=800">' +
+        `<title>TRCT — ${pessoa.nome.replace(/[<>&]/g, '')}</title>` +
+        `<style>${css.replace(/<\/style/gi, '')}\n` +
+        'html,body{background:#fff;margin:0}body{padding:12px}' +
+        '@media screen and (max-width:760px){body{zoom:.9}}@media screen and (max-width:640px){body{zoom:.78}}' +
+        '@media screen and (max-width:540px){body{zoom:.64}}@media screen and (max-width:440px){body{zoom:.52}}' +
+        '@media screen and (max-width:360px){body{zoom:.44}}</style></head><body>' +
+        termoRef.current.innerHTML +
+        '</body></html>';
+      const r1 = await fetch('/api/rh/rescisao/termo', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          funcionarioId: props.funcionarioId,
+          html,
+          liquido: calc.liquido,
+          bruto: calc.proventos,
+          descontos: calc.descontos,
+          afastamento,
+          vencimento,
+          causa: CAUSA_AFASTAMENTO[tipo],
+        }),
+      });
+      const j1 = await r1.json().catch(() => ({}));
+      if (!r1.ok || !j1.documentoId) throw new Error(j1.error ?? 'não consegui guardar o termo');
+      const r2 = await fetch('/api/rh/assinatura', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ acao: 'criar', documentoId: j1.documentoId }),
+      });
+      const j2 = await r2.json().catch(() => ({}));
+      if (!r2.ok || !j2.link) throw new Error(j2.error ?? 'não consegui gerar o link de assinatura');
+      setEnvio({ fase: 'ok', link: j2.link, whatsapp: j2.whatsapp, semCpf: !!j2.semCpf });
+      if (janela) janela.location.href = j2.whatsapp;
+    } catch (e) {
+      janela?.close();
+      setEnvio({ fase: 'erro', msg: (e as Error).message });
+    }
+  }
 
   const avisosPedido: AvisoPrevio[] = ['nao_cumprido', 'dispensado', 'trabalhado'];
   const avisosEmpresa: AvisoPrevio[] = ['indenizado', 'trabalhado'];
@@ -587,10 +663,37 @@ export function TrctForm(props: {
           >
             🖨 Imprimir / Salvar PDF
           </button>
+          <button
+            type="button"
+            disabled={!calc || envio.fase === 'enviando'}
+            onClick={enviarPraAssinar}
+            className="rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-40"
+          >
+            {envio.fase === 'enviando' ? 'Enviando…' : '✍️ Enviar pra assinar (WhatsApp)'}
+          </button>
           <span className="text-xs text-slate-500">
             Confira com o contador antes de pagar. Médias de horas extras e comissões não entram sozinhas: lance em “outros proventos”.
           </span>
         </div>
+        {envio.fase === 'ok' && (
+          <div className="rounded-md border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-900">
+            ✅ Termo guardado na ficha (Documentos de saída) e link de assinatura gerado. Quando {pessoa.nome.split(' ')[0]} assinar
+            (CPF + selfie + rubrica), a conta a pagar de {calc ? calc.liquido.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : ''}{' '}
+            entra sozinha e aparece em Financeiro → Pedidos Pix.
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <a href={envio.whatsapp} target="_blank" rel="noreferrer" className="rounded bg-emerald-600 px-2 py-1 text-xs font-medium text-white">
+                Abrir o WhatsApp de novo
+              </a>
+              <button type="button" onClick={() => navigator.clipboard?.writeText(envio.link)} className="rounded border border-emerald-400 px-2 py-1 text-xs">
+                Copiar link
+              </button>
+              <span className="break-all text-xs text-emerald-800">{envio.link}</span>
+            </div>
+            {envio.semCpf && <p className="mt-1 text-xs text-amber-700">⚠️ Cadastro sem CPF: a pessoa vai digitar o CPF na hora de assinar.</p>}
+            <p className="mt-1 text-xs text-emerald-800">Mudou alguma coisa no termo? Envie de novo: sai um termo novo (cancele o antigo na ficha).</p>
+          </div>
+        )}
+        {envio.fase === 'erro' && <p className="text-sm text-red-700">⚠️ {envio.msg}</p>}
       </div>
 
       {/* Termo — o que sai na impressão. Mesmo modelo do TRCT oficial que o
@@ -598,6 +701,7 @@ export function TrctForm(props: {
       {!calc ? (
         <p className="text-sm text-slate-500 print:hidden">Preencha salário, admissão e afastamento pra calcular.</p>
       ) : (
+        <div ref={termoRef}>
         <TermoOficial
           pessoa={pessoa}
           dados={dados}
@@ -610,6 +714,7 @@ export function TrctForm(props: {
           dataAviso={dados.dataAviso || afastamento}
           pagamento={dados.pagamento || calc.dataLimite}
         />
+        </div>
       )}
     </div>
   );

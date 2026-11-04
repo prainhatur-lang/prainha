@@ -7,11 +7,12 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { db, schema } from '@concilia/db';
-import { and, eq, ilike, isNull } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { exigirPermApi, negarSemPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { lerRescisao, vencimentoRescisao, TIPOS_DOC_RESCISAO, type RescisaoLida } from '@/lib/rh/rescisao';
-import { empregadorEbDoFuncionario, lancarRepasseEb, prepararRepasseEb } from '@/lib/rh/rescisao-empregador';
+import { empregadorEbDoFuncionario } from '@/lib/rh/rescisao-empregador';
+import { lancarContaRescisao } from '@/lib/rh/rescisao-lancar';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -106,92 +107,14 @@ export async function POST(req: Request) {
   const semPermConta = await negarSemPerm(user.id, 'conta_pagar.create');
   if (semPermConta) return semPermConta;
 
-  const [cat] = await db
-    .select({ id: schema.categoriaConta.id })
-    .from(schema.categoriaConta)
-    .where(
-      and(
-        eq(schema.categoriaConta.filialId, doc.filialId),
-        ilike(schema.categoriaConta.descricao, '%rescis%'),
-        isNull(schema.categoriaConta.excluidaEm),
-      ),
-    )
-    .limit(1);
-
-  const lida = (doc.dados ?? null) as RescisaoLida | null;
-  const competencia = (lida?.dataAfastamento ?? doc.dataDesligamento ?? d.vencimento).slice(0, 7);
-  const obs = [
-    lida?.causa ? `Causa: ${lida.causa}` : null,
-    lida?.bruto != null ? `Bruto ${lida.bruto.toFixed(2)}` : null,
-    lida?.descontos != null ? `descontos ${lida.descontos.toFixed(2)}` : null,
-    `Termo na ficha do funcionário (RH → Funcionários)`,
-  ]
-    .filter(Boolean)
-    .join(' · ');
-
-  // Empregado da E.B. (30/10/2026): casa repassa pra E.B., E.B. paga a pessoa.
-  const eb = await empregadorEbDoFuncionario(doc.funcionarioId, doc.cpf);
-  if (eb) {
-    try {
-      const prep = await prepararRepasseEb(doc.filialId);
-      const [casa] = await db.select({ nome: schema.filial.nome }).from(schema.filial).where(eq(schema.filial.id, doc.filialId)).limit(1);
-      const r = await db.transaction((tx) =>
-        lancarRepasseEb(
-          tx,
-          {
-            documentoId: doc.id,
-            casaFilialId: doc.filialId,
-            casaNome: casa?.nome ?? 'casa',
-            funcionarioNome: doc.nome,
-            cpf: doc.cpf,
-            fornecedorFuncionarioId: doc.fornecedorId,
-            valor: d.valor,
-            vencimento: d.vencimento,
-            competencia,
-            observacao: obs,
-            usuarioId: user.id,
-          },
-          prep,
-        ),
-      );
-      return NextResponse.json({ ok: true, contaPagarId: r.contaCasaId, contaEmpregadorId: r.contaEbId, empregador: 'E.B.' });
-    } catch (e) {
-      if ((e as Error).message === 'JA_LANCADA') {
-        return NextResponse.json({ error: 'esse documento já virou conta a pagar' }, { status: 409 });
-      }
-      throw e;
-    }
-  }
-
   try {
-    const contaId = await db.transaction(async (tx) => {
-      const [conta] = await tx
-        .insert(schema.contaPagar)
-        .values({
-          filialId: doc.filialId,
-          criadoPor: user.id,
-          criadoEm: new Date(),
-          codigoExterno: null,
-          fornecedorId: doc.fornecedorId,
-          categoriaId: cat?.id ?? null,
-          dataVencimento: d.vencimento,
-          valor: d.valor.toFixed(2),
-          descricao: d.descricao || `Rescisão — ${doc.nome}`,
-          observacao: obs,
-          competencia,
-          origem: 'FOLHA',
-          folhaSemanaId: null,
-        })
-        .returning({ id: schema.contaPagar.id });
-      const ligou = await tx
-        .update(t)
-        .set({ contaPagarId: conta!.id })
-        .where(and(eq(t.id, doc.id), isNull(t.contaPagarId)))
-        .returning({ id: t.id });
-      if (!ligou.length) throw new Error('JA_LANCADA');
-      return conta!.id;
+    const r = await lancarContaRescisao(doc, {
+      valor: d.valor,
+      vencimento: d.vencimento,
+      descricao: d.descricao,
+      usuarioId: user.id,
     });
-    return NextResponse.json({ ok: true, contaPagarId: contaId });
+    return NextResponse.json({ ok: true, ...r });
   } catch (e) {
     if ((e as Error).message === 'JA_LANCADA') {
       return NextResponse.json({ error: 'esse documento já virou conta a pagar' }, { status: 409 });

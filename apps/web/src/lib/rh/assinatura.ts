@@ -80,3 +80,22 @@ export const ROTULO_STATUS_ASSINATURA: Record<string, string> = {
   assinado: 'assinado',
   cancelado: 'cancelado',
 };
+
+/** Rubrica feita com o dedo na tela (TRCT gerado pelo sistema, 04/11/2026). */
+export function caminhoRubricaAssinatura(filialId: string, funcionarioId: string, assinaturaId: string): string {
+  return `${pastaDocRh(filialId)}/${funcionarioId}/assinaturas/${assinaturaId}-rubrica.png`;
+}
+
+/** Rubrica do aceite → PNG de até 300 KB; qualquer coisa estranha vira null. */
+export function rubricaDoAceite(raw: unknown): Buffer | null {
+  if (!raw || typeof raw !== 'string') return null;
+  const m = raw.match(/^data:image\/png;base64,(.+)$/);
+  if (!m) return null;
+  try {
+    const buf = Buffer.from(m[1]!, 'base64');
+    if (buf.length < 200 || buf.length > 300_000) return null;
+    return buf;
+  } catch {
+    return null;
+  }
+}
