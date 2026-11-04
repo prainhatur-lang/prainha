@@ -288,7 +288,59 @@ function ComprovanteZap({ p, podeMexer }: { p: PixEnviado; podeMexer: boolean })
           </button>
         </div>
       )}
+      {podeMexer && c?.status === 'SEM_TEMPLATE' && <ModeloComprovante />}
       {aviso && <div className={`mt-0.5 ${aviso.ok ? 'text-emerald-700' : 'text-rose-700'}`}>{aviso.texto}</div>}
+    </div>
+  );
+}
+
+const SITUACAO_MODELO: Record<string, string> = {
+  aprovado: 'aprovado ✓ — já pode reenviar',
+  em_analise: 'em análise na Meta (costuma levar minutos)',
+  recusado: 'recusado pela Meta',
+  nao_existe: 'ainda não criado',
+  indisponivel: 'não consegui falar com a Meta',
+};
+
+/** Modelo `comprovante_pix` na Meta: sem ele o comprovante só sai com conversa
+ *  aberta nas últimas 24 h (03/11/2026). */
+function ModeloComprovante() {
+  const [ocupado, setOcupado] = useState(false);
+  const [estado, setEstado] = useState<{ situacao: string; detalhe?: string | null } | null>(null);
+
+  async function chamar(method: 'GET' | 'POST') {
+    setOcupado(true);
+    const r = await fetch('/api/financeiro/pedidos-pix/comprovante-modelo', { method }).catch(() => null);
+    const d = r ? ((await r.json().catch(() => ({}))) as { situacao?: string; detalhe?: string | null; error?: string }) : {};
+    setOcupado(false);
+    setEstado(d.situacao ? { situacao: d.situacao, detalhe: d.detalhe } : { situacao: 'indisponivel', detalhe: d.error ?? 'falha de rede' });
+  }
+
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-2">
+      <span className="text-amber-700">Pra sair direto sem conversa aberta, a Meta exige um modelo aprovado.</span>
+      <button
+        type="button"
+        disabled={ocupado}
+        onClick={() => void chamar('POST')}
+        className="rounded-md border border-amber-300 bg-white px-2 py-0.5 text-[11px] font-medium text-amber-800 hover:bg-amber-50 disabled:opacity-50"
+      >
+        {ocupado ? 'Falando com a Meta…' : 'Criar modelo do comprovante na Meta'}
+      </button>
+      <button
+        type="button"
+        disabled={ocupado}
+        onClick={() => void chamar('GET')}
+        className="rounded-md border border-slate-300 bg-white px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+      >
+        Ver situação
+      </button>
+      {estado && (
+        <span className={estado.situacao === 'aprovado' ? 'text-emerald-700' : 'text-slate-600'}>
+          Modelo: {SITUACAO_MODELO[estado.situacao] ?? estado.situacao}
+          {estado.detalhe ? ` — ${estado.detalhe}` : ''}
+        </span>
+      )}
     </div>
   );
 }

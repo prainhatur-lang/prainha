@@ -78,7 +78,7 @@ let wabaResolvida: string | null = null;
  * dela, procura nas contas que o token alcança (mesmo caminho do
  * /api/atendimento/numeros-meta).
  */
-async function wabaDoRemetente(): Promise<string> {
+export async function wabaDoRemetente(): Promise<string> {
   if (process.env.WHATSAPP_WABA_ID) return process.env.WHATSAPP_WABA_ID;
   if (wabaResolvida) return wabaResolvida;
   const phoneId = phoneIdPadrao();

@@ -20,6 +20,7 @@ import { db, schema } from '@concilia/db';
 import { desc, eq, sql } from 'drizzle-orm';
 import { consultarPagamentoPixInter, resolverCredenciaisInterPagamentos, type InterPixConsulta } from '@/lib/inter';
 import { celular11, rotuloMotivoFora, telefonesForaDosEnvios } from '@/lib/whatsapp-nao-enviar';
+import { estadoModeloComprovante, type EstadoModeloComprovante } from '@/lib/pix-comprovante-modelo';
 
 const VALIDADE_LINK_MS = 60 * 24 * 3600 * 1000; // 60 dias
 
@@ -484,7 +485,7 @@ export async function enviarComprovantePix(
         return r;
       }
       // conversa achou que estava aberta e não estava → tenta o template abaixo
-      if (!process.env.WHATSAPP_COMPROVANTE_TEMPLATE) {
+      if (!process.env.WHATSAPP_COMPROVANTE_TEMPLATE && (await estadoModeloComprovante()).situacao !== 'aprovado') {
         const r: ResultadoEnvioComprovante = { status: 'ERRO', telefone, modo: 'janela', mensagem: `WhatsApp recusou: ${res.erro}` };
         await gravar(r, null, res.erro ?? null);
         return r;
@@ -492,33 +493,56 @@ export async function enviarComprovantePix(
     }
 
     const template = process.env.WHATSAPP_COMPROVANTE_TEMPLATE;
+    // Sem a env (nunca foi criada): usa o `comprovante_pix` que o próprio
+    // sistema cria na Meta pelo botão da tela (03/11/2026), se já aprovado.
+    let padrao: EstadoModeloComprovante | null = null;
     if (!template) {
-      const r: ResultadoEnvioComprovante = {
-        status: 'SEM_TEMPLATE',
-        telefone,
-        modo: null,
-        mensagem: 'Sem conversa aberta e o modelo do comprovante ainda não está configurado — use o botão do wa.me.',
-      };
-      await gravar(r, null, 'WHATSAPP_COMPROVANTE_TEMPLATE ausente');
-      return r;
+      padrao = await estadoModeloComprovante();
+      if (padrao.situacao !== 'aprovado') {
+        const porque =
+          padrao.situacao === 'em_analise'
+            ? 'o modelo do comprovante está em análise na Meta'
+            : padrao.situacao === 'recusado'
+              ? `a Meta recusou o modelo do comprovante (${padrao.detalhe ?? ''})`
+              : 'o modelo do comprovante ainda não foi criado na Meta';
+        const r: ResultadoEnvioComprovante = {
+          status: 'SEM_TEMPLATE',
+          telefone,
+          modo: null,
+          mensagem: `Sem conversa aberta e ${porque} — use o botão do wa.me.`,
+        };
+        await gravar(r, null, `modelo ${padrao.nome}: ${padrao.situacao}`);
+        return r;
+      }
+    }
+    const corpo = {
+      type: 'body',
+      parameters: [d.recebedor || 'tudo bem', d.casa, brl(d.valor), d.dataCurta || 'hoje'].map((t) => ({
+        type: 'text',
+        text: t,
+      })),
+    };
+    const components: unknown[] = [];
+    if (!padrao || padrao.comDocumento) {
+      components.push({ type: 'header', parameters: [{ type: 'document', document: { link, filename: arquivo } }] });
+    }
+    components.push(corpo);
+    if (padrao && padrao.botaoUrl != null) {
+      components.push({
+        type: 'button',
+        sub_type: 'url',
+        index: String(padrao.botaoUrl),
+        parameters: [{ type: 'text', text: link.slice(link.indexOf('?') + 1) }],
+      });
     }
     const res = await postar(phoneId, {
       messaging_product: 'whatsapp',
       to: para,
       type: 'template',
       template: {
-        name: template,
-        language: { code: process.env.WHATSAPP_COMPROVANTE_LANG || 'pt_BR' },
-        components: [
-          { type: 'header', parameters: [{ type: 'document', document: { link, filename: arquivo } }] },
-          {
-            type: 'body',
-            parameters: [d.recebedor || 'tudo bem', d.casa, brl(d.valor), d.dataCurta || 'hoje'].map((t) => ({
-              type: 'text',
-              text: t,
-            })),
-          },
-        ],
+        name: template || padrao!.nome,
+        language: { code: process.env.WHATSAPP_COMPROVANTE_LANG || padrao?.idioma || 'pt_BR' },
+        components,
       },
     });
     if (res.wamid) {
