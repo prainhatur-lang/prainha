@@ -317,6 +317,12 @@ export function TrctForm(props: {
             <input className={input} value={dependentes} onChange={(e) => setDependentes(e.target.value)} inputMode="numeric" />
           </label>
         </div>
+        {admissao && afastamento && afastamento < admissao && (
+          <p className="rounded border border-rose-300 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700">
+            ⚠️ Afastamento ({fmtData(afastamento)}) antes da admissão ({fmtData(admissao)}): a data de saída está errada,
+            corrija aqui ou no cadastro.
+          </p>
+        )}
 
         <label className={rotulo}>
           Tipo de saída
