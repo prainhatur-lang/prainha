@@ -309,6 +309,90 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
       ),
     );
 
+  // --- Resultado com tudo pago (competência = vencimento no mês) ---
+  // O quadro acima conta só o que foi PAGO no mês (caixa). Este conta tudo o que VENCE no mês,
+  // pago ou não — o resultado "se tivesse dado pra pagar tudo". Fica de fora:
+  //  · conta excluída e conta que entrou num borderô (conta o borderô, como no quadro de caixa);
+  //  · ENCONTRO_CONTAS: acerto entre as casas que compensa transferências e boletos que já
+  //    estão lançados como despesa — somar de novo seria contar duas vezes;
+  //  · provisão do Consumer ("PROVISIONAMENTO ...") quando a conta de verdade do mesmo
+  //    fornecedor ou da mesma categoria já está lançada no mês (o Consumer nunca baixa a
+  //    provisão quando a conta real é paga). Provisão sem conta real fica, como estimativa.
+  // Pagamento parcial: o pedaço pago entra em "pagas", o saldo em "em aberto".
+  const tpRows = (await db.execute(sql`
+    WITH mes AS (
+      SELECT c.id, c.valor, c.valor_pago, c.data_pagamento, c.origem, c.fornecedor_id, c.categoria_id,
+             (c.origem = 'CONSUMER' AND ltrim(coalesce(c.descricao, '')) ILIKE 'provis%') AS provisao
+        FROM conta_pagar c
+       WHERE c.filial_id = ${filialId}::uuid
+         AND c.data_delete IS NULL
+         AND c.bordero_id IS NULL
+         AND c.data_vencimento BETWEEN ${ymdStart}::date AND ${ymdEnd}::date
+    ), cls AS (
+      SELECT m.*,
+             CASE
+               WHEN m.origem = 'ENCONTRO_CONTAS' THEN 'encontro'
+               WHEN m.data_pagamento IS NOT NULL THEN 'paga'
+               WHEN m.provisao AND EXISTS (
+                 SELECT 1 FROM conta_pagar o
+                  WHERE o.filial_id = ${filialId}::uuid
+                    AND o.id <> m.id
+                    AND o.data_delete IS NULL
+                    AND o.data_vencimento BETWEEN ${ymdStart}::date AND ${ymdEnd}::date
+                    AND NOT (o.origem = 'CONSUMER' AND ltrim(coalesce(o.descricao, '')) ILIKE 'provis%')
+                    AND (o.fornecedor_id = m.fornecedor_id OR o.categoria_id = m.categoria_id)
+               ) THEN 'provisao_coberta'
+               ELSE 'aberta'
+             END AS tipo
+        FROM mes m
+    )
+    SELECT
+      (coalesce(sum(coalesce(valor_pago, valor)) FILTER (WHERE tipo = 'paga'), 0)
+        + coalesce(sum(coalesce(valor_pago, 0)) FILTER (WHERE tipo = 'aberta'), 0))::float8 AS pagas,
+      count(*) FILTER (WHERE tipo = 'paga')::int AS qtd_pagas,
+      (coalesce(sum(coalesce(valor_pago, valor)) FILTER (WHERE tipo = 'paga'
+          AND data_pagamento NOT BETWEEN ${ymdStart}::date AND ${ymdEnd}::date), 0)
+        + coalesce(sum(coalesce(valor_pago, 0)) FILTER (WHERE tipo = 'aberta'), 0))::float8 AS pagas_fora,
+      coalesce(sum(greatest(valor - coalesce(valor_pago, 0), 0)) FILTER (WHERE tipo = 'aberta'), 0)::float8 AS aberto,
+      count(*) FILTER (WHERE tipo = 'aberta' AND valor - coalesce(valor_pago, 0) > 0.004)::int AS qtd_aberto,
+      coalesce(sum(greatest(valor - coalesce(valor_pago, 0), 0)) FILTER (WHERE tipo = 'aberta' AND provisao), 0)::float8 AS provisoes_abertas,
+      count(*) FILTER (WHERE tipo = 'aberta' AND provisao)::int AS qtd_provisoes_abertas,
+      coalesce(sum(valor) FILTER (WHERE tipo = 'provisao_coberta'), 0)::float8 AS provisoes_cobertas,
+      count(*) FILTER (WHERE tipo = 'provisao_coberta')::int AS qtd_provisoes_cobertas,
+      coalesce(sum(valor) FILTER (WHERE tipo = 'encontro'), 0)::float8 AS encontro,
+      count(*) FILTER (WHERE tipo = 'encontro')::int AS qtd_encontro
+    FROM cls
+  `)) as unknown as {
+    pagas: number;
+    qtd_pagas: number;
+    pagas_fora: number;
+    aberto: number;
+    qtd_aberto: number;
+    provisoes_abertas: number;
+    qtd_provisoes_abertas: number;
+    provisoes_cobertas: number;
+    qtd_provisoes_cobertas: number;
+    encontro: number;
+    qtd_encontro: number;
+  }[];
+  const tp = tpRows[0];
+
+  // Ponte com o quadro de caixa: o que ele soma (pago no mês) e este não.
+  const ponteRows = (await db.execute(sql`
+    SELECT
+      coalesce(sum(coalesce(valor_pago, valor)) FILTER (WHERE data_delete IS NOT NULL), 0)::float8 AS excluidas,
+      coalesce(sum(coalesce(valor_pago, valor)) FILTER (WHERE data_delete IS NULL
+        AND (data_vencimento IS NULL OR data_vencimento NOT BETWEEN ${ymdStart}::date AND ${ymdEnd}::date)), 0)::float8 AS outros_meses,
+      coalesce(sum(coalesce(valor_pago, valor)) FILTER (WHERE data_delete IS NULL
+        AND data_vencimento BETWEEN ${ymdStart}::date AND ${ymdEnd}::date
+        AND origem = 'ENCONTRO_CONTAS'), 0)::float8 AS encontro_pago
+      FROM conta_pagar
+     WHERE filial_id = ${filialId}::uuid
+       AND bordero_id IS NULL
+       AND data_pagamento BETWEEN ${ymdStart}::date AND ${ymdEnd}::date
+  `)) as unknown as { excluidas: number; outros_meses: number; encontro_pago: number }[];
+  const ponte = ponteRows[0];
+
   const topFornecedores = await db
     .select({
       nome: schema.fornecedor.nome,
@@ -496,6 +580,32 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
       lucro: faturamento - despesasPagas,
       margem: faturamento ? ((faturamento - despesasPagas) / faturamento) * 100 : 0,
     },
+    // Competência: tudo o que vence no mês, pago ou em aberto (ver a consulta acima).
+    resultadoTudoPago: (() => {
+      const pagas = num(tp?.pagas ?? null);
+      const aberto = num(tp?.aberto ?? null);
+      const despesas = pagas + aberto;
+      return {
+        receitas: faturamento,
+        pagas,
+        qtdPagas: tp?.qtd_pagas ?? 0,
+        pagasFora: num(tp?.pagas_fora ?? null),
+        aberto,
+        qtdAberto: tp?.qtd_aberto ?? 0,
+        provisoesAbertas: num(tp?.provisoes_abertas ?? null),
+        qtdProvisoesAbertas: tp?.qtd_provisoes_abertas ?? 0,
+        provisoesCobertas: num(tp?.provisoes_cobertas ?? null),
+        qtdProvisoesCobertas: tp?.qtd_provisoes_cobertas ?? 0,
+        encontro: num(tp?.encontro ?? null),
+        qtdEncontro: tp?.qtd_encontro ?? 0,
+        excluidasPagas: num(ponte?.excluidas ?? null),
+        outrosMeses: num(ponte?.outros_meses ?? null),
+        encontroPago: num(ponte?.encontro_pago ?? null),
+        despesas,
+        lucro: faturamento - despesas,
+        margem: faturamento ? ((faturamento - despesas) / faturamento) * 100 : 0,
+      };
+    })(),
     cobertura: {
       extratoAte: extr?.ate ?? null,
       vendaCartaoAte: vadq?.ate ?? null,

@@ -337,6 +337,72 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
           </Secao>
         </div>
 
+        {/* Resultado com tudo pago: competência (vence no mês), pago ou em aberto */}
+        {(() => {
+          const tp = d.resultadoTudoPago;
+          const linkAberto = `/financeiro?filialId=${filial.id}&dataIni=${d.periodo.ymdStart}&dataFim=${d.periodo.ymdEnd}&status=aberto`;
+          const diferenca = tp.lucro - d.resultado.lucro;
+          return (
+            <Secao titulo="Resultado com tudo pago (contas que vencem no mês)" className="mb-5">
+              <div className="grid grid-cols-2 gap-3 text-center lg:grid-cols-4">
+                <div>
+                  <p className="text-[11px] uppercase text-slate-500">Receitas</p>
+                  <p className="mt-1 text-lg font-semibold text-emerald-700">{brl(tp.receitas)}</p>
+                </div>
+                <div>
+                  <p className="text-[11px] uppercase text-slate-500">Despesas do mês</p>
+                  <p className="mt-1 text-lg font-semibold text-rose-600">{brl(tp.despesas)}</p>
+                  <p className="text-[11px] text-slate-400">pagas {brl(tp.pagas)} + em aberto {brl(tp.aberto)}</p>
+                </div>
+                <div>
+                  <p className="text-[11px] uppercase text-slate-500">Contas do mês em aberto</p>
+                  <p className={`mt-1 text-lg font-semibold ${tp.aberto > 0 ? 'text-amber-600' : 'text-slate-500'}`}>{brl(tp.aberto)}</p>
+                  <Link href={linkAberto} className="text-[11px] text-sky-700 underline hover:text-sky-900">
+                    {int(tp.qtdAberto)} {tp.qtdAberto === 1 ? 'conta' : 'contas'} · ver lista
+                  </Link>
+                </div>
+                <div>
+                  <p className="text-[11px] uppercase text-slate-500">Resultado com tudo pago</p>
+                  <p className={`mt-1 text-lg font-semibold ${tp.lucro >= 0 ? 'text-sky-700' : 'text-rose-600'}`}>{brl(tp.lucro)}</p>
+                  <p className="text-[11px] text-slate-400">margem {pct(tp.margem)}</p>
+                </div>
+              </div>
+              <div className="mt-3 space-y-1 border-t border-slate-100 pt-2 text-[11px] text-slate-500">
+                <p>
+                  Conta pela data de vencimento: tudo o que vence no mês, pago ou não, como se o dinheiro desse pra pagar
+                  tudo. O quadro de cima conta só o que saiu do caixa no mês.
+                </p>
+                {tp.qtdProvisoesAbertas > 0 && (
+                  <p>
+                    Dentro do em aberto há {brl(tp.provisoesAbertas)} de provisão do Consumer ({int(tp.qtdProvisoesAbertas)}) sem conta de
+                    verdade lançada no mês — valor estimado, confira na lista.
+                  </p>
+                )}
+                {(tp.qtdProvisoesCobertas > 0 || tp.qtdEncontro > 0) && (
+                  <p>
+                    Não entra:
+                    {tp.qtdProvisoesCobertas > 0 && (
+                      <> provisão do Consumer que já tem a conta de verdade no mês {brl(tp.provisoesCobertas)} ({int(tp.qtdProvisoesCobertas)})</>
+                    )}
+                    {tp.qtdProvisoesCobertas > 0 && tp.qtdEncontro > 0 && ' ·'}
+                    {tp.qtdEncontro > 0 && (
+                      <> encontro de contas entre as casas {brl(tp.encontro)} ({int(tp.qtdEncontro)}), que só compensa transferência e boleto já lançados</>
+                    )}
+                    .
+                  </p>
+                )}
+                <p className="text-slate-400">
+                  Do quadro de cima pra este ({diferenca >= 0 ? '+' : '−'}{brl(Math.abs(diferenca))} no resultado): saem as pagas de outros
+                  meses {brl(tp.outrosMeses)}
+                  {tp.excluidasPagas > 0.004 && <>, as excluídas {brl(tp.excluidasPagas)}</>}
+                  {tp.encontroPago > 0.004 && <> e o encontro de contas pago {brl(tp.encontroPago)}</>}; entram o em aberto do mês {brl(tp.aberto)}
+                  {tp.pagasFora > 0.004 && <> e as do mês pagas fora dele {brl(tp.pagasFora)}</>}.
+                </p>
+              </div>
+            </Secao>
+          );
+        })()}
+
         {/* Cobertura & conciliação */}
         <Secao titulo="Cobertura & conciliação" className="mb-5">
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
