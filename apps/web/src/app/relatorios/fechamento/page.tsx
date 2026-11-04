@@ -345,6 +345,143 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
           </Secao>
         </div>
 
+        {/* Sobrou ou faltou? Caixa do mês × contas do mês que ficaram sem pagar */}
+        {(() => {
+          const tp = d.resultadoTudoPago;
+          const linkAberto = `/financeiro?filialId=${filial.id}&dataIni=${d.periodo.ymdStart}&dataFim=${d.periodo.ymdEnd}&status=aberto`;
+          // mês em andamento: conta só o que já venceu até hoje; o que vence depois fica à parte
+          const aVencer = mesEncerrado ? 0 : tp.abertoAVencer;
+          const naoPago = tp.naoPagoNoMes - aVencer;
+          const real = tp.sobraReal + aVencer;
+          const sobrou = real >= 0;
+          const doFat = (v: number) => (tp.receitas ? pct((Math.abs(v) / tp.receitas) * 100) : '—');
+          const deOutrosMeses = tp.pagoDeMesesAnteriores + tp.pagoAdiantado;
+          // o "Resultado operacional" de cima também soma conta excluída com baixa e encontro de contas
+          const difCima = tp.sobraCaixa - d.resultado.lucro;
+          const outrosCima = difCima - tp.excluidasPagas - tp.encontroPagoNoMes;
+          let frase: string;
+          if (!sobrou && tp.sobraCaixa > 0) {
+            frase = `O caixa do mês mostra ${brl(tp.sobraCaixa)} de sobra, mas só porque ${brl(naoPago)} de contas do mês ficaram sem pagar no mês. Isso não é sobra: pagando o que era do mês, faltaram ${brl(-real)}.`;
+          } else if (!sobrou) {
+            frase =
+              `As vendas não cobriram nem o que foi pago no mês (${brl(-tp.sobraCaixa)} a menos)` +
+              (naoPago > 0.004
+                ? `, e ainda ficaram ${brl(naoPago)} de contas do mês sem pagar. No total faltaram ${brl(-real)}.`
+                : '.');
+          } else if (naoPago > 0.004) {
+            frase = `Sobrou de verdade ${brl(real)}. O caixa mostra ${brl(tp.sobraCaixa)}, mas ${brl(naoPago)} disso é conta do mês que ficou sem pagar no mês e já foi descontada.`;
+          } else {
+            frase = `Sobrou de verdade ${brl(real)}: todas as contas do mês foram pagas dentro do mês.`;
+          }
+          return (
+            <Secao titulo="Sobrou ou faltou no mês?" className="mb-5">
+              <div
+                className={`mb-3 rounded-lg border px-4 py-3 ${sobrou ? 'border-emerald-200 bg-emerald-50' : 'border-rose-200 bg-rose-50'}`}
+              >
+                <p className={`text-2xl font-bold ${sobrou ? 'text-emerald-700' : 'text-rose-700'}`}>
+                  {!mesEncerrado && 'Até hoje: '}
+                  {sobrou ? 'Sobrou' : 'Faltou'} {brl(Math.abs(real))}
+                  <span className="ml-2 text-sm font-medium">({doFat(real)} das vendas)</span>
+                </p>
+                <p className="mt-1 text-sm text-slate-700">{frase}</p>
+              </div>
+              <div className="divide-y divide-slate-100 text-sm">
+                <div className="flex items-baseline justify-between gap-3 py-1.5">
+                  <span className="text-slate-700">Vendas do mês</span>
+                  <span className="font-semibold text-emerald-700">{brl(tp.receitas)}</span>
+                </div>
+                <div className="flex items-baseline justify-between gap-3 py-1.5">
+                  <span className="text-slate-700">
+                    − Pago no mês
+                    {deOutrosMeses > 0.004 && (
+                      <span className="block text-[11px] text-slate-400">
+                        {tp.pagoDeMesesAnteriores > 0.004 && <>inclui {brl(tp.pagoDeMesesAnteriores)} de contas de meses anteriores (atraso que vinha de trás)</>}
+                        {tp.pagoDeMesesAnteriores > 0.004 && tp.pagoAdiantado > 0.004 && ' e '}
+                        {tp.pagoAdiantado > 0.004 && <>{brl(tp.pagoAdiantado)} de contas que vencem depois (adiantadas)</>}
+                      </span>
+                    )}
+                  </span>
+                  <span className="font-semibold text-rose-600">− {brl(tp.pagoNoMes)}</span>
+                </div>
+                <div className="flex items-baseline justify-between gap-3 bg-slate-50 px-1 py-1.5">
+                  <span className="font-medium text-slate-800">
+                    = Ficou no caixa do mês
+                    <span className="block text-[11px] font-normal text-slate-400">vendas − o que foi pago; é a &quot;sobra&quot; que aparece</span>
+                  </span>
+                  <span className={`font-semibold ${tp.sobraCaixa >= 0 ? 'text-slate-800' : 'text-rose-600'}`}>{brl(tp.sobraCaixa)}</span>
+                </div>
+                <div className="flex items-baseline justify-between gap-3 py-1.5">
+                  <span className="text-slate-700">
+                    {mesEncerrado ? '− Contas do mês que ficaram sem pagar no mês' : '− Contas do mês já vencidas e sem pagar'}
+                    <span className="block text-[11px] text-slate-400">
+                      em aberto hoje {brl(tp.aberto - aVencer)} (
+                      <Link href={linkAberto} className="text-sky-700 underline hover:text-sky-900">
+                        {int(tp.qtdAberto)} {tp.qtdAberto === 1 ? 'conta' : 'contas'} · ver lista
+                      </Link>
+                      )
+                      {tp.pagasFora > 0.004 && <> · pagas só depois do mês {brl(tp.pagasFora)}</>}
+                    </span>
+                  </span>
+                  <span className="font-semibold text-amber-600">− {brl(naoPago)}</span>
+                </div>
+                <div className="flex items-baseline justify-between gap-3 py-2">
+                  <span className={`font-semibold ${sobrou ? 'text-emerald-700' : 'text-rose-700'}`}>
+                    = {sobrou ? 'Sobrou de verdade' : 'Faltou'}
+                  </span>
+                  <span className={`text-lg font-bold ${sobrou ? 'text-emerald-700' : 'text-rose-700'}`}>
+                    {sobrou ? '' : '− '}
+                    {brl(Math.abs(real))}
+                  </span>
+                </div>
+                {aVencer > 0.004 && (
+                  <div className="flex items-baseline justify-between gap-3 py-1.5 text-slate-500">
+                    <span>
+                      Ainda vence até o fim do mês
+                      <span className="block text-[11px] text-slate-400">conta em aberto que não venceu — não foi descontada acima</span>
+                    </span>
+                    <span className="font-medium">{brl(aVencer)}</span>
+                  </div>
+                )}
+              </div>
+              <div className="mt-3 space-y-1 border-t border-slate-100 pt-2 text-[11px] text-slate-500">
+                {!mesEncerrado && (
+                  <p className="font-medium text-amber-700">
+                    Mês em andamento: a conta é até hoje. Ainda entram vendas e pagamentos, e o que vence depois de hoje está à parte.
+                  </p>
+                )}
+                <p>
+                  Vendas = contas fechadas no mês (cartão e Pix podem cair no banco depois). Não é o saldo do banco — esse está em
+                  Movimento bancário.
+                </p>
+                {tp.qtdProvisoesAbertas > 0 && (
+                  <p>
+                    Nas contas sem pagar há {brl(tp.provisoesAbertas)} de provisão do Consumer ({int(tp.qtdProvisoesAbertas)}), valor estimado.
+                  </p>
+                )}
+                {deOutrosMeses > 0.004 && (
+                  <p>
+                    Só com as contas que vencem no mês o resultado seria {brl(tp.lucro)} (quadro abaixo); a diferença são as contas de outros
+                    meses pagas com o dinheiro deste ({brl(deOutrosMeses)}).
+                  </p>
+                )}
+                {Math.abs(difCima) > 0.5 && (
+                  <p className="text-slate-400">
+                    O &quot;Resultado operacional&quot; lá em cima dá {brl(d.resultado.lucro)} porque também soma{' '}
+                    {[
+                      tp.excluidasPagas > 0.004 ? `conta excluída que tinha baixa (${brl(tp.excluidasPagas)})` : null,
+                      tp.encontroPagoNoMes > 0.004 ? `encontro de contas entre as casas (${brl(tp.encontroPagoNoMes)})` : null,
+                      Math.abs(outrosCima) > 0.5 ? `outros lançamentos (${brl(outrosCima)})` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' e ')}
+                    .
+                  </p>
+                )}
+              </div>
+            </Secao>
+          );
+        })()}
+
         {/* Resultado com tudo pago: competência (vence no mês), pago ou em aberto */}
         {(() => {
           const tp = d.resultadoTudoPago;

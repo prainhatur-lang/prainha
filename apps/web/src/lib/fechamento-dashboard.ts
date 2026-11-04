@@ -4,7 +4,7 @@
 
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, gte, inArray, isNull, isNotNull, lte, sql } from 'drizzle-orm';
-import { brDateStart, brDateEnd } from './datas';
+import { brDateStart, brDateEnd, hojeBr } from './datas';
 
 const num = (v: string | number | null): number => (v == null ? 0 : Number(v));
 
@@ -321,7 +321,7 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
   // Pagamento parcial: o pedaço pago entra em "pagas", o saldo em "em aberto".
   const tpRows = (await db.execute(sql`
     WITH mes AS (
-      SELECT c.id, c.valor, c.valor_pago, c.data_pagamento, c.origem, c.fornecedor_id, c.categoria_id,
+      SELECT c.id, c.valor, c.valor_pago, c.data_pagamento, c.data_vencimento, c.origem, c.fornecedor_id, c.categoria_id,
              (c.origem = 'CONSUMER' AND ltrim(coalesce(c.descricao, '')) ILIKE 'provis%') AS provisao
         FROM conta_pagar c
        WHERE c.filial_id = ${filialId}::uuid
@@ -360,7 +360,9 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
       coalesce(sum(valor) FILTER (WHERE tipo = 'provisao_coberta'), 0)::float8 AS provisoes_cobertas,
       count(*) FILTER (WHERE tipo = 'provisao_coberta')::int AS qtd_provisoes_cobertas,
       coalesce(sum(valor) FILTER (WHERE tipo = 'encontro'), 0)::float8 AS encontro,
-      count(*) FILTER (WHERE tipo = 'encontro')::int AS qtd_encontro
+      count(*) FILTER (WHERE tipo = 'encontro')::int AS qtd_encontro,
+      coalesce(sum(greatest(valor - coalesce(valor_pago, 0), 0)) FILTER (WHERE tipo = 'aberta'
+        AND data_vencimento > ${hojeBr()}::date), 0)::float8 AS aberto_a_vencer
     FROM cls
   `)) as unknown as {
     pagas: number;
@@ -374,6 +376,7 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
     qtd_provisoes_cobertas: number;
     encontro: number;
     qtd_encontro: number;
+    aberto_a_vencer: number;
   }[];
   const tp = tpRows[0];
 
@@ -392,6 +395,40 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
        AND data_pagamento BETWEEN ${ymdStart}::date AND ${ymdEnd}::date
   `)) as unknown as { excluidas: number; outros_meses: number; encontro_pago: number }[];
   const ponte = ponteRows[0];
+
+  // Sobrou ou faltou? O que saiu de verdade no mês (sem excluída, sem borderô, sem encontro de
+  // contas) e quanto disso pagou conta de outro mês. Com o "em aberto" e as "pagas fora do mês"
+  // da consulta de cima dá pra separar a sobra de verdade da sobra que só existe porque ficou
+  // conta sem pagar: sobra de verdade = vendas − pago no mês − contas do mês não pagas no mês.
+  const cxRows = (await db.execute(sql`
+    SELECT
+      coalesce(sum(coalesce(valor_pago, valor)) FILTER (WHERE origem IS DISTINCT FROM 'ENCONTRO_CONTAS'
+        AND data_pagamento BETWEEN ${ymdStart}::date AND ${ymdEnd}::date), 0)::float8 AS pago_no_mes,
+      coalesce(sum(coalesce(valor_pago, valor)) FILTER (WHERE origem IS DISTINCT FROM 'ENCONTRO_CONTAS'
+        AND data_pagamento BETWEEN ${ymdStart}::date AND ${ymdEnd}::date
+        AND (data_vencimento IS NULL OR data_vencimento < ${ymdStart}::date)), 0)::float8 AS de_meses_anteriores,
+      coalesce(sum(coalesce(valor_pago, valor)) FILTER (WHERE origem IS DISTINCT FROM 'ENCONTRO_CONTAS'
+        AND data_pagamento BETWEEN ${ymdStart}::date AND ${ymdEnd}::date
+        AND data_vencimento > ${ymdEnd}::date), 0)::float8 AS adiantadas,
+      coalesce(sum(coalesce(valor_pago, valor)) FILTER (WHERE origem IS DISTINCT FROM 'ENCONTRO_CONTAS'
+        AND data_vencimento BETWEEN ${ymdStart}::date AND ${ymdEnd}::date
+        AND data_pagamento > ${ymdEnd}::date), 0)::float8 AS pagas_depois,
+      coalesce(sum(coalesce(valor_pago, valor)) FILTER (WHERE origem = 'ENCONTRO_CONTAS'
+        AND data_pagamento BETWEEN ${ymdStart}::date AND ${ymdEnd}::date), 0)::float8 AS encontro_no_mes
+      FROM conta_pagar
+     WHERE filial_id = ${filialId}::uuid
+       AND data_delete IS NULL
+       AND bordero_id IS NULL
+       AND (data_pagamento BETWEEN ${ymdStart}::date AND ${ymdEnd}::date
+            OR (data_vencimento BETWEEN ${ymdStart}::date AND ${ymdEnd}::date AND data_pagamento > ${ymdEnd}::date))
+  `)) as unknown as {
+    pago_no_mes: number;
+    de_meses_anteriores: number;
+    adiantadas: number;
+    pagas_depois: number;
+    encontro_no_mes: number;
+  }[];
+  const cx = cxRows[0];
 
   const topFornecedores = await db
     .select({
@@ -604,6 +641,17 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
         despesas,
         lucro: faturamento - despesas,
         margem: faturamento ? ((faturamento - despesas) / faturamento) * 100 : 0,
+        // Sobrou ou faltou (caixa do mês × conta que ficou sem pagar)
+        pagoNoMes: num(cx?.pago_no_mes ?? null),
+        pagoDeMesesAnteriores: num(cx?.de_meses_anteriores ?? null),
+        pagoAdiantado: num(cx?.adiantadas ?? null),
+        pagasDepois: num(cx?.pagas_depois ?? null),
+        encontroPagoNoMes: num(cx?.encontro_no_mes ?? null),
+        // em aberto que ainda não venceu (só existe no mês em andamento)
+        abertoAVencer: num(tp?.aberto_a_vencer ?? null),
+        sobraCaixa: faturamento - num(cx?.pago_no_mes ?? null),
+        naoPagoNoMes: aberto + num(tp?.pagas_fora ?? null),
+        sobraReal: faturamento - num(cx?.pago_no_mes ?? null) - aberto - num(tp?.pagas_fora ?? null),
       };
     })(),
     cobertura: {
