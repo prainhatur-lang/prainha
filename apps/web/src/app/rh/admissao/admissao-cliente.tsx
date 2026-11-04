@@ -82,7 +82,15 @@ interface Aso {
   hora: string;
   observacao: string;
 }
-const ASO_VAZIO: Aso = { clinica: '', endereco: '', telefone: '', data: '', hora: '', observacao: '' };
+// Clínica de sempre (contas pagas de ASO vão pra MEDSEG, CNPJ 43.017.222/0001-20). Dá pra trocar no formulário.
+const ASO_VAZIO: Aso = {
+  clinica: 'MEDSEG (Centro Médico do Trabalhador)',
+  endereco: 'Rua Bahia, 1429, Siqueira Campos, Aracaju-SE',
+  telefone: '(79) 3012-2050',
+  data: '',
+  hora: '',
+  observacao: '',
+};
 const CHAVE_CLINICA = 'rh_admissao_clinica_aso';
 /** Clínica usada da última vez (só conveniência deste navegador). */
 function clinicaSalva(): Pick<Aso, 'clinica' | 'endereco' | 'telefone'> | null {
