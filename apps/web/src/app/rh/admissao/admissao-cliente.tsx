@@ -53,6 +53,7 @@ interface Convite {
   termos: { cargo?: string; modelo?: string; valor?: string; admissao?: string; aso?: Aso };
   link: string;
   guiaAso?: string | null;
+  email?: string;
   expiraEm: string;
   criadoEm: string;
   abertoEm: string | null;
@@ -164,6 +165,7 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
   const [asoPara, setAsoPara] = useState<string | null>(null);
   const [asoRegistro, setAsoRegistro] = useState('');
   const [asoEnviando, setAsoEnviando] = useState(false);
+  const [asoEmail, setAsoEmail] = useState('');
   useEffect(() => {
     const c0 = clinicaSalva();
     if (c0) setAso((a) => ({ ...a, ...c0 }));
@@ -314,10 +316,11 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
   function abrirAso(v: Convite) {
     setAsoPara(asoPara === v.id ? null : v.id);
     setAsoRegistro(v.termos.admissao ?? '');
+    setAsoEmail(v.email ?? '');
     if (v.termos.aso) setAso(v.termos.aso);
   }
 
-  async function enviarAso(v: Convite) {
+  async function enviarAso(v: Convite, por: 'whatsapp' | 'email' = 'whatsapp') {
     setAsoEnviando(true);
     try {
       const r = await fetch('/api/rh/admissao', {
@@ -327,13 +330,15 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
           acao: 'aso',
           id: v.id,
           aso,
+          ...(asoEmail.trim() ? { email: asoEmail.trim() } : {}),
           ...(v.status !== 'assinado' && asoRegistro ? { admissao: asoRegistro } : {}),
         }),
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error ?? 'falhou');
       guardarClinica(aso);
-      window.open(j.whatsapp, '_blank');
+      if (por === 'email') window.location.href = j.email;
+      else window.open(j.whatsapp, '_blank');
       setAsoPara(null);
       void carregar();
     } catch (e) {
@@ -706,6 +711,10 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
                           </button>
                         </label>
                       )}
+                      <label className="text-xs text-slate-600">
+                        E-mail da pessoa (pro envio por e-mail)
+                        <input type="email" className={inp} value={asoEmail} placeholder="nome@exemplo.com" onChange={(e) => setAsoEmail(e.target.value)} />
+                      </label>
                     </div>
                     <button
                       className="mt-3 rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
@@ -713,6 +722,14 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
                       onClick={() => enviarAso(v)}
                     >
                       {asoEnviando ? 'Salvando…' : '📲 Salvar e mandar no WhatsApp'}
+                    </button>
+                    <button
+                      className="ml-2 mt-3 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                      disabled={!asoOk(aso) || asoEnviando || !/^\S+@\S+\.\S+$/.test(asoEmail.trim())}
+                      onClick={() => enviarAso(v, 'email')}
+                      title="Abre o seu e-mail já com o pedido escrito; é só apertar Enviar"
+                    >
+                      📧 Salvar e mandar por e-mail
                     </button>
                   </div>
                 )}

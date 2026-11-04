@@ -50,6 +50,13 @@ async function usuario() {
 const soDig = (s: string) => String(s ?? '').replace(/\D/g, '');
 
 /** Telefone no formato do wa.me (55 + DDD + número). */
+/** E-mail que a pessoa preencheu no link ou, antes disso, o que veio do SPC. */
+function emailDoConvite(pessoais: unknown, dadosSpc: unknown): string {
+  const de = (o: unknown) =>
+    o && typeof o === 'object' && typeof (o as { email?: unknown }).email === 'string' ? (o as { email: string }).email.trim() : '';
+  return de(pessoais) || de(dadosSpc);
+}
+
 function foneWa(t: string): string | null {
   let d = soDig(t);
   if (d.startsWith('0')) d = d.replace(/^0+/, '');
@@ -83,6 +90,8 @@ export async function GET(req: Request) {
       funcionarioId: C.funcionarioId,
       assinaturaId: C.assinaturaId,
       documentos: C.documentos,
+      pessoais: C.pessoais,
+      dadosSpc: C.dadosSpc,
     })
     .from(C)
     .where(eq(C.filialId, filialId))
@@ -102,6 +111,9 @@ export async function GET(req: Request) {
       token: undefined,
       docs: Array.isArray(r.documentos) ? r.documentos.length : 0,
       documentos: undefined,
+      email: emailDoConvite(r.pessoais, r.dadosSpc),
+      pessoais: undefined,
+      dadosSpc: undefined,
       vencido: r.status !== 'assinado' && r.status !== 'cancelado' && r.expiraEm.getTime() < Date.now(),
     })),
   });
@@ -151,6 +163,7 @@ const Body = z.discriminatedUnion('acao', [
     acao: z.literal('aso'),
     id: z.string().uuid(),
     aso: Aso,
+    email: z.string().max(200).optional(),
     // Muda a data do registro junto (normalmente a segunda-feira).
     admissao: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   }),
@@ -182,7 +195,7 @@ export async function POST(req: Request) {
   if (b.acao === 'aso') {
     const C = schema.admissaoConvite;
     const [c] = await db
-      .select({ filialId: C.filialId, status: C.status, termos: C.termos, token: C.token, nome: C.nome, telefone: C.telefone, expiraEm: C.expiraEm })
+      .select({ filialId: C.filialId, status: C.status, termos: C.termos, token: C.token, nome: C.nome, telefone: C.telefone, expiraEm: C.expiraEm, pessoais: C.pessoais, dadosSpc: C.dadosSpc })
       .from(C)
       .where(eq(C.id, b.id))
       .limit(1);
@@ -195,7 +208,12 @@ export async function POST(req: Request) {
     await db.update(C).set({ termos: t }).where(eq(C.id, b.id));
     const primeiro = c.nome.trim().split(/\s+/)[0];
     const texto = `Olá, ${primeiro}! Aqui é do RH do Prainha.\n\n${textoAsoWhatsapp(b.aso, t.admissao, c.token)}`;
-    return NextResponse.json({ ok: true, whatsapp: `https://wa.me/${c.telefone}?text=${encodeURIComponent(texto)}` });
+    // Mesmo texto pro e-mail (mailto: abre o e-mail de quem está no RH, já preenchido).
+    const para = (b.email ?? '').trim() || emailDoConvite(c.pessoais, c.dadosSpc);
+    const corpo = texto.replace(/\*/g, '') + '\n\nQualquer dúvida, responda este e-mail ou chame no WhatsApp.\nRH Prainha';
+    const assunto = `Exame admissional (ASO) — ${c.nome.trim()}`;
+    const email = `mailto:${encodeURIComponent(para)}?subject=${encodeURIComponent(assunto)}&body=${encodeURIComponent(corpo)}`;
+    return NextResponse.json({ ok: true, whatsapp: `https://wa.me/${c.telefone}?text=${encodeURIComponent(texto)}`, email, para });
   }
 
   if (!(await acessoFilial(user.id, b.filialId))) return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
