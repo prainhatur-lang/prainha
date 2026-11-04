@@ -12,7 +12,7 @@ import { eq } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { hojeBr } from '@/lib/datas';
 import { calcularFolhaMensal } from '@/lib/rh/folha-mensal';
-import { horasDoMesPorCpf } from '@/lib/rh/folha-mensal-dados';
+import { horasDoMesPorCpf, salarioFamiliaPorCpf } from '@/lib/rh/folha-mensal-dados';
 import { proximosFeriados } from '@/lib/reservas/feriados';
 import { TrctForm } from './trct-form';
 
@@ -61,6 +61,44 @@ export default async function RescisaoPage(props: { params: Promise<{ id: string
     }
   }
 
+  // Salário-família: cotas da última folha do contador (rubrica 995), inclusive
+  // a do próprio mês da saída se já tiver.
+  let salFamilia: { cotas: number; valorCota: number } | null = null;
+  const cpfLimpo = (f.cpf ?? '').replace(/\D/g, '');
+  if (cpfLimpo) {
+    const [a, m] = afastamento.split('-').map(Number);
+    const compSeguinte = m === 12 ? `${a + 1}-01` : `${a}-${String(m + 1).padStart(2, '0')}`;
+    try {
+      salFamilia = (await salarioFamiliaPorCpf([cpfLimpo], compSeguinte)).get(cpfLimpo) ?? null;
+    } catch {
+      salFamilia = null;
+    }
+  }
+
+  // Endereço do empregador: da casa com o mesmo CNPJ (cadastro fiscal) ou o da E.B.
+  const cnpjEmp = (f.cnpjRegistro ?? '').replace(/\D/g, '');
+  let empregador = { endereco: '', bairro: '', municipio: 'ARACAJU', uf: 'SE', cep: '', cnae: '' };
+  if (cnpjEmp === '05486249000172') {
+    empregador = { endereco: 'Rua R ZAQUEU BRANDAO, 752', bairro: 'SALGADO FILHO', municipio: 'ARACAJU', uf: 'SE', cep: '49020595', cnae: '5620-1/04' };
+  } else if (cnpjEmp) {
+    const [casa] = await db
+      .select({ fiscal: schema.filial.fiscalConfig })
+      .from(schema.filial)
+      .where(eq(schema.filial.cnpj, cnpjEmp))
+      .limit(1);
+    const e = casa?.fiscal?.endereco;
+    if (e) {
+      empregador = {
+        endereco: [e.logradouro, e.numero, e.complemento].filter(Boolean).join(', '),
+        bairro: e.bairro ?? '',
+        municipio: e.municipio ?? 'ARACAJU',
+        uf: e.uf ?? 'SE',
+        cep: e.cep ?? '',
+        cnae: '',
+      };
+    }
+  }
+
   return (
     <main className="min-h-screen bg-slate-50 print:bg-white">
       <div className="print:hidden">
@@ -78,7 +116,10 @@ export default async function RescisaoPage(props: { params: Promise<{ id: string
           </p>
         </div>
         <TrctForm
+          funcionarioId={f.id}
+          empregador={empregador}
           pessoa={{
+            nascimento: f.dataNascimento ?? null,
             nome: f.nome,
             cpf: f.cpf,
             endereco: f.endereco,
@@ -96,6 +137,7 @@ export default async function RescisaoPage(props: { params: Promise<{ id: string
             admissao: f.dataAdmissao ?? '',
             afastamento,
             noturno: Math.round(noturno * 100) / 100,
+            salFamilia,
           }}
         />
       </section>

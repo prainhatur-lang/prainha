@@ -1,8 +1,9 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, Fragment } from 'react';
 import {
   AVISO_LABEL,
+  CAUSA_AFASTAMENTO,
   CODIGO_AFASTAMENTO,
   TIPO_LABEL,
   calcularTrct,
@@ -15,6 +16,7 @@ import {
 } from '@/lib/rh/trct';
 
 interface Pessoa {
+  nascimento: string | null;
   nome: string;
   cpf: string | null;
   endereco: string | null;
@@ -38,6 +40,57 @@ const fmtCnpj = (c: string | null) => {
   const d = (c ?? '').replace(/\D/g, '');
   return d.length === 14 ? `${d.slice(0, 2)}.${d.slice(2, 5)}.${d.slice(5, 8)}/${d.slice(8, 12)}-${d.slice(12)}` : c || '—';
 };
+const fmtCep = (c: string) => {
+  const d = (c ?? '').replace(/\D/g, '');
+  return d.length === 8 ? `${d.slice(0, 2)}.${d.slice(2, 5)}-${d.slice(5)}` : c;
+};
+const fmtValor = (v: number) => v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+interface Empregador {
+  endereco: string;
+  bairro: string;
+  municipio: string;
+  uf: string;
+  cep: string;
+  cnae: string;
+}
+
+/** Campos do TRCT oficial que o cadastro não tem (PIS, CTPS, mãe...). Ficam
+ *  guardados neste navegador por funcionário. Vazio = o sistema preenche. */
+interface DadosTermo {
+  pis: string;
+  ctps: string;
+  mae: string;
+  nascimento: string;
+  endereco: string;
+  bairro: string;
+  municipio: string;
+  uf: string;
+  cep: string;
+  empEndereco: string;
+  empBairro: string;
+  empMunicipio: string;
+  empUf: string;
+  empCep: string;
+  cnae: string;
+  tomador: string;
+  codSindical: string;
+  entidadeSindical: string;
+  categoria: string;
+  pensaoTrct: string;
+  pensaoFgts: string;
+  tipoContrato: string;
+  dataAviso: string;
+  remAnterior: string;
+  salFamilia: string;
+  pagamento: string;
+  preposto: string;
+  prepostoCargo: string;
+}
+
+const CONTRATO_INDETERMINADO = '1. Contrato de trabalho por prazo indeterminado';
+const CONTRATO_EXPERIENCIA =
+  '3. Contrato de trabalho por prazo determinado sem cláusula assecuratória de direito recíproco de rescisão antecipada';
 const num = (s: string) => {
   const n = Number(String(s).replace(/\./g, '').replace(',', '.'));
   return Number.isFinite(n) ? n : 0;
@@ -58,10 +111,68 @@ function tipoSugerido(admissao: string, afastamento: string, motivo: string | nu
 }
 
 export function TrctForm(props: {
+  funcionarioId: string;
+  empregador: Empregador;
   pessoa: Pessoa;
-  inicial: { salario: number; admissao: string; afastamento: string; noturno: number };
+  inicial: {
+    salario: number;
+    admissao: string;
+    afastamento: string;
+    noturno: number;
+    salFamilia: { cotas: number; valorCota: number } | null;
+  };
 }) {
-  const { pessoa, inicial } = props;
+  const { pessoa, inicial, empregador } = props;
+  const chave = `trct-dados:${props.funcionarioId}`;
+  const [dados, setDados] = useState<DadosTermo>({
+    pis: '',
+    ctps: '',
+    mae: '',
+    nascimento: pessoa.nascimento ?? '',
+    endereco: pessoa.endereco ?? '',
+    bairro: '',
+    municipio: 'ARACAJU',
+    uf: 'SE',
+    cep: '',
+    empEndereco: empregador.endereco,
+    empBairro: empregador.bairro,
+    empMunicipio: empregador.municipio,
+    empUf: empregador.uf,
+    empCep: empregador.cep,
+    cnae: empregador.cnae,
+    tomador: '',
+    codSindical: '',
+    entidadeSindical: '',
+    categoria: '01 - Empregado',
+    pensaoTrct: '0,00',
+    pensaoFgts: '0,00',
+    tipoContrato: '',
+    dataAviso: '',
+    remAnterior: '',
+    salFamilia: '',
+    pagamento: '',
+    preposto: 'ELISON VIEIRA SANTOS DO BOMFIM',
+    prepostoCargo: 'SOCIO',
+  });
+  const [carregou, setCarregou] = useState(false);
+  useEffect(() => {
+    try {
+      const salvo = window.localStorage.getItem(chave);
+      if (salvo) setDados((d) => ({ ...d, ...(JSON.parse(salvo) as Partial<DadosTermo>) }));
+    } catch {
+      /* sem armazenamento: segue com o padrão */
+    }
+    setCarregou(true);
+  }, [chave]);
+  useEffect(() => {
+    if (!carregou) return;
+    try {
+      window.localStorage.setItem(chave, JSON.stringify(dados));
+    } catch {
+      /* ignora */
+    }
+  }, [carregou, chave, dados]);
+  const setD = (k: keyof DadosTermo) => (e: { target: { value: string } }) => setDados((d) => ({ ...d, [k]: e.target.value }));
   const [salario, setSalario] = useState(String(inicial.salario || ''));
   const [admissao, setAdmissao] = useState(inicial.admissao);
   const [afastamento, setAfastamento] = useState(inicial.afastamento);
@@ -74,16 +185,31 @@ export function TrctForm(props: {
   const [adiant13, setAdiant13] = useState('');
   const [dependentes, setDependentes] = useState('0');
   const [saldoFgts, setSaldoFgts] = useState('');
-  const [extras, setExtras] = useState<{ descricao: string; valor: string; tipo: 'P' | 'D'; tributavel: boolean }[]>(
+  const [extras, setExtras] = useState<{ descricao: string; valor: string; tipo: 'P' | 'D'; tributavel: boolean; codigo?: string }[]>(
     inicial.noturno > 0
-      ? [{ descricao: 'Adicional noturno e reflexos do mês (ponto)', valor: inicial.noturno.toFixed(2).replace('.', ','), tipo: 'P', tributavel: true }]
+      ? [{ descricao: 'Adicional noturno e reflexos do mês (ponto)', valor: inicial.noturno.toFixed(2).replace('.', ','), tipo: 'P', tributavel: true, codigo: '55' }]
       : [],
   );
+
+  // Salário-família automático: cotas da folha do contador, proporcional aos dias do mês.
+  const diasMesSaida = useMemo(() => {
+    if (!admissao || !afastamento) return 30;
+    const [a, m, d] = afastamento.split('-').map(Number);
+    const ini = `${a}-${String(m).padStart(2, '0')}-01`;
+    const de = admissao > ini ? admissao : ini;
+    const ultimo = new Date(Date.UTC(a, m, 0)).getUTCDate();
+    if (de === ini && d === ultimo) return 30;
+    return Math.max(0, Math.min(30, diasEntre(de, afastamento) + 1));
+  }, [admissao, afastamento]);
+  const salFamiliaAuto = inicial.salFamilia
+    ? Math.round(inicial.salFamilia.cotas * inicial.salFamilia.valorCota * (diasMesSaida / 30) * 100) / 100
+    : 0;
+  const salFamiliaValor = dados.salFamilia.trim() ? num(dados.salFamilia) : salFamiliaAuto;
 
   const calc = useMemo(() => {
     if (!admissao || !afastamento || !(num(salario) > 0) || afastamento < admissao) return null;
     const ex: ExtraTrct[] = extras
-      .map((e) => ({ descricao: e.descricao, valor: num(e.valor), tipo: e.tipo, tributavel: e.tributavel }))
+      .map((e) => ({ descricao: e.descricao, valor: num(e.valor), tipo: e.tipo, tributavel: e.tributavel, codigo: e.codigo }))
       .filter((e) => e.valor > 0);
     return calcularTrct({
       salario: num(salario),
@@ -98,8 +224,23 @@ export function TrctForm(props: {
       dependentesIr: Number(dependentes) || 0,
       saldoFgts: saldoFgts ? num(saldoFgts) : null,
       extras: ex,
+      salarioFamilia: salFamiliaValor,
     });
-  }, [salario, admissao, afastamento, tipo, aviso, fimExp, art480, feriasVenc, adiant13, dependentes, saldoFgts, extras]);
+  }, [salario, admissao, afastamento, tipo, aviso, fimExp, art480, feriasVenc, adiant13, dependentes, saldoFgts, extras, salFamiliaValor]);
+
+  // Campo 23: remuneração do mês anterior ao afastamento (proporcional se entrou nele).
+  const remAnteriorAuto = useMemo(() => {
+    if (!admissao || !afastamento) return 0;
+    const [a, m] = afastamento.split('-').map(Number);
+    const pa = m === 1 ? a - 1 : a;
+    const pm = m === 1 ? 12 : m - 1;
+    const ini = `${pa}-${String(pm).padStart(2, '0')}-01`;
+    const ultimo = new Date(Date.UTC(pa, pm, 0)).getUTCDate();
+    const fim = `${pa}-${String(pm).padStart(2, '0')}-${String(ultimo).padStart(2, '0')}`;
+    if (admissao > fim) return 0;
+    if (admissao <= ini) return num(salario);
+    return Math.round((num(salario) / 30) * (diasEntre(admissao, fim) + 1) * 100) / 100;
+  }, [admissao, afastamento, salario]);
 
   const avisosPedido: AvisoPrevio[] = ['nao_cumprido', 'dispensado', 'trabalhado'];
   const avisosEmpresa: AvisoPrevio[] = ['indenizado', 'trabalhado'];
@@ -232,6 +373,34 @@ export function TrctForm(props: {
                     entra no INSS/FGTS
                   </label>
                 )}
+                {e.tipo === 'P' && (
+                  <select
+                    className="rounded-md border border-slate-300 px-1.5 py-1.5 text-xs"
+                    title="Campo do TRCT"
+                    value={e.codigo ?? ''}
+                    onChange={(ev) => setExtras(extras.map((x, j) => (j === i ? { ...x, codigo: ev.target.value || undefined } : x)))}
+                  >
+                    <option value="">outros</option>
+                    <option value="51">51 Comissões</option>
+                    <option value="52">52 Gratificação</option>
+                    <option value="55">55 Adic. noturno</option>
+                    <option value="56.1">56.1 Horas extras</option>
+                    <option value="57">57 Gorjetas</option>
+                    <option value="58">58 DSR</option>
+                  </select>
+                )}
+                {e.tipo === 'D' && (
+                  <select
+                    className="rounded-md border border-slate-300 px-1.5 py-1.5 text-xs"
+                    title="Campo do TRCT"
+                    value={e.codigo ?? ''}
+                    onChange={(ev) => setExtras(extras.map((x, j) => (j === i ? { ...x, codigo: ev.target.value || undefined } : x)))}
+                  >
+                    <option value="">outros</option>
+                    <option value="100">100 Pensão</option>
+                    <option value="101">101 Adiant. salarial</option>
+                  </select>
+                )}
                 <button type="button" className="text-xs text-red-600 hover:underline" onClick={() => setExtras(extras.filter((_, j) => j !== i))}>
                   remover
                 </button>
@@ -246,6 +415,61 @@ export function TrctForm(props: {
             </button>
           </div>
         </div>
+
+        <details className="rounded-lg border border-slate-200 p-3" open={!dados.pis || !dados.ctps || !dados.mae}>
+          <summary className="cursor-pointer text-sm font-medium text-slate-800">
+            Dados do termo (PIS, CTPS, mãe, endereço, empregador…) — ficam guardados neste navegador
+          </summary>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <label className={rotulo}>10 PIS/PASEP<input className={input} value={dados.pis} onChange={setD('pis')} /></label>
+            <label className={rotulo}>17 CTPS (nº, série, UF)<input className={input} value={dados.ctps} onChange={setD('ctps')} placeholder="4728391 - 0010 / SE" /></label>
+            <label className={rotulo}>19 Nascimento<input type="date" className={input} value={dados.nascimento} onChange={setD('nascimento')} /></label>
+            <label className={rotulo}>20 Nome da mãe<input className={input} value={dados.mae} onChange={setD('mae')} /></label>
+            <label className={`${rotulo} sm:col-span-2`}>12 Endereço do trabalhador<input className={input} value={dados.endereco} onChange={setD('endereco')} /></label>
+            <label className={rotulo}>13 Bairro<input className={input} value={dados.bairro} onChange={setD('bairro')} /></label>
+            <label className={rotulo}>16 CEP<input className={input} value={dados.cep} onChange={setD('cep')} /></label>
+            <label className={rotulo}>14 Município<input className={input} value={dados.municipio} onChange={setD('municipio')} /></label>
+            <label className={rotulo}>15 UF<input className={input} value={dados.uf} onChange={setD('uf')} /></label>
+            <label className={rotulo}>30 Categoria<input className={input} value={dados.categoria} onChange={setD('categoria')} /></label>
+            <label className={rotulo}>28 / 29 Pensão (%) TRCT · FGTS
+              <span className="flex gap-2">
+                <input className={input} value={dados.pensaoTrct} onChange={setD('pensaoTrct')} />
+                <input className={input} value={dados.pensaoFgts} onChange={setD('pensaoFgts')} />
+              </span>
+            </label>
+            <label className={`${rotulo} sm:col-span-2`}>03 Endereço do empregador<input className={input} value={dados.empEndereco} onChange={setD('empEndereco')} /></label>
+            <label className={rotulo}>04 Bairro<input className={input} value={dados.empBairro} onChange={setD('empBairro')} /></label>
+            <label className={rotulo}>07 CEP<input className={input} value={dados.empCep} onChange={setD('empCep')} /></label>
+            <label className={rotulo}>05 Município<input className={input} value={dados.empMunicipio} onChange={setD('empMunicipio')} /></label>
+            <label className={rotulo}>06 UF<input className={input} value={dados.empUf} onChange={setD('empUf')} /></label>
+            <label className={rotulo}>08 CNAE<input className={input} value={dados.cnae} onChange={setD('cnae')} /></label>
+            <label className={rotulo}>09 CNPJ/CEI tomador/obra<input className={input} value={dados.tomador} onChange={setD('tomador')} /></label>
+            <label className={rotulo}>31 Código sindical<input className={input} value={dados.codSindical} onChange={setD('codSindical')} /></label>
+            <label className={`${rotulo} sm:col-span-3`}>32 CNPJ e nome da entidade sindical<input className={input} value={dados.entidadeSindical} onChange={setD('entidadeSindical')} /></label>
+            <label className={`${rotulo} sm:col-span-4`}>21 Tipo de contrato
+              <input className={input} value={dados.tipoContrato} onChange={setD('tipoContrato')} placeholder={tipoEhExperiencia(tipo) ? CONTRATO_EXPERIENCIA : CONTRATO_INDETERMINADO} />
+            </label>
+            <label className={rotulo}>23 Remuneração mês anterior
+              <input className={input} value={dados.remAnterior} onChange={setD('remAnterior')} placeholder={fmtValor(remAnteriorAuto)} inputMode="decimal" />
+            </label>
+            <label className={rotulo}>25 Data do aviso prévio<input type="date" className={input} value={dados.dataAviso || afastamento} onChange={setD('dataAviso')} /></label>
+            <label className={rotulo}>62 Salário-família (R$)
+              <input
+                className={input}
+                value={dados.salFamilia}
+                onChange={setD('salFamilia')}
+                inputMode="decimal"
+                placeholder={inicial.salFamilia ? `${fmtValor(salFamiliaAuto)} (${inicial.salFamilia.cotas} cota(s))` : '0,00'}
+              />
+            </label>
+            <label className={rotulo}>Data do pagamento (quitação)
+              <input type="date" className={input} value={dados.pagamento || (calc?.dataLimite ?? '')} onChange={setD('pagamento')} />
+            </label>
+            <label className={`${rotulo} sm:col-span-2`}>150 Preposto (quem assina pela empresa)<input className={input} value={dados.preposto} onChange={setD('preposto')} /></label>
+            <label className={rotulo}>Cargo do preposto<input className={input} value={dados.prepostoCargo} onChange={setD('prepostoCargo')} /></label>
+          </div>
+          <p className="mt-2 text-xs text-slate-500">Em branco = o sistema preenche (o valor cinza dentro do campo).</p>
+        </details>
 
         {calc && calc.avisos.length > 0 && (
           <ul className="space-y-1 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
@@ -270,128 +494,375 @@ export function TrctForm(props: {
         </div>
       </div>
 
-      {/* Termo — o que sai na impressão */}
+      {/* Termo — o que sai na impressão. Mesmo modelo do TRCT oficial que o
+          contador usa (Portaria 1.621/2010): 2 páginas, campos numerados. */}
       {!calc ? (
         <p className="text-sm text-slate-500 print:hidden">Preencha salário, admissão e afastamento pra calcular.</p>
       ) : (
-        <div className="rounded-xl border border-slate-300 bg-white p-5 text-[13px] text-slate-900 print:rounded-none print:border-0 print:p-0 print:text-[11px]">
-          <h2 className="text-center text-base font-bold uppercase">Termo de Rescisão do Contrato de Trabalho</h2>
-
-          <Secao titulo="Empregador">
-            <Linha r="CNPJ" v={fmtCnpj(pessoa.cnpj)} />
-            <Linha r="Razão social" v={pessoa.empresa} />
-          </Secao>
-
-          <Secao titulo="Trabalhador">
-            <Linha r="Nome" v={pessoa.nome} />
-            <Linha r="CPF" v={fmtCpf(pessoa.cpf)} />
-            <Linha r="Endereço" v={pessoa.endereco ?? '—'} />
-            <Linha r="Cargo" v={`${pessoa.cargo ?? '—'}${pessoa.cbo ? ` · CBO ${pessoa.cbo}` : ''}`} />
-            {pessoa.matricula && <Linha r="Matrícula" v={pessoa.matricula} />}
-          </Secao>
-
-          <Secao titulo="Contrato">
-            <Linha r="Remuneração mês anterior" v={brl(num(salario))} />
-            <Linha r="Admissão" v={fmtData(admissao)} />
-            <Linha r="Aviso prévio" v={tipoTemAviso(tipo) ? `${AVISO_LABEL[avisoValido]}${calc.diasAviso ? ` · ${calc.diasAviso} dias` : ''}` : 'Não se aplica'} />
-            <Linha r="Afastamento" v={fmtData(afastamento)} />
-            {calc.fimProjetado !== afastamento && <Linha r="Projeção do aviso" v={fmtData(calc.fimProjetado)} />}
-            <Linha r="Causa do afastamento" v={TIPO_LABEL[tipo]} />
-            <Linha r="Código de afastamento" v={CODIGO_AFASTAMENTO[tipo]} />
-            {tipoEhExperiencia(tipo) && <Linha r="Fim previsto da experiência" v={fmtData(fimExp)} />}
-          </Secao>
-
-          <div className="mt-4 grid gap-4 sm:grid-cols-2 print:grid-cols-2">
-            <Tabela titulo="Verbas rescisórias" linhas={proventos} total={calc.proventos} rotuloTotal="Total bruto" />
-            <Tabela titulo="Deduções" linhas={descontos} total={calc.descontos} rotuloTotal="Total deduções" />
-          </div>
-
-          <div className="mt-4 flex items-center justify-between rounded-lg border-2 border-slate-900 px-4 py-2">
-            <span className="font-bold uppercase">Valor líquido a receber</span>
-            <span className="text-lg font-bold">{brl(calc.liquido)}</span>
-          </div>
-
-          <div className="mt-3 grid gap-1 text-xs text-slate-600 sm:grid-cols-2 print:grid-cols-2">
-            <span>Base INSS: {brl(calc.baseInss)} · 13º: {brl(calc.baseInss13)}</span>
-            <span>FGTS do mês: {brl(calc.fgtsMes)} · FGTS 13º: {brl(calc.fgts13)}</span>
-            {calc.multaFgtsPct > 0 && (
-              <span>
-                Multa FGTS {Math.round(calc.multaFgtsPct * 100)}%: {brl(calc.multaFgts)} (guia à parte)
-              </span>
-            )}
-            <span>Pagamento até: {fmtData(calc.dataLimite)} (art. 477 §6)</span>
-          </div>
-
-          <div className="mt-12 grid gap-10 sm:grid-cols-2 print:grid-cols-2">
-            <Assinatura texto={`${pessoa.empresa} — empregador`} />
-            <Assinatura texto={`${pessoa.nome} — trabalhador`} />
-          </div>
-          <p className="mt-6 text-center text-xs text-slate-500">Aracaju, ____ de ______________ de ______</p>
-        </div>
+        <TermoOficial
+          pessoa={pessoa}
+          dados={dados}
+          calc={calc}
+          tipo={tipo}
+          admissao={admissao}
+          afastamento={afastamento}
+          tipoContrato={dados.tipoContrato.trim() || (tipoEhExperiencia(tipo) ? CONTRATO_EXPERIENCIA : CONTRATO_INDETERMINADO)}
+          remAnterior={dados.remAnterior.trim() ? num(dados.remAnterior) : remAnteriorAuto}
+          dataAviso={dados.dataAviso || afastamento}
+          pagamento={dados.pagamento || calc.dataLimite}
+        />
       )}
     </div>
   );
 }
 
-function Secao({ titulo, children }: { titulo: string; children: React.ReactNode }) {
+type Calc = NonNullable<ReturnType<typeof calcularTrct>>;
+
+const CAB = 'bg-[#d9d9d9] text-center text-[10px] font-bold uppercase';
+
+/** Uma célula com rótulo pequeno em cima e o valor embaixo, como no TRCT. */
+function C(props: { n: string; r: string; v?: React.ReactNode; span?: number; alto?: boolean }) {
   return (
-    <div className="mt-4">
-      <p className="border-b border-slate-300 pb-0.5 text-xs font-bold uppercase text-slate-700">{titulo}</p>
-      <dl className="mt-1.5 grid gap-x-6 gap-y-1 sm:grid-cols-2 print:grid-cols-2">{children}</dl>
-    </div>
+    <td colSpan={props.span ?? 1} className={`border border-black px-1 align-top ${props.alto ? 'h-[11mm]' : ''}`}>
+      <div className="text-[8px] leading-tight">
+        {props.n} {props.r}
+      </div>
+      <div className="min-h-[13px] text-[11px] leading-tight">{props.v}</div>
+    </td>
   );
 }
 
-function Linha({ r, v }: { r: string; v: string }) {
+function Barra({ t, span = 12, esquerda }: { t: string; span?: number; esquerda?: boolean }) {
   return (
-    <div className="flex gap-2">
-      <dt className="shrink-0 text-slate-500">{r}:</dt>
-      <dd className="font-medium">{v}</dd>
-    </div>
+    <tr>
+      <td colSpan={span} className={`border border-black ${CAB} ${esquerda ? '!text-left px-1' : ''}`}>
+        {t}
+      </td>
+    </tr>
   );
 }
 
-function Tabela(props: {
-  titulo: string;
-  linhas: { codigo: string; descricao: string; referencia: string; valor: number }[];
-  total: number;
-  rotuloTotal: string;
-}) {
+function Cols({ n }: { n: number }) {
   return (
-    <div>
-      <p className="border-b border-slate-300 pb-0.5 text-xs font-bold uppercase text-slate-700">{props.titulo}</p>
-      <table className="mt-1 w-full">
-        <tbody>
-          {props.linhas.map((l, i) => (
-            <tr key={i} className="border-b border-slate-100 align-top">
-              <td className="w-12 py-1 pr-2 text-slate-500">{l.codigo}</td>
-              <td className="py-1 pr-2">
-                {l.descricao}
-                {l.referencia && <span className="text-slate-500"> ({l.referencia})</span>}
-              </td>
-              <td className="py-1 text-right tabular-nums">{brl(l.valor)}</td>
-            </tr>
+    <colgroup>
+      {Array.from({ length: n }, (_, i) => (
+        <col key={i} style={{ width: `${100 / n}%` }} />
+      ))}
+    </colgroup>
+  );
+}
+
+interface Celula {
+  rotulo: React.ReactNode;
+  valor: number | null;
+  destaque?: boolean;
+}
+
+function GradeVerbas({ titulo, cab, celulas }: { titulo: string; cab: string; celulas: (Celula | null)[] }) {
+  const linhas: (Celula | null)[][] = [];
+  for (let i = 0; i < celulas.length; i += 3) linhas.push(celulas.slice(i, i + 3));
+  return (
+    <table className="w-full table-fixed border-collapse">
+      <colgroup>
+        {[0, 1, 2].map((i) => (
+          <Fragment key={i}>
+            <col style={{ width: '19.33%' }} />
+            <col style={{ width: '14%' }} />
+          </Fragment>
+        ))}
+      </colgroup>
+      <tbody>
+        <tr>
+          <td colSpan={6} className="border-x border-black px-1 text-[10px] font-bold uppercase">
+            {titulo}
+          </td>
+        </tr>
+        <tr className="text-[10px] font-bold">
+          {[0, 1, 2].map((i) => (
+            <Fragment key={i}>
+              <td className="border border-black px-1">{cab}</td>
+              <td className="border border-black px-1">Valor</td>
+            </Fragment>
           ))}
-          {props.linhas.length === 0 && (
-            <tr>
-              <td colSpan={3} className="py-1 text-slate-400">—</td>
-            </tr>
-          )}
-          <tr className="font-bold">
-            <td />
-            <td className="py-1.5">{props.rotuloTotal}</td>
-            <td className="py-1.5 text-right tabular-nums">{brl(props.total)}</td>
+        </tr>
+        {linhas.map((l, i) => (
+          <tr key={i} className="h-[7.5mm]">
+            {l.map((c, j) =>
+              c ? (
+                <Fragment key={j}>
+                  <td className={`border border-black px-1 align-top text-[8.5px] leading-tight ${c.destaque ? 'bg-[#d9d9d9] align-middle text-[10px] font-bold uppercase' : ''}`}>
+                    {c.rotulo}
+                  </td>
+                  <td className={`border border-black px-1 text-right text-[11px] ${c.destaque ? 'bg-[#d9d9d9] font-bold' : ''}`}>
+                    {c.valor === null ? '' : `R$ ${fmtValor(c.valor)}`}
+                  </td>
+                </Fragment>
+              ) : (
+                <Fragment key={j}>
+                  <td className="border border-black" />
+                  <td className="border border-black" />
+                </Fragment>
+              ),
+            )}
           </tr>
-        </tbody>
-      </table>
-    </div>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
-function Assinatura({ texto }: { texto: string }) {
+function TermoOficial(props: {
+  pessoa: Pessoa;
+  dados: DadosTermo;
+  calc: Calc;
+  tipo: TipoRescisao;
+  admissao: string;
+  afastamento: string;
+  tipoContrato: string;
+  remAnterior: number;
+  dataAviso: string;
+  pagamento: string;
+}) {
+  const { pessoa, dados, calc, tipo } = props;
+  const cod = CODIGO_AFASTAMENTO[tipo];
+  const causa = CAUSA_AFASTAMENTO[tipo];
+
+  // Soma por campo do TRCT; o que não tem campo próprio vai nas linhas em branco.
+  const MAPA: Record<string, string> = { '66': '66.1' };
+  const P_FIXOS = new Set(['50', '51', '52', '53', '54', '55', '56.1', '57', '58', '59', '60', '61', '62', '63', '64.1', '65', '66.1', '68', '69', '70', '71', '99']);
+  const D_FIXOS = new Set(['100', '101', '102', '103', '104', '112.1', '112.2', '114.1', '114.2']);
+  const porCodigo = new Map<string, number>();
+  const ref = new Map<string, string>();
+  const outrosP: Celula[] = [];
+  const outrosD: Celula[] = [];
+  for (const v of calc.verbas) {
+    const c = MAPA[v.codigo] ?? v.codigo;
+    const fixos = v.tipo === 'P' ? P_FIXOS : D_FIXOS;
+    if (fixos.has(c)) {
+      porCodigo.set(c, (porCodigo.get(c) ?? 0) + v.valor);
+      if (v.referencia) ref.set(c, v.referencia);
+    } else {
+      (v.tipo === 'P' ? outrosP : outrosD).push({ rotulo: `${v.codigo} ${v.descricao}`, valor: v.valor });
+    }
+  }
+  const val = (c: string) => Math.round((porCodigo.get(c) ?? 0) * 100) / 100;
+  const avos = (c: string) => ref.get(c)?.match(/^(\d+)\/12/)?.[1] ?? '__';
+  const diasAvisoInd = ref.get('69')?.match(/^(\d+)/)?.[1] ?? '___';
+  const diasAvisoDesc = ref.get('103')?.match(/^(\d+)/)?.[1] ?? '___';
+  const cel = (rotulo: React.ReactNode, c: string): Celula => ({ rotulo, valor: val(c) });
+
+  const vazios = (lista: Celula[], n: number) => {
+    const saida: (Celula | null)[] = lista.slice(0, n);
+    while (saida.length < n) saida.push(null);
+    return saida;
+  };
+  // Mais "outros" do que linhas: junta o resto na última.
+  const juntar = (lista: Celula[], n: number): Celula[] => {
+    if (lista.length <= n) return lista;
+    const resto = lista.slice(n - 1);
+    return [...lista.slice(0, n - 1), { rotulo: resto.map((r) => r.rotulo).join(' + '), valor: resto.reduce((s, r) => s + (r.valor ?? 0), 0) }];
+  };
+  const extrasP = vazios(juntar(outrosP, 7), 7);
+  const extrasD = vazios(juntar(outrosD, 8), 8);
+
+  const verbas: (Celula | null)[] = [
+    cel(<>50 Saldo de {calc.diasSaldo}/dias Salário (líquido de 0/faltas e DSR)</>, '50'),
+    cel('51 Comissões', '51'),
+    cel('52 Gratificação', '52'),
+    cel(<>53 Adic. de Insalubridade ___%</>, '53'),
+    cel(<>54 Adic. de Periculosidade ___%</>, '54'),
+    cel(<>55 Adic. Noturno ___ horas ___%</>, '55'),
+    cel(<>56.1 Horas Extras ___ horas a ___%</>, '56.1'),
+    cel('57 Gorjetas', '57'),
+    cel('58 Descanso Semanal Remunerado (DSR)', '58'),
+    cel('59 Reflexo do DSR sobre Salário Variável', '59'),
+    cel('60 Multa Art. 477 § 8º/CLT', '60'),
+    cel('61 Multa Art. 479/CLT', '61'),
+    cel('62 Salário-Família', '62'),
+    cel(<>63 13º Salário Proporcional {avos('63')}/12 avos</>, '63'),
+    cel(<>64.1 13º Salário-Exerc. ____ - __/12 avos</>, '64.1'),
+    cel(<>65 Férias Proporc {avos('65')}/12 avos</>, '65'),
+    cel(<>66.1 Férias Venc. Per. Aquis. / / a / /</>, '66.1'),
+    cel('68 Terço Constituc. de Férias', '68'),
+    cel(<>69 - Aviso-Prévio Indenizado {diasAvisoInd}/dias</>, '69'),
+    cel('70 13º Salário (Aviso Prévio Indenizado)', '70'),
+    cel('71 Férias (Aviso-Prévio Indenizado)', '71'),
+    ...extrasP,
+    cel('99 Ajuste de Saldo Devedor', '99'),
+    { rotulo: 'Total bruto', valor: calc.proventos, destaque: true },
+  ];
+  const deducoes: (Celula | null)[] = [
+    cel('100 Pensão Alimentícia', '100'),
+    cel('101 Adiantamento Salarial', '101'),
+    cel('102 Adiantamento 13º Salário', '102'),
+    cel(<>103 Aviso-Prévio Indenizado{diasAvisoDesc}/dias</>, '103'),
+    cel('104 Indenização Art. 480 CLT', '104'),
+    cel('112.1 Previdência Social', '112.1'),
+    cel(<>112.2 Prev. Social - 13º Salário</>, '112.2'),
+    cel('114.1 IRRF', '114.1'),
+    cel('114.2 IRRF sobre 13º Salário', '114.2'),
+    ...extrasD.slice(0, 6),
+    extrasD[6],
+    extrasD[7],
+    { rotulo: 'Total deduções', valor: calc.descontos, destaque: true },
+    null,
+    null,
+    { rotulo: 'Valor líquido', valor: calc.liquido, destaque: true },
+  ];
+
+  const empCnpj = fmtCnpj(pessoa.cnpj);
+  const cpf = fmtCpf(pessoa.cpf);
+  const nasc = dados.nascimento ? fmtData(dados.nascimento) : '';
+
   return (
-    <div className="text-center">
-      <div className="border-t border-slate-900 pt-1 text-xs">{texto}</div>
+    <div className="mx-auto w-full max-w-[190mm] bg-white font-[Arial,Helvetica,sans-serif] text-black print:max-w-none">
+      <style>{'@media print{@page{size:A4;margin:9mm 10mm}}'}</style>
+
+      {/* Página 1 — TRCT */}
+      <div className="border border-slate-300 p-3 print:border-0 print:p-0">
+        <div className={`border border-black py-0.5 text-[15px] ${CAB}`}>Termo de Rescisão do Contrato de Trabalho</div>
+        <table className="mt-3 w-full table-fixed border-collapse">
+          <Cols n={12} />
+          <tbody>
+            <Barra t="Identificação do Empregador" />
+            <tr>
+              <C n="01" r="CNPJ/CEI" v={empCnpj} span={3} />
+              <C n="02" r="Razão Social/Nome" v={pessoa.empresa} span={9} />
+            </tr>
+            <tr>
+              <C n="03" r="Endereço (logradouro, nº, andar, apartamento)" v={dados.empEndereco} span={9} />
+              <C n="04" r="Bairro" v={dados.empBairro} span={3} />
+            </tr>
+            <tr>
+              <C n="05" r="Município" v={dados.empMunicipio} span={4} />
+              <C n="06" r="UF" v={dados.empUf} span={1} />
+              <C n="07" r="CEP" v={fmtCep(dados.empCep)} span={2} />
+              <C n="08" r="CNAE" v={dados.cnae} span={2} />
+              <C n="09" r="CNPJ/CEI Tomador/Obra" v={dados.tomador} span={3} />
+            </tr>
+            <Barra t="Identificação do Trabalhador" />
+            <tr>
+              <C n="10" r="PIS/PASEP" v={dados.pis} span={3} />
+              <C n="11" r="Nome" v={pessoa.nome} span={9} />
+            </tr>
+            <tr>
+              <C n="12" r="Endereço (logradouro, nº, andar, apartamento)" v={dados.endereco} span={9} />
+              <C n="13" r="Bairro" v={dados.bairro} span={3} />
+            </tr>
+            <tr>
+              <C n="14" r="Município" v={dados.municipio} span={3} />
+              <C n="15" r="UF" v={dados.uf} span={1} />
+              <C n="16" r="CEP" v={fmtCep(dados.cep)} span={2} />
+              <C n="17" r="CTPS (nº, série, UF)" v={dados.ctps} span={4} />
+              <C n="18" r="CPF" v={cpf} span={2} />
+            </tr>
+            <tr>
+              <C n="19" r="Data de Nascimento" v={nasc} span={3} />
+              <C n="20" r="Nome da Mãe" v={dados.mae} span={9} />
+            </tr>
+            <Barra t="Dados do Contrato" />
+            <tr>
+              <C n="21" r="Tipo de Contrato" v={props.tipoContrato} span={12} alto />
+            </tr>
+            <tr>
+              <C n="22" r="Causa do Afastamento" v={causa} span={12} alto />
+            </tr>
+            <tr>
+              <C n="23" r="Remuneração Mês Ant." v={fmtValor(props.remAnterior)} span={3} />
+              <C n="24" r="Data de Admissão" v={fmtData(props.admissao)} span={2} />
+              <C n="25" r="Data do Aviso Prévio" v={fmtData(props.dataAviso)} span={2} />
+              <C n="26" r="Data de Afastamento" v={fmtData(props.afastamento)} span={3} />
+              <C n="27" r="Cod. Afastamento" v={cod} span={2} />
+            </tr>
+            <tr>
+              <C n="28" r="Pensão Alim. (%) TRCT" v={dados.pensaoTrct} span={3} />
+              <C n="29" r="Pensão Alim. (%) FGTS" v={dados.pensaoFgts} span={3} />
+              <C n="30" r="Categoria do Trabalhador" v={dados.categoria} span={6} />
+            </tr>
+            <tr>
+              <C n="31" r="Código Sindical" v={dados.codSindical} span={3} />
+              <C n="32" r="CNPJ e Nome da Entidade Sindical Laboral" v={dados.entidadeSindical} span={9} />
+            </tr>
+            <Barra t="Discriminação das Verbas Rescisórias" />
+          </tbody>
+        </table>
+        <GradeVerbas titulo="Verbas rescisórias" cab="Rubrica" celulas={verbas} />
+        <GradeVerbas titulo="Deduções" cab="Desconto" celulas={deducoes} />
+      </div>
+
+      {/* Página 2 — Termo de quitação */}
+      <div className="mt-6 flex flex-col border border-slate-300 p-3 print:mt-0 print:h-[278mm] print:break-before-page print:border-0 print:p-0">
+        <div className={`border border-black py-0.5 text-[15px] ${CAB}`}>Termo de Quitação de Rescisão do Contrato de Trabalho</div>
+        <table className="mt-3 w-full table-fixed border-collapse">
+          <Cols n={12} />
+          <tbody>
+            <Barra t="Empregador" esquerda />
+            <tr>
+              <C n="01" r="CNPJ/CEI" v={empCnpj} span={3} />
+              <C n="02" r="Razão Social/Nome" v={pessoa.empresa} span={9} />
+            </tr>
+            <Barra t="Trabalhador" esquerda />
+            <tr>
+              <C n="10" r="PIS/PASEP" v={dados.pis} span={3} />
+              <C n="11" r="Nome" v={pessoa.nome} span={9} />
+            </tr>
+            <tr>
+              <C n="17" r="CTPS (nº, série, UF)" v={dados.ctps} span={3} />
+              <C n="18" r="CPF" v={cpf} span={2} />
+              <C n="19" r="Data de Nascimento" v={nasc} span={2} />
+              <C n="20" r="Nome da Mãe" v={dados.mae} span={5} />
+            </tr>
+            <Barra t="Contrato" esquerda />
+            <tr>
+              <C n="22" r="Causa do Afastamento" v={causa} span={12} alto />
+            </tr>
+            <tr>
+              <C n="24" r="Data de Admissão" v={fmtData(props.admissao)} span={2} />
+              <C n="25" r="Data do Aviso Prévio" v={fmtData(props.dataAviso)} span={2} />
+              <C n="26" r="Data de Afastamento" v={fmtData(props.afastamento)} span={2} />
+              <C n="27" r="Cod. Afastamento" v={cod} span={3} />
+              <C n="29" r="Pensão Alim. (%) FGTS" v={dados.pensaoFgts} span={3} />
+            </tr>
+            <tr>
+              <C n="30" r="Categoria do Trabalhador" v={dados.categoria} span={12} />
+            </tr>
+          </tbody>
+        </table>
+
+        <p className="mt-6 text-justify text-[10.5px] leading-snug">
+          No dia {fmtData(props.pagamento)} foi realizado, nos termos do art. 23 da Instrução Normativa/SRT n.º 15/2010, o
+          efetivo pagamento das verbas rescisórias especificadas no corpo do TRCT, no valor líquido de R$ {fmtValor(calc.liquido)}, o
+          qual, devidamente rubricado pelas partes, é parte integrante do presente Termo de Quitação.
+        </p>
+
+        <p className="mt-8 text-[10.5px]">
+          ______________________ / ______, _______ de _____________________ de ____________.
+        </p>
+
+        <div className="mt-14 w-[45%]">
+          <div className="border-t border-black pt-1 text-[10px] leading-tight">
+            150 Assinatura do Empregador ou Preposto
+            <div className="mt-0.5 text-[9px]">{pessoa.empresa}</div>
+            <div className="text-[9px]">{dados.preposto}</div>
+            <div className="text-[9px]">{dados.prepostoCargo}</div>
+          </div>
+        </div>
+
+        <div className="mt-14 flex justify-between gap-10">
+          <div className="w-[45%] border-t border-black pt-1 text-[10px]">151 Assinatura do Trabalhador</div>
+          <div className="w-[45%] border-t border-black pt-1 text-[10px]">152 Assinatura do Responsável Legal do Trabalhador</div>
+        </div>
+
+        <div className="mt-auto pt-10">
+          <div className="border border-black px-1 text-[10px]">156 Informações à CAIXA:</div>
+          <div className="border-x border-b border-black bg-[#d9d9d9] px-2 py-1 text-center text-[10.5px] font-bold leading-snug">
+            A ASSISTÊNCIA NO ATO DE RESCISÃO CONTRATUAL É GRATUITA.
+            <br />
+            Pode o trabalhador iniciar ação judicial quanto aos créditos resultantes das relações de trabalho até o limite de dois
+            anos após a extinção do contrato de trabalho (Inc. XXIX, Art. 7º da Constituição Federal/1988).
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

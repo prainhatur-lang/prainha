@@ -47,9 +47,20 @@ export const CODIGO_AFASTAMENTO: Record<TipoRescisao, string> = {
   pedido_demissao: 'PD0',
   acordo: 'SJ1',
   justa_causa: 'JC2',
-  experiencia_fim: 'RA2',
-  experiencia_empregador: 'RA1',
-  experiencia_empregado: 'PD0',
+  experiencia_fim: 'FT1',
+  experiencia_empregador: 'RA2',
+  experiencia_empregado: 'RA1',
+};
+
+/** Campo 22 do TRCT oficial (texto da causa do afastamento). */
+export const CAUSA_AFASTAMENTO: Record<TipoRescisao, string> = {
+  sem_justa_causa: 'Despedida sem justa causa, pelo empregador',
+  pedido_demissao: 'Rescisão contratual a pedido do empregado',
+  acordo: 'Rescisão por acordo entre as partes (art. 484-A da CLT)',
+  justa_causa: 'Despedida por justa causa, pelo empregador',
+  experiencia_fim: 'Extinção normal do contrato de trabalho por prazo determinado',
+  experiencia_empregador: 'Rescisão antecipada, pelo empregador, do contrato de trabalho por prazo determinado',
+  experiencia_empregado: 'Rescisão antecipada, pelo empregado, do contrato de trabalho por prazo determinado',
 };
 
 export const AVISO_LABEL: Record<AvisoPrevio, string> = {
@@ -80,6 +91,8 @@ export interface ExtraTrct {
   tipo: 'P' | 'D';
   /** Provento que entra no INSS, FGTS e IR (ex.: adicional noturno do mês). */
   tributavel?: boolean;
+  /** Código da rubrica no TRCT oficial (ex.: '55' adicional noturno). */
+  codigo?: string;
 }
 
 export interface TrctInput {
@@ -100,6 +113,8 @@ export interface TrctInput {
   /** Saldo do FGTS na conta pra multa (se não souber, o sistema estima). */
   saldoFgts?: number | null;
   extras?: ExtraTrct[];
+  /** Salário-família do mês (cotas × valor, proporcional aos dias). Fora do INSS. */
+  salarioFamilia?: number;
 }
 
 export interface TrctCalc {
@@ -241,10 +256,12 @@ export function calcularTrct(input: TrctInput): TrctCalc {
   for (const e of input.extras ?? []) {
     if (!(e.valor > 0)) continue;
     if (e.tipo === 'P') {
-      P('95', e.descricao || 'Outros proventos', e.tributavel ? 'tributável' : '', e.valor);
+      P(e.codigo || '95', e.descricao || 'Outros proventos', e.tributavel ? 'tributável' : '', e.valor);
       if (e.tributavel) extrasTrib += r2(e.valor);
     }
   }
+
+  P('62', 'Salário-família', '', input.salarioFamilia ?? 0);
 
   // Aviso prévio.
   const anos = anosCompletos(admissao, afastamento);
@@ -275,9 +292,9 @@ export function calcularTrct(input: TrctInput): TrctCalc {
       const faltam = diasEntre(afastamento, input.fimExperiencia);
       const metade = r2(diaria * faltam / 2);
       if (tipo === 'experiencia_empregador') {
-        P('95', 'Indenização art. 479 CLT (metade dos dias restantes)', `${faltam}/2 dias`, metade);
+        P('61', 'Indenização art. 479 CLT (metade dos dias restantes)', `${faltam}/2 dias`, metade);
       } else if (input.descontarArt480) {
-        D('115', 'Indenização art. 480 CLT (metade dos dias restantes)', `${faltam}/2 dias`, metade);
+        D('104', 'Indenização art. 480 CLT (metade dos dias restantes)', `${faltam}/2 dias`, metade);
       }
     }
   }
@@ -318,7 +335,7 @@ export function calcularTrct(input: TrctInput): TrctCalc {
   D('114.2', 'IRRF sobre 13º salário', '', ir13);
   if (input.adiantamento13 && input.adiantamento13 > 0) D('102', 'Adiantamento de 13º salário', '', input.adiantamento13);
   for (const e of input.extras ?? []) {
-    if (e.valor > 0 && e.tipo === 'D') D('115', e.descricao || 'Outros descontos', '', e.valor);
+    if (e.valor > 0 && e.tipo === 'D') D(e.codigo || '115', e.descricao || 'Outros descontos', '', e.valor);
   }
 
   // FGTS.
