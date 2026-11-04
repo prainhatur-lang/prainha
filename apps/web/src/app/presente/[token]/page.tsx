@@ -5,12 +5,16 @@
 import { notFound } from 'next/navigation';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
+import { after } from 'next/server';
+import { entregarValeAoPresenteado } from '@/lib/vale-presente-entrega';
 import { PresenteClient } from './presente-client';
 
 export const dynamic = 'force-dynamic';
 
 export default async function PresentePage(props: { params: Promise<{ token: string }> }) {
-  const { token } = await props.params;
+  const { token: bruto } = await props.params;
+  // Botão de URL dinâmica da Meta pode chegar como "{{1}}token".
+  const token = decodeURIComponent(bruto ?? '').replace(/^(\{\{\d+\}\})+/, '');
   if (!token || token.length < 20) notFound();
 
   const [linha] = await db
@@ -21,6 +25,13 @@ export default async function PresentePage(props: { params: Promise<{ token: str
     .limit(1);
   if (!linha) notFound();
   const { v, filialNome } = linha;
+
+  // Pago, com WhatsApp de quem ganhou e ainda não entregue (modelo da Meta
+  // estava em análise na hora do Pix): tenta de novo, sem segurar a página.
+  if (v.status === 'pago' && v.presenteadoTelefone && !v.presenteadoAvisadoEm) {
+    after(() => entregarValeAoPresenteado(v).catch(() => {}));
+  }
+  const fone = (v.presenteadoTelefone ?? '').replace(/\D/g, '').replace(/^55/, '');
 
   const dataUso = v.dataUso
     ? new Date(`${String(v.dataUso)}T12:00:00-03:00`).toLocaleDateString('pt-BR', {
@@ -49,6 +60,9 @@ export default async function PresentePage(props: { params: Promise<{ token: str
         statusInicial={v.status}
         usadoEm={v.usadoEm ? v.usadoEm.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : null}
         pixInicial={{ qrCodeString: v.pagamentoQrcode, qrCodeImg: v.pagamentoQrcodeImg }}
+        presenteadoTelefone={fone || null}
+        presenteadoEmail={v.presenteadoEmail ?? null}
+        avisadoPresenteado={!!v.presenteadoAvisadoEm}
       />
     </main>
   );

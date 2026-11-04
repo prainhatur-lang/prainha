@@ -765,6 +765,8 @@ export async function processarEntrada(params: {
           data: dados.data ?? undefined,
           pessoas: dados.pessoas,
           itens: dados.itens,
+          presenteadoTelefone: dados.whatsappPresenteado ?? undefined,
+          presenteadoEmail: dados.emailPresenteado ?? undefined,
         });
         if (/\/presente\//.test(r)) {
           const total = /TOTAL (R\$\s?[\d.,]+)/.exec(r)?.[1] ?? '';

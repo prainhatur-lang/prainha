@@ -1,5 +1,6 @@
 // Vale-presente comprado no site (/presentear/[casa]) — PÚBLICO.
-// POST { casa, valor, compradorNome, compradorTelefone, presenteados, mensagem, site }
+// POST { casa, valor, compradorNome, compradorTelefone, presenteados, mensagem, site,
+//        presenteadoTelefone?, presenteadoEmail? }
 // Cria o vale de crédito livre, gera o Pix e devolve o token (/presente/<token>).
 
 import { NextResponse } from 'next/server';
@@ -22,6 +23,8 @@ export async function POST(request: Request) {
       compradorTelefone: String(b.compradorTelefone ?? ''),
       presenteados: String(b.presenteados ?? ''),
       mensagem: typeof b.mensagem === 'string' ? b.mensagem : undefined,
+      presenteadoTelefone: typeof b.presenteadoTelefone === 'string' ? b.presenteadoTelefone : undefined,
+      presenteadoEmail: typeof b.presenteadoEmail === 'string' ? b.presenteadoEmail : undefined,
     });
     if ('erro' in r) return NextResponse.json({ error: r.erro }, { status: 400 });
     return NextResponse.json({ token: r.token });

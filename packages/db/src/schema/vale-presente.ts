@@ -34,6 +34,13 @@ export const valePresente = pgTable(
     /** Quem vai usar (ex.: "Ana e Pedro"). */
     presenteados: varchar('presenteados', { length: 200 }),
     mensagem: text('mensagem'),
+    /** Contato de quem GANHOU (04/11/2026): pago, o vale vai direto pra ele. */
+    presenteadoTelefone: varchar('presenteado_telefone', { length: 30 }),
+    presenteadoEmail: varchar('presenteado_email', { length: 200 }),
+    /** Quando o vale foi entregue no WhatsApp do presenteado (null = ainda não). */
+    presenteadoAvisadoEm: timestamp('presenteado_avisado_em', { withTimezone: true }),
+    /** Última tentativa de entrega (ex.: "enviado", "modelo em análise na Meta"). */
+    presenteadoAviso: text('presenteado_aviso'),
     /** Dia previsto do jantar (YYYY-MM-DD). Null = em aberto. */
     dataUso: date('data_uso'),
     pessoas: integer('pessoas').notNull().default(2),

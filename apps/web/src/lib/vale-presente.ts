@@ -10,6 +10,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq, gte, sql } from 'drizzle-orm';
 import { createPixPayment, queryPayment } from '@/lib/pagamento-online';
 import { buscarItensCardapio } from '@/lib/atendimento/cardapio';
+import { emailValido, entregarValeAoPresenteado, foneWhatsApp, garantirModeloVale } from '@/lib/vale-presente-entrega';
 
 export const BASE_PRESENTE = 'https://app.prainhabar.com/presente/';
 
@@ -42,6 +43,9 @@ export interface PedidoValePresente {
   telefone: string;
   compradorNome: string;
   presenteados?: string;
+  /** WhatsApp/e-mail de quem GANHA (opcional, 04/11/2026): pago, o vale vai pra ele. */
+  presenteadoTelefone?: string;
+  presenteadoEmail?: string;
   mensagem?: string;
   observacao?: string;
   data?: string;
@@ -101,6 +105,15 @@ export async function atualizarPagamentoVale(v: Vale): Promise<Vale> {
         .set({ status: 'pago', pagoEm: new Date() })
         .where(eq(schema.valePresente.id, v.id))
         .returning();
+      // Quitado → manda pro WhatsApp de quem ganhou (quando a gente tem).
+      if (atual?.presenteadoTelefone) {
+        try {
+          const r = await entregarValeAoPresenteado(atual);
+          if (!r.enviado) console.warn('[vale-presente] entrega ao presenteado pendente:', r.motivo);
+        } catch (e) {
+          console.error('[vale-presente] entrega ao presenteado falhou:', e instanceof Error ? e.message : e);
+        }
+      }
       return atual ?? v;
     }
   } catch (e) {
@@ -167,6 +180,8 @@ export async function criarValePresente(p: PedidoValePresente): Promise<string> 
           compradorNome: (p.compradorNome || 'Cliente').slice(0, 200),
           compradorTelefone: p.telefone?.slice(0, 30) || null,
           presenteados: p.presenteados?.slice(0, 200) || null,
+          presenteadoTelefone: foneWhatsApp(p.presenteadoTelefone),
+          presenteadoEmail: emailValido(p.presenteadoEmail),
           mensagem: p.mensagem?.trim() || null,
           observacao: p.observacao?.trim() || null,
           dataUso: data,
@@ -185,6 +200,8 @@ export async function criarValePresente(p: PedidoValePresente): Promise<string> 
     }
   }
   if (!vale) return 'ERRO: não consegui gravar o vale. Transfira pra equipe.';
+  // Já pede o modelo do WhatsApp na Meta (a aprovação corre enquanto o Pix não cai).
+  if (vale.presenteadoTelefone) void garantirModeloVale().catch(() => {});
 
   let pixTxt = '';
   try {
@@ -198,6 +215,9 @@ export async function criarValePresente(p: PedidoValePresente): Promise<string> 
   const linhas = itens.map((i) => `- ${i.qtd}x ${i.nome}${i.tamanho ? ` (${i.tamanho})` : ''} — ${brl(i.preco * i.qtd)}`);
   return [
     `OK: vale-presente ${vale.codigo} criado (${p.filialNome}). AINDA NÃO PAGO.`,
+    vale.presenteadoTelefone
+      ? 'Quem ganha recebe o vale no WhatsApp dele assim que o Pix cair.'
+      : 'Sem WhatsApp de quem ganha: pago, o comprador encaminha o link (a página tem o botão "Mandar pra quem vai ganhar").',
     ...linhas,
     `Subtotal ${brl(subtotal)} + 10% serviço ${brl(servico)} = TOTAL ${brl(total)}`,
     `Link pra pagar (vira o voucher QUITADO depois do Pix): ${BASE_PRESENTE}${vale.token}`,
@@ -227,6 +247,9 @@ export interface PedidoValePorValor {
   compradorTelefone: string;
   presenteados: string;
   mensagem?: string;
+  /** Opcionais (04/11/2026): pago, o vale vai direto pra quem ganhou. */
+  presenteadoTelefone?: string;
+  presenteadoEmail?: string;
 }
 
 /** Cria o vale de crédito livre + Pix. Devolve o token do link ou um erro. */
@@ -243,6 +266,14 @@ export async function criarValePorValor(p: PedidoValePorValor): Promise<{ token:
   if (nome.length < 2) return { erro: 'diga seu nome' };
   if (presenteados.length < 2) return { erro: 'diga pra quem é o presente' };
   if (fone.length < 10 || fone.length > 13) return { erro: 'WhatsApp inválido (com DDD)' };
+  const foneGanhador = (p.presenteadoTelefone ?? '').trim() ? foneWhatsApp(p.presenteadoTelefone) : null;
+  if ((p.presenteadoTelefone ?? '').replace(/\D/g, '') && !foneGanhador) {
+    return { erro: 'WhatsApp de quem vai ganhar inválido (com DDD) — ou deixe em branco' };
+  }
+  const emailGanhador = (p.presenteadoEmail ?? '').trim() ? emailValido(p.presenteadoEmail) : null;
+  if ((p.presenteadoEmail ?? '').trim() && !emailGanhador) {
+    return { erro: 'e-mail de quem vai ganhar inválido — ou deixe em branco' };
+  }
 
   // Freio contra abuso: no máximo 5 vales sem pagar por telefone na última hora.
   const [{ n } = { n: 0 }] = await db
@@ -271,6 +302,8 @@ export async function criarValePorValor(p: PedidoValePorValor): Promise<{ token:
           compradorNome: nome.slice(0, 200),
           compradorTelefone: fone,
           presenteados: presenteados.slice(0, 200),
+          presenteadoTelefone: foneGanhador,
+          presenteadoEmail: emailGanhador,
           mensagem: p.mensagem?.trim().slice(0, 600) || null,
           pessoas: 2,
           itens: [],
@@ -286,6 +319,7 @@ export async function criarValePorValor(p: PedidoValePorValor): Promise<{ token:
     }
   }
   if (!vale) return { erro: 'não consegui gerar o vale agora — tente de novo' };
+  if (foneGanhador) void garantirModeloVale().catch(() => {});
   try {
     await gerarPix(vale);
   } catch (e) {

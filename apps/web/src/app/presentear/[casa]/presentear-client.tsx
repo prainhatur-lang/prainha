@@ -45,6 +45,8 @@ export function PresentearClient(p: {
   const [de, setDe] = useState('');
   const [mensagem, setMensagem] = useState('');
   const [fone, setFone] = useState('');
+  const [foneGanha, setFoneGanha] = useState('');
+  const [emailGanha, setEmailGanha] = useState('');
   const [isca, setIsca] = useState('');
   const [enviando, setEnviando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -59,6 +61,11 @@ export function PresentearClient(p: {
     if (para.trim().length < 2) return setErro('Diga pra quem é o presente.');
     if (de.trim().length < 2) return setErro('Diga seu nome.');
     if (fone.replace(/\D/g, '').length < 10) return setErro('Informe seu WhatsApp com DDD.');
+    const dGanha = foneGanha.replace(/\D/g, '').length;
+    if (dGanha > 0 && dGanha < 10) return setErro('WhatsApp de quem vai ganhar: com DDD (ou deixe em branco).');
+    if (emailGanha.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(emailGanha.trim())) {
+      return setErro('E-mail de quem vai ganhar inválido (ou deixe em branco).');
+    }
     setEnviando(true);
     try {
       const r = await fetch('/api/presentear', {
@@ -71,6 +78,8 @@ export function PresentearClient(p: {
           compradorNome: de,
           compradorTelefone: fone,
           mensagem,
+          presenteadoTelefone: foneGanha,
+          presenteadoEmail: emailGanha,
           site: isca,
         }),
       });
@@ -264,6 +273,32 @@ export function PresentearClient(p: {
               className="w-full resize-none rounded-xl border px-4 py-3.5 outline-none"
               style={campo}
             />
+            <div className="rounded-xl border border-dashed p-3" style={{ borderColor: campo.borderColor }}>
+              <div className="text-sm font-semibold">Quer que o vale chegue direto pra quem vai ganhar? (opcional)</div>
+              <p className="mt-0.5 text-xs" style={{ color: t.suave }}>
+                Pagou, a gente manda o vale no WhatsApp dele. Pode deixar em branco e encaminhar você mesmo.
+              </p>
+              <input
+                value={foneGanha}
+                onChange={(e) => setFoneGanha(mascaraFone(e.target.value))}
+                inputMode="tel"
+                autoComplete="off"
+                placeholder="WhatsApp de quem vai ganhar — (79) 99999-9999"
+                className="mt-2 w-full rounded-xl border px-4 py-3 outline-none"
+                style={campo}
+              />
+              <input
+                value={emailGanha}
+                onChange={(e) => setEmailGanha(e.target.value)}
+                inputMode="email"
+                type="email"
+                autoComplete="off"
+                maxLength={200}
+                placeholder="E-mail de quem vai ganhar (opcional)"
+                className="mt-2 w-full rounded-xl border px-4 py-3 outline-none"
+                style={campo}
+              />
+            </div>
           </div>
 
           <div className="space-y-3">
