@@ -231,7 +231,7 @@ ${sai ? `<p class="s"><b>Saíram da empresa — sem VT (${saidos.length})</b></p
   }
 
   async function pagar() {
-    if (!confirm(`Gravar a quinzena ${p.nomeQuinzena} como paga? Total ${brl(total)} para ${comVt.length} pessoa(s). Gera uma conta a pagar por pessoa (os comprovantes da lotérica casam com ela).`)) return;
+    if (!confirm(`Gravar a quinzena ${p.nomeQuinzena} como paga? Total ${brl(total)} para ${comVt.length} pessoa(s). Gera uma conta a pagar por pessoa (a Baixa por comprovantes casa com ela).`)) return;
     await enviar({
       acao: 'pagar',
       filialId: p.filialId,

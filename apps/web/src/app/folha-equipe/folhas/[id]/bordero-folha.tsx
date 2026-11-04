@@ -160,7 +160,7 @@ export function BorderoFolha({ folhaId, hoje }: { folhaId: string; hoje: string 
         Um Pix só pro intermediário, que paga cada pessoa e devolve os comprovantes. A saída de dinheiro
         é a conta do intermediário; as contas de cada pessoa ficam no borderô e recebem a baixa pelos{' '}
         <Link href="/folha-equipe/comprovantes" className="underline">
-          comprovantes da lotérica
+          Baixa por comprovantes
         </Link>
         .
       </p>

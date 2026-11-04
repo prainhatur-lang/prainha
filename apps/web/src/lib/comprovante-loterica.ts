@@ -505,7 +505,7 @@ export async function casarComprovante(
     .map((c) => ({ ...c, parec: parecDaPessoa.get(c.chavePessoa) ?? c.parec }))
     .filter((c) => c.parec >= PARECENCA_MIN && !presas.has(c.id));
   if (daPessoa.length === 0) {
-    return { ok: false, motivo: `não achei conta de 10% (ou de VT) em aberto pra "${lido.nome}" (nem pela conta de depósito do cadastro)` };
+    return { ok: false, motivo: `não achei conta da equipe em aberto (10%, comissão, gratificação, VT ou rescisão) pra "${lido.nome}" (nem pela conta de depósito do cadastro)` };
   }
 
   // Opções: cada conta sozinha + a soma das abertas da pessoa na mesma folha.

@@ -1,4 +1,5 @@
-// /folha-equipe/comprovantes — comprovantes da lotérica (o 10% por fora).
+// /folha-equipe/comprovantes — Baixa por comprovantes (antes "Comprovantes da
+// lotérica (10%)"): 10%/taxa de serviço, comissão, gratificação, VT, rescisão.
 // Sobe as fotos, o sistema lê e acha a conta FOLHA de cada um; "Baixar os
 // casados" dá a baixa na data do depósito. Lógica em lib/comprovante-loterica.
 
@@ -79,15 +80,16 @@ export default async function ComprovantesLotericaPage() {
       <AppHeader userEmail={user.email} />
       <section className="mx-auto max-w-5xl px-6 py-10">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
-          <h1 className="text-2xl font-semibold text-slate-900">Comprovantes da lotérica (10%)</h1>
+          <h1 className="text-2xl font-semibold text-slate-900">Baixa por comprovantes</h1>
           <Link href="/folha-equipe/folhas" className="text-sm text-slate-600 underline">
             Folhas semanais
           </Link>
         </div>
         <p className="mt-1 text-sm text-slate-600">
-          Suba as fotos que a lotérica manda. Cada uma é lida (nome, valor, data) e casada com a conta do 10% em
-          aberto da pessoa — uma conta, ou a soma das contas dela na mesma folha. A baixa só acontece no botão verde,
-          na data do depósito. As fotos ficam guardadas.
+          Suba as fotos dos comprovantes de depósito ou Pix feitos pra equipe (lotérica, banco ou Pix). Cada uma é
+          lida (nome, valor, data) e casada com a conta em aberto da pessoa — 10%/taxa de serviço, comissão,
+          bonificação/gratificação, vale-transporte ou rescisão; uma conta, ou a soma das contas dela na mesma folha.
+          A baixa só acontece no botão verde, na data do depósito. As fotos ficam guardadas.
         </p>
 
         <EnviarComprovantes casas={casas} />

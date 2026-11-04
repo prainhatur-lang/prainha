@@ -7,6 +7,7 @@ import { createClient } from '@/lib/supabase/server';
 import { roleEfetivoUsuario } from '@/lib/permissoes';
 import { permissoesDoUsuario } from '@/lib/permissoes-runtime';
 import { ehSoContador } from '@/lib/so-contador';
+import { ehInstanciaClientes } from '@/lib/instancia';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,5 +26,7 @@ export async function GET() {
     role,
     perms: Array.from(permsSet),
     soContador,
+    // Instância dos clientes do SaaS: a sidebar esconde os itens internos.
+    instanciaClientes: ehInstanciaClientes(),
   });
 }

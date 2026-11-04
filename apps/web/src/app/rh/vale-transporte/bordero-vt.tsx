@@ -194,7 +194,7 @@ th{background:#f1f5f9}.r{text-align:right}tfoot td{font-weight:bold}.ass{margin-
         Um Pix só pra lotérica, que paga cada pessoa e devolve os comprovantes. A saída de dinheiro é a conta da
         lotérica; a conta de cada pessoa fica no borderô e recebe a baixa pelos{' '}
         <Link href="/folha-equipe/comprovantes" className="underline">
-          comprovantes da lotérica
+          Baixa por comprovantes
         </Link>
         , igual à folha.
       </p>

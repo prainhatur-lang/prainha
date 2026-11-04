@@ -1,16 +1,27 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { FilialSwitcher } from './filial-switcher';
 import {
   MENU_AREAS,
   isRouteActive,
+  normalizarBusca,
   type MenuArea,
   type MenuIconName,
+  type MenuLinkItem,
   type NotificationKey,
 } from './menu-config';
+
+interface ResultadoBusca {
+  link: MenuLinkItem;
+  area: string;
+  secao?: string;
+  /** Nome antigo ou palavra que bateu com a busca, quando não foi o nome atual. */
+  tambem?: string;
+  pontos: number;
+}
 
 interface Notificacoes {
   opsAguardandoRevisao: number;
@@ -100,7 +111,46 @@ function Icon({ name, className = 'h-5 w-5' }: { name: MenuIconName; className?:
           <path d="M18.5 5.5a9 9 0 0 1 0 13" />
         </svg>
       );
+    case 'menu':
+      return (
+        <svg {...common}>
+          <path d="M3 2v7a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2V2" />
+          <path d="M7 2v20" />
+          <path d="M21 15V2a5 5 0 0 0-5 5v6a2 2 0 0 0 2 2h3Zm0 0v7" />
+        </svg>
+      );
+    case 'fiscal':
+      return (
+        <svg {...common}>
+          <path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z" />
+          <path d="M8 8h8M8 12h8M8 16h5" />
+        </svg>
+      );
+    case 'reports':
+      return (
+        <svg {...common}>
+          <path d="M3 3v18h18" />
+          <path d="M8 17v-4M13 17V7M18 17v-7" />
+        </svg>
+      );
   }
+}
+
+function SearchIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      className="h-4 w-4 shrink-0"
+    >
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-3.5-3.5" />
+    </svg>
+  );
 }
 
 function ChevronIcon({ open }: { open: boolean }) {
@@ -137,9 +187,13 @@ function Badge({ value }: { value: number }) {
 
 export function AppSidebar({ mobileOpen, onMobileOpenChange, brand }: AppSidebarProps) {
   const pathname = usePathname();
+  const router = useRouter();
   const [role, setRole] = useState<Role | null>(null);
   const [perms, setPerms] = useState<Set<string> | null>(null);
   const [soContador, setSoContador] = useState(false);
+  // Instância dos clientes do SaaS: esconde os itens `interno` (E.B., Lelis, energia).
+  const [instanciaClientes, setInstanciaClientes] = useState(false);
+  const [busca, setBusca] = useState('');
   const [notificacoes, setNotificacoes] = useState<Notificacoes>(NOTIFICACOES_VAZIAS);
   // Área aberta = escolha manual do usuário; sem escolha, abre a área da rota
   // atual (e Início como default). Derivado, não sincronizado por effect.
@@ -150,12 +204,17 @@ export function AppSidebar({ mobileOpen, onMobileOpenChange, brand }: AppSidebar
 
     fetch('/api/usuario/me', { cache: 'no-store' })
       .then((response) => (response.ok ? response.json() : null))
-      .then((data: { role?: Role; perms?: string[]; soContador?: boolean } | null) => {
+      .then(
+        (
+          data: { role?: Role; perms?: string[]; soContador?: boolean; instanciaClientes?: boolean } | null,
+        ) => {
         if (cancelled) return;
         if (data?.role) setRole(data.role);
         setSoContador(!!data?.soContador);
+        setInstanciaClientes(!!data?.instanciaClientes);
         setPerms(new Set(Array.isArray(data?.perms) ? data.perms : []));
-      })
+        },
+      )
       .catch(() => {
         if (!cancelled) setPerms(new Set());
       });
@@ -220,20 +279,40 @@ export function AppSidebar({ mobileOpen, onMobileOpenChange, brand }: AppSidebar
     return false;
   }
 
-  const visibleAreas = useMemo<MenuArea[]>(
+  // Tudo que a pessoa pode abrir (inclui as telas "só na busca").
+  const allowedAreas = useMemo<MenuArea[]>(
     () =>
       MENU_AREAS.map((area) => ({
         ...area,
         sections: area.sections
           .map((section) => ({
             ...section,
-            links: section.links.filter((link) => podeVer(link.perm) && !(link.semContador && soContador)),
+            links: section.links.filter(
+              (link) =>
+                podeVer(link.perm) &&
+                !(link.semContador && soContador) &&
+                !(link.interno && instanciaClientes),
+            ),
           }))
           .filter((section) => section.links.length > 0),
       })).filter((area) => area.sections.length > 0),
     // role/perms são os únicos valores que mudam a visibilidade.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [perms, role, soContador],
+    [perms, role, soContador, instanciaClientes],
+  );
+
+  // O que ocupa linha no menu: sem as telas que só aparecem na busca.
+  const visibleAreas = useMemo<MenuArea[]>(
+    () =>
+      allowedAreas
+        .map((area) => ({
+          ...area,
+          sections: area.sections
+            .map((section) => ({ ...section, links: section.links.filter((link) => !link.soNaBusca) }))
+            .filter((section) => section.links.length > 0),
+        }))
+        .filter((area) => area.sections.length > 0),
+    [allowedAreas],
   );
 
   const activeHref = useMemo(() => {
@@ -244,13 +323,60 @@ export function AppSidebar({ mobileOpen, onMobileOpenChange, brand }: AppSidebar
   }, [pathname, visibleAreas]);
 
   const activeAreaId = useMemo(() => {
-    return visibleAreas.find((area) =>
+    const doMenu = visibleAreas.find((area) =>
       area.sections.some((section) => section.links.some((link) => link.href === activeHref)),
     )?.id;
-  }, [activeHref, visibleAreas]);
+    if (doMenu) return doMenu;
+    // Tela "só na busca" aberta (ex.: Admissão): abre a área dela no menu.
+    return allowedAreas.find((area) =>
+      area.sections.some((section) =>
+        section.links.some((link) => link.soNaBusca && isRouteActive(pathname, link.href)),
+      ),
+    )?.id;
+  }, [activeHref, visibleAreas, allowedAreas, pathname]);
+
+  const resultadosBusca = useMemo<ResultadoBusca[]>(() => {
+    const termos = normalizarBusca(busca).split(/\s+/).filter(Boolean);
+    if (termos.length === 0) return [];
+    const frase = termos.join(' ');
+    const vistos = new Set<string>();
+    const achados: ResultadoBusca[] = [];
+    for (const area of allowedAreas) {
+      for (const section of area.sections) {
+        for (const link of section.links) {
+          if (link.soon || vistos.has(link.href)) continue;
+          const nome = normalizarBusca(link.label);
+          const apelidos = (link.aka ?? []).map((original) => ({ original, norm: normalizarBusca(original) }));
+          const contexto = normalizarBusca(`${area.label} ${section.label ?? ''}`);
+          const tudo = [nome, ...apelidos.map((a) => a.norm), contexto].join(' | ');
+          if (!termos.every((termo) => tudo.includes(termo))) continue;
+
+          let pontos = 0;
+          if (nome.startsWith(frase)) pontos = 4;
+          else if (nome.includes(frase)) pontos = 3;
+          else if (termos.every((termo) => nome.includes(termo))) pontos = 2;
+
+          let tambem: string | undefined;
+          if (pontos < 2) {
+            // Mostra o nome antigo/palavra que bateu (o mais longo é o mais claro).
+            tambem = apelidos
+              .filter((a) => termos.some((termo) => a.norm.includes(termo)))
+              .sort((a, b) => b.original.length - a.original.length)[0]?.original;
+            if (tambem) pontos = 1;
+          }
+
+          vistos.add(link.href);
+          achados.push({ link, area: area.label, secao: section.label, tambem, pontos });
+        }
+      }
+    }
+    // sort estável: dentro da mesma nota, segue a ordem do menu.
+    return achados.sort((a, b) => b.pontos - a.pontos).slice(0, 30);
+  }, [busca, allowedAreas]);
 
   useEffect(() => {
     onMobileOpenChange(false);
+    setBusca('');
   }, [pathname, onMobileOpenChange]);
 
   useEffect(() => {
@@ -317,7 +443,85 @@ export function AppSidebar({ mobileOpen, onMobileOpenChange, brand }: AppSidebar
 
         <FilialSwitcher />
 
+        <div className="shrink-0 border-b border-slate-200 px-3 py-2.5">
+          <label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-slate-400 focus-within:border-slate-400 focus-within:bg-white focus-within:text-slate-600">
+            <SearchIcon />
+            <input
+              type="search"
+              value={busca}
+              onChange={(event) => setBusca(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  const primeiro = resultadosBusca[0];
+                  if (!primeiro) return;
+                  event.preventDefault();
+                  setBusca('');
+                  onMobileOpenChange(false);
+                  router.push(primeiro.link.href);
+                } else if (event.key === 'Escape' && busca) {
+                  // Primeiro Esc limpa a busca; o próximo fecha o menu no celular.
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setBusca('');
+                }
+              }}
+              placeholder="Buscar no menu…"
+              aria-label="Buscar no menu"
+              autoComplete="off"
+              className="min-w-0 flex-1 bg-transparent text-xs text-slate-900 outline-none placeholder:text-slate-400 [&::-webkit-search-cancel-button]:hidden"
+            />
+            {busca && (
+              <button
+                type="button"
+                aria-label="Limpar busca"
+                onClick={() => setBusca('')}
+                className="rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+              >
+                <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" className="h-3.5 w-3.5">
+                  <path d="M6 6l12 12M18 6 6 18" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+              </button>
+            )}
+          </label>
+        </div>
+
         <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
+          {busca.trim() ? (
+            resultadosBusca.length === 0 ? (
+              <p className="px-2 py-6 text-center text-xs text-slate-500">
+                Nada com “{busca.trim()}”.
+              </p>
+            ) : (
+              <div className="space-y-0.5">
+                {resultadosBusca.map((resultado, index) => (
+                  <Link
+                    key={resultado.link.href}
+                    href={resultado.link.href}
+                    onClick={() => {
+                      setBusca('');
+                      onMobileOpenChange(false);
+                    }}
+                    className={`block rounded-lg px-2.5 py-2 transition-colors hover:bg-slate-100 ${
+                      index === 0 ? 'bg-slate-50 ring-1 ring-inset ring-slate-200' : ''
+                    }`}
+                  >
+                    <span className="block truncate text-xs font-semibold text-slate-900">
+                      {resultado.link.label}
+                    </span>
+                    <span className="block truncate text-[10px] text-slate-500">
+                      {resultado.area}
+                      {resultado.secao ? ` › ${resultado.secao}` : ''}
+                    </span>
+                    {resultado.tambem && (
+                      <span className="block truncate text-[10px] text-emerald-700">
+                        também: {resultado.tambem}
+                      </span>
+                    )}
+                  </Link>
+                ))}
+              </div>
+            )
+          ) : (
           <div className="space-y-1">
             {visibleAreas.map((area) => {
               const expanded = isExpanded(area.id);
@@ -409,6 +613,7 @@ export function AppSidebar({ mobileOpen, onMobileOpenChange, brand }: AppSidebar
               );
             })}
           </div>
+          )}
         </nav>
       </aside>
     </>
