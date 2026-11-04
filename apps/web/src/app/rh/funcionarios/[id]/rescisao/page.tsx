@@ -8,7 +8,7 @@ import { createClient } from '@/lib/supabase/server';
 import { exigirPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { eq } from 'drizzle-orm';
+import { and, desc, eq, isNull } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { hojeBr } from '@/lib/datas';
 import { calcularFolhaMensal } from '@/lib/rh/folha-mensal';
@@ -86,6 +86,21 @@ export default async function RescisaoPage(props: { params: Promise<{ id: string
     }
   }
 
+  // Carta de pedido de demissão subida na ficha (Documentos de saída): é a
+  // prova de que a pessoa pediu pra sair, então o tipo sugerido segue ela.
+  const [carta] = await db
+    .select({ nome: schema.funcionarioDocumento.arquivoNome, em: schema.funcionarioDocumento.criadoEm })
+    .from(schema.funcionarioDocumento)
+    .where(
+      and(
+        eq(schema.funcionarioDocumento.funcionarioId, f.id),
+        eq(schema.funcionarioDocumento.tipo, 'pedido_demissao'),
+        isNull(schema.funcionarioDocumento.canceladoEm),
+      ),
+    )
+    .orderBy(desc(schema.funcionarioDocumento.criadoEm))
+    .limit(1);
+
   // Endereço do empregador: da casa com o mesmo CNPJ (cadastro fiscal) ou o da E.B.
   const cnpjEmp = (f.cnpjRegistro ?? '').replace(/\D/g, '');
   let empregador = { endereco: '', bairro: '', municipio: 'ARACAJU', uf: 'SE', cep: '', cnae: '' };
@@ -150,6 +165,7 @@ export default async function RescisaoPage(props: { params: Promise<{ id: string
             noturno: Math.round(noturno * 100) / 100,
             salFamilia,
             faltasPonto,
+            cartaPedido: carta ? { nome: carta.nome ?? 'arquivo' } : null,
           }}
         />
       </section>

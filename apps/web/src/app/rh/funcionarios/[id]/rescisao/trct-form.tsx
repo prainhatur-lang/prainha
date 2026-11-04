@@ -101,10 +101,10 @@ function diasEntre(a: string, b: string) {
   return Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400000);
 }
 
-function tipoSugerido(admissao: string, afastamento: string, motivo: string | null): TipoRescisao {
+function tipoSugerido(admissao: string, afastamento: string, motivo: string | null, temCarta = false): TipoRescisao {
   const m = (motivo ?? '').toLowerCase();
   const dias = admissao && afastamento ? diasEntre(admissao, afastamento) + 1 : 999;
-  const pedido = m.includes('pedido') || m.includes('pediu');
+  const pedido = temCarta || m.includes('pedido') || m.includes('pediu');
   if (dias <= 90) return pedido ? 'experiencia_empregado' : 'experiencia_empregador';
   if (m.includes('justa')) return 'justa_causa';
   if (m.includes('acordo')) return 'acordo';
@@ -122,6 +122,8 @@ export function TrctForm(props: {
     noturno: number;
     salFamilia: { cotas: number; valorCota: number } | null;
     faltasPonto: FaltasDoPonto | null;
+    /** Carta de pedido de demissão subida na ficha. */
+    cartaPedido?: { nome: string } | null;
   };
 }) {
   const { pessoa, inicial, empregador } = props;
@@ -178,11 +180,14 @@ export function TrctForm(props: {
   const [salario, setSalario] = useState(String(inicial.salario || ''));
   const [admissao, setAdmissao] = useState(inicial.admissao);
   const [afastamento, setAfastamento] = useState(inicial.afastamento);
-  const [tipo, setTipo] = useState<TipoRescisao>(tipoSugerido(inicial.admissao, inicial.afastamento, pessoa.motivo));
+  const [tipo, setTipo] = useState<TipoRescisao>(
+    tipoSugerido(inicial.admissao, inicial.afastamento, pessoa.motivo, !!inicial.cartaPedido),
+  );
   const [aviso, setAviso] = useState<AvisoPrevio>('indenizado');
   // Contrato de experiência de 45 dias (o padrão da E.B.): fim = admissão + 44.
   const [fimExp, setFimExp] = useState(inicial.admissao ? somarDiasYmd(inicial.admissao, 44) : '');
-  const [art480, setArt480] = useState(false);
+  // Com a carta de pedido na ficha já vem marcado (é como o contador faz); dá pra desmarcar.
+  const [art480, setArt480] = useState(!!inicial.cartaPedido);
   const [feriasVenc, setFeriasVenc] = useState('0');
   const [adiant13, setAdiant13] = useState('');
   const [dependentes, setDependentes] = useState('0');
@@ -297,6 +302,11 @@ export function TrctForm(props: {
           </select>
         </label>
         {pessoa.motivo && <p className="text-xs text-slate-500">Motivo na ficha: {pessoa.motivo}</p>}
+        {inicial.cartaPedido && (
+          <p className="text-xs text-emerald-700">
+            📄 Carta de pedido de demissão na ficha ({inicial.cartaPedido.nome}): tipo sugerido como saída pela pessoa.
+          </p>
+        )}
 
         {tipoTemAviso(tipo) && (
           <label className={rotulo}>
