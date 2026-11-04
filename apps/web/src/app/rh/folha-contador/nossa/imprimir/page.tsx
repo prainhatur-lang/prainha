@@ -12,7 +12,7 @@ import { escolherFilial } from '@/lib/filial-ativa';
 import { brl } from '@/lib/format';
 import { hojeBr } from '@/lib/datas';
 import { calcularFolhaMensal, type RegimeFolha } from '@/lib/rh/folha-mensal';
-import { horasDoMesPorCpf, salarioFamiliaPorCpf } from '@/lib/rh/folha-mensal-dados';
+import { ajudaCustoPorCpf, horasDoMesPorCpf, salarioFamiliaPorCpf } from '@/lib/rh/folha-mensal-dados';
 import { proximosFeriados } from '@/lib/reservas/feriados';
 import { db, schema } from '@concilia/db';
 import { and, eq, inArray, isNotNull, or } from 'drizzle-orm';
@@ -85,10 +85,11 @@ export default async function ImprimirNossaFolhaPage(props: { searchParams: Prom
     )
     .sort((a, b) => a.nome.localeCompare(b.nome));
   const cpfs = [...new Set(doMes.map((f) => f.cpf).filter((c): c is string => !!c))];
-  const [horas, feriados, salFamilia] = await Promise.all([
+  const [horas, feriados, salFamilia, ajudaCusto] = await Promise.all([
     horasDoMesPorCpf(cpfs, ini, fim),
     proximosFeriados(ini, 31).then((l) => l.map((f) => f.data)),
     salarioFamiliaPorCpf(cpfs, comp),
+    ajudaCustoPorCpf(cpfs, comp),
   ]);
 
   const semSalario = doMes.filter((f) => !Number(f.salarioBase));
@@ -105,6 +106,7 @@ export default async function ImprimirNossaFolhaPage(props: { searchParams: Prom
         dias: f.cpf ? horas.get(f.cpf) ?? [] : [],
         feriados,
         salarioFamilia: f.cpf ? salFamilia.get(f.cpf) : null,
+        ajudaCusto: f.cpf ? ajudaCusto.get(f.cpf) : null,
       }),
     }))
     .filter((l) => l.calc.proventos > 0 || l.calc.avisos.length > 0);

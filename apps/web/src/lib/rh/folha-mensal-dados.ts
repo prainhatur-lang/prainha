@@ -132,6 +132,36 @@ export async function salarioFamiliaPorCpf(cpfs: string[], comp: string): Promis
 }
 
 /**
+ * Ajuda de custo por CPF (rubricas "AJUDA DE CUSTO", ex. 202 e 213) da folha do
+ * contador mais recente antes da competência. É valor fixo combinado, faz parte
+ * da folha oficial e o ponto não diz quanto é (03/11/2026). Fora do INSS/FGTS.
+ */
+export async function ajudaCustoPorCpf(
+  cpfs: string[],
+  comp: string,
+): Promise<Map<string, { codigo: string; descricao: string; valor: number }[]>> {
+  const saida = new Map<string, { codigo: string; descricao: string; valor: number }[]>();
+  if (cpfs.length === 0) return saida;
+  const linhas = await db
+    .select({ cpf: schema.folhaContador.cpf, rubricas: schema.folhaContador.rubricas })
+    .from(schema.folhaContador)
+    .where(and(lt(schema.folhaContador.competencia, comp), inArray(schema.folhaContador.cpf, cpfs)))
+    .orderBy(desc(schema.folhaContador.competencia));
+  const vistos = new Set<string>();
+  const alvo = new Set(cpfs);
+  for (const l of linhas) {
+    const cpf = String(l.cpf ?? '').replace(/\D/g, '');
+    if (!alvo.has(cpf) || vistos.has(cpf)) continue;
+    vistos.add(cpf);
+    const rs = ((l.rubricas as { codigo: string; descricao: string; tipo: string; valor: number }[] | null) ?? []).filter(
+      (x) => x.tipo === 'P' && x.valor > 0 && /AJUDA\s+DE\s+CUSTO/i.test(x.descricao ?? ''),
+    );
+    if (rs.length) saida.set(cpf, rs.map((x) => ({ codigo: x.codigo, descricao: x.descricao, valor: x.valor })));
+  }
+  return saida;
+}
+
+/**
  * Minutos do mês por CPF e por casa — pra dividir o custo de quem trabalha em
  * mais de uma casa (rateio da E.B. pelas horas). Mesma regra de
  * horasDoMesPorCpf: no dia em que o Stelanto tem hora vale ele (casa = equipe
