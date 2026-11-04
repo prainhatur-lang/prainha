@@ -21,6 +21,7 @@ interface Consulta {
     celular: string | null;
     dataNascimento: string | null;
     mae: string | null;
+    pai?: string | null;
     endereco: string | null;
     numero: string | null;
     bairro: string | null;
@@ -249,6 +250,9 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
               </span>
               <span>
                 <b>Mãe:</b> {c.dados.mae ?? '— (ela preenche)'}
+              </span>
+              <span>
+                <b>Pai:</b> {c.dados.pai ?? '— (ela preenche, se tiver)'}
               </span>
               <span>
                 <b>E-mail:</b> {c.dados.email ?? '—'}

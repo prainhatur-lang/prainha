@@ -190,6 +190,7 @@ export async function POST(req: Request) {
         nome: spc?.nome ?? r.dados.nome,
         dataNascimento: r.dados.dataNascimento ?? spc?.nascimento ?? null,
         mae: spc?.mae ?? null,
+        pai: spc?.pai ?? null,
         celular: r.dados.celular ?? spc?.telefone ?? null,
       },
       existente: existente

@@ -111,6 +111,7 @@ function pessoaisIniciais(c: Convite): PessoaisAdmissao {
     nome: c.nome,
     nascimento: ymd(s.dataNascimento),
     mae: t('mae'),
+    pai: t('pai'),
     email: t('email'),
     logradouro: t('endereco'),
     numero: t('numero'),

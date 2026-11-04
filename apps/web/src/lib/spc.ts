@@ -22,6 +22,8 @@ export interface DadosSpc {
   nome: string | null;
   nascimento: string | null;
   mae: string | null;
+  /** Nome do pai — o SPC traz quando tem (nomePai). */
+  pai?: string | null;
   email: string | null;
   /** Celular (DDD + número), quando o SPC tem. */
   telefone: string | null;
@@ -104,6 +106,7 @@ function extrairPf(pf: Record<string, unknown>): Partial<DadosSpc> {
     nome: txt(pf.nome),
     email: txt(pf.email),
     mae: txt(pf.nomeMae),
+    pai: txt(pf.nomePai),
     nascimento,
     telefone: fone(cel) ?? fone(res),
     endereco: txt(end.logradouro)?.slice(0, 120) ?? null,
@@ -138,6 +141,7 @@ function colhe(obj: unknown): Partial<DadosSpc> {
       if (!t) continue;
       if (!out.nascimento && /nascimento|dtnasc|datanasc/.test(K)) out.nascimento = data(t);
       else if (!out.mae && /(nomemae|mae)$/.test(K)) out.mae = t;
+      else if (!out.pai && /nomepai$/.test(K)) out.pai = t;
       else if (!out.telefone && /telefone|celular|fone/.test(K) && soDig(t).length >= 10)
         out.telefone = soDig(t).slice(0, 15);
       else if (!out.endereco && /logradouro|endereco/.test(K)) out.endereco = t.slice(0, 120);
@@ -189,6 +193,12 @@ export function hashCpf(cpf: string): string {
  * negativo. É o que a rota pública usa depois que o teto de consulta fechou
  * (ou quando só quer reaproveitar o que já se sabe).
  */
+/** O pai não tem coluna: vem do JSON guardado (bruto.nomePai). */
+function paiDoBruto(b: unknown): string | null {
+  const v = b && typeof b === 'object' ? (b as Record<string, unknown>).nomePai : null;
+  return typeof v === 'string' && v.trim() ? v.trim() : null;
+}
+
 export async function consultarCpfSoCache(cpf: string): Promise<DadosSpc | null> {
   const doc = soDig(cpf);
   if (!cpfValido(doc)) return null;
@@ -202,6 +212,7 @@ export async function consultarCpfSoCache(cpf: string): Promise<DadosSpc | null>
     nome: cache.nome,
     nascimento: cache.nascimento ?? null,
     mae: cache.mae ?? null,
+    pai: paiDoBruto(cache.bruto),
     email: cache.email ?? null,
     telefone: cache.telefone ?? null,
     endereco: cache.endereco ?? null,
@@ -239,6 +250,7 @@ export async function consultarCpf(
       nome: cache.nome,
       nascimento: cache.nascimento ?? null,
       mae: cache.mae ?? null,
+      pai: paiDoBruto(cache.bruto),
       email: cache.email ?? null,
       telefone: cache.telefone ?? null,
       endereco: cache.endereco ?? null,
@@ -349,6 +361,7 @@ export async function consultarCpf(
       nome,
       nascimento: extra.nascimento ?? null,
       mae: extra.mae ?? null,
+      pai: extra.pai ?? null,
       email: extra.email ?? null,
       telefone: extra.telefone ?? null,
       endereco: extra.endereco ?? null,
