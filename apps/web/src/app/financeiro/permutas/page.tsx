@@ -24,6 +24,7 @@ export default async function PermutasPage(props: { searchParams: Promise<{ fili
   if (!user) redirect('/login');
   await exigirPerm(user.id, 'conta_receber.read');
   const podeCriar = await podeUsuario(user.id, 'conta_receber.create');
+  const podePagar = await podeUsuario(user.id, 'conta_pagar.create');
 
   const filiais = await filiaisDoUsuario(user.id);
   const sp = await props.searchParams;
@@ -57,6 +58,7 @@ export default async function PermutasPage(props: { searchParams: Promise<{ fili
       codigo: schema.permutaCredito.clienteCodigoExterno,
       erro: schema.permutaCredito.erro,
       lancadoEm: schema.permutaCredito.lancadoEm,
+      contaPagarIds: schema.permutaCredito.contaPagarIds,
       fiadoStatus: schema.fiadoLancamento.status,
       fiadoErro: schema.fiadoLancamento.erro,
       fiadoAplicadoEm: schema.fiadoLancamento.aplicadoEm,
@@ -111,6 +113,9 @@ export default async function PermutasPage(props: { searchParams: Promise<{ fili
     observacao: k.observacao,
     arquivoNome: k.arquivoNome,
     temArquivo: !!k.arquivoPath,
+    tipo: (k.tipo === 'receber' || k.tipo === 'pagar' ? k.tipo : 'credito') as ContratoLinha['tipo'],
+    arquivos: (k.arquivos ?? []).map((a) => ({ nome: a.nome })),
+    vencimentos: k.vencimentos ?? [],
     criadoPor: k.criadoPor,
     criadoEm: k.criadoEm.toISOString(),
     cancelado: k.canceladoEm ? { em: k.canceladoEm.toISOString(), motivo: k.canceladoMotivo } : null,
@@ -129,6 +134,7 @@ export default async function PermutasPage(props: { searchParams: Promise<{ fili
           fiadoErro: c.fiadoErro,
           saldo: s?.saldo != null ? Number(s.saldo) : null,
           fiadoDesligado: s ? !(Number(s.limite ?? 0) > 0) : false,
+          contaPagarIds: c.contaPagarIds ?? null,
         };
       }),
   }));
@@ -143,7 +149,11 @@ export default async function PermutasPage(props: { searchParams: Promise<{ fili
           divida o valor entre as casas e o sistema cadastra o parceiro e lança o crédito na conta corrente (fiado)
           dele em cada casa. O que ele consumir vai abatendo do crédito.
         </p>
-        <Permutas casas={casas} contratos={linhas} podeCriar={podeCriar} />
+        <p className="mt-1 text-sm text-slate-500">
+          Também dá pra tirar foto das páginas do contrato e pedir pra IA ler e preencher, e lançar como conta a
+          receber (o parceiro paga) ou conta a pagar (as casas pagam), dividindo entre uma, outra ou todas as casas.
+        </p>
+        <Permutas casas={casas} contratos={linhas} podeCriar={podeCriar} podePagar={podePagar} />
       </div>
     </main>
   );

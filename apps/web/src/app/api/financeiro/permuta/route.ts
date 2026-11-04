@@ -3,6 +3,11 @@
 //      mandar o contrato direto pro bucket
 // POST { acao: 'criar', parceiro..., valorTotal, creditos: [{filialId, valor}] }
 //      → grava o contrato e já pede cadastro/lança o crédito em cada casa
+// POST { acao: 'ler', arquivos: [{path, nome}] } → IA lê as fotos/PDF do contrato
+//      (todas juntas) e devolve o formulário preenchido (04/11/2026)
+//      'criar' aceita tipo 'credito' (padrão, igual a antes) | 'receber' (débito
+//      a prazo no fiado do parceiro) | 'pagar' (conta a pagar por parcela, exige
+//      conta_pagar.create), vários arquivos e as parcelas.
 // POST { acao: 'reprocessar', id } → "tentar de novo"
 // POST { acao: 'cancelar', id, motivo } → só marca (crédito já lançado fica;
 //      estorno é na conta corrente do cliente)
@@ -16,11 +21,13 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { createAdminClient } from '@/lib/supabase/server';
 import { exigirPermApi, negarSemPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
-import { BUCKET_PERMUTA, PERMUTA_EXTENSOES, PERMUTA_TAMANHO_MAX, processarPermutas } from '@/lib/permuta';
+import { BUCKET_PERMUTA, PERMUTA_EXTENSOES, PERMUTA_TAMANHO_MAX, lancarContasPagar, processarPermutas } from '@/lib/permuta';
+import { lerContratoPermuta } from '@/lib/permuta-ler';
+import { podeUsuario } from '@/lib/permissoes-runtime';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 const Ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional();
 const txt = (max: number) => z.string().trim().max(max).nullable().optional();
@@ -41,7 +48,17 @@ const Body = z.discriminatedUnion('acao', [
     observacao: txt(2000),
     arquivoPath: z.string().min(1).max(500).nullable().optional(),
     arquivoNome: txt(200),
+    tipo: z.enum(['credito', 'receber', 'pagar']).optional(),
+    arquivos: z.array(z.object({ path: z.string().min(1).max(500), nome: z.string().trim().min(1).max(200) })).max(20).optional(),
+    vencimentos: z
+      .array(z.object({ data: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), valor: z.number().positive() }))
+      .max(120)
+      .optional(),
     creditos: z.array(z.object({ filialId: z.string().uuid(), valor: z.number().positive() })).min(1).max(10),
+  }),
+  z.object({
+    acao: z.literal('ler'),
+    arquivos: z.array(z.object({ path: z.string().min(1).max(500), nome: z.string().trim().min(1).max(200) })).min(1).max(20),
   }),
   z.object({ acao: z.literal('reprocessar'), id: z.string().uuid() }),
   z.object({ acao: z.literal('cancelar'), id: z.string().uuid(), motivo: z.string().trim().min(3).max(500) }),
@@ -91,6 +108,29 @@ export async function POST(req: Request) {
     return NextResponse.json({ bucket: BUCKET_PERMUTA, path: data.path, token: data.token });
   }
 
+  if (d.acao === 'ler') {
+    if (d.arquivos.some((a) => !a.path.startsWith(pastaDoUsuario(user.id)))) {
+      return NextResponse.json({ error: 'arquivo de outro usuário' }, { status: 400 });
+    }
+    const admin = await createAdminClient();
+    const baixados: Array<{ bytes: Uint8Array; nome: string }> = [];
+    for (const a of d.arquivos) {
+      const { data, error } = await admin.storage.from(BUCKET_PERMUTA).download(a.path);
+      if (error || !data) return NextResponse.json({ error: `não abri ${a.nome}: ${error?.message ?? 'sem resposta'}` }, { status: 500 });
+      baixados.push({ bytes: new Uint8Array(await data.arrayBuffer()), nome: a.nome });
+    }
+    const filiais = await filiaisDoUsuario(user.id);
+    try {
+      const lido = await lerContratoPermuta(
+        baixados,
+        filiais.map((f) => ({ id: f.id, nome: f.nome, cnpj: f.cnpj ?? null })),
+      );
+      return NextResponse.json({ ok: true, lido });
+    } catch (e) {
+      return NextResponse.json({ error: `leitura: ${(e as Error).message}` }, { status: 502 });
+    }
+  }
+
   if (d.acao === 'reprocessar') {
     const k = await contratoDoUsuario(d.id, user.id);
     if (!k) return NextResponse.json({ error: 'contrato não encontrado' }, { status: 404 });
@@ -137,6 +177,22 @@ export async function POST(req: Request) {
   if (d.arquivoPath && !d.arquivoPath.startsWith(pastaDoUsuario(user.id))) {
     return NextResponse.json({ error: 'arquivo de outro usuário' }, { status: 400 });
   }
+  const tipo = d.tipo ?? 'credito';
+  const arquivos = d.arquivos ?? [];
+  if (arquivos.some((a) => !a.path.startsWith(pastaDoUsuario(user.id)))) {
+    return NextResponse.json({ error: 'arquivo de outro usuário' }, { status: 400 });
+  }
+  if (tipo === 'pagar' && !(await podeUsuario(user.id, 'conta_pagar.create'))) {
+    return NextResponse.json({ error: 'sem permissão pra lançar conta a pagar' }, { status: 403 });
+  }
+  const vencimentos = tipo === 'credito' ? [] : (d.vencimentos ?? []);
+  if (vencimentos.length) {
+    const somaV = vencimentos.reduce((s, v) => s + centavos(v.valor), 0);
+    if (somaV !== centavos(d.valorTotal)) {
+      return NextResponse.json({ error: `as parcelas (R$ ${(somaV / 100).toFixed(2)}) não fecham com o valor do contrato` }, { status: 400 });
+    }
+  }
+  const primeiro = arquivos[0];
   const [org] = await db
     .select({ organizacaoId: schema.filial.organizacaoId })
     .from(schema.filial)
@@ -159,8 +215,11 @@ export async function POST(req: Request) {
         dataInicio: d.dataInicio || null,
         dataFim: d.dataFim || null,
         observacao: d.observacao || null,
-        arquivoPath: d.arquivoPath || null,
-        arquivoNome: d.arquivoNome || null,
+        arquivoPath: d.arquivoPath || primeiro?.path || null,
+        arquivoNome: d.arquivoNome || primeiro?.nome || null,
+        tipo,
+        arquivos: arquivos.length ? arquivos : null,
+        vencimentos: vencimentos.length ? vencimentos : null,
         criadoPor: user.email ?? user.id,
       })
       .returning({ id: schema.permutaContrato.id });
@@ -169,6 +228,20 @@ export async function POST(req: Request) {
     );
     return k!;
   });
+  if (tipo === 'pagar') {
+    // Conta a pagar sai na hora, com quem lançou; se falhar, o cron tenta de novo.
+    const [k] = await db.select().from(schema.permutaContrato).where(eq(schema.permutaContrato.id, novo.id)).limit(1);
+    const creds = await db.select().from(schema.permutaCredito).where(eq(schema.permutaCredito.contratoId, novo.id));
+    for (const c of creds) {
+      await lancarContasPagar(k!, c, user.id).catch(async (e) => {
+        await db
+          .update(schema.permutaCredito)
+          .set({ status: 'erro', erro: String((e as Error).message ?? e).slice(0, 300) })
+          .where(eq(schema.permutaCredito.id, c.id));
+      });
+    }
+    return NextResponse.json({ ok: true, id: novo.id });
+  }
   // Já pede o cadastro / lança onde o parceiro existe; o resto o cron conclui.
   await processarPermutas({ contratoId: novo.id }).catch(() => {});
   return NextResponse.json({ ok: true, id: novo.id });
@@ -181,8 +254,11 @@ export async function GET(req: Request) {
   if (!UUID.test(id)) return NextResponse.json({ error: 'id inválido' }, { status: 400 });
   const k = await contratoDoUsuario(id, auth.user.id);
   if (!k?.arquivoPath) return NextResponse.json({ error: 'contrato sem arquivo' }, { status: 404 });
+  // ?n=<índice> abre o n-ésimo arquivo do contrato (várias fotos).
+  const n = Number(new URL(req.url).searchParams.get('n') ?? '');
+  const caminho = Number.isInteger(n) && k.arquivos?.[n] ? k.arquivos[n]!.path : k.arquivoPath;
   const admin = await createAdminClient();
-  const { data, error } = await admin.storage.from(BUCKET_PERMUTA).createSignedUrl(k.arquivoPath, 60);
+  const { data, error } = await admin.storage.from(BUCKET_PERMUTA).createSignedUrl(caminho, 60);
   if (error || !data) return NextResponse.json({ error: `storage: ${error?.message ?? 'sem resposta'}` }, { status: 500 });
   return NextResponse.redirect(data.signedUrl);
 }

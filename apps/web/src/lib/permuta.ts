@@ -20,6 +20,8 @@
 import { db, schema } from '@concilia/db';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { normalizarCliente } from '@/lib/cliente-cadastro';
+import { garantirFornecedorDoPedido } from '@/lib/pedido-sem-nota';
+import { hojeBr } from '@/lib/datas';
 
 /** Forma do PDV usada no crédito: "Programa de fidelidade, Cashback, Crédito Virtual". */
 export const PERMUTA_FORMA_CODIGO = 20;
@@ -81,7 +83,10 @@ async function pedirCadastro(contrato: Contrato, filialId: string): Promise<stri
       cpfOuCnpj: doc || null,
       ...(fone.length >= 10 ? { celular: fone } : {}),
       ...(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? { email } : {}),
-      observacao: `Parceiro de permuta — crédito para consumo (contrato ${contrato.id.slice(0, 8)})`,
+      observacao:
+        contrato.tipo === 'receber'
+          ? `Parceiro — valor a receber do contrato ${contrato.id.slice(0, 8)}`
+          : `Parceiro de permuta — crédito para consumo (contrato ${contrato.id.slice(0, 8)})`,
       // Fiado ligado, mas travado: só consome até o crédito.
       limiteCreditoContaCorrente: 0.01,
       bloquearVendaAposLimite: true,
@@ -97,6 +102,7 @@ async function pedirCadastro(contrato: Contrato, filialId: string): Promise<stri
 
 /** Lança o crédito na conta corrente do parceiro (fila do fiado). */
 async function lancarCredito(contrato: Contrato, cred: Credito, codigo: number, nome: string | null) {
+  if (contrato.tipo === 'receber') return lancarReceber(contrato, cred, codigo, nome);
   const [forma] = await db
     .select({ descricao: schema.formaPagamentoConsumer.descricao })
     .from(schema.formaPagamentoConsumer)
@@ -125,11 +131,107 @@ async function lancarCredito(contrato: Contrato, cred: Credito, codigo: number, 
     .where(eq(schema.permutaCredito.id, cred.id));
 }
 
+/**
+ * Divide o valor da casa pelas parcelas do contrato, na proporção de cada
+ * parcela; os centavos que sobram vão na última. Sem parcelas = uma só.
+ */
+export function parcelasDaCasa(
+  valorCasa: number,
+  vencimentos: Array<{ data: string; valor: number }> | null | undefined,
+  padrao: string,
+): Array<{ data: string; valor: number }> {
+  const venc = (vencimentos ?? []).filter((v) => v.valor > 0).sort((a, b) => a.data.localeCompare(b.data));
+  const totalC = Math.round(valorCasa * 100);
+  if (venc.length === 0) return [{ data: padrao, valor: totalC / 100 }];
+  const soma = venc.reduce((s, v) => s + v.valor, 0);
+  let usado = 0;
+  return venc.map((v, i) => {
+    const c = i === venc.length - 1 ? totalC - usado : Math.round((totalC * v.valor) / soma);
+    usado += c;
+    return { data: v.data, valor: c / 100 };
+  });
+}
+
+/** Contrato "a receber": o parceiro deve à casa → débito no fiado, a prazo. */
+async function lancarReceber(contrato: Contrato, cred: Credito, codigo: number, nome: string | null) {
+  const parcelas = parcelasDaCasa(Number(cred.valor), contrato.vencimentos, contrato.dataInicio ?? hojeBr());
+  const lista = parcelas.map((p) => `${p.data.split('-').reverse().join('/')} R$ ${p.valor.toFixed(2)}`).join(', ');
+  const obs = `Parceria — a receber (${contrato.parceiroNome})${parcelas.length > 1 ? ` · parcelas: ${lista}` : ''}`.slice(0, 200);
+  const [f] = await db
+    .insert(schema.fiadoLancamento)
+    .values({
+      filialId: cred.filialId,
+      clienteCodigoExterno: codigo,
+      clienteNome: nome ?? contrato.parceiroNome,
+      tipo: 'credito',
+      valor: Number(cred.valor).toFixed(2),
+      condicao: 'prazo',
+      vencimento: parcelas[0]!.data,
+      criadoPor: contrato.criadoPor ?? 'permuta',
+      observacao: obs,
+    })
+    .returning({ id: schema.fiadoLancamento.id });
+  await db
+    .update(schema.permutaCredito)
+    .set({ status: 'lancado', clienteCodigoExterno: codigo, fiadoLancamentoId: f!.id, erro: null, lancadoEm: new Date() })
+    .where(eq(schema.permutaCredito.id, cred.id));
+}
+
+/**
+ * Contrato "a pagar": a casa paga o parceiro → uma conta a pagar MANUAL por
+ * parcela, com o parceiro como fornecedor da casa (copia de outra casa, acha
+ * pelo nome ou cria pela Receita).
+ */
+export async function lancarContasPagar(contrato: Contrato, cred: Credito, criadoPorId: string | null) {
+  if (cred.contaPagarIds?.length) return; // já lançou
+  const forn = await garantirFornecedorDoPedido(cred.filialId, {
+    fornecedorCnpj: contrato.documento,
+    fornecedorNome: contrato.parceiroNome,
+  });
+  const parcelas = parcelasDaCasa(Number(cred.valor), contrato.vencimentos, contrato.dataInicio ?? hojeBr());
+  const desc = `Parceria — ${contrato.parceiroNome}`.slice(0, 200);
+  const obs = [contrato.contrapartida, `Contrato de permuta/parceria ${contrato.id.slice(0, 8)}`].filter(Boolean).join(' · ');
+  const ids = await db.transaction(async (tx) => {
+    const out: string[] = [];
+    for (const [i, p] of parcelas.entries()) {
+      const [c] = await tx
+        .insert(schema.contaPagar)
+        .values({
+          filialId: cred.filialId,
+          fornecedorId: forn?.id ?? null,
+          categoriaId: null,
+          descricao: desc,
+          observacao: obs.slice(0, 1000),
+          valor: p.valor.toFixed(2),
+          dataVencimento: p.data,
+          competencia: p.data.slice(0, 7),
+          ...(parcelas.length > 1 ? { parcela: i + 1, totalParcelas: parcelas.length } : {}),
+          origem: 'MANUAL',
+          criadoPor: criadoPorId,
+          criadoEm: new Date(),
+          dataCadastro: new Date(`${hojeBr()}T12:00:00-03:00`),
+        })
+        .returning({ id: schema.contaPagar.id });
+      out.push(c!.id);
+    }
+    await tx
+      .update(schema.permutaCredito)
+      .set({ status: 'lancado', contaPagarIds: out, erro: null, lancadoEm: new Date() })
+      .where(eq(schema.permutaCredito.id, cred.id));
+    return out;
+  });
+  return ids;
+}
+
 /** Avança um crédito: acha/cria o cliente e lança. Nunca estoura. */
 async function avancar(contrato: Contrato, cred: Credito): Promise<void> {
   try {
     if (cred.status !== 'aguardando_cadastro' && cred.status !== 'erro') return;
     if (cred.fiadoLancamentoId) return; // já lançado (proteção contra lançar 2x)
+    if (contrato.tipo === 'pagar') {
+      await lancarContasPagar(contrato, cred, null);
+      return;
+    }
     const doc = soDig(contrato.documento);
 
     // 1. Já tem cadastro na casa?

@@ -9,7 +9,7 @@
 // `agente_comando` (criar_cliente) e o crédito sai quando ela devolve o código.
 // Regra em apps/web/src/lib/permuta.ts.
 
-import { pgTable, uuid, varchar, timestamp, text, date, numeric, integer, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, text, date, numeric, integer, index, jsonb } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { filial, organizacao } from './tenant';
 
@@ -37,6 +37,14 @@ export const permutaContrato = pgTable(
     canceladoEm: timestamp('cancelado_em', { withTimezone: true }),
     canceladoPor: text('cancelado_por'),
     canceladoMotivo: text('cancelado_motivo'),
+    /** 'credito' (crédito de consumo no fiado — o de sempre) | 'receber'
+     *  (parceiro deve: lança no fiado a prazo) | 'pagar' (casa deve: vira
+     *  conta a pagar). 04/11/2026. */
+    tipo: varchar('tipo', { length: 10 }).notNull().default('credito'),
+    /** Todas as fotos/arquivos do contrato [{path, nome}] (o 1º também fica em arquivoPath). */
+    arquivos: jsonb('arquivos').$type<Array<{ path: string; nome: string }>>(),
+    /** Parcelas do contrato [{data: 'YYYY-MM-DD', valor}] — pagar/receber. */
+    vencimentos: jsonb('vencimentos').$type<Array<{ data: string; valor: number }>>(),
   },
   (t) => ({
     porOrg: index('idx_permuta_contrato_org').on(t.organizacaoId, t.criadoEm),
@@ -56,6 +64,8 @@ export const permutaCredito = pgTable(
     /** criar_cliente pedido à loja (quando o parceiro não existia lá). */
     agenteComandoId: uuid('agente_comando_id'),
     fiadoLancamentoId: uuid('fiado_lancamento_id'),
+    /** tipo 'pagar': contas a pagar criadas nesta casa (uma por parcela). */
+    contaPagarIds: jsonb('conta_pagar_ids').$type<string[]>(),
     erro: text('erro'),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
     lancadoEm: timestamp('lancado_em', { withTimezone: true }),
