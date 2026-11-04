@@ -142,6 +142,10 @@ export const funcionario = pgTable(
     cbo: varchar('cbo', { length: 10 }),
     /** Código do empregado na folha do contador. */
     matriculaFolha: varchar('matricula_folha', { length: 20 }),
+    /** Dados do registro pro contrato de trabalho (04/11/2026): RG, CTPS,
+     *  PIS, filiação, estado civil… e os termos do último contrato gerado em
+     *  /rh/funcionarios/[id]/contrato. Ver lib/rh/contrato-trabalho.ts. */
+    dadosRegistro: jsonb('dados_registro'),
 
     /** Login do Consumer/usuario_operacao, quando a pessoa também vende —
      *  usado como fallback de PIN no bater ponto (ver PONTO_HTML). */

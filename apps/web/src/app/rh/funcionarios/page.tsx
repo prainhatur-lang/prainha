@@ -226,6 +226,12 @@ export default async function FuncionariosPage(props: { searchParams: Promise<SP
             </p>
           </div>
           <div className="flex gap-4 text-right text-xs text-slate-500">
+            <a
+              href={`/rh/admissao?filialId=${filialId}`}
+              className="self-center rounded-md bg-emerald-600 px-3 py-2 text-sm font-medium text-white hover:bg-emerald-700"
+            >
+              📲 Admissão pelo WhatsApp
+            </a>
             <span>
               <strong className="block text-lg text-slate-900">{ativos}</strong>ativos
             </span>

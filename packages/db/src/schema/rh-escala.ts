@@ -319,3 +319,49 @@ export const funcionarioAssinatura = pgTable(
     porPessoa: index('idx_funcionario_assinatura_pessoa').on(t.funcionarioId, t.enviadoEm),
   }),
 );
+
+/**
+ * Convite de admissão (04/11/2026). O RH digita o CPF, o SPC traz o que tiver
+ * (nome, nascimento, mãe, endereço, telefone), confirma o WhatsApp e acerta
+ * cargo/valor/modelo. A pessoa recebe o link /op/admissao/<token>, completa os
+ * dados, sobe os documentos, lê o contrato, faz os aceites, tira a selfie e
+ * assina. Ao assinar vira (ou atualiza) o `funcionario` com os documentos.
+ * status: enviado → aberto → assinado | cancelado.
+ */
+export const admissaoConvite = pgTable(
+  'admissao_convite',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    funcionarioId: uuid('funcionario_id').references(() => funcionario.id, { onDelete: 'set null' }),
+    cpf: varchar('cpf', { length: 11 }).notNull(),
+    nome: varchar('nome', { length: 200 }).notNull(),
+    telefone: varchar('telefone', { length: 20 }).notNull(),
+    termos: jsonb('termos').notNull(),
+    dadosSpc: jsonb('dados_spc'),
+    pessoais: jsonb('pessoais'),
+    documentos: jsonb('documentos'),
+    token: varchar('token', { length: 64 }).notNull().unique(),
+    status: varchar('status', { length: 20 }).notNull().default('enviado'),
+    expiraEm: timestamp('expira_em', { withTimezone: true }).notNull(),
+    criadoPor: uuid('criado_por'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    abertoEm: timestamp('aberto_em', { withTimezone: true }),
+    assinadoEm: timestamp('assinado_em', { withTimezone: true }),
+    assinadoIp: varchar('assinado_ip', { length: 80 }),
+    assinadoAparelho: text('assinado_aparelho'),
+    selfiePath: text('selfie_path'),
+    rubricaPath: text('rubrica_path'),
+    faceDistancia: varchar('face_distancia', { length: 12 }),
+    textoAceite: text('texto_aceite'),
+    hashContrato: varchar('hash_contrato', { length: 64 }),
+    documentoContratoId: uuid('documento_contrato_id'),
+    assinaturaId: uuid('assinatura_id'),
+    canceladoEm: timestamp('cancelado_em', { withTimezone: true }),
+    canceladoPor: uuid('cancelado_por'),
+  },
+  (t) => ({
+    porFilial: index('idx_admissao_convite_filial').on(t.filialId, t.criadoEm),
+    porCpf: index('idx_admissao_convite_cpf').on(t.cpf),
+  }),
+);

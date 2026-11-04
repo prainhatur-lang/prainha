@@ -164,6 +164,8 @@
     "migrate:motivo-admissao": "tsx scripts/migrate-motivo-admissao.ts",
     "migrate:dez-pct-casas": "tsx scripts/migrate-dez-pct-casas.ts",
     "migrate:whatsapp-nao-enviar": "tsx scripts/migrate-whatsapp-nao-enviar.ts",
+    "migrate:funcionario-dados-registro": "tsx scripts/migrate-funcionario-dados-registro.ts",
+    "migrate:admissao-convite": "tsx scripts/migrate-admissao-convite.ts",
     "migrate:combo-marcado": "tsx scripts/migrate-combo-marcado.ts",
     "migrate:combo-regra": "tsx scripts/migrate-combo-regra.ts",
     "migrate:vale-transporte": "tsx scripts/migrate-vale-transporte.ts",
