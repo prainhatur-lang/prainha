@@ -292,16 +292,65 @@ export function nomeArquivoComprovante(d: DadosComprovantePix): string {
 
 // ── Destinatário ───────────────────────────────────────────────────────────
 
-export type OrigemFone = 'fone_whatsapp' | 'funcionario' | 'vendedor' | 'fone_principal';
+export type OrigemFone = 'fone_whatsapp' | 'funcionario' | 'vendedor' | 'fone_principal' | 'outra_casa' | 'chave_pix';
 
 export const ROTULO_ORIGEM: Record<string, string> = {
   fone_whatsapp: 'WhatsApp do cadastro',
   funcionario: 'telefone do funcionário (RH)',
   vendedor: 'WhatsApp do vendedor',
   fone_principal: 'telefone do Consumer',
+  outra_casa: 'WhatsApp do cadastro em outra casa',
+  chave_pix: 'chave Pix é o celular dele',
 };
 
 export async function destinatarioDoPix(
+  fornecedorId: string | null,
+  chave?: string | null,
+): Promise<{ telefone: string; origem: OrigemFone } | null> {
+  const proprio = await destinatarioDoCadastro(fornecedorId);
+  if (proprio) return proprio;
+  // 03/11/2026 (José Vitor, Tabuará): o Pix estava num cadastro sem celular,
+  // e o WhatsApp dele estava em outro cadastro / nas outras casas.
+  //  · o mesmo fornecedor nas outras casas (grupo econômico ou CPF/CNPJ);
+  //  · a chave Pix, quando é celular E é o WhatsApp de algum fornecedor ou
+  //    funcionário cadastrado (CPF de 11 dígitos pode ter cara de celular —
+  //    sem essa conferência não manda).
+  if (fornecedorId) {
+    const irmaos = (await db.execute(sql`
+      SELECT o.fone_whatsapp, o.fone_principal
+        FROM fornecedor f
+        JOIN fornecedor o ON o.id <> f.id AND o.data_delete IS NULL AND (
+             (f.grupo_economico_id IS NOT NULL AND o.grupo_economico_id = f.grupo_economico_id)
+          OR (length(regexp_replace(coalesce(f.cnpj_ou_cpf, ''), '\D', '', 'g')) IN (11, 14)
+              AND regexp_replace(coalesce(o.cnpj_ou_cpf, ''), '\D', '', 'g') = regexp_replace(f.cnpj_ou_cpf, '\D', '', 'g')))
+       WHERE f.id = ${fornecedorId}::uuid
+       ORDER BY (o.fone_whatsapp IS NOT NULL AND o.fone_whatsapp <> '') DESC
+       LIMIT 20
+    `)) as unknown as Array<{ fone_whatsapp: string | null; fone_principal: string | null }>;
+    for (const campo of ['fone_whatsapp', 'fone_principal'] as const) {
+      for (const i of irmaos) {
+        const c = celular11(i[campo]);
+        if (c) return { telefone: c, origem: 'outra_casa' };
+      }
+    }
+  }
+  const daChave = celular11(chave);
+  if (daChave) {
+    const conhecido = (await db.execute(sql`
+      SELECT 1 FROM fornecedor
+       WHERE data_delete IS NULL
+         AND right(regexp_replace(coalesce(fone_whatsapp, ''), '\D', '', 'g'), 8) = ${daChave.slice(-8)}
+      UNION ALL
+      SELECT 1 FROM funcionario
+       WHERE right(regexp_replace(coalesce(telefone, ''), '\D', '', 'g'), 8) = ${daChave.slice(-8)}
+      LIMIT 1
+    `)) as unknown as unknown[];
+    if (conhecido.length > 0) return { telefone: daChave, origem: 'chave_pix' };
+  }
+  return null;
+}
+
+async function destinatarioDoCadastro(
   fornecedorId: string | null,
 ): Promise<{ telefone: string; origem: OrigemFone } | null> {
   if (!fornecedorId) return null;
@@ -419,7 +468,7 @@ export async function enviarComprovantePix(
   };
   try {
     const [p] = await db
-      .select({ id: schema.pixPagamento.id, filialId: schema.pixPagamento.filialId, status: schema.pixPagamento.status, fornecedorId: schema.pixPagamento.fornecedorId })
+      .select({ id: schema.pixPagamento.id, filialId: schema.pixPagamento.filialId, status: schema.pixPagamento.status, fornecedorId: schema.pixPagamento.fornecedorId, chave: schema.pixPagamento.chave })
       .from(schema.pixPagamento)
       .where(eq(schema.pixPagamento.id, pixId))
       .limit(1);
@@ -437,7 +486,7 @@ export async function enviarComprovantePix(
       return r;
     }
     const d = dd.dados;
-    const dest = await destinatarioDoPix(p.fornecedorId);
+    const dest = await destinatarioDoPix(p.fornecedorId, p.chave);
     if (!dest) {
       const r: ResultadoEnvioComprovante = {
         status: 'SEM_NUMERO',

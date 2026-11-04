@@ -213,7 +213,7 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
     const ultimos = await ultimosEnviosComprovante(pagos.map((p) => p.id));
     await Promise.all(
       pagos.map(async (p) => {
-        const dest = await destinatarioDoPix(p.fornecedorId ?? null).catch(() => null);
+        const dest = await destinatarioDoPix(p.fornecedorId ?? null, p.chave).catch(() => null);
         p.foneDestino = dest?.telefone ?? null;
         p.origemFone = dest ? (ROTULO_ORIGEM[dest.origem] ?? dest.origem) : null;
         const u = ultimos.get(p.id);

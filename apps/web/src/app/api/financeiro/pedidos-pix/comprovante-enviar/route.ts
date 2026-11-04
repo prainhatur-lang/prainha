@@ -40,7 +40,7 @@ export async function POST(req: Request) {
   if (p.status !== 'PAGO') return NextResponse.json({ error: 'O Pix ainda não está pago.' }, { status: 400 });
 
   if (parsed.data.acao === 'wame') {
-    const dest = await destinatarioDoPix(p.fornecedorId);
+    const dest = await destinatarioDoPix(p.fornecedorId, p.chave);
     const r = await linkWaMeComprovante(p.id, dest?.telefone ?? null);
     if (!r.ok) return NextResponse.json({ ok: false, status: 'INDISPONIVEL', error: `${r.motivo} Nada foi enviado.` });
     return NextResponse.json({ ok: true, link: r.link });
