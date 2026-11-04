@@ -899,8 +899,11 @@ export async function processarEntrada(params: {
             atualizadoEm: sql`now()`,
           })
           .where(eq(schema.atendimentoConversa.id, registro.conversaId));
+        // Parecer do supervisor (quando houve) vai junto no WhatsApp do aviso,
+        // pra quem recebe já saber por que a Nina não resolveu sozinha.
+        const sup = /Supervisor: (.+)$/.exec(resumo ?? '')?.[1]?.trim();
         void avisarEquipe(numerosEquipe, {
-          motivo: `Transferência: ${motivo}`,
+          motivo: sup ? `Transferência: ${motivo} | Supervisor: ${sup}` : `Transferência: ${motivo}`,
           nomeCliente: conversa.nomeCliente ?? 'sem nome',
           telefone: entrada.telefone,
           filial: filialNome,
