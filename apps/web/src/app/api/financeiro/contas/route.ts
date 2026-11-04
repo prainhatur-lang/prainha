@@ -46,6 +46,9 @@ const Body = z.object({
   observacao: z.string().trim().max(1000).nullable().optional(),
   forcar: z.boolean().optional(),
   forcarDuplicada: z.boolean().optional(),
+  // Lançamento repetido mês a mês (04/11/2026): cada mês é uma conta, com n/N.
+  parcela: z.number().int().positive().optional(),
+  totalParcelas: z.number().int().positive().max(120).optional(),
 });
 
 export async function POST(req: Request) {
@@ -160,6 +163,7 @@ export async function POST(req: Request) {
       dataPagamento: b.dataPagamento ?? null,
       valorPago: paga ? b.valor.toFixed(2) : null,
       competencia: b.dataVencimento.slice(0, 7),
+      ...(b.parcela && b.totalParcelas ? { parcela: b.parcela, totalParcelas: b.totalParcelas } : {}),
       origem: 'MANUAL',
       criadoPor: user.id,
       criadoEm: new Date(),

@@ -205,6 +205,22 @@ export function FornecedorPicker({
   );
 }
 
+/** Soma meses numa data YYYY-MM-DD sem fuso: dia 31 em mês de 30 vira 30 (fev → 28/29). */
+export function somarMeses(ymd: string, n: number): string {
+  const [a, m, d] = ymd.split('-').map(Number);
+  const total = a * 12 + (m - 1) + n;
+  const ano = Math.floor(total / 12);
+  const mes = (total % 12) + 1;
+  const ultimo = new Date(Date.UTC(ano, mes, 0)).getUTCDate();
+  const dia = Math.min(d, ultimo);
+  return `${ano}-${String(mes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
+}
+
+function ddmmaaaa(ymd: string): string {
+  const [a, m, d] = ymd.split('-');
+  return `${d}/${m}/${a}`;
+}
+
 export function NovaContaForm({
   filiais,
   filialId,
@@ -232,12 +248,99 @@ export function NovaContaForm({
   const [observacao, setObservacao] = useState('');
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+  // Repetir todo mês (04/11/2026): aluguel, pró-labore... um lançamento, vários vencimentos.
+  const [repetir, setRepetir] = useState(false);
+  const [meses, setMeses] = useState('12');
+  const [mesNoHistorico, setMesNoHistorico] = useState(true);
+  const [progresso, setProgresso] = useState<string | null>(null);
 
   const pai = useMemo(() => categorias.find((c) => c.id === paiId), [categorias, paiId]);
   // categoria efetiva = subcategoria quando escolhida; senão a própria categoria
   const categoriaId = subId || paiId || null;
   // o que o campo de valor vai mandar — mostrado ao vivo embaixo do campo
   const valorNum = parseValorBr(valor);
+  const qtdMeses = Math.floor(Number(meses));
+  const vencimentosRepetidos = useMemo(() => {
+    if (!repetir || !/^\d{4}-\d{2}-\d{2}$/.test(dataVencimento)) return [];
+    if (!Number.isFinite(qtdMeses) || qtdMeses < 2 || qtdMeses > 120) return [];
+    return Array.from({ length: qtdMeses }, (_, i) => somarMeses(dataVencimento, i));
+  }, [repetir, dataVencimento, qtdMeses]);
+
+  /** Lança uma conta por mês. Só a 1ª pode nascer paga; as outras ficam em aberto. */
+  async function submitRepetido(v: number) {
+    if (vencimentosRepetidos.length < 2) {
+      setErro('Repetir: informe de 2 a 120 meses.');
+      return;
+    }
+    const total = vencimentosRepetidos.length;
+    const base = descricao.trim();
+    let forcarCasa = false;
+    let forcarDuplicada = false;
+    const criadas: string[] = [];
+    setSalvando(true);
+    try {
+      for (let i = 0; i < total; i++) {
+        const venc = vencimentosRepetidos[i]!;
+        setProgresso(`Lançando ${i + 1} de ${total}…`);
+        const hist = mesNoHistorico ? `${base} — ${venc.slice(5, 7)}/${venc.slice(0, 4)}` : base;
+        const enviar = () =>
+          fetch('/api/financeiro/contas', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              filialId,
+              descricao: hist.slice(0, 500),
+              valor: v,
+              dataVencimento: venc,
+              dataLancamento,
+              dataPagamento: i === 0 && status === 'PAGA' ? dataPagamento : null,
+              fornecedorId: fornecedorId || null,
+              categoriaId,
+              observacao: observacao.trim() || null,
+              parcela: i + 1,
+              totalParcelas: total,
+              ...(forcarCasa ? { forcar: true } : {}),
+              // da 2ª em diante, "mesmo nº e valor" é a própria série
+              ...(forcarDuplicada || i > 0 ? { forcarDuplicada: true } : {}),
+            }),
+          });
+        let r = await enviar();
+        let d = await r.json().catch(() => ({}));
+        if (r.status === 409 && d.casaErrada && !forcarCasa) {
+          if (!window.confirm(`⚠️ ${d.error}\n\nLançar nesta casa mesmo assim?`)) {
+            setErro(d.error);
+            break;
+          }
+          forcarCasa = true;
+          r = await enviar();
+          d = await r.json().catch(() => ({}));
+        }
+        if (r.status === 409 && d.duplicada && d.podeForcar && !forcarDuplicada) {
+          if (!window.confirm(`⚠️ ${d.error}\n\nÉ outra compra? Lançar mesmo assim?`)) {
+            setErro(d.error);
+            break;
+          }
+          forcarDuplicada = true;
+          r = await enviar();
+          d = await r.json().catch(() => ({}));
+        }
+        if (!r.ok) {
+          setErro(
+            `${criadas.length ? `Lançou ${criadas.length} de ${total}; parou no vencimento ${ddmmaaaa(venc)}: ` : ''}${d.error ?? `HTTP ${r.status}`}`,
+          );
+          break;
+        }
+        if (d.id) criadas.push(d.id);
+      }
+      if (criadas.length === total) {
+        router.push(criadas[0] ? `/financeiro/conta/${criadas[0]}` : '/financeiro');
+        router.refresh();
+      }
+    } finally {
+      setSalvando(false);
+      setProgresso(null);
+    }
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -250,6 +353,7 @@ export function NovaContaForm({
         'Escolha o fornecedor na lista — ou apague o campo pra lançar sem fornecedor.',
       );
     }
+    if (repetir) return submitRepetido(v);
     setSalvando(true);
     try {
       let forcarDuplicada = false;
@@ -475,6 +579,68 @@ export function NovaContaForm({
           Pagou uma parte só? Lance <b>em aberto</b> e registre o pagamento parcial na
           página da conta — cada pagamento fica no histórico.
         </p>
+
+        <div className="mt-3 border-t border-slate-100 pt-3">
+          <label className="flex items-center gap-2 text-sm text-slate-800">
+            <input type="checkbox" checked={repetir} onChange={(e) => setRepetir(e.target.checked)} />
+            🔁 Repetir todo mês <span className="text-xs text-slate-500">(aluguel, pró-labore, mensalidade…)</span>
+          </label>
+          {repetir && (
+            <div className="mt-2 rounded-md bg-slate-50 p-3">
+              <div className="flex flex-wrap items-end gap-3">
+                <div>
+                  <label className={labelCls}>Quantos meses</label>
+                  <input
+                    value={meses}
+                    onChange={(e) => setMeses(e.target.value.replace(/\D/g, ''))}
+                    inputMode="numeric"
+                    className={`${inputCls} w-24 font-mono`}
+                  />
+                </div>
+                <div className="flex gap-1 pb-0.5">
+                  {[3, 6, 12, 24].map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      onClick={() => setMeses(String(n))}
+                      className={`rounded-md border px-2 py-1 text-xs ${
+                        meses === String(n)
+                          ? 'border-slate-900 bg-slate-900 text-white'
+                          : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+                <label className="flex items-center gap-2 pb-1 text-xs text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={mesNoHistorico}
+                    onChange={(e) => setMesNoHistorico(e.target.checked)}
+                  />
+                  Pôr o mês no histórico (“{descricao.trim() || 'Aluguel'} — {dataVencimento.slice(5, 7)}/{dataVencimento.slice(0, 4)}”)
+                </label>
+              </div>
+              {vencimentosRepetidos.length > 0 ? (
+                <p className="mt-2 text-xs text-slate-600">
+                  Vai lançar <b>{vencimentosRepetidos.length} contas</b>
+                  {valorNum != null && valorNum > 0 && (
+                    <> de <b className="font-mono">{brl(valorNum)}</b> (total {brl(valorNum * vencimentosRepetidos.length)})</>
+                  )}
+                  , vencendo {vencimentosRepetidos.map(ddmmaaaa).join(' · ')}.
+                  {status === 'PAGA' && <> Só a 1ª entra como paga; as outras ficam em aberto.</>}
+                </p>
+              ) : (
+                <p className="mt-2 text-xs text-rose-700">Informe de 2 a 120 meses e o vencimento da 1ª.</p>
+              )}
+              <p className="mt-1 text-[11px] text-slate-500">
+                Cada mês vira uma conta separada (parcela 1/N, 2/N…): dá pra pagar, mudar o valor ou
+                excluir um mês sem mexer nos outros.
+              </p>
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-white p-4">
@@ -502,7 +668,11 @@ export function NovaContaForm({
           disabled={salvando}
           className="rounded-md bg-slate-900 px-4 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50"
         >
-          {salvando ? 'Lançando...' : 'Lançar conta'}
+          {salvando
+            ? progresso ?? 'Lançando...'
+            : repetir && vencimentosRepetidos.length > 1
+              ? `Lançar ${vencimentosRepetidos.length} contas`
+              : 'Lançar conta'}
         </button>
       </div>
     </form>
