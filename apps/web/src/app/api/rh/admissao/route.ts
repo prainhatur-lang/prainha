@@ -129,6 +129,8 @@ const Body = z.discriminatedUnion('acao', [
     telefone: z.string().min(8).max(20),
     termos: Termos,
     dadosSpc: z.record(z.string(), z.unknown()).optional(),
+    // 6x1 com folga num dia que ainda não tem escala cadastrada (0=dom..6=sáb): cria "MENSALISTA Folga <dia>".
+    folgaNova: z.number().int().min(0).max(6).optional(),
   }),
   z.object({ acao: z.literal('cancelar'), id: z.string().uuid() }),
 ]);
@@ -216,6 +218,34 @@ export async function POST(req: Request) {
   const termos: TermosConvite = { ...b.termos, cbo: b.termos.cbo ?? '', atividades: b.termos.atividades ?? '' };
   // Local vazio = endereço da casa onde vai trabalhar (b.filialId), não o de quem registra.
   if (!termos.local.trim()) termos.local = await localDaCasa(b.filialId);
+  if (!termos.jornadaId && b.folgaNova !== undefined && termos.modelo !== 'intermitente') {
+    // Mesmo molde das escalas do Stelanto: 440 min (7h20) nos 6 dias de trabalho, 0 na folga.
+    const DIAS = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
+    const m = (d: number) => (d === b.folgaNova ? 0 : 440);
+    const nomeJ = `MENSALISTA Folga ${DIAS[b.folgaNova]}`;
+    await db
+      .insert(schema.rhJornada)
+      .values({
+        nome: nomeJ,
+        tipo: 'fixa',
+        origem: 'manual',
+        minDom: m(0),
+        minSeg: m(1),
+        minTer: m(2),
+        minQua: m(3),
+        minQui: m(4),
+        minSex: m(5),
+        minSab: m(6),
+      })
+      .onConflictDoNothing({ target: schema.rhJornada.nome });
+    const [j] = await db
+      .select({ id: schema.rhJornada.id })
+      .from(schema.rhJornada)
+      .where(and(eq(schema.rhJornada.nome, nomeJ), eq(schema.rhJornada.ativo, true)))
+      .limit(1);
+    if (!j) return NextResponse.json({ error: `escala ${nomeJ} está desativada` }, { status: 400 });
+    termos.jornadaId = j.id;
+  }
   if (termos.jornadaId) {
     const [j] = await db
       .select({ id: schema.rhJornada.id })

@@ -146,9 +146,25 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
 
   // Escala: intermitente → jornada intermitente da casa; fixo → o RH escolhe a folga (ou decide na escala do mês).
   const jornadasDoModelo = jornadas.filter((j) => (modelo === 'intermitente' ? j.tipo === 'intermitente' : j.tipo !== 'intermitente'));
+  // 6x1: todo dia da semana pode ser a folga fixa. Dia sem escala cadastrada aparece como "nova" e é criada ao gerar o link.
+  const DIAS_SEMANA = ['Domingo', 'Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado'];
+  const semFolgaCadastrada =
+    modelo === 'intermitente'
+      ? []
+      : DIAS_SEMANA.map((d, i) => ({ d, i })).filter(
+          ({ d }) => !jornadasDoModelo.some((j) => j.nome.trim().toLowerCase() === `mensalista folga ${d}`.toLowerCase()),
+        );
+  const folgaNova = jornadaId.startsWith('novo:') ? Number(jornadaId.slice(5)) : undefined;
+  const nomeEscala =
+    folgaNova !== undefined ? `MENSALISTA Folga ${DIAS_SEMANA[folgaNova]}` : (jornadas.find((j) => j.id === jornadaId)?.nome ?? '');
+  useEffect(() => {
+    if (modelo === 'intermitente' || !nomeEscala) return;
+    setJornada((j) => (j.startsWith('44 horas') ? `44 horas semanais, escala 6x1 (${nomeEscala.replace(/^MENSALISTA /i, '')}), com intervalo de 1 hora` : j));
+  }, [modelo, nomeEscala]);
   useEffect(() => {
     setJornadaId((atual) => {
       if (jornadasDoModelo.some((j) => j.id === atual)) return atual;
+      if (atual.startsWith('novo:') && modelo !== 'intermitente') return atual;
       if (modelo !== 'intermitente') return '';
       const tab = /tabu/i.test(nomeLotacao);
       const j =
@@ -196,6 +212,7 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
           nome,
           telefone: whats,
           dadosSpc: c?.dados ?? undefined,
+          ...(folgaNova !== undefined ? { folgaNova } : {}),
           termos: {
             modelo,
             empregadorCnpj: empregador,
@@ -209,7 +226,7 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
             expDias,
             expProrrogacao,
             setor: '',
-            ...(jornadaId ? { jornadaId } : {}),
+            ...(jornadaId && folgaNova === undefined ? { jornadaId } : {}),
           },
         }),
       });
@@ -237,7 +254,7 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
   }
 
   const cpfDig = cpf.replace(/\D/g, '');
-  const pronto = !!c && nome.trim().length > 3 && whats.replace(/\D/g, '').length >= 10 && whatsOk && cargo.trim().length > 1 && !!valor && !!admissao;
+  const pronto = !!c && nome.trim().length > 3 && whats.replace(/\D/g, '').length >= 10 && whatsOk && cargo.trim().length > 1 && !!valor && !!admissao && !!jornadaId;
   const inp = 'mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm';
 
   return (
@@ -350,17 +367,7 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
           <h2 className="text-sm font-semibold text-slate-800">3. O combinado (vai no contrato)</h2>
           <div className="mt-2 grid gap-3 sm:grid-cols-2">
             <label className="text-xs text-slate-600">
-              Modelo
-              <select className={inp} value={modelo} onChange={(e) => setModelo(e.target.value as typeof modelo)}>
-                {MODELOS.map((m) => (
-                  <option key={m.v} value={m.v}>
-                    {m.t}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="text-xs text-slate-600">
-              Contratante (empresa que registra)
+              1) Quem contrata (empresa que registra)
               <select className={inp} value={empregador} onChange={(e) => setEmpregador(e.target.value)}>
                 {empregadores.map((e) => (
                   <option key={e.cnpj} value={e.cnpj}>
@@ -370,7 +377,7 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
               </select>
             </label>
             <label className="text-xs text-slate-600">
-              Casa onde vai trabalhar
+              2) Onde vai trabalhar
               <select className={inp} value={lotacao} onChange={(e) => setLotacao(e.target.value)}>
                 {listaCasas.map((x) => (
                   <option key={x.id} value={x.id}>
@@ -380,19 +387,58 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
               </select>
             </label>
             <label className="text-xs text-slate-600">
-              Escala
-              <select className={inp} value={jornadaId} onChange={(e) => setJornadaId(e.target.value)}>
-                <option value="">{modelo === 'intermitente' ? '— sem escala' : 'Decidir na escala do mês'}</option>
+              3) Salário
+              <select
+                className={inp}
+                value={modelo === 'intermitente' ? 'hora' : 'clt'}
+                onChange={(e) => setModelo(e.target.value === 'hora' ? 'intermitente' : 'experiencia')}
+              >
+                <option value="clt">Mensal — CLT (salário fixo)</option>
+                <option value="hora">Por hora — intermitente</option>
+              </select>
+            </label>
+            {modelo === 'intermitente' ? (
+              <div className="text-xs text-slate-600">
+                Contrato
+                <div className="mt-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-sm text-slate-700">Intermitente (por convocação)</div>
+              </div>
+            ) : (
+              <label className="text-xs text-slate-600">
+                Contrato CLT
+                <select className={inp} value={modelo} onChange={(e) => setModelo(e.target.value as typeof modelo)}>
+                  {MODELOS.filter((m) => m.v !== 'intermitente').map((m) => (
+                    <option key={m.v} value={m.v}>
+                      {m.t}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <label className="text-xs text-slate-600 sm:col-span-2">
+              4) Escala em que vai trabalhar (obrigatório)
+              <select
+                className={`${inp} ${jornadaId ? '' : 'border-amber-400 bg-amber-50'}`}
+                value={jornadaId}
+                onChange={(e) => setJornadaId(e.target.value)}
+              >
+                <option value="" disabled>
+                  {modelo === 'intermitente' ? 'Escolha a escala intermitente…' : 'Escolha a folga fixa da semana (6x1)…'}
+                </option>
                 {jornadasDoModelo.map((j) => (
                   <option key={j.id} value={j.id}>
                     {j.nome}
+                  </option>
+                ))}
+                {semFolgaCadastrada.map(({ d, i }) => (
+                  <option key={`novo:${i}`} value={`novo:${i}`}>
+                    MENSALISTA Folga {d} (6x1, 7h20/dia — nova, cadastra ao gerar o link)
                   </option>
                 ))}
               </select>
               <span className="mt-0.5 block text-[11px] text-slate-500">
                 {modelo === 'intermitente'
                   ? 'Intermitente: trabalha por convocação e conta só as horas batidas no ponto.'
-                  : 'Folga fixa da semana. Assinou → aparece na escala do mês da casa com essa folga sugerida.'}
+                  : '6x1 com a folga fixa escolhida; o domingo de folga roda na escala do mês pela regra (homem 1 a cada 5 — CCT; mulher a cada 2 — CLT 386). Assinou → já aparece na escala do mês da casa.'}
               </span>
             </label>
             <label className="text-xs text-slate-600">
@@ -445,6 +491,7 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
               {enviando ? 'Gerando…' : '📲 Gerar link e abrir o WhatsApp'}
             </button>
             {!whatsOk && <span className="text-xs text-slate-500">marque que confirmou o WhatsApp</span>}
+            {!jornadaId && <span className="text-xs text-amber-700">escolha a escala antes de mandar</span>}
           </div>
           {gerado && (
             <div className="mt-3 rounded-md bg-emerald-50 p-3 text-sm text-emerald-900">
