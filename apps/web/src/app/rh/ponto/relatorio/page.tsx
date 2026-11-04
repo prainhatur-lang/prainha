@@ -51,7 +51,7 @@ const TOLERANCIA_ATRASO_MIN = 5;
 const SEMANA = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
 const MESES = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
 
-type Situacao = 'ok' | 'falta' | 'incompleto' | 'sem_intervalo' | 'atestado' | 'folga' | 'hoje' | 'fora' | 'extra' | 'menos';
+type Situacao = 'ok' | 'falta' | 'incompleto' | 'sem_intervalo' | 'atestado' | 'folga' | 'hoje' | 'fora' | 'extra' | 'menos' | 'antes_registro';
 /** Diferença do dia que não vira aviso (CLT art. 58 §1º: até 10 min por dia). */
 const TOLERANCIA_DIA_MIN = 10;
 
@@ -113,6 +113,10 @@ interface Resumo {
   corrigidas: number;
   ajustes: number;
   outrasCasas: number;
+  /** Dias batidos antes da admissão (diária): ficam fora do total do mês. */
+  admissao: string | null;
+  antesRegistroDias: number;
+  antesRegistroMin: number;
   dias: LinhaDia[];
 }
 
@@ -153,6 +157,7 @@ const ROTULO: Record<Situacao, { txt: string; cls: string }> = {
   folga: { txt: 'folga', cls: 'bg-slate-100 text-slate-500' },
   hoje: { txt: 'hoje (em andamento)', cls: 'bg-slate-100 text-slate-500' },
   fora: { txt: '—', cls: 'text-slate-300' },
+  antes_registro: { txt: 'diária (antes do registro)', cls: 'bg-amber-50 text-amber-700' },
 };
 
 export default async function RelatorioPontoPage(props: { searchParams: Promise<SP> }) {
@@ -416,6 +421,9 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
       corrigidas: 0,
       ajustes: ajustesPorPessoa.get(f.id) ?? 0,
       outrasCasas: 0,
+      admissao: f.dataAdmissao ?? null,
+      antesRegistroDias: 0,
+      antesRegistroMin: 0,
       dias: [],
     };
 
@@ -458,11 +466,21 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
       let saldo: number | null = null;
       const prev = foraDoPeriodo || dia === hoje ? 0 : prevJornada;
 
+      // Registrado que bateu antes da admissão = diária (paga na folha semanal):
+      // aparece no dia, mas fica fora do total do mês que vai pro contracheque.
+      const antesRegistro = registrado && !!f.dataAdmissao && dia < f.dataAdmissao && lista.length > 0;
+      if (antesRegistro) {
+        r.antesRegistroDias++;
+        r.antesRegistroMin += trab;
+        situacoes.push('antes_registro');
+      }
       if (lista.length > 0) {
-        r.diasTrabalhados++;
-        r.trabalhadoMin += trab;
-        r.noturnoMin += notReal;
-        r.noturnoFictoMin += notFicto;
+        if (!antesRegistro) {
+          r.diasTrabalhados++;
+          r.trabalhadoMin += trab;
+          r.noturnoMin += notReal;
+          r.noturnoFictoMin += notFicto;
+        }
         for (const b of lista) {
           if (b.origem === 'celular') r.porCelular++;
           if (b.origem === 'correcao') r.corrigidas++;
@@ -599,7 +617,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
   };
 
   const csvSintetico = csvHref([
-    ['Pessoa', 'Cargo', 'Jornada', 'Dias trabalhados', 'Horas trabalhadas', 'Horas previstas', 'Saldo do mês', 'Saldo anterior', 'Acertos do mês', 'Saldo geral', 'Hora extra', 'Noturno 22h–5h (relógio)', 'Noturno (hora reduzida 52min30s)', 'Faltas', 'Horas de falta', 'Incompletos', 'Atrasos', 'Min de atraso', 'Dias de atestado', 'Batidas pelo celular', 'Ajustes à mão (inclusão, alteração, exclusão)', 'Tipo'],
+    ['Pessoa', 'Cargo', 'Jornada', 'Dias trabalhados', 'Horas trabalhadas', 'Horas previstas', 'Saldo do mês', 'Saldo anterior', 'Acertos do mês', 'Saldo geral', 'Hora extra', 'Noturno 22h–5h (relógio)', 'Noturno (hora reduzida 52min30s)', 'Faltas', 'Horas de falta', 'Incompletos', 'Atrasos', 'Min de atraso', 'Dias de atestado', 'Batidas pelo celular', 'Ajustes à mão (inclusão, alteração, exclusão)', 'Tipo', 'Admissão', 'Dias antes do registro (diária)', 'Horas antes do registro (diária)'],
     ...resumos.map((r) => [
       r.nome,
       r.cargo ?? '',
@@ -623,6 +641,9 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
       r.porCelular,
       r.ajustes,
       TIPOS.find((t) => t.id === r.tipo)?.txt ?? '',
+      r.admissao ? r.admissao.split('-').reverse().join('/') : '',
+      r.antesRegistroDias || '',
+      r.antesRegistroDias ? fmtHoras(r.antesRegistroMin) : '',
     ]),
   ]);
   const csvAnalitico = csvHref([
@@ -803,7 +824,17 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
                       </div>
                     </td>
                     <td className="px-2 py-2 text-right">{r.diasTrabalhados}</td>
-                    <td className="px-2 py-2 text-right font-medium">{fmtHoras(r.trabalhadoMin)}</td>
+                    <td className="px-2 py-2 text-right font-medium">
+                      {fmtHoras(r.trabalhadoMin)}
+                      {r.antesRegistroDias ? (
+                        <div
+                          className="whitespace-nowrap text-xs font-normal text-amber-700"
+                          title={`Batido antes da admissão (${r.admissao ? ddmm(r.admissao) : ''}): é diária, paga na folha semanal. Fica fora do total do mês.`}
+                        >
+                          + {fmtHoras(r.antesRegistroMin)} diária
+                        </div>
+                      ) : null}
+                    </td>
                     <td className="px-2 py-2 text-right text-slate-500">{r.temBanco ? fmtHoras(r.previstoMin) : '—'}</td>
                     <td className={`px-2 py-2 text-right font-medium ${!r.temBanco ? 'text-slate-300' : r.saldoMin < 0 ? 'text-red-600' : r.saldoMin > 0 ? 'text-blue-700' : ''}`}>
                       {r.temBanco ? fmtSaldo(r.saldoMin) : '—'}
@@ -880,6 +911,11 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
                   {r.incompletos ? ` · ${r.incompletos} incompleto(s)` : ''}
                   {r.atrasos ? ` · ${r.atrasos} atraso(s)` : ''}
                   {r.noturnoMin ? ` · 🌙 noturno ${fmtHoras(r.noturnoMin)} (${fmtHoras(r.noturnoFictoMin)} reduzida)` : ''}
+                  {r.antesRegistroDias ? (
+                    <div className="text-amber-700">
+                      Registrado em {r.admissao ? ddmm(r.admissao) : '—'} · antes disso {r.antesRegistroDias} dia(s) de diária ({fmtHoras(r.antesRegistroMin)}), fora do total do mês
+                    </div>
+                  ) : null}
                 </div>
               </div>
               <table className="w-full text-sm">
