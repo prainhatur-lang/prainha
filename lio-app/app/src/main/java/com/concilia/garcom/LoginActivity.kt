@@ -102,7 +102,10 @@ class LoginActivity : AppCompatActivity() {
         descobertos.forEach { s ->
             if (opcoes.none { it.second == s.base }) opcoes.add(Pair("${s.nome} — ${s.base.removePrefix("http://")}", s.base))
         }
-        Session.SERVIDORES.forEach { (nome, base) ->
+        // Reserva fixa (IPs do Prainha) só aparece pro aparelho do Prainha — com o app
+        // aberto pra qualquer restaurante, quem é de fora não deve ver esses IPs.
+        // A varredura da rede continua testando esses IPs igual (descobrirServidores).
+        if (mostrarReservaPrainha()) Session.SERVIDORES.forEach { (nome, base) ->
             if (opcoes.none { it.second == base }) opcoes.add(Pair(nome, base))
         }
         // O endereço digitado à mão (ex.: https://mar.tailb22e0d.ts.net) vira uma
@@ -127,12 +130,23 @@ class LoginActivity : AppCompatActivity() {
         servidorSp.post { ajustando = false }
     }
 
+    /** Aparelho do Prainha: código "prainha", ou sem código mas já usado antes
+     *  (as LIOs das casas de hoje, que nunca digitaram código). Instalação nova
+     *  sem código, ou código de outra empresa, não mostra os IPs do Prainha. */
+    private fun mostrarReservaPrainha(): Boolean {
+        val digitado = codigoEmpresaIn.text.toString().trim().lowercase()
+        val codigo = digitado.ifBlank { Session.codigoEmpresa(this) ?: "" }
+        if (codigo == "prainha") return true
+        if (codigo.isNotBlank()) return false
+        return Session.servidorSalvo(this) != null || Session.isLoggedIn(this)
+    }
+
     /** Pergunta ao Concilia as filiais (e o túnel) do código da empresa e põe no
      *  seletor. `manual` = a pessoa tocou Buscar (mostra erro); silencioso no
      *  arranque quando já havia código salvo. */
     private fun buscarFiliais(manual: Boolean) {
         val codigo = codigoEmpresaIn.text.toString().trim().lowercase()
-        if (codigo.length < 3) { if (manual) mostrarErro("Digite o código da empresa (ex.: prainha)"); return }
+        if (codigo.length < 3) { if (manual) mostrarErro("Digite o código da empresa"); return }
         if (manual) { stNuvem = "☁️ Buscando filiais de \"$codigo\"…"; mostrarStatus() }
         Thread {
             try {

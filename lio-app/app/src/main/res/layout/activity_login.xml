@@ -18,7 +18,7 @@
             android:layout_height="72dp"
             android:src="@drawable/ic_logo"
             android:layout_marginBottom="10dp"
-            android:contentDescription="Prainha" />
+            android:contentDescription="Concilia" />
 
         <TextView
             android:layout_width="wrap_content"
@@ -47,7 +47,7 @@
                 android:layout_width="0dp"
                 android:layout_weight="1"
                 android:layout_height="wrap_content"
-                android:hint="Código da empresa (ex.: prainha)"
+                android:hint="Código da empresa"
                 android:inputType="textNoSuggestions|textVisiblePassword"
                 android:imeOptions="actionGo"
                 android:background="#FFFFFF"
@@ -94,7 +94,7 @@
             android:id="@+id/login"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="Login (o mesmo do Consumer)"
+            android:hint="Login"
             android:inputType="textNoSuggestions"
             android:background="#FFFFFF"
             android:padding="14dp"

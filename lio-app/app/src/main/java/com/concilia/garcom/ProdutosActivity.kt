@@ -181,7 +181,7 @@ class ProdutosActivity : AppCompatActivity() {
     private fun escolher(p: Api.Produto) {
         if (p.semEstoque) {
             AlertDialog.Builder(this)
-                .setMessage("${p.nome} está SEM ESTOQUE no Consumer. Lançar mesmo assim?")
+                .setMessage("${p.nome} está SEM ESTOQUE. Lançar mesmo assim?")
                 .setPositiveButton("Lançar") { _, _ -> escolherVariante(p) }
                 .setNegativeButton("Não", null)
                 .show()
