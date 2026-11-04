@@ -106,7 +106,8 @@ export function resolverCredenciaisInterPagamentos(filialId: string): InterCrede
     const certB64 = process.env[`${p}_PAG_CERT_B64`]?.trim();
     const keyB64 = process.env[`${p}_PAG_KEY_B64`]?.trim();
     if (clientId && clientSecret && certB64 && keyB64) return { clientId, clientSecret, certB64, keyB64 };
-    return credenciaisInterEmpresa(e.sigla);
+    // A da Lelis foi cadastrada como INTER_LELES_* (mesmo fallback do extrato).
+    return credenciaisInterEmpresa(e.sigla) ?? (e.sigla === 'LELIS' ? credenciaisInterEmpresa('LELES') : null);
   }
   return null;
 }
