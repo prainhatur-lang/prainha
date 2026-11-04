@@ -334,6 +334,23 @@ export async function destinatarioDoPix(
       }
     }
   }
+  // 04/11/2026 (rescisão da Geovana pela E.B.): Pix pra pessoa, sem fornecedor,
+  // com a chave no CPF. O celular vem da ficha do funcionário com esse CPF
+  // (qualquer casa). Igualdade exata de CPF — não confunde com celular.
+  const docChave = (chave ?? '').replace(/\D/g, '');
+  if (docChave.length === 11) {
+    const fu = (await db.execute(sql`
+      SELECT telefone FROM funcionario
+       WHERE regexp_replace(coalesce(cpf, ''), '\D', '', 'g') = ${docChave}
+         AND telefone IS NOT NULL AND telefone <> ''
+       ORDER BY ativo DESC NULLS LAST
+       LIMIT 5
+    `)) as unknown as Array<{ telefone: string | null }>;
+    for (const f of fu) {
+      const c = celular11(f.telefone);
+      if (c) return { telefone: c, origem: 'funcionario' };
+    }
+  }
   const daChave = celular11(chave);
   if (daChave) {
     const conhecido = (await db.execute(sql`
