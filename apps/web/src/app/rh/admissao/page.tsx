@@ -53,7 +53,7 @@ export default async function AdmissaoPage(props: { searchParams: Promise<{ fili
           </a>
           <h1 className="mt-1 text-2xl font-bold text-slate-900">Admissão pelo WhatsApp</h1>
           <p className="mt-1 text-sm text-slate-600">
-            Digite o CPF: o SPC traz nome, nascimento, mãe e telefone. Confira o WhatsApp, acerte o contrato e mande o link.
+            Digite o CPF: o SPC traz nome, nascimento, mãe, pai (quando tem) e telefone. Confira o WhatsApp, acerte o contrato (quem registra, onde trabalha e a escala) e mande o link.
             A pessoa preenche o resto (pai, RG, PIS, CTPS…), sobe os documentos, lê o contrato, aceita e assina com selfie e
             rubrica. Assinou → o cadastro, o contrato e os documentos entram na ficha sozinhos.
           </p>
@@ -80,6 +80,7 @@ export default async function AdmissaoPage(props: { searchParams: Promise<{ fili
         <AdmissaoCliente
           filialId={filial.id}
           filialNome={filial.nome}
+          casas={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
           hoje={hojeBr()}
           empregadores={EMPREGADORES.map((e) => ({ cnpj: e.cnpj, rotulo: e.rotulo }))}
           empregadorPadrao={CNPJ_DA_CASA[filial.id] ?? EMPREGADORES[0].cnpj}

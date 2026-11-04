@@ -73,6 +73,24 @@ export async function empregadorDoCnpj(cnpj: string): Promise<Empregador> {
   };
 }
 
+/** "Casa, endereço" da filial onde a pessoa vai trabalhar (o local do contrato
+ *  quando quem registra é outra empresa, ex.: E.B. registra, trabalha na Mar). */
+export async function localDaCasa(filialId: string): Promise<string> {
+  const [casa] = await db
+    .select({ nome: schema.filial.nome, fiscal: schema.filial.fiscalConfig })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, filialId))
+    .limit(1);
+  if (!casa) return '';
+  const e = casa.fiscal?.endereco;
+  const end = e
+    ? [[e.logradouro, e.numero, e.complemento].filter(Boolean).join(', '), e.bairro, `${e.municipio ?? 'Aracaju'}/${e.uf ?? 'SE'}`]
+        .filter(Boolean)
+        .join(', ')
+    : '';
+  return end ? `${casa.nome}, ${end}` : casa.nome;
+}
+
 /** O que o RH acerta antes de mandar o link (vai no contrato). */
 export interface TermosConvite {
   modelo: TermosContrato['modelo'];
@@ -87,6 +105,8 @@ export interface TermosConvite {
   expDias: string;
   expProrrogacao: string;
   setor: string;
+  /** Escala (rh_jornada) que entra na ficha quando assina; vazio = decide na escala do mês. */
+  jornadaId?: string;
 }
 
 /** Dados que a pessoa preenche no link (o contrato + o que a ficha pede). */

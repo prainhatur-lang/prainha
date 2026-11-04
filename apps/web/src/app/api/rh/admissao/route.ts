@@ -18,6 +18,7 @@ import {
   ADMISSAO_VALIDADE_DIAS,
   EMPREGADORES,
   LINK_BASE_ADMISSAO,
+  localDaCasa,
   resumoCombinado,
   type TermosConvite,
 } from '@/lib/rh/admissao';
@@ -84,7 +85,13 @@ export async function GET(req: Request) {
     .where(eq(C.filialId, filialId))
     .orderBy(desc(C.criadoEm))
     .limit(100);
+  const jornadas = await db
+    .select({ id: schema.rhJornada.id, nome: schema.rhJornada.nome, tipo: schema.rhJornada.tipo })
+    .from(schema.rhJornada)
+    .where(eq(schema.rhJornada.ativo, true))
+    .orderBy(schema.rhJornada.nome);
   return NextResponse.json({
+    jornadas,
     convites: rows.map((r) => ({
       ...r,
       link: LINK_BASE_ADMISSAO + r.token,
@@ -109,6 +116,7 @@ const Termos = z.object({
   expDias: z.string().max(3).default('45'),
   expProrrogacao: z.string().max(3).default('45'),
   setor: z.string().max(20).default(''),
+  jornadaId: z.string().uuid().optional(),
 });
 
 const Body = z.discriminatedUnion('acao', [
@@ -206,6 +214,16 @@ export async function POST(req: Request) {
 
   // criar
   const termos: TermosConvite = { ...b.termos, cbo: b.termos.cbo ?? '', atividades: b.termos.atividades ?? '' };
+  // Local vazio = endereço da casa onde vai trabalhar (b.filialId), não o de quem registra.
+  if (!termos.local.trim()) termos.local = await localDaCasa(b.filialId);
+  if (termos.jornadaId) {
+    const [j] = await db
+      .select({ id: schema.rhJornada.id })
+      .from(schema.rhJornada)
+      .where(and(eq(schema.rhJornada.id, termos.jornadaId), eq(schema.rhJornada.ativo, true)))
+      .limit(1);
+    if (!j) return NextResponse.json({ error: 'escala não encontrada' }, { status: 400 });
+  } else delete termos.jornadaId;
   if (!EMPREGADORES.some((e) => e.cnpj === termos.empregadorCnpj)) {
     return NextResponse.json({ error: 'empregador desconhecido' }, { status: 400 });
   }

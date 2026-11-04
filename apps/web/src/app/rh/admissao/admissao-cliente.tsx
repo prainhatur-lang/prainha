@@ -7,6 +7,7 @@ interface Props {
   filialNome: string;
   hoje: string;
   empregadores: { cnpj: string; rotulo: string }[];
+  casas?: { id: string; nome: string }[];
   empregadorPadrao: string;
 }
 
@@ -85,7 +86,7 @@ const STATUS: Record<string, { t: string; c: string }> = {
   cancelado: { t: 'cancelado', c: 'bg-rose-50 text-rose-700' },
 };
 
-export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empregadorPadrao }: Props) {
+export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empregadorPadrao, casas }: Props) {
   const [cpf, setCpf] = useState('');
   const [consultando, setConsultando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -106,6 +107,12 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
   const [expDias, setExpDias] = useState('45');
   const [expProrrogacao, setExpProrrogacao] = useState('45');
   const [local, setLocal] = useState('');
+  // Onde vai trabalhar (lotação/escala) — pode ser diferente de quem registra (ex.: E.B.).
+  const [lotacao, setLotacao] = useState(filialId);
+  const [jornadaId, setJornadaId] = useState('');
+  const [jornadas, setJornadas] = useState<{ id: string; nome: string; tipo: string }[]>([]);
+  const listaCasas = casas && casas.length ? casas : [{ id: filialId, nome: filialNome }];
+  const nomeLotacao = listaCasas.find((x) => x.id === lotacao)?.nome ?? filialNome;
 
   const [enviando, setEnviando] = useState(false);
   const [gerado, setGerado] = useState<{ link: string; whatsapp: string } | null>(null);
@@ -113,7 +120,11 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
 
   const carregar = useCallback(async () => {
     const r = await fetch(`/api/rh/admissao?filialId=${filialId}`);
-    if (r.ok) setConvites((await r.json()).convites ?? []);
+    if (r.ok) {
+      const j = await r.json();
+      setConvites(j.convites ?? []);
+      if (Array.isArray(j.jornadas)) setJornadas(j.jornadas);
+    }
   }, [filialId]);
   useEffect(() => {
     void carregar();
@@ -128,6 +139,24 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
       setJornada((j) => (j.startsWith('Conforme convocação') ? '44 horas semanais, escala 6x1, com intervalo de 1 hora' : j));
     }
   }, [modelo]);
+
+  useEffect(() => {
+    setLotacao(filialId);
+  }, [filialId]);
+
+  // Escala: intermitente → jornada intermitente da casa; fixo → o RH escolhe a folga (ou decide na escala do mês).
+  const jornadasDoModelo = jornadas.filter((j) => (modelo === 'intermitente' ? j.tipo === 'intermitente' : j.tipo !== 'intermitente'));
+  useEffect(() => {
+    setJornadaId((atual) => {
+      if (jornadasDoModelo.some((j) => j.id === atual)) return atual;
+      if (modelo !== 'intermitente') return '';
+      const tab = /tabu/i.test(nomeLotacao);
+      const j =
+        jornadasDoModelo.find((x) => (tab ? /tabu/i.test(x.nome) : /prainha/i.test(x.nome))) ?? jornadasDoModelo[0];
+      return j?.id ?? '';
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelo, jornadas, nomeLotacao]);
 
   async function consultar(forcarSpc = false) {
     setErro(null);
@@ -162,7 +191,7 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           acao: 'criar',
-          filialId,
+          filialId: lotacao,
           cpf,
           nome,
           telefone: whats,
@@ -180,6 +209,7 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
             expDias,
             expProrrogacao,
             setor: '',
+            ...(jornadaId ? { jornadaId } : {}),
           },
         }),
       });
@@ -330,7 +360,7 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
               </select>
             </label>
             <label className="text-xs text-slate-600">
-              Empresa que registra
+              Contratante (empresa que registra)
               <select className={inp} value={empregador} onChange={(e) => setEmpregador(e.target.value)}>
                 {empregadores.map((e) => (
                   <option key={e.cnpj} value={e.cnpj}>
@@ -338,6 +368,32 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
                   </option>
                 ))}
               </select>
+            </label>
+            <label className="text-xs text-slate-600">
+              Casa onde vai trabalhar
+              <select className={inp} value={lotacao} onChange={(e) => setLotacao(e.target.value)}>
+                {listaCasas.map((x) => (
+                  <option key={x.id} value={x.id}>
+                    {x.nome}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="text-xs text-slate-600">
+              Escala
+              <select className={inp} value={jornadaId} onChange={(e) => setJornadaId(e.target.value)}>
+                <option value="">{modelo === 'intermitente' ? '— sem escala' : 'Decidir na escala do mês'}</option>
+                {jornadasDoModelo.map((j) => (
+                  <option key={j.id} value={j.id}>
+                    {j.nome}
+                  </option>
+                ))}
+              </select>
+              <span className="mt-0.5 block text-[11px] text-slate-500">
+                {modelo === 'intermitente'
+                  ? 'Intermitente: trabalha por convocação e conta só as horas batidas no ponto.'
+                  : 'Folga fixa da semana. Assinou → aparece na escala do mês da casa com essa folga sugerida.'}
+              </span>
             </label>
             <label className="text-xs text-slate-600">
               Cargo / função
@@ -376,8 +432,8 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
               <textarea className={inp} rows={2} value={atividades} onChange={(e) => setAtividades(e.target.value)} />
             </label>
             <label className="text-xs text-slate-600 sm:col-span-2">
-              Local de trabalho (vazio = endereço da empresa)
-              <input className={inp} value={local} onChange={(e) => setLocal(e.target.value)} placeholder={filialNome} />
+              Local de trabalho no contrato (vazio = endereço da casa escolhida)
+              <input className={inp} value={local} onChange={(e) => setLocal(e.target.value)} placeholder={nomeLotacao} />
             </label>
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-3">

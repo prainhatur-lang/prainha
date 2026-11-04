@@ -411,6 +411,16 @@ async function assinar(req: Request, c: Convite, body: Record<string, unknown>) 
         faceDistancia,
         textoAceite: texto,
       });
+      // Escala escolhida pelo RH no convite (não mexe em quem já está ativo em outra casa).
+      if (termos.jornadaId && !lotacaoExtra) {
+        await tx
+          .insert(schema.funcionarioJornada)
+          .values({ funcionarioId, jornadaId: termos.jornadaId, vigenteDesde: termos.admissao, usuarioId: c.criadoPor })
+          .onConflictDoUpdate({
+            target: [schema.funcionarioJornada.funcionarioId, schema.funcionarioJornada.vigenteDesde],
+            set: { jornadaId: termos.jornadaId },
+          });
+      }
       if (p.valeTransporte === 'nao_quer') {
         await tx
           .insert(schema.vtPessoa)
