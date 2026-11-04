@@ -193,9 +193,36 @@ export function TrctForm(props: {
   const [dependentes, setDependentes] = useState('0');
   const [saldoFgts, setSaldoFgts] = useState('');
   // Faltas: já vêm do ponto (dias sem batida fora da folga e sem atestado).
-  const fp = inicial.faltasPonto;
-  const [faltas, setFaltas] = useState(String(fp?.faltas ?? 0));
-  const [dsrPerdidos, setDsrPerdidos] = useState(String(fp?.dsr ?? 0));
+  const [fp, setFp] = useState<FaltasDoPonto | null>(inicial.faltasPonto);
+  const [faltas, setFaltas] = useState(String(inicial.faltasPonto?.faltas ?? 0));
+  const [dsrPerdidos, setDsrPerdidos] = useState(String(inicial.faltasPonto?.dsr ?? 0));
+  const [buscandoFaltas, setBuscandoFaltas] = useState(false);
+  // Mudou a data de saída na tela: busca as faltas do ponto de novo (o
+  // servidor só calculou pra data do cadastro, ou hoje se ainda está ativo).
+  useEffect(() => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(afastamento) || afastamento === (inicial.faltasPonto?.ate ?? inicial.afastamento)) return;
+    let vivo = true;
+    const t = setTimeout(async () => {
+      setBuscandoFaltas(true);
+      try {
+        const r = await fetch(`/api/rh/funcionario/${props.funcionarioId}/trct-faltas?afastamento=${afastamento}`);
+        const j = (await r.json()) as { faltas?: FaltasDoPonto | null };
+        if (!vivo || !r.ok) return;
+        const novo = j.faltas ?? null;
+        setFp(novo);
+        setFaltas(String(novo?.faltas ?? 0));
+        setDsrPerdidos(String(novo?.dsr ?? 0));
+      } catch {
+        /* sem rede: fica o que está na tela */
+      } finally {
+        if (vivo) setBuscandoFaltas(false);
+      }
+    }, 400);
+    return () => {
+      vivo = false;
+      clearTimeout(t);
+    };
+  }, [afastamento, props.funcionarioId, inicial.afastamento, inicial.faltasPonto]);
   const [faltasFerias, setFaltasFerias] = useState('');
   const [extras, setExtras] = useState<{ descricao: string; valor: string; tipo: 'P' | 'D'; tributavel: boolean; codigo?: string }[]>(
     inicial.noturno > 0
@@ -372,7 +399,9 @@ export function TrctForm(props: {
               <input className={input} value={faltasFerias} onChange={(e) => setFaltasFerias(e.target.value)} inputMode="numeric" placeholder={`em branco = ${Number(faltas) || 0} (as do mês)`} />
             </label>
           </div>
-          {fp ? (
+          {buscandoFaltas ? (
+            <p className="mt-2 text-xs text-slate-500">Lendo o ponto até {fmtData(afastamento)}…</p>
+          ) : fp ? (
             <details className="mt-2 text-xs text-slate-700">
               <summary className="cursor-pointer">
                 Pelo ponto de {fmtData(fp.de)} a {fmtData(fp.ate)}: {fp.diasComPonto} dia(s) com batida, {fp.faltas} falta(s) e {fp.dsr} DSR perdido(s)
