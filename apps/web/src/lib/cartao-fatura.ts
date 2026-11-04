@@ -17,7 +17,7 @@
 
 import * as XLSX from 'xlsx';
 import { db, schema } from '@concilia/db';
-import { and, asc, desc, eq, inArray, isNull, ne } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, ne, sql, type SQL } from 'drizzle-orm';
 import { createAdminClient } from '@/lib/supabase/server';
 
 /** Mesmo bucket privado dos extratos do fechamento, em pasta própria. */
@@ -392,6 +392,33 @@ export async function lerEGravarFatura(faturaId: string, userId: string | null):
         })),
       );
     }
+    // Parcela de compra que já tem casa noutra fatura (ou na versão anterior
+    // desta) entra com a casa e a categoria dela: a 3/4 segue a 1/4 e a 2/4.
+    // Mesma compra = estabelecimento, cartão, data da compra e nº de parcelas
+    // (o valor da parcela varia uns centavos). Lançamento à vista não herda.
+    await tx.execute(sql`
+      update cartao_lancamento l
+         set filial_id = src.filial_id,
+             rateio = src.rateio,
+             categoria = coalesce(src.categoria, l.categoria)
+        from (
+          select distinct on (n.id) n.id, o.filial_id, o.rateio, o.categoria
+            from cartao_lancamento n
+            join cartao_lancamento o
+              on o.organizacao_id = n.organizacao_id
+             and o.fatura_id <> n.fatura_id
+             and o.estabelecimento = n.estabelecimento
+             and o.cartao_final = n.cartao_final
+             and o.data_compra = n.data_compra
+             and o.total_parcelas = n.total_parcelas
+             and abs(o.valor - n.valor) <= 0.01 * n.total_parcelas
+             and (o.filial_id is not null or o.rateio is not null)
+            join cartao_fatura f on f.id = o.fatura_id and f.excluido_em is null
+           where n.fatura_id = ${faturaId} and n.total_parcelas > 1
+           order by n.id, o.parcela desc nulls last
+        ) src
+       where l.id = src.id
+    `);
     await tx
       .update(schema.cartaoFatura)
       .set({
@@ -516,6 +543,11 @@ export interface Classificacao {
   /** Aplica também aos outros lançamentos do MESMO estabelecimento, em todas
    *  as faturas da organização. */
   mesmoEstabelecimento?: boolean;
+  /** A casa (e a divisão) vai só pras parcelas da MESMA compra — mesmo
+   *  estabelecimento, cartão, data da compra e nº de parcelas —, não pras
+   *  outras compras do estabelecimento (DIMARA de um dia pro Bar, de outro dia
+   *  pra Mar). A categoria continua seguindo mesmoEstabelecimento. */
+  casaPorCompra?: boolean;
 }
 
 /** Grava categoria e/ou casa num lançamento (decisão do dono, por cima da
@@ -525,39 +557,89 @@ export async function classificarLancamento(
   lancamentoId: string,
   c: Classificacao,
 ): Promise<number> {
-  const set: { categoria?: string | null; filialId?: string | null; rateio?: string[] | null } = {};
-  if (c.categoria !== undefined) set.categoria = c.categoria ? c.categoria.trim().slice(0, 60) : null;
+  const setCategoria: { categoria?: string | null } = {};
+  const setCasa: { filialId?: string | null; rateio?: string[] | null } = {};
+  if (c.categoria !== undefined) setCategoria.categoria = c.categoria ? c.categoria.trim().slice(0, 60) : null;
   if (c.filialId !== undefined) {
     if (c.filialId !== null && !acesso.filiais.some((f) => f.id === c.filialId)) throw new Error('casa desconhecida');
-    set.filialId = c.filialId;
+    setCasa.filialId = c.filialId;
     // Casa única escolhida desfaz a divisão.
-    set.rateio = null;
+    setCasa.rateio = null;
   }
   if (c.ratear !== undefined) {
     if (c.ratear && acesso.filiais.length < 2) throw new Error('não há casas pra dividir');
-    set.rateio = c.ratear ? acesso.filiais.map((f) => f.id) : null;
-    if (c.ratear) set.filialId = null;
+    setCasa.rateio = c.ratear ? acesso.filiais.map((f) => f.id) : null;
+    if (c.ratear) setCasa.filialId = null;
   }
-  if (Object.keys(set).length === 0) return 0;
+  const temCategoria = Object.keys(setCategoria).length > 0;
+  const temCasa = Object.keys(setCasa).length > 0;
+  if (!temCategoria && !temCasa) return 0;
   const [alvo] = await db
-    .select({ id: schema.cartaoLancamento.id, estabelecimento: schema.cartaoLancamento.estabelecimento })
+    .select({
+      id: schema.cartaoLancamento.id,
+      estabelecimento: schema.cartaoLancamento.estabelecimento,
+      cartaoFinal: schema.cartaoLancamento.cartaoFinal,
+      dataCompra: schema.cartaoLancamento.dataCompra,
+      totalParcelas: schema.cartaoLancamento.totalParcelas,
+      valor: schema.cartaoLancamento.valor,
+    })
     .from(schema.cartaoLancamento)
     .where(
       and(eq(schema.cartaoLancamento.id, lancamentoId), eq(schema.cartaoLancamento.organizacaoId, acesso.organizacaoId)),
     )
     .limit(1);
   if (!alvo) throw new Error('lançamento não encontrado');
-  const mudados = await db
+  const org = eq(schema.cartaoLancamento.organizacaoId, acesso.organizacaoId);
+  const escopo = c.mesmoEstabelecimento
+    ? eq(schema.cartaoLancamento.estabelecimento, alvo.estabelecimento)
+    : eq(schema.cartaoLancamento.id, alvo.id);
+
+  // Sem "casa por compra": um update só, igual sempre foi.
+  if (!c.casaPorCompra || !temCasa) {
+    const mudados = await db
+      .update(schema.cartaoLancamento)
+      .set({ ...setCategoria, ...setCasa })
+      .where(and(org, escopo))
+      .returning({ id: schema.cartaoLancamento.id });
+    return mudados.length;
+  }
+
+  const ids = new Set<string>();
+  if (temCategoria) {
+    const r = await db
+      .update(schema.cartaoLancamento)
+      .set(setCategoria)
+      .where(and(org, escopo))
+      .returning({ id: schema.cartaoLancamento.id });
+    for (const x of r) ids.add(x.id);
+  }
+  const r = await db
     .update(schema.cartaoLancamento)
-    .set(set)
-    .where(
-      and(
-        eq(schema.cartaoLancamento.organizacaoId, acesso.organizacaoId),
-        c.mesmoEstabelecimento
-          ? eq(schema.cartaoLancamento.estabelecimento, alvo.estabelecimento)
-          : eq(schema.cartaoLancamento.id, alvo.id),
-      ),
-    )
+    .set(setCasa)
+    .where(and(org, condMesmaCompra(alvo)))
     .returning({ id: schema.cartaoLancamento.id });
-  return mudados.length;
+  for (const x of r) ids.add(x.id);
+  return ids.size;
+}
+
+/** As parcelas da mesma compra do lançamento (ele incluso). À vista ou sem
+ *  data/cartão = só ele. O valor da parcela varia uns centavos (a 1ª leva o
+ *  arredondamento), por isso a folga de 1 centavo por parcela. */
+function condMesmaCompra(alvo: {
+  id: string;
+  estabelecimento: string;
+  cartaoFinal: string | null;
+  dataCompra: string | null;
+  totalParcelas: number | null;
+  valor: string;
+}): SQL {
+  const L = schema.cartaoLancamento;
+  if (!alvo.dataCompra || !alvo.cartaoFinal || !alvo.totalParcelas || alvo.totalParcelas < 2) return eq(L.id, alvo.id);
+  return and(
+    eq(L.estabelecimento, alvo.estabelecimento),
+    eq(L.cartaoFinal, alvo.cartaoFinal),
+    eq(L.dataCompra, alvo.dataCompra),
+    eq(L.totalParcelas, alvo.totalParcelas),
+    sql`abs(${L.valor} - ${alvo.valor}::numeric) <= ${(alvo.totalParcelas * 0.01).toFixed(2)}::numeric`,
+  )!;
 }

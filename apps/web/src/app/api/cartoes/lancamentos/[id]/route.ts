@@ -23,6 +23,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     filialId?: string | null;
     ratear?: boolean;
     mesmoEstabelecimento?: boolean;
+    casaPorCompra?: boolean;
   } | null;
   if (!body) return NextResponse.json({ error: 'corpo ausente' }, { status: 400 });
   try {
@@ -31,6 +32,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       filialId: body.filialId === undefined ? undefined : body.filialId === null ? null : String(body.filialId),
       ratear: typeof body.ratear === 'boolean' ? body.ratear : undefined,
       mesmoEstabelecimento: body.mesmoEstabelecimento === true,
+      casaPorCompra: body.casaPorCompra === true,
     });
     return NextResponse.json({ ok: true, mudados });
   } catch (e) {

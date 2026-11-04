@@ -3,11 +3,12 @@
 // Categoria e casa de cada lançamento da fatura, escolhidas na mão. A regra do
 // estabelecimento só sugere; o que o dono marca aqui fica gravado.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 const OUTRA = '__outra__';
 const RATEIO = '__rateio__';
+const CHAVE_POR_COMPRA = 'cartoes.casaPorCompra';
 
 export function ClassificarLancamento({
   id,
@@ -18,6 +19,7 @@ export function ClassificarLancamento({
   categorias,
   filiais,
   todos,
+  porCompra = false,
 }: {
   id: string;
   categoria: string | null;
@@ -29,6 +31,9 @@ export function ClassificarLancamento({
   categorias: string[];
   filiais: Array<{ id: string; nome: string }>;
   todos: boolean;
+  /** A casa vale só pras parcelas desta compra (não pras outras compras do
+   *  mesmo estabelecimento). */
+  porCompra?: boolean;
 }) {
   const router = useRouter();
   const [ocupado, setOcupado] = useState(false);
@@ -41,7 +46,7 @@ export function ClassificarLancamento({
       const r = await fetch(`/api/cartoes/lancamentos/${id}`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ...body, mesmoEstabelecimento: todos }),
+        body: JSON.stringify({ ...body, mesmoEstabelecimento: todos, casaPorCompra: porCompra }),
       });
       const j = (await r.json().catch(() => ({}))) as { error?: string; mudados?: number };
       if (!r.ok) throw new Error(j.error ?? `erro ${r.status}`);
@@ -130,11 +135,40 @@ export function LancamentosEditaveis({
   filiais: Array<{ id: string; nome: string }>;
 }) {
   const [todos, setTodos] = useState(true);
+  const [porCompra, setPorCompra] = useState(false);
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem(CHAVE_POR_COMPRA) === '1') setPorCompra(true);
+    } catch {
+      /* sem armazenamento: fica desmarcado */
+    }
+  }, []);
+  function mudarPorCompra(v: boolean) {
+    setPorCompra(v);
+    try {
+      window.localStorage.setItem(CHAVE_POR_COMPRA, v ? '1' : '0');
+    } catch {
+      /* sem armazenamento */
+    }
+  }
   return (
     <>
       <label className="mt-3 flex items-center gap-2 text-xs text-slate-600">
         <input type="checkbox" checked={todos} onChange={(e) => setTodos(e.target.checked)} />
         Ao escolher, aplicar também aos outros lançamentos do mesmo estabelecimento (em todas as faturas)
+      </label>
+      <label className="mt-1 flex items-start gap-2 text-xs text-slate-600">
+        <input
+          type="checkbox"
+          className="mt-0.5"
+          checked={porCompra}
+          onChange={(e) => mudarPorCompra(e.target.checked)}
+        />
+        <span>
+          <b>Casa por compra:</b> a casa escolhida vale só pras parcelas da mesma compra (mesmo dia, cartão e nº de
+          parcelas) — as outras compras no mesmo estabelecimento ficam com a casa que já têm. A categoria segue a
+          opção de cima.
+        </span>
       </label>
       <div className="mt-2 overflow-x-auto rounded-lg border border-slate-200 bg-white">
         <table className="w-full text-sm">
@@ -165,6 +199,7 @@ export function LancamentosEditaveis({
                     categorias={categorias}
                     filiais={filiais}
                     todos={todos}
+                    porCompra={porCompra}
                   />
                 </td>
                 <td className={`px-3 py-1.5 text-right tabular-nums ${l.credito ? 'text-emerald-700' : ''}`}>
