@@ -14,6 +14,7 @@ import { hojeBr } from '@/lib/datas';
 import { calcularFolhaMensal } from '@/lib/rh/folha-mensal';
 import { horasDoMesPorCpf, salarioFamiliaPorCpf } from '@/lib/rh/folha-mensal-dados';
 import { proximosFeriados } from '@/lib/reservas/feriados';
+import { faltasDoPonto, type FaltasDoPonto } from '@/lib/rh/trct-faltas';
 import { TrctForm } from './trct-form';
 
 export const dynamic = 'force-dynamic';
@@ -72,6 +73,16 @@ export default async function RescisaoPage(props: { params: Promise<{ id: string
       salFamilia = (await salarioFamiliaPorCpf([cpfLimpo], compSeguinte)).get(cpfLimpo) ?? null;
     } catch {
       salFamilia = null;
+    }
+  }
+
+  // Faltas do mês da saída pelo ponto (todo TRCT, pedido do dono 04/11/2026).
+  let faltasPonto: FaltasDoPonto | null = null;
+  if (f.cpf) {
+    try {
+      faltasPonto = await faltasDoPonto(f.cpf, f.dataAdmissao, afastamento);
+    } catch {
+      faltasPonto = null;
     }
   }
 
@@ -138,6 +149,7 @@ export default async function RescisaoPage(props: { params: Promise<{ id: string
             afastamento,
             noturno: Math.round(noturno * 100) / 100,
             salFamilia,
+            faltasPonto,
           }}
         />
       </section>

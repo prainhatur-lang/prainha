@@ -17,6 +17,10 @@
 // - INSS sobre saldo (e 13º à parte); aviso indenizado, férias indenizadas e
 //   1/3 não têm INSS nem IR. FGTS 8% sobre saldo, aviso e 13º.
 // - IRRF tabela 2026 com a redução da Lei 15.270/2025 (isento até R$ 5.000).
+// - Faltas sem atestado (04/11/2026, vêm do ponto): saem do saldo junto com o
+//   DSR das semanas com falta (campo 50 "líquido de N faltas e DSR"); no mês
+//   da saída o avo do 13º só conta com 15 dias trabalhados; férias seguem a
+//   escala do art. 130 (até 5 = 30 dias, 6–14 = 24, 15–23 = 18, 24–32 = 12).
 
 import { calcularInss } from './folha-mensal';
 
@@ -115,6 +119,21 @@ export interface TrctInput {
   extras?: ExtraTrct[];
   /** Salário-família do mês (cotas × valor, proporcional aos dias). Fora do INSS. */
   salarioFamilia?: number;
+  /** Faltas sem justificativa no mês da saída (dias). */
+  faltas?: number;
+  /** DSR perdido pelas semanas com falta (dias). */
+  dsrPerdidos?: number;
+  /** Faltas no período aquisitivo das férias (art. 130). Sem valor = as do mês. */
+  faltasFerias?: number;
+}
+
+/** Dias de férias pelo art. 130 da CLT conforme as faltas do período. */
+export function diasFeriasArt130(faltas: number): number {
+  if (faltas <= 5) return 30;
+  if (faltas <= 14) return 24;
+  if (faltas <= 23) return 18;
+  if (faltas <= 32) return 12;
+  return 0;
 }
 
 export interface TrctCalc {
@@ -127,6 +146,10 @@ export interface TrctCalc {
   avos13: number;
   avosFerias: number;
   diasSaldo: number;
+  /** Dias tirados do saldo (faltas + DSR perdido). */
+  faltasDsr: number;
+  /** Dias de férias de direito pelo art. 130 (30 sem faltas). */
+  diasFerias: number;
   baseInss: number;
   baseInss13: number;
   fgtsMes: number;
@@ -247,9 +270,18 @@ export function calcularTrct(input: TrctInput): TrctCalc {
   const inicioMes = `${aa}-${String(mm).padStart(2, '0')}-01`;
   const deSaldo = admissao > inicioMes ? admissao : inicioMes;
   const mesInteiro = deSaldo === inicioMes && dd === ultimoDiaMes(aa, mm);
-  const diasSaldo = mesInteiro ? 30 : Math.min(30, diasEntre(deSaldo, afastamento) + 1);
+  const diasMes = mesInteiro ? 30 : Math.min(30, diasEntre(deSaldo, afastamento) + 1);
+  const faltas = Math.max(0, Math.floor(input.faltas ?? 0));
+  const dsrPerdidos = Math.max(0, Math.floor(input.dsrPerdidos ?? 0));
+  const faltasDsr = Math.min(diasMes, faltas + dsrPerdidos);
+  const diasSaldo = diasMes - faltasDsr;
   const saldo = r2(diaria * diasSaldo);
-  P('50', 'Saldo de salário', `${diasSaldo} dias`, saldo);
+  P(
+    '50',
+    'Saldo de salário',
+    faltasDsr > 0 ? `${diasSaldo} dias (${diasMes} − ${faltas} falta(s) − ${dsrPerdidos} DSR)` : `${diasSaldo} dias`,
+    saldo,
+  );
 
   // Extras tributáveis entram no saldo (INSS/FGTS/IR).
   let extrasTrib = 0;
@@ -301,8 +333,17 @@ export function calcularTrct(input: TrctInput): TrctCalc {
 
   // 13º e férias.
   const perdeProporcionais = tipo === 'justa_causa';
-  const a13Trab = perdeProporcionais ? 0 : avos13(admissao, afastamento);
-  const a13Proj = perdeProporcionais ? 0 : avos13(admissao, fimProjetado);
+  let a13Trab = perdeProporcionais ? 0 : avos13(admissao, afastamento);
+  let a13Proj = perdeProporcionais ? 0 : avos13(admissao, fimProjetado);
+  // Mês da saída: o avo só vale com 15 dias de trabalho (faltas não contam).
+  if (faltas > 0 && a13Trab > 0) {
+    const diasCorridos = diasEntre(deSaldo, afastamento) + 1;
+    if (diasCorridos >= 15 && diasCorridos - faltas < 15) {
+      a13Trab -= 1;
+      a13Proj -= 1;
+      avisos.push(`Com ${faltas} falta(s), o mês da saída ficou com menos de 15 dias trabalhados e perdeu o avo do 13º.`);
+    }
+  }
   const dec = r2((salario / 12) * a13Trab);
   const decAviso = r2((salario / 12) * Math.max(0, a13Proj - a13Trab));
   P('63', '13º salário proporcional', `${a13Trab}/12`, dec);
@@ -310,13 +351,17 @@ export function calcularTrct(input: TrctInput): TrctCalc {
 
   const fer = perdeProporcionais ? { avos: 0, inicioPeriodo: admissao } : avosFerias(admissao, afastamento);
   const ferProj = perdeProporcionais ? fer : avosFerias(admissao, fimProjetado);
-  const feriasProp = r2((salario / 12) * fer.avos);
+  const faltasFerias = Math.max(0, Math.floor(input.faltasFerias ?? faltas));
+  const diasFerias = diasFeriasArt130(faltasFerias);
+  const fatorFerias = diasFerias / 30;
+  if (diasFerias < 30) avisos.push(`${faltasFerias} falta(s) no período aquisitivo: férias de ${diasFerias} dias (art. 130 da CLT).`);
+  const feriasProp = r2((salario / 12) * fer.avos * fatorFerias);
   const avosProjExtra = ferProj.inicioPeriodo === fer.inicioPeriodo ? Math.max(0, ferProj.avos - fer.avos) : 12 - fer.avos + ferProj.avos;
-  const feriasAviso = r2((salario / 12) * avosProjExtra);
+  const feriasAviso = r2((salario / 12) * avosProjExtra * fatorFerias);
   const venc = Math.max(0, Math.min(2, input.feriasVencidas ?? 0));
   const feriasVenc = r2(salario * venc);
   P('66', 'Férias vencidas', `${venc} período(s)`, feriasVenc);
-  P('65', 'Férias proporcionais', `${fer.avos}/12`, feriasProp);
+  P('65', 'Férias proporcionais', diasFerias < 30 ? `${fer.avos}/12 de ${diasFerias} dias` : `${fer.avos}/12`, feriasProp);
   P('71', 'Férias (aviso prévio indenizado)', `${avosProjExtra}/12`, feriasAviso);
   P('68', 'Terço constitucional de férias', '1/3', r2((feriasVenc + feriasProp + feriasAviso) / 3));
   if (tipo === 'justa_causa' && venc === 0 && anos >= 1) avisos.push('Justa causa ainda paga férias vencidas, se houver: confira se tem período não gozado.');
@@ -371,6 +416,8 @@ export function calcularTrct(input: TrctInput): TrctCalc {
     avos13: a13Proj,
     avosFerias: fer.avos + avosProjExtra,
     diasSaldo,
+    faltasDsr,
+    diasFerias,
     baseInss,
     baseInss13,
     fgtsMes,

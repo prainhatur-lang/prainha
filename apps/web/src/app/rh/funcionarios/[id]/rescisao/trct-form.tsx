@@ -14,6 +14,7 @@ import {
   type ExtraTrct,
   type TipoRescisao,
 } from '@/lib/rh/trct';
+import type { FaltasDoPonto } from '@/lib/rh/trct-faltas';
 
 interface Pessoa {
   nascimento: string | null;
@@ -120,6 +121,7 @@ export function TrctForm(props: {
     afastamento: string;
     noturno: number;
     salFamilia: { cotas: number; valorCota: number } | null;
+    faltasPonto: FaltasDoPonto | null;
   };
 }) {
   const { pessoa, inicial, empregador } = props;
@@ -185,6 +187,11 @@ export function TrctForm(props: {
   const [adiant13, setAdiant13] = useState('');
   const [dependentes, setDependentes] = useState('0');
   const [saldoFgts, setSaldoFgts] = useState('');
+  // Faltas: já vêm do ponto (dias sem batida fora da folga e sem atestado).
+  const fp = inicial.faltasPonto;
+  const [faltas, setFaltas] = useState(String(fp?.faltas ?? 0));
+  const [dsrPerdidos, setDsrPerdidos] = useState(String(fp?.dsr ?? 0));
+  const [faltasFerias, setFaltasFerias] = useState('');
   const [extras, setExtras] = useState<{ descricao: string; valor: string; tipo: 'P' | 'D'; tributavel: boolean; codigo?: string }[]>(
     inicial.noturno > 0
       ? [{ descricao: 'Adicional noturno e reflexos do mês (ponto)', valor: inicial.noturno.toFixed(2).replace('.', ','), tipo: 'P', tributavel: true, codigo: '55' }]
@@ -225,8 +232,11 @@ export function TrctForm(props: {
       saldoFgts: saldoFgts ? num(saldoFgts) : null,
       extras: ex,
       salarioFamilia: salFamiliaValor,
+      faltas: Number(faltas) || 0,
+      dsrPerdidos: Number(dsrPerdidos) || 0,
+      faltasFerias: faltasFerias.trim() ? Number(faltasFerias) || 0 : undefined,
     });
-  }, [salario, admissao, afastamento, tipo, aviso, fimExp, art480, feriasVenc, adiant13, dependentes, saldoFgts, extras, salFamiliaValor]);
+  }, [salario, admissao, afastamento, tipo, aviso, fimExp, art480, feriasVenc, adiant13, dependentes, saldoFgts, extras, salFamiliaValor, faltas, dsrPerdidos, faltasFerias]);
 
   // Campo 23: remuneração do mês anterior ao afastamento (proporcional se entrou nele).
   const remAnteriorAuto = useMemo(() => {
@@ -335,6 +345,50 @@ export function TrctForm(props: {
             Saldo do FGTS pra multa (R$)
             <input className={input} value={saldoFgts} onChange={(e) => setSaldoFgts(e.target.value)} inputMode="decimal" placeholder="em branco = estimado" />
           </label>
+        </div>
+
+        <div className="rounded-lg border border-amber-200 bg-amber-50/50 p-3">
+          <div className="grid gap-4 sm:grid-cols-3">
+            <label className={rotulo}>
+              Faltas sem atestado no mês (dias)
+              <input className={input} value={faltas} onChange={(e) => setFaltas(e.target.value)} inputMode="numeric" />
+            </label>
+            <label className={rotulo}>
+              DSR perdido (dias, 1 por semana com falta)
+              <input className={input} value={dsrPerdidos} onChange={(e) => setDsrPerdidos(e.target.value)} inputMode="numeric" />
+            </label>
+            <label className={rotulo}>
+              Faltas no período das férias (art. 130)
+              <input className={input} value={faltasFerias} onChange={(e) => setFaltasFerias(e.target.value)} inputMode="numeric" placeholder={`em branco = ${Number(faltas) || 0} (as do mês)`} />
+            </label>
+          </div>
+          {fp ? (
+            <details className="mt-2 text-xs text-slate-700">
+              <summary className="cursor-pointer">
+                Pelo ponto de {fmtData(fp.de)} a {fmtData(fp.ate)}: {fp.diasComPonto} dia(s) com batida, {fp.faltas} falta(s) e {fp.dsr} DSR perdido(s)
+                {fp.ate !== afastamento && ' — a data de saída mudou, confira'}
+              </summary>
+              <ul className="mt-1 space-y-0.5 pl-4">
+                {fp.semanas.map((w) => (
+                  <li key={w.de}>
+                    {fmtData(w.de).slice(0, 5)}–{fmtData(w.ate).slice(0, 5)}:{' '}
+                    {w.semPonto.length === 0
+                      ? 'bateu todos os dias'
+                      : `sem ponto ${w.semPonto.map((d) => d.slice(8)).join(', ')}`}
+                    {w.folgas.length > 0 && ` · folga na escala ${w.folgas.map((d) => d.slice(8)).join(', ')}`}
+                    {w.folgaSuposta && ' · sem escala: 1 folga suposta'}
+                    {' → '}
+                    <b>{w.faltas} falta(s){w.dsr ? ' + DSR' : ''}</b>
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-1 text-slate-500">
+                Atestado lançado abona o dia. Folga combinada fora da escala: corrija os números acima antes de imprimir.
+              </p>
+            </details>
+          ) : (
+            <p className="mt-2 text-xs text-slate-500">Sem batida de ponto no mês da saída: faltas não calculadas, preencha se houver.</p>
+          )}
         </div>
 
         <div>
@@ -666,7 +720,7 @@ function TermoOficial(props: {
   const extrasD = vazios(juntar(outrosD, 8), 8);
 
   const verbas: (Celula | null)[] = [
-    cel(<>50 Saldo de {calc.diasSaldo}/dias Salário (líquido de 0/faltas e DSR)</>, '50'),
+    cel(<>50 Saldo de {calc.diasSaldo}/dias Salário (líquido de {calc.faltasDsr}/faltas e DSR)</>, '50'),
     cel('51 Comissões', '51'),
     cel('52 Gratificação', '52'),
     cel(<>53 Adic. de Insalubridade ___%</>, '53'),
