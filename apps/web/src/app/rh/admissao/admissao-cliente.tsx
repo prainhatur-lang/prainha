@@ -50,8 +50,9 @@ interface Convite {
   nome: string;
   telefone: string;
   status: string;
-  termos: { cargo?: string; modelo?: string; valor?: string; admissao?: string };
+  termos: { cargo?: string; modelo?: string; valor?: string; admissao?: string; aso?: Aso };
   link: string;
+  guiaAso?: string | null;
   expiraEm: string;
   criadoEm: string;
   abertoEm: string | null;
@@ -72,6 +73,41 @@ const mascaraCpf = (v: string) => {
 const fmtData = (ymd: string | null) => (ymd ? ymd.slice(0, 10).split('-').reverse().join('/') : '—');
 const fmtHora = (iso: string | null) =>
   iso ? new Date(iso).toLocaleString('pt-BR', { timeZone: 'America/Maceio', dateStyle: 'short', timeStyle: 'short' }) : '—';
+
+interface Aso {
+  clinica: string;
+  endereco: string;
+  telefone: string;
+  data: string;
+  hora: string;
+  observacao: string;
+}
+const ASO_VAZIO: Aso = { clinica: '', endereco: '', telefone: '', data: '', hora: '', observacao: '' };
+const CHAVE_CLINICA = 'rh_admissao_clinica_aso';
+/** Clínica usada da última vez (só conveniência deste navegador). */
+function clinicaSalva(): Pick<Aso, 'clinica' | 'endereco' | 'telefone'> | null {
+  try {
+    const j = JSON.parse(localStorage.getItem(CHAVE_CLINICA) ?? 'null');
+    return j && typeof j.clinica === 'string' ? j : null;
+  } catch {
+    return null;
+  }
+}
+function guardarClinica(a: Aso) {
+  try {
+    localStorage.setItem(CHAVE_CLINICA, JSON.stringify({ clinica: a.clinica, endereco: a.endereco, telefone: a.telefone }));
+  } catch {
+    /* sem storage: tudo bem */
+  }
+}
+/** Próxima segunda-feira depois de `ymd` (registro na segunda fecha a folha da semana). */
+function proximaSegunda(ymd: string): string {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d));
+  t.setUTCDate(t.getUTCDate() + (((8 - t.getUTCDay()) % 7) || 7));
+  return t.toISOString().slice(0, 10);
+}
+const asoOk = (a: Aso) => a.clinica.trim().length > 1 && /^\d{4}-\d{2}-\d{2}$/.test(a.data);
 
 const MODELOS = [
   { v: 'experiencia', t: 'Experiência (CLT mensal)' },
@@ -113,6 +149,18 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
   const [jornadas, setJornadas] = useState<{ id: string; nome: string; tipo: string }[]>([]);
   const listaCasas = casas && casas.length ? casas : [{ id: filialId, nome: filialNome }];
   const nomeLotacao = listaCasas.find((x) => x.id === lotacao)?.nome ?? filialNome;
+
+  // Pedido do exame admissional (ASO) — opcional, vai junto no link.
+  const [pedirAso, setPedirAso] = useState(false);
+  const [aso, setAso] = useState<Aso>(ASO_VAZIO);
+  const [asoPara, setAsoPara] = useState<string | null>(null);
+  const [asoRegistro, setAsoRegistro] = useState('');
+  const [asoEnviando, setAsoEnviando] = useState(false);
+  useEffect(() => {
+    const c0 = clinicaSalva();
+    if (c0) setAso((a) => ({ ...a, ...c0 }));
+  }, []);
+  const campoAso = (k: keyof Aso) => (e: { target: { value: string } }) => setAso((a) => ({ ...a, [k]: e.target.value }));
 
   const [enviando, setEnviando] = useState(false);
   const [gerado, setGerado] = useState<{ link: string; whatsapp: string } | null>(null);
@@ -227,11 +275,13 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
             expProrrogacao,
             setor: '',
             ...(jornadaId && folgaNova === undefined ? { jornadaId } : {}),
+            ...(pedirAso && asoOk(aso) ? { aso } : {}),
           },
         }),
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error ?? 'falhou');
+      if (pedirAso && asoOk(aso)) guardarClinica(aso);
       setGerado({ link: j.link, whatsapp: j.whatsapp });
       window.open(j.whatsapp, '_blank');
       void carregar();
@@ -252,6 +302,68 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
     if (!r.ok) alert((await r.json()).error ?? 'falhou');
     void carregar();
   }
+
+  function abrirAso(v: Convite) {
+    setAsoPara(asoPara === v.id ? null : v.id);
+    setAsoRegistro(v.termos.admissao ?? '');
+    if (v.termos.aso) setAso(v.termos.aso);
+  }
+
+  async function enviarAso(v: Convite) {
+    setAsoEnviando(true);
+    try {
+      const r = await fetch('/api/rh/admissao', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          acao: 'aso',
+          id: v.id,
+          aso,
+          ...(v.status !== 'assinado' && asoRegistro ? { admissao: asoRegistro } : {}),
+        }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error ?? 'falhou');
+      guardarClinica(aso);
+      window.open(j.whatsapp, '_blank');
+      setAsoPara(null);
+      void carregar();
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setAsoEnviando(false);
+    }
+  }
+
+  const inpAso = 'mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm';
+  const camposAso = (
+    <>
+      <label className="text-xs text-slate-600 sm:col-span-2">
+        Clínica
+        <input className={inpAso} value={aso.clinica} onChange={campoAso('clinica')} placeholder="Nome da clínica de medicina do trabalho" />
+      </label>
+      <label className="text-xs text-slate-600 sm:col-span-2">
+        Endereço da clínica
+        <input className={inpAso} value={aso.endereco} onChange={campoAso('endereco')} />
+      </label>
+      <label className="text-xs text-slate-600">
+        Telefone da clínica
+        <input className={inpAso} value={aso.telefone} onChange={campoAso('telefone')} />
+      </label>
+      <label className="text-xs text-slate-600">
+        Dia de se apresentar
+        <input type="date" className={inpAso} value={aso.data} onChange={campoAso('data')} />
+      </label>
+      <label className="text-xs text-slate-600">
+        Horário (opcional)
+        <input type="time" className={inpAso} value={aso.hora} onChange={campoAso('hora')} />
+      </label>
+      <label className="text-xs text-slate-600">
+        Observação (opcional)
+        <input className={inpAso} value={aso.observacao} onChange={campoAso('observacao')} placeholder="Ir em jejum, levar carteira de vacina…" />
+      </label>
+    </>
+  );
 
   const cpfDig = cpf.replace(/\D/g, '');
   const pronto = !!c && nome.trim().length > 3 && whats.replace(/\D/g, '').length >= 10 && whatsOk && cargo.trim().length > 1 && !!valor && !!admissao && !!jornadaId;
@@ -454,8 +566,11 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
               <input className={inp} value={valor} onChange={(e) => setValor(e.target.value)} inputMode="decimal" />
             </label>
             <label className="text-xs text-slate-600">
-              Início
+              Início (data do registro)
               <input type="date" className={inp} value={admissao} onChange={(e) => setAdmissao(e.target.value)} />
+              <button type="button" className="mt-1 text-xs text-blue-700 underline" onClick={() => setAdmissao(proximaSegunda(hoje))}>
+                próxima segunda ({fmtData(proximaSegunda(hoje))})
+              </button>
             </label>
             {modelo === 'experiencia' && (
               <>
@@ -481,6 +596,21 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
               Local de trabalho no contrato (vazio = endereço da casa escolhida)
               <input className={inp} value={local} onChange={(e) => setLocal(e.target.value)} placeholder={nomeLotacao} />
             </label>
+          </div>
+          <div className="mt-4 rounded-md border border-amber-200 bg-amber-50/50 p-3">
+            <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
+              <input type="checkbox" checked={pedirAso} onChange={(e) => setPedirAso(e.target.checked)} />
+              🩺 Mandar junto o pedido do exame admissional (ASO)
+            </label>
+            {pedirAso && (
+              <>
+                <div className="mt-2 grid gap-3 sm:grid-cols-2">{camposAso}</div>
+                <p className="mt-2 text-xs text-slate-600">
+                  No WhatsApp vai a clínica, o dia de se apresentar, a data do registro ({fmtData(admissao)}) e o link da guia pra mostrar na clínica.
+                  {!asoOk(aso) && <span className="text-amber-700"> Falta a clínica e o dia — sem isso o link sai sem o pedido.</span>}
+                </p>
+              </>
+            )}
           </div>
           <div className="mt-4 flex flex-wrap items-center gap-3">
             <button
@@ -514,7 +644,8 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
             {convites.map((v) => {
               const st = v.vencido ? { t: 'venceu', c: 'bg-slate-100 text-slate-500' } : (STATUS[v.status] ?? STATUS.enviado);
               return (
-                <div key={v.id} className="flex flex-wrap items-center gap-2 py-2 text-sm">
+                <div key={v.id} className="py-2 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
                   <span className={`rounded px-2 py-0.5 text-xs ${st.c}`}>{st.t}</span>
                   <b>{v.nome}</b>
                   <span className="text-xs text-slate-500">
@@ -532,6 +663,16 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
                         comprovante
                       </a>
                     )}
+                    {v.guiaAso && (
+                      <a className="text-blue-700 underline" href={v.guiaAso} target="_blank" rel="noreferrer">
+                        guia ASO
+                      </a>
+                    )}
+                    {v.status !== 'cancelado' && (
+                      <button className="text-amber-700 underline" onClick={() => abrirAso(v)}>
+                        🩺 {v.termos.aso ? 'reenviar ASO' : 'pedir ASO'}
+                      </button>
+                    )}
                     {(v.status === 'enviado' || v.status === 'aberto') && !v.vencido && (
                       <>
                         <button className="text-blue-700 underline" onClick={() => navigator.clipboard.writeText(v.link)}>
@@ -543,6 +684,30 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
                       </>
                     )}
                   </span>
+                </div>
+                {asoPara === v.id && (
+                  <div className="mt-2 rounded-md border border-amber-200 bg-amber-50/50 p-3">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {camposAso}
+                      {v.status !== 'assinado' && (
+                        <label className="text-xs text-slate-600">
+                          Data do registro
+                          <input type="date" className={inp} value={asoRegistro} onChange={(e) => setAsoRegistro(e.target.value)} />
+                          <button type="button" className="mt-1 text-xs text-blue-700 underline" onClick={() => setAsoRegistro(proximaSegunda(hoje))}>
+                            próxima segunda ({fmtData(proximaSegunda(hoje))})
+                          </button>
+                        </label>
+                      )}
+                    </div>
+                    <button
+                      className="mt-3 rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                      disabled={!asoOk(aso) || asoEnviando}
+                      onClick={() => enviarAso(v)}
+                    >
+                      {asoEnviando ? 'Salvando…' : '📲 Salvar e mandar no WhatsApp'}
+                    </button>
+                  </div>
+                )}
                 </div>
               );
             })}

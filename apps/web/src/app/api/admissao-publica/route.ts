@@ -2,6 +2,7 @@
 // abre é a pessoa pelo link /op/admissao/<token>, sem login. A defesa é o
 // token (24 bytes aleatórios, vale 15 dias) + o CPF dela em todo POST.
 // GET  ?token=…                              → situação (primeiro nome, casa)
+// GET  ?token=…&guia=aso                     → guia do exame admissional (HTML, pra mostrar na clínica)
 // POST { token, cpf, acao:'abrir' }          → dados salvos + o combinado
 // POST { …, acao:'salvar', pessoais }        → grava o que ela preencheu
 // POST { …, acao:'contrato' }                → HTML do contrato (pra ler antes)
@@ -33,7 +34,10 @@ import {
   EMPREGADORES,
   PESSOAIS_ADMISSAO_VAZIO,
   contratoHtml,
+  dataComDiaSemana,
   empregadorDoCnpj,
+  guiaAsoHtml,
+  guiaAsoLink,
   faltandoNoLink,
   pastaConvite,
   regimeDoModelo,
@@ -144,8 +148,27 @@ function erro(msg: string, status = 400) {
 }
 
 export async function GET(req: Request) {
-  const c = await conviteDoToken(new URL(req.url).searchParams.get('token'));
+  const sp = new URL(req.url).searchParams;
+  const c = await conviteDoToken(sp.get('token'));
   if (!c) return erro('Link não encontrado. Confira se copiou inteiro.', 404);
+  if (sp.get('guia') === 'aso') {
+    const t = c.termos as TermosConvite;
+    const html = (corpo: string, status = 200) =>
+      new NextResponse(corpo, { status, headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+    if (c.status === 'cancelado') return html('<p style="font-family:sans-serif">Este link foi cancelado. Fale com o RH do Prainha.</p>', 410);
+    if (!t.aso) return html('<p style="font-family:sans-serif">O RH ainda não marcou o exame admissional.</p>', 404);
+    const p = pessoaisIniciais(c);
+    return html(
+      guiaAsoHtml({
+        nome: p.nome?.trim() || c.nome,
+        cpf: c.cpf,
+        nascimento: p.nascimento,
+        termos: t,
+        empregador: await empregadorDoCnpj(t.empregadorCnpj),
+        casa: c.casa,
+      }),
+    );
+  }
   const s = situacao(c);
   return NextResponse.json({
     ok: true,
@@ -188,6 +211,17 @@ export async function POST(req: Request) {
       docsPedidos: DOCS_PEDIDOS,
       aceites: ACEITES,
       textoAceite: textoAceiteAdmissao(c.nome, c.cpf, termos),
+      aso: termos.aso
+        ? {
+            clinica: termos.aso.clinica,
+            endereco: termos.aso.endereco,
+            telefone: termos.aso.telefone,
+            quando: `${dataComDiaSemana(termos.aso.data)}${termos.aso.hora ? ` às ${termos.aso.hora}` : ''}`,
+            observacao: termos.aso.observacao,
+            registro: dataComDiaSemana(termos.admissao),
+            guia: guiaAsoLink(String(body.token)),
+          }
+        : null,
     });
   }
 

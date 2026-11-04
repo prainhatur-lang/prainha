@@ -3,6 +3,7 @@
 // POST { acao:'consultar', filialId, cpf } → SPC (regra 7: identificarPorCpf) + cadastro existente
 // POST { acao:'criar', filialId, cpf, nome, telefone, termos } → convite + link wa.me
 // POST { acao:'cancelar', id }
+// POST { acao:'aso', id, aso }             → pedido do exame admissional (ASO) depois do link; devolve wa.me
 // Regra em lib/rh/admissao.ts; a pessoa preenche em /op/admissao/<token>.
 
 import { NextResponse } from 'next/server';
@@ -20,6 +21,8 @@ import {
   LINK_BASE_ADMISSAO,
   localDaCasa,
   resumoCombinado,
+  guiaAsoLink,
+  textoAsoWhatsapp,
   type TermosConvite,
 } from '@/lib/rh/admissao';
 
@@ -95,6 +98,7 @@ export async function GET(req: Request) {
     convites: rows.map((r) => ({
       ...r,
       link: LINK_BASE_ADMISSAO + r.token,
+      guiaAso: (r.termos as TermosConvite | null)?.aso ? guiaAsoLink(r.token) : null,
       token: undefined,
       docs: Array.isArray(r.documentos) ? r.documentos.length : 0,
       documentos: undefined,
@@ -102,6 +106,15 @@ export async function GET(req: Request) {
     })),
   });
 }
+
+const Aso = z.object({
+  clinica: z.string().min(2).max(120),
+  endereco: z.string().max(300).default(''),
+  telefone: z.string().max(40).default(''),
+  data: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  hora: z.string().regex(/^(\d{2}:\d{2})?$/).default(''),
+  observacao: z.string().max(500).default(''),
+});
 
 const Termos = z.object({
   modelo: z.enum(['intermitente', 'experiencia', 'indeterminado']),
@@ -117,6 +130,7 @@ const Termos = z.object({
   expProrrogacao: z.string().max(3).default('45'),
   setor: z.string().max(20).default(''),
   jornadaId: z.string().uuid().optional(),
+  aso: Aso.optional(),
 });
 
 const Body = z.discriminatedUnion('acao', [
@@ -133,6 +147,13 @@ const Body = z.discriminatedUnion('acao', [
     folgaNova: z.number().int().min(0).max(6).optional(),
   }),
   z.object({ acao: z.literal('cancelar'), id: z.string().uuid() }),
+  z.object({
+    acao: z.literal('aso'),
+    id: z.string().uuid(),
+    aso: Aso,
+    // Muda a data do registro junto (normalmente a segunda-feira).
+    admissao: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  }),
 ]);
 
 export async function POST(req: Request) {
@@ -156,6 +177,25 @@ export async function POST(req: Request) {
       .set({ status: 'cancelado', canceladoEm: new Date(), canceladoPor: user.id })
       .where(and(eq(C.id, b.id), inArray(C.status, ['enviado', 'aberto'])));
     return NextResponse.json({ ok: true });
+  }
+
+  if (b.acao === 'aso') {
+    const C = schema.admissaoConvite;
+    const [c] = await db
+      .select({ filialId: C.filialId, status: C.status, termos: C.termos, token: C.token, nome: C.nome, telefone: C.telefone, expiraEm: C.expiraEm })
+      .from(C)
+      .where(eq(C.id, b.id))
+      .limit(1);
+    if (!c) return NextResponse.json({ error: 'convite não encontrado' }, { status: 404 });
+    if (!(await acessoFilial(user.id, c.filialId))) return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
+    if (c.status === 'cancelado') return NextResponse.json({ error: 'link cancelado' }, { status: 409 });
+    const t = { ...(c.termos as TermosConvite), aso: b.aso };
+    // A data do registro já vai no contrato assinado: depois de assinar não muda.
+    if (b.admissao && c.status !== 'assinado') t.admissao = b.admissao;
+    await db.update(C).set({ termos: t }).where(eq(C.id, b.id));
+    const primeiro = c.nome.trim().split(/\s+/)[0];
+    const texto = `Olá, ${primeiro}! Aqui é do RH do Prainha.\n\n${textoAsoWhatsapp(b.aso, t.admissao, c.token)}`;
+    return NextResponse.json({ ok: true, whatsapp: `https://wa.me/${c.telefone}?text=${encodeURIComponent(texto)}` });
   }
 
   if (!(await acessoFilial(user.id, b.filialId))) return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
@@ -307,7 +347,8 @@ export async function POST(req: Request) {
   const texto =
     `Olá, ${primeiro}! Aqui é do RH do Prainha. Pra fazer o seu registro, abra o link abaixo: ` +
     `preencha os seus dados, mande as fotos dos documentos, leia o contrato e assine com uma selfie.\n\n` +
-    `Combinado: ${resumoCombinado(termos)}\n\n${link}\n\nO link vale ${ADMISSAO_VALIDADE_DIAS} dias.`;
+    `Combinado: ${resumoCombinado(termos)}\n\n${link}\n\nO link vale ${ADMISSAO_VALIDADE_DIAS} dias.` +
+    (termos.aso ? `\n\n${textoAsoWhatsapp(termos.aso, termos.admissao, token)}` : '');
   return NextResponse.json({
     ok: true,
     id: conv.id,

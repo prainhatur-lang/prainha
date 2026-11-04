@@ -107,6 +107,20 @@ export interface TermosConvite {
   setor: string;
   /** Escala (rh_jornada) que entra na ficha quando assina; vazio = decide na escala do mês. */
   jornadaId?: string;
+  /** Pedido do exame admissional (ASO): onde e quando se apresentar. Vazio = sem pedido. */
+  aso?: AsoConvite;
+}
+
+/** Encaminhamento pro exame admissional (04/11/2026). O registro é `admissao`. */
+export interface AsoConvite {
+  clinica: string;
+  endereco: string;
+  telefone: string;
+  /** YYYY-MM-DD — dia de se apresentar na clínica. */
+  data: string;
+  /** HH:MM (opcional). */
+  hora: string;
+  observacao: string;
 }
 
 /** Dados que a pessoa preenche no link (o contrato + o que a ficha pede). */
@@ -377,4 +391,81 @@ export const ROTULO_STATUS_CONVITE: Record<string, string> = {
 
 export function regimeDoModelo(m: TermosContrato['modelo']): 'intermitente_hora' | 'clt_mensal' {
   return m === 'intermitente' ? 'intermitente_hora' : 'clt_mensal';
+}
+
+const DIAS_SEMANA = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'];
+/** "2026-11-09" → "segunda-feira, 09/11/2026". */
+export function dataComDiaSemana(ymd: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return ymd;
+  const [y, m, d] = ymd.split('-').map(Number);
+  const dia = DIAS_SEMANA[new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
+  return `${dia}, ${fmtData(ymd)}`;
+}
+
+/** Próxima segunda-feira depois de `ymd` (registro sai na segunda pra fechar a folha da semana). */
+export function proximaSegunda(ymd: string): string {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d));
+  const falta = ((8 - t.getUTCDay()) % 7) || 7;
+  t.setUTCDate(t.getUTCDate() + falta);
+  return t.toISOString().slice(0, 10);
+}
+
+/** Endereço público da guia do ASO (abre sem CPF; a defesa é o token). */
+export const guiaAsoLink = (token: string) => `https://app.prainhabar.com/api/admissao-publica?token=${token}&guia=aso`;
+
+/** Linhas do pedido do ASO pro texto do WhatsApp. */
+export function textoAsoWhatsapp(a: AsoConvite, admissao: string, token: string): string {
+  const quando = `${dataComDiaSemana(a.data)}${a.hora ? ` às ${a.hora}` : ''}`;
+  return [
+    `*Exame admissional (ASO):* apresente-se na ${a.clinica}${a.endereco ? ` (${a.endereco})` : ''} em ${quando}, com documento com foto e esta guia:`,
+    guiaAsoLink(token),
+    a.observacao ? `Obs.: ${a.observacao}` : '',
+    `*Seu registro começa em ${dataComDiaSemana(admissao)}.*`,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+/** Guia de encaminhamento pro exame admissional — a pessoa mostra na clínica. */
+export function guiaAsoHtml(o: {
+  nome: string;
+  cpf: string;
+  nascimento?: string;
+  termos: TermosConvite;
+  empregador: Empregador;
+  casa: string;
+}): string {
+  const { termos: t, empregador: emp } = o;
+  const a = t.aso!;
+  const endEmp = [emp.endereco, emp.bairro, `${emp.municipio}/${emp.uf}`].filter(Boolean).join(', ');
+  const linha = (k: string, v: string) => (v ? `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>` : '');
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Encaminhamento ASO — ${esc(o.nome)}</title>
+<style>
+body{font-family:Georgia,'Times New Roman',serif;color:#111;max-width:800px;margin:0 auto;padding:24px;line-height:1.5;font-size:14px;background:#fff}
+h1{font-size:18px;text-align:center;text-transform:uppercase;margin:0 0 4px}
+.sub{text-align:center;font-size:12px;color:#444;margin:0 0 16px}
+h2{font-size:14px;text-transform:uppercase;margin:18px 0 6px}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid #bbb;padding:6px 8px;text-align:left;vertical-align:top;font-size:13px}
+th{width:34%;background:#f4f4f4;font-weight:normal}
+.box{border:2px solid #111;padding:10px 12px;margin:16px 0;border-radius:4px;font-size:15px}
+.ass{margin-top:48px;border-top:1px solid #333;padding-top:6px;font-size:12px;width:60%}
+@media print{body{padding:0}}
+</style></head><body>
+<h1>Encaminhamento para exame admissional</h1>
+<p class="sub">ASO — Atestado de Saúde Ocupacional (NR-7)</p>
+<h2>Empresa</h2>
+<table>${linha('Razão social', emp.razaoSocial)}${linha('CNPJ', fmtCnpj(emp.cnpj))}${linha('Endereço', endEmp)}${linha('Local de trabalho', o.casa)}</table>
+<h2>Candidato(a)</h2>
+<table>${linha('Nome', o.nome)}${linha('CPF', fmtCpf(o.cpf))}${linha('Nascimento', o.nascimento ? fmtData(o.nascimento) : '')}${linha('Cargo / função', t.cargo)}${linha('CBO', t.cbo)}</table>
+<h2>Clínica</h2>
+<table>${linha('Clínica', a.clinica)}${linha('Endereço', a.endereco)}${linha('Telefone', a.telefone)}</table>
+<div class="box"><b>Apresentar-se em:</b> ${esc(dataComDiaSemana(a.data))}${a.hora ? ` às ${esc(a.hora)}` : ''}<br>
+<b>Data prevista do registro (admissão):</b> ${esc(dataComDiaSemana(t.admissao))}</div>
+${a.observacao ? `<p><b>Observação:</b> ${esc(a.observacao)}</p>` : ''}
+<p>Levar documento oficial com foto. O resultado (ASO) deve ser entregue ao RH antes da data do registro.</p>
+<div class="ass">RH — ${esc(emp.razaoSocial)}</div>
+</body></html>`;
 }

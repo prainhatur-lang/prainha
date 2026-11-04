@@ -35,6 +35,15 @@ interface Dados {
   docsPedidos: DocPedido[];
   aceites: { chave: string; texto: string }[];
   textoAceite: string;
+  aso?: {
+    clinica: string;
+    endereco: string;
+    telefone: string;
+    quando: string;
+    observacao: string;
+    registro: string;
+    guia: string;
+  } | null;
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -453,6 +462,23 @@ export function AdmissaoPublicaCliente({ token }: { token: string }) {
             <b>Combinado:</b> {dados.resumo}
             {dados.empregador ? <span className="block text-xs text-sky-700">Empregador: {dados.empregador}</span> : null}
           </p>
+          {dados.aso ? (
+            <div className="mt-2 rounded-md border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900">
+              <b>🩺 Exame admissional (ASO)</b>
+              <span className="block">
+                Apresente-se na <b>{dados.aso.clinica}</b>
+                {dados.aso.endereco ? ` (${dados.aso.endereco})` : ''} em <b>{dados.aso.quando}</b>, com documento com foto.
+              </span>
+              {dados.aso.telefone ? <span className="block text-xs">Telefone da clínica: {dados.aso.telefone}</span> : null}
+              {dados.aso.observacao ? <span className="block text-xs">Obs.: {dados.aso.observacao}</span> : null}
+              <span className="mt-1 block">
+                Seu registro começa em <b>{dados.aso.registro}</b>.
+              </span>
+              <a className="mt-1 inline-block font-medium underline" href={dados.aso.guia} target="_blank" rel="noreferrer">
+                Abrir a guia pra mostrar na clínica
+              </a>
+            </div>
+          ) : null}
           <p className="mt-1 text-right text-xs text-slate-400">
             {salvo === 'salvando' ? 'salvando…' : salvo === 'salvo' ? '✓ salvo' : salvo === 'erro' ? 'não salvou — confira a internet' : ''}
           </p>
