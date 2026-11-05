@@ -64,6 +64,7 @@ export function FormCadastro({ origem, zap, plano, demo }: { origem: string; zap
   const [erro, setErro] = useState('');
   const [testeFim, setTesteFim] = useState('');
   const [acesso, setAcesso] = useState<Acesso | null>(null);
+  const [emailEnviado, setEmailEnviado] = useState(false);
 
   const set = (k: keyof typeof f) => (e: { target: { value: string } }) => {
     let v = e.target.value;
@@ -108,9 +109,10 @@ export function FormCadastro({ origem, zap, plano, demo }: { origem: string; zap
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...f, origem }),
       });
-      const j = (await r.json().catch(() => ({}))) as { error?: string; testeFim?: string; acesso?: Acesso | null };
+      const j = (await r.json().catch(() => ({}))) as { error?: string; testeFim?: string; acesso?: Acesso | null; emailEnviado?: boolean };
       if (!r.ok) throw new Error(j.error || 'Não deu pra cadastrar. Tente de novo.');
       setAcesso(j.acesso ?? null);
+      setEmailEnviado(Boolean(j.emailEnviado));
       setTesteFim(j.testeFim ?? '');
     } catch (err) {
       setErro(err instanceof Error ? err.message : 'Não deu pra cadastrar.');
@@ -149,7 +151,8 @@ export function FormCadastro({ origem, zap, plano, demo }: { origem: string; zap
                 </div>
               )}
               <p className="mt-2 text-xs text-[#5a6878]">
-                Anote ou tire um print. No primeiro acesso o sistema pede pra você trocar a senha.
+                {emailEnviado ? `Mandamos esses dados também pro e-mail ${f.email}.` : 'Anote ou tire um print.'} No primeiro
+                acesso o sistema pede pra você trocar a senha.
               </p>
             </div>
             <div className="mt-4 flex flex-wrap gap-3">
@@ -172,6 +175,7 @@ export function FormCadastro({ origem, zap, plano, demo }: { origem: string; zap
           Seu teste com <b>todos os módulos</b> vai até <b>{fim}</b>, sem pagar nada. A loja{' '}
           <b>{f.nomeFantasia}</b> está sendo preparada: nossa equipe chama você no WhatsApp {f.whatsapp} pra
           entregar o acesso e ajudar a começar.
+          {emailEnviado && <> A confirmação também foi pro e-mail {f.email}.</>}
         </p>
         <p className="mt-2 text-[#3d4a58]">
           No fim do teste, se quiser continuar, a mensalidade é paga por Pix. Se não quiser, não precisa fazer nada.

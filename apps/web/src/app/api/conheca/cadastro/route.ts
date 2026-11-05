@@ -13,6 +13,7 @@ import { validarDocumento, formatarDocumento } from '@/lib/nfce/documento';
 import { buscarCnpjReceita } from '@/lib/receita-cnpj';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
 import { provisionarContaSaas, type AcessoSaas } from '@/lib/saas-provisao';
+import { enviarEmailCadastro } from '@/lib/saas-email-cadastro';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -124,5 +125,17 @@ export async function POST(request: Request) {
   let acesso: AcessoSaas | null = null;
   if (contaId) acesso = await provisionarContaSaas(contaId).catch(() => null);
 
-  return NextResponse.json({ ok: true, testeFim, acesso });
+  // Acesso (ou confirmação do cadastro) no e-mail. Falhou → segue; a tela
+  // continua mostrando o acesso e fica anotado em saas_conta.observacao.
+  const mail = await enviarEmailCadastro({
+    contaId,
+    email,
+    responsavel,
+    nomeFantasia,
+    whatsapp,
+    testeFim,
+    acesso,
+  }).catch(() => ({ ok: false }));
+
+  return NextResponse.json({ ok: true, testeFim, acesso, emailEnviado: mail.ok });
 }
