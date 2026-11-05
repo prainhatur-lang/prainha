@@ -170,6 +170,7 @@
     "migrate:combo-regra": "tsx scripts/migrate-combo-regra.ts",
     "migrate:vale-transporte": "tsx scripts/migrate-vale-transporte.ts",
     "migrate:escala-mensal": "tsx scripts/migrate-escala-mensal.ts",
+    "migrate:troca-folga": "tsx scripts/migrate-troca-folga.ts",
     "migrate:atestado": "tsx scripts/migrate-atestado.ts",
     "migrate:funcionario-documento": "tsx scripts/migrate-funcionario-documento.ts",
     "migrate:contabilidade-rh": "tsx scripts/migrate-contabilidade-rh.ts",

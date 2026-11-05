@@ -365,3 +365,31 @@ export const admissaoConvite = pgTable(
     porCpf: index('idx_admissao_convite_cpf').on(t.cpf),
   }),
 );
+
+/** Troca de folga entre colegas feita no tablet do ponto (pedido do dono
+ *  05/11/2026: Claudia trocou com Edjane e a trava barrou a entrada). Quem pede
+ *  TRABALHA em `dia_trabalha` no lugar do colega e FOLGA em `dia_devolve`, que o
+ *  colega cobre. Os dois dias ficam a no máximo 10 dias de hoje. Só o colega
+ *  confirma (no tablet, pelo rosto); confirmada → rh_escala_dia dos dois muda.
+ *  Gerente só vê a lista no /rh/escala-mensal. `id_local` = id na loja. */
+export const rhTrocaFolga = pgTable(
+  'rh_troca_folga',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    idLocal: integer('id_local').notNull(),
+    solicitanteId: uuid('solicitante_id').notNull().references(() => funcionario.id, { onDelete: 'cascade' }),
+    colegaId: uuid('colega_id').notNull().references(() => funcionario.id, { onDelete: 'cascade' }),
+    diaTrabalha: date('dia_trabalha').notNull(),
+    diaDevolve: date('dia_devolve').notNull(),
+    /** aguardando | confirmada | recusada */
+    status: varchar('status', { length: 20 }).notNull(),
+    criadaEm: timestamp('criada_em', { withTimezone: true }).notNull().defaultNow(),
+    respondidaEm: timestamp('respondida_em', { withTimezone: true }),
+    escalaAplicadaEm: timestamp('escala_aplicada_em', { withTimezone: true }),
+  },
+  (t) => ({
+    uniq: unique('uq_rh_troca_folga_local').on(t.filialId, t.idLocal),
+    porCasa: index('idx_rh_troca_folga_filial').on(t.filialId, t.diaTrabalha),
+  }),
+);

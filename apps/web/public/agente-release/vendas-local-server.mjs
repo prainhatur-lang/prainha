@@ -1015,6 +1015,15 @@ async function initSchema() {
   // dia que o gerente autorizou bater mais cedo, vindos do roster da nuvem.
   await addCol('ponto_funcionario', 'hora_entrada text');
   await addCol('ponto_funcionario', 'cedo_liberado_dia text');
+  // Troca de folga entre colegas feita no tablet (05/11/2026). Quem pede
+  // trabalha em dia_trabalha no lugar do colega e folga em dia_devolve, que o
+  // colega cobre. Só o colega confirma (pelo rosto, no tablet). sync_pendente
+  // leva pra nuvem (/api/loja/ponto/troca), que muda a escala dos dois.
+  await sql`CREATE TABLE IF NOT EXISTS ponto_troca_folga (id bigserial PRIMARY KEY,
+    solicitante_id uuid NOT NULL, colega_id uuid NOT NULL,
+    dia_trabalha text NOT NULL, dia_devolve text NOT NULL,
+    status text NOT NULL DEFAULT 'aguardando', criada_em timestamptz NOT NULL DEFAULT now(),
+    respondida_em timestamptz, sync_pendente boolean NOT NULL DEFAULT true)`;
   // Batida anulada ("Não sou eu" no tablet, ou excluída pelo RH na nuvem) não
   // conta pra nada local (entrada/saída, cooldown, horas). A linha fica — a fila
   // da nuvem é por cursor de id — e anulada_sync_pendente leva a anulação pra lá.
@@ -11075,6 +11084,117 @@ function pontoTravaCedo(pessoa, dia, agora) {
     return null;
   }
 }
+// ---- TROCA DE FOLGA NO TABLET (05/11/2026) ----
+// Claudia (Prainha Mar) trocou a folga com Edjane e a trava barrou a entrada.
+// Agora, barrada a entrada, o tablet oferece "Troquei a folga com um colega":
+// escolhe o colega e o dia em que ela folga no lugar dele (no máximo 10 dias de
+// hoje). A entrada de hoje passa; o colega confirma no tablet quando o rosto
+// dele aparecer. Confirmada, a nuvem muda a escala do mês dos dois. Recusada,
+// a troca não vale mais (o gerente vê a lista no /rh/escala-mensal).
+const PONTO_TROCA_MAX_DIAS = 10;
+function pontoDiaSoma(dia, n) {
+  const [a, m, d] = String(dia).split('-').map(Number);
+  return new Date(Date.UTC(a, m - 1, d + n)).toISOString().slice(0, 10);
+}
+function pontoDiaDistancia(a, b) {
+  const p = (x) => { const [y, m, d] = String(x).split('-').map(Number); return Date.UTC(y, m - 1, d); };
+  return Math.round(Math.abs(p(a) - p(b)) / 86400000);
+}
+// Troca que libera a ENTRADA desta pessoa neste dia: quem pediu, no dia em que
+// trabalha no lugar do colega (vale já enquanto o colega não respondeu); o
+// colega, no dia em que cobre quem pediu (só depois de confirmar).
+async function pontoTrocaLibera(funcionarioId, dia) {
+  try {
+    const r = await sql`SELECT id FROM ponto_troca_folga
+      WHERE (solicitante_id=${funcionarioId} AND dia_trabalha=${dia} AND status IN ('aguardando','confirmada'))
+         OR (colega_id=${funcionarioId} AND dia_devolve=${dia} AND status='confirmada')
+      LIMIT 1`;
+    return r.length > 0;
+  } catch (err) { console.error('[ponto] troca (leitura):', err.message); return false; }
+}
+async function pontoTrocasPendentesDe(funcionarioId) {
+  const hoje = diaOperacionalDe(new Date());
+  const r = await sql`SELECT t.id, t.dia_trabalha, t.dia_devolve, p.nome AS solicitante_nome
+    FROM ponto_troca_folga t LEFT JOIN ponto_funcionario p ON p.funcionario_id=t.solicitante_id
+    WHERE t.colega_id=${funcionarioId} AND t.status='aguardando'
+      AND (t.dia_trabalha >= ${pontoDiaSoma(hoje, -PONTO_TROCA_MAX_DIAS)} OR t.dia_devolve >= ${hoje})
+    ORDER BY t.id`;
+  return r.map((x) => ({ id: Number(x.id), dia_trabalha: x.dia_trabalha, dia_devolve: x.dia_devolve,
+    solicitante_nome: x.solicitante_nome || 'Seu colega' }));
+}
+// GET /api/ponto/troca/opcoes?f=<quem pede> — colegas ativos + dias possíveis
+async function apiPontoTrocaOpcoes(funcionarioId) {
+  if (!/^[0-9a-f-]{36}$/i.test(String(funcionarioId || ''))) return { ok: false, erro: 'funcionário inválido' };
+  const hoje = diaOperacionalDe(new Date());
+  const colegas = await sql`SELECT funcionario_id, nome, setor FROM ponto_funcionario
+    WHERE ativo AND funcionario_id <> ${funcionarioId} ORDER BY nome`;
+  const dias = [];
+  for (let n = -PONTO_TROCA_MAX_DIAS; n <= PONTO_TROCA_MAX_DIAS; n++) if (n !== 0) dias.push(pontoDiaSoma(hoje, n));
+  return { ok: true, hoje, dias, colegas: colegas.map((c) => ({ funcionario_id: c.funcionario_id, nome: c.nome, setor: c.setor })) };
+}
+// POST /api/ponto/troca/criar {solicitante_id, colega_id, dia_devolve} — quem
+// pede trabalha HOJE (dia operacional) no lugar do colega.
+async function apiPontoTrocaCriar(body) {
+  const sol = String(body.solicitante_id || ''), col = String(body.colega_id || '');
+  const devolve = String(body.dia_devolve || '');
+  if (!/^[0-9a-f-]{36}$/i.test(sol) || !/^[0-9a-f-]{36}$/i.test(col) || sol === col) return { ok: false, erro: 'escolha o colega' };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(devolve)) return { ok: false, erro: 'escolha o dia da sua folga' };
+  const hoje = diaOperacionalDe(new Date());
+  if (devolve === hoje || pontoDiaDistancia(devolve, hoje) > PONTO_TROCA_MAX_DIAS)
+    return { ok: false, erro: `a troca tem que ser no máximo em ${PONTO_TROCA_MAX_DIAS} dias` };
+  const pessoas = await sql`SELECT funcionario_id, nome FROM ponto_funcionario WHERE ativo AND funcionario_id IN (${sol}, ${col})`;
+  if (pessoas.length !== 2) return { ok: false, erro: 'colega não encontrado' };
+  const ja = (await sql`SELECT id FROM ponto_troca_folga WHERE solicitante_id=${sol} AND dia_trabalha=${hoje}
+    AND status IN ('aguardando','confirmada') LIMIT 1`)[0];
+  if (ja) return { ok: true, id: Number(ja.id), ja: true };
+  const [nova] = await sql`INSERT INTO ponto_troca_folga (solicitante_id, colega_id, dia_trabalha, dia_devolve)
+    VALUES (${sol}, ${col}, ${hoje}, ${devolve}) RETURNING id`;
+  const nomeDe = (id) => (pessoas.find((p) => String(p.funcionario_id) === id) || {}).nome || id;
+  console.log(`[ponto] troca de folga: ${nomeDe(sol)} trabalha ${hoje} no lugar de ${nomeDe(col)}, folga ${devolve}`);
+  loopPontoTroca().catch(() => {});
+  return { ok: true, id: Number(nova.id) };
+}
+// POST /api/ponto/troca/responder {id, colega_id, aceita} — o colega, já
+// reconhecido pelo rosto, confirma ou recusa. Resposta é uma só.
+async function apiPontoTrocaResponder(body) {
+  const id = Number(body.id), col = String(body.colega_id || '');
+  if (!Number.isInteger(id) || id <= 0 || !/^[0-9a-f-]{36}$/i.test(col)) return { ok: false, erro: 'troca inválida' };
+  const status = body.aceita ? 'confirmada' : 'recusada';
+  const r = await sql`UPDATE ponto_troca_folga SET status=${status}, respondida_em=now(), sync_pendente=true
+    WHERE id=${id} AND colega_id=${col} AND status='aguardando' RETURNING id`;
+  if (!r.length) return { ok: false, erro: 'essa troca já foi respondida' };
+  console.log(`[ponto] troca de folga ${id}: ${status}`);
+  loopPontoTroca().catch(() => {});
+  return { ok: true, status };
+}
+let pontoTrocaRodando = false;
+async function loopPontoTroca() {
+  if (pontoTrocaRodando || !FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  pontoTrocaRodando = true;
+  try {
+    const rows = await sql`SELECT id, solicitante_id, colega_id, dia_trabalha, dia_devolve, status, criada_em, respondida_em
+      FROM ponto_troca_folga WHERE sync_pendente ORDER BY id LIMIT 100`;
+    if (!rows.length) return;
+    const e = Math.floor(Date.now() / 1000) + 120;
+    const r = await fetch(`${PAGAR_MESA_URL}/api/loja/ponto/troca`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ f: FILIAL_ID, e, s: nfceAssina('ponto', e), trocas: rows.map((x) => ({
+        id: Number(x.id), solicitante_id: x.solicitante_id, colega_id: x.colega_id,
+        dia_trabalha: x.dia_trabalha, dia_devolve: x.dia_devolve, status: x.status,
+        criada_em: new Date(x.criada_em).toISOString(),
+        respondida_em: x.respondida_em ? new Date(x.respondida_em).toISOString() : null })) }),
+      signal: AbortSignal.timeout(20000),
+    });
+    const j = await r.json().catch(() => null);
+    if (!j?.ok || !Array.isArray(j.ids)) { console.error('[ponto] troca: nuvem recusou:', j?.erro || r.status); return; }
+    // só baixa o que subiu e não mudou de novo enquanto subia
+    for (const x of rows) {
+      if (!j.ids.includes(Number(x.id))) continue;
+      await sql`UPDATE ponto_troca_folga SET sync_pendente=false WHERE id=${x.id} AND status=${x.status}`;
+    }
+  } catch (err) { console.error('[ponto] troca (nuvem):', err.message); }
+  finally { pontoTrocaRodando = false; }
+}
 // GET /api/ponto/pessoas — roster ativo + estado do dia (fora/trabalhando desde)
 // + face_descriptor de quem já tem, pro reconhecimento comparar no navegador.
 // `marca` = impressão digital de quem está no roster e de quem tem rosto. A
@@ -11290,6 +11410,15 @@ async function apiPontoBaterFacial(body) {
   const pessoa = (await sql`SELECT * FROM ponto_funcionario WHERE funcionario_id=${funcionarioId} AND ativo`)[0];
   if (!pessoa) return { ok: false, erro: 'funcionário não encontrado ou inativo' };
 
+  // Troca de folga esperando a resposta desta pessoa (05/11/2026): o tablet
+  // pergunta antes de bater (ela pode ter vindo só confirmar, de folga).
+  if (body.perguntar_troca) {
+    try {
+      const pend = await pontoTrocasPendentesDe(funcionarioId);
+      if (pend.length) return { ok: false, troca_pendente: pend, nome: pessoa.nome };
+    } catch (err) { console.error('[ponto] troca (pendentes):', err.message); }
+  }
+
   const agora = new Date();
   const ultimaGeral = (await sql`SELECT tipo, quando FROM ponto_batida WHERE funcionario_id=${funcionarioId}
     AND anulada_em IS NULL ORDER BY quando DESC LIMIT 1`)[0];
@@ -11310,7 +11439,7 @@ async function apiPontoBaterFacial(body) {
     WHERE funcionario_id=${funcionarioId} AND dia_operacional=${dia} AND anulada_em IS NULL
     ORDER BY quando DESC LIMIT 1`)[0];
   const tipo = ultimaHoje && ultimaHoje.tipo === 'entrada' ? 'saida' : 'entrada';
-  if (!ultimaHoje) {
+  if (!ultimaHoje && !(await pontoTrocaLibera(funcionarioId, dia))) {
     const trava = await pontoTravaSemana(pessoa, dia);
     if (trava) return trava;
     const cedo = pontoTravaCedo(pessoa, dia, agora);
@@ -11433,7 +11562,7 @@ async function apiPontoBater(body) {
       ? `${pessoa.nome} já está com entrada batida.`
       : `${pessoa.nome} já bateu saída — pra sair nesse turno, bate entrada de novo primeiro.` };
   }
-  if (!ultima && tipo === 'entrada') {
+  if (!ultima && tipo === 'entrada' && !(await pontoTrocaLibera(funcionarioId, dia))) {
     const trava = await pontoTravaSemana(pessoa, dia);
     if (trava) return trava;
     const cedo = pontoTravaCedo(pessoa, dia, agora);
@@ -17600,7 +17729,8 @@ function pfResFecha(){
 function pfResHora(q){
   try { return new Date(q).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); } catch(x) { return ''; }
 }
-async function pfBater(pessoa){
+async function pfBater(pessoa, opts){
+  opts=opts||{};
   clearInterval(PF_LOOP); PF_LOOP=null;
   var dg=null; try { dg=pfDiag(); } catch(x) {}
   if (PF_TEMPOS) PF_TEMPOS.bateu=true;
@@ -17608,8 +17738,10 @@ async function pfBater(pessoa){
   var r;
   try {
     r=await (await fetch('/api/ponto/bater-facial',{method:'POST',headers:{'content-type':'application/json'},
-      body:JSON.stringify({funcionario_id:pessoa.funcionario_id, diag:dg})})).json();
+      body:JSON.stringify({funcionario_id:pessoa.funcionario_id, diag:dg, perguntar_troca:!opts.semTroca})})).json();
   } catch(e){ r={ok:false,erro:'sem conexão com o servidor da loja'}; }
+  // Troca de folga esperando a resposta desta pessoa: pergunta antes de bater.
+  if (r && r.troca_pendente && r.troca_pendente.length) { pfTrocaResponder(pessoa, r.troca_pendente); return r; }
   if (r.ok) {
     // A pessoa TEM que ver se foi entrada ou saída — grande, com cor e hora.
     var ent=(r.tipo==='entrada');
@@ -17641,7 +17773,15 @@ async function pfBater(pessoa){
       });
       return r;
     }
-    if (r.bloqueio) pfResMostra('erro','✗','Ponto NÃO registrado','', r.erro||'', 6000);
+    if (r.bloqueio) {
+      pfResMostra('erro','✗','Ponto NÃO registrado','', r.erro||'', 6000);
+      // Troca de folga com colega (05/11/2026): quem trocou libera a entrada aqui.
+      if (r.bloqueio==='limite_semana' || r.bloqueio==='antes_da_hora') {
+        var exT=document.getElementById('pfExtra');
+        exT.innerHTML='<button id="pfTrocaBtn" style="cursor:pointer;font:inherit;font-size:22px;font-weight:700;padding:16px;border-radius:14px;border:0;background:#2563eb;color:#fff;width:100%;margin-top:14px">🔁 Troquei a folga com um colega</button>';
+        document.getElementById('pfTrocaBtn').onclick=function(){ pfResFecha(); pfTrocaIniciar(pessoa); };
+      }
+    }
     else if (r.ultimo_quando) pfResMostra('ja','✓','Seu ponto já está batido',
       (r.ultimo_tipo==='saida'?'SAÍDA':'ENTRADA')+' às '+pfResHora(r.ultimo_quando),
       'Não precisa bater de novo. '+(r.erro||''), 5000);
@@ -17650,6 +17790,112 @@ async function pfBater(pessoa){
   // a tela cheia cobre os primeiros segundos: o fechamento conta depois dela
   PF_FECHA_T=setTimeout(fecharPontoFacial, ((r.ok&&r.batida_id)||r.bloqueio?8000:4500)+(PF_RES_T?PF_RES_MS:0));
   return r; // só a escolha entre gêmeos lê (pfGemeoEscolhe)
+}
+// ---- Troca de folga no tablet (05/11/2026) ----
+var PF_BTN='cursor:pointer;font:inherit;font-size:20px;font-weight:700;padding:14px;border-radius:14px;border:0;color:#fff;';
+function pfTrocaDiaRot(d){
+  try { var x=new Date(d+'T12:00:00'); return x.toLocaleDateString('pt-BR',{weekday:'short',day:'2-digit',month:'2-digit'}); } catch(e){ return d; }
+}
+function pfTrocaEspera(ms){ clearTimeout(PF_FECHA_T); PF_FECHA_T=setTimeout(fecharPontoFacial, ms||60000); }
+async function pfTrocaIniciar(pessoa){
+  pfTrocaEspera();
+  var ex=document.getElementById('pfExtra');
+  ex.innerHTML='<div style="color:#fff;font-size:18px;text-align:center;margin-top:12px">Carregando os colegas…</div>';
+  var o;
+  try { o=await (await fetch('/api/ponto/troca/opcoes?f='+encodeURIComponent(pessoa.funcionario_id))).json(); }
+  catch(e){ o={ok:false,erro:'sem conexão com o servidor da loja'}; }
+  if (!o.ok) { ex.innerHTML='<div style="color:#fecaca;font-size:18px;text-align:center">'+esc(o.erro||'erro')+'</div>'; return; }
+  var html='<div style="margin-top:12px;color:#fff;font-size:20px;font-weight:700;text-align:center">Com quem você trocou? Hoje você trabalha no lugar dele(a).</div>'+
+    '<input id="pfTrocaBusca" placeholder="digite o nome" style="font:inherit;font-size:20px;padding:12px;border-radius:12px;border:0;width:100%;box-sizing:border-box;margin:10px 0">'+
+    '<div id="pfTrocaLista" style="display:flex;flex-direction:column;gap:8px;max-height:46vh;overflow:auto"></div>'+
+    '<button id="pfTrocaSai" style="'+PF_BTN+'background:#334155;width:100%;margin-top:10px">Cancelar</button>';
+  ex.innerHTML=html;
+  function lista(){
+    var q=(document.getElementById('pfTrocaBusca').value||'').toLowerCase();
+    var box=document.getElementById('pfTrocaLista'); box.innerHTML='';
+    o.colegas.filter(function(c){ return !q || String(c.nome).toLowerCase().indexOf(q)>=0; }).slice(0,40).forEach(function(c){
+      var b=document.createElement('button'); b.style.cssText=PF_BTN+'background:#1e3a8a;text-align:left';
+      b.textContent=c.nome+(c.setor?' · '+c.setor:'');
+      b.onclick=function(){ pfTrocaDia(pessoa, c, o); };
+      box.appendChild(b);
+    });
+  }
+  document.getElementById('pfTrocaBusca').oninput=function(){ pfTrocaEspera(); lista(); };
+  document.getElementById('pfTrocaSai').onclick=fecharPontoFacial;
+  lista();
+}
+function pfTrocaDia(pessoa, colega, o){
+  pfTrocaEspera();
+  var ex=document.getElementById('pfExtra');
+  var pc=String(colega.nome||'').split(' ')[0];
+  var html='<div style="margin-top:12px;color:#fff;font-size:20px;font-weight:700;text-align:center">Hoje você trabalha no lugar de '+esc(pc)+'.<br>Em que dia '+esc(pc)+' trabalha no seu lugar (você folga)?</div>'+
+    '<div style="color:#cbd5e1;font-size:15px;text-align:center;margin:4px 0 10px">no máximo 10 dias antes ou depois de hoje</div>'+
+    '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">';
+  o.dias.forEach(function(d){
+    html+='<button data-d="'+d+'" style="'+PF_BTN+'font-size:17px;padding:12px 4px;background:'+(d<o.hoje?'#475569':'#1e3a8a')+'">'+esc(pfTrocaDiaRot(d))+'</button>';
+  });
+  html+='</div><button id="pfTrocaVolta" style="'+PF_BTN+'background:#334155;width:100%;margin-top:10px">← Voltar</button>';
+  ex.innerHTML=html;
+  Array.prototype.forEach.call(ex.querySelectorAll('button[data-d]'), function(b){
+    b.onclick=function(){ pfTrocaConfirma(pessoa, colega, b.getAttribute('data-d'), o); };
+  });
+  document.getElementById('pfTrocaVolta').onclick=function(){ pfTrocaIniciar(pessoa); };
+}
+function pfTrocaConfirma(pessoa, colega, dia, o){
+  pfTrocaEspera();
+  var ex=document.getElementById('pfExtra');
+  var pc=String(colega.nome||'').split(' ')[0];
+  ex.innerHTML='<div style="margin-top:12px;color:#fff;font-size:21px;font-weight:700;text-align:center;background:#1e293b;border-radius:14px;padding:14px">'+
+    'Hoje ('+esc(pfTrocaDiaRot(o.hoje))+') você trabalha no lugar de '+esc(pc)+'.<br>'+
+    esc(pfTrocaDiaRot(dia))+' você folga e '+esc(pc)+' trabalha.<br>'+
+    '<span style="font-weight:500;font-size:16px;color:#cbd5e1">'+esc(pc)+' confirma aqui no tablet quando bater o ponto. Sem desconto pros dois.</span></div>'+
+    '<button id="pfTrocaOk" style="'+PF_BTN+'background:#16a34a;width:100%;margin-top:10px">✓ Confirmar e bater a entrada</button>'+
+    '<button id="pfTrocaVolta2" style="'+PF_BTN+'background:#334155;width:100%;margin-top:8px">← Voltar</button>';
+  document.getElementById('pfTrocaVolta2').onclick=function(){ pfTrocaDia(pessoa, colega, o); };
+  document.getElementById('pfTrocaOk').onclick=async function(){
+    this.disabled=true;
+    var r;
+    try {
+      r=await (await fetch('/api/ponto/troca/criar',{method:'POST',headers:{'content-type':'application/json'},
+        body:JSON.stringify({solicitante_id:pessoa.funcionario_id, colega_id:colega.funcionario_id, dia_devolve:dia})})).json();
+    } catch(e){ r={ok:false,erro:'sem conexão com o servidor da loja'}; }
+    if (!r.ok) { ex.innerHTML='<div style="color:#fecaca;font-size:19px;text-align:center;margin-top:12px">'+esc(r.erro||'erro')+'</div>'; pfTrocaEspera(8000); return; }
+    ex.innerHTML='';
+    pfBater(pessoa, {semTroca:true});
+  };
+}
+function pfTrocaResponder(pessoa, pend){
+  pfTrocaEspera();
+  var st=document.getElementById('pfStatus'); st.textContent='Olá, '+pessoa.nome;
+  document.getElementById('pfSub').textContent='';
+  var ex=document.getElementById('pfExtra');
+  var t=pend[0];
+  if (!t) {
+    ex.innerHTML='<div style="margin-top:12px;color:#fff;font-size:20px;font-weight:700;text-align:center">Pronto! Quer bater o ponto agora?</div>'+
+      '<button id="pfTrocaBate" style="'+PF_BTN+'background:#16a34a;width:100%;margin-top:10px">Bater o ponto agora</button>'+
+      '<button id="pfTrocaSoVim" style="'+PF_BTN+'background:#334155;width:100%;margin-top:8px">Não, só vim confirmar</button>';
+    document.getElementById('pfTrocaBate').onclick=function(){ ex.innerHTML=''; pfBater(pessoa, {semTroca:true}); };
+    document.getElementById('pfTrocaSoVim').onclick=fecharPontoFacial;
+    pfTrocaEspera(30000);
+    return;
+  }
+  var ps=String(t.solicitante_nome||'').split(' ')[0];
+  ex.innerHTML='<div style="margin-top:12px;color:#fff;font-size:21px;font-weight:700;text-align:center;background:#1e293b;border-radius:14px;padding:14px">🔁 '+esc(ps)+' trocou a folga com você:<br>'+
+    esc(pfTrocaDiaRot(t.dia_trabalha))+' '+esc(ps)+' trabalha no seu lugar e<br>'+esc(pfTrocaDiaRot(t.dia_devolve))+' você trabalha no lugar dele(a).</div>'+
+    '<button id="pfTrocaSim" style="'+PF_BTN+'background:#16a34a;width:100%;margin-top:10px">✓ Confirmo a troca</button>'+
+    '<button id="pfTrocaNao" style="'+PF_BTN+'background:#b91c1c;width:100%;margin-top:8px">✗ Não combinei</button>';
+  async function responde(aceita){
+    var r;
+    try {
+      r=await (await fetch('/api/ponto/troca/responder',{method:'POST',headers:{'content-type':'application/json'},
+        body:JSON.stringify({id:t.id, colega_id:pessoa.funcionario_id, aceita:aceita})})).json();
+    } catch(e){ r={ok:false,erro:'sem conexão com o servidor da loja'}; }
+    if (!r.ok && !/respondida/.test(r.erro||'')) { ex.innerHTML='<div style="color:#fecaca;font-size:19px;text-align:center;margin-top:12px">'+esc(r.erro||'erro')+'</div>'; pfTrocaEspera(8000); return; }
+    pfResMostra('ok', aceita?'✓':'✗', aceita?'Troca confirmada':'Troca recusada', aceita?'A escala dos dois muda':'O gerente vai ver', '', 2500);
+    pfTrocaResponder(pessoa, pend.slice(1));
+  }
+  document.getElementById('pfTrocaSim').onclick=function(){ this.disabled=true; responde(true); };
+  document.getElementById('pfTrocaNao').onclick=function(){ this.disabled=true; responde(false); };
 }
 function pfPerguntaIntervalo(r, pessoa){
   var ex=document.getElementById('pfExtra');
@@ -33062,6 +33308,9 @@ const server = http.createServer(async (req, res) => {
       // dar pra medir quem desiste e por quê (rosto ambíguo × longe do cadastro).
       if (req.method === 'POST' && p === '/api/ponto/facial-diag') { const b = await readBody(req); pontoFacialTempos(b && b.diag, { ok: false }); return res.end(JSON.stringify({ ok: true })); }
       if (req.method === 'POST' && p === '/api/ponto/anular') return res.end(JSON.stringify(await apiPontoAnular(await readBody(req))));
+      if (p === '/api/ponto/troca/opcoes') return res.end(JSON.stringify(await apiPontoTrocaOpcoes(u.searchParams.get('f'))));
+      if (req.method === 'POST' && p === '/api/ponto/troca/criar') return res.end(JSON.stringify(await apiPontoTrocaCriar(await readBody(req))));
+      if (req.method === 'POST' && p === '/api/ponto/troca/responder') return res.end(JSON.stringify(await apiPontoTrocaResponder(await readBody(req))));
       if (p === '/api/ponto/meu-dia') return res.end(JSON.stringify(await apiPontoMeuDia(u.searchParams.get('f'))));
       return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
     }
@@ -34118,6 +34367,8 @@ async function main() {
   setInterval(() => loopFaceSync().catch(() => {}), 60 * 1000);
   setTimeout(() => loopPontoAnular().catch(() => {}), 50 * 1000);
   setInterval(() => loopPontoAnular().catch(() => {}), 60 * 1000);
+  setTimeout(() => loopPontoTroca().catch(() => {}), 55 * 1000);
+  setInterval(() => loopPontoTroca().catch(() => {}), 60 * 1000);
   setTimeout(() => loopMarcasNuvem().catch(() => {}), 55 * 1000);
   setInterval(() => loopMarcasNuvem().catch(() => {}), 60 * 1000);
   setTimeout(() => loopProdutoFila().catch(() => {}), 50 * 1000);

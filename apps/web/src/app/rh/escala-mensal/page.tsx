@@ -16,6 +16,8 @@ import { EscalaGrade } from './grade';
 import { PendenciasEscalaAviso } from './pendencias';
 import { pendenciasEscala, type PendenciasEscala } from '@/lib/rh/escala-pendencias';
 import { atestadosNoPeriodo, diasDeAtestado } from '@/lib/rh/atestado';
+import { trocasFolgaRecentes, type TrocaFolga } from '@/lib/rh/troca-folga';
+import { somarDias } from '@/lib/rh/dia-operacional';
 
 export const dynamic = 'force-dynamic';
 
@@ -77,6 +79,12 @@ export default async function EscalaMensalPage(props: { searchParams: Promise<SP
     (atestados[fid] ??= []).push(dia);
   }
   const link = (m: string) => `?filialId=${filial.id}&mes=${m}`;
+  // Trocas de folga feitas no tablet (05/11/2026): extra — falhou, a tela sai sem.
+  const trocas = await trocasFolgaRecentes(filial.id, somarDias(hoje, -30)).catch((e): TrocaFolga[] => {
+    console.error('[escala-mensal] trocas:', e);
+    return [];
+  });
+  const dm = (d: string) => `${d.slice(8, 10)}/${d.slice(5, 7)}`;
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -142,6 +150,57 @@ export default async function EscalaMensalPage(props: { searchParams: Promise<SP
           podeEditar={podeEditar}
           atestados={atestados}
         />
+
+        <div className="mt-8 rounded-lg border border-slate-200 bg-white p-4 print:hidden">
+          <h2 className="text-lg font-semibold text-slate-900">🔁 Trocas de folga (tablet do ponto)</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            Quem foi barrado na entrada troca a folga com um colega no tablet (até 10 dias). A entrada já passa na hora;
+            o colega confirma no tablet quando bater o ponto. Confirmada, a escala dos dois muda sozinha aqui na grade.
+          </p>
+          {trocas.length === 0 ? (
+            <p className="mt-3 text-sm text-slate-500">Nenhuma troca nos últimos 30 dias.</p>
+          ) : (
+            <div className="mt-3 overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 text-left text-slate-500">
+                    <th className="py-2 pr-4">Pediu</th>
+                    <th className="py-2 pr-4">Trabalha no lugar de</th>
+                    <th className="py-2 pr-4">Dia que trabalha</th>
+                    <th className="py-2 pr-4">Dia que folga (colega cobre)</th>
+                    <th className="py-2 pr-4">Situação</th>
+                    <th className="py-2 pr-4">Feita em</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {trocas.map((t) => (
+                    <tr key={t.id} className="border-b border-slate-100">
+                      <td className="py-2 pr-4 font-medium text-slate-800">{t.solicitante}</td>
+                      <td className="py-2 pr-4 text-slate-700">{t.colega}</td>
+                      <td className="py-2 pr-4">{dm(t.diaTrabalha)}</td>
+                      <td className="py-2 pr-4">{dm(t.diaDevolve)}</td>
+                      <td className="py-2 pr-4">
+                        {t.status === 'confirmada' ? (
+                          <span className="rounded bg-green-100 px-2 py-0.5 text-green-800">
+                            ✓ confirmada{t.respondidaEm ? ` ${t.respondidaEm}` : ''}
+                            {t.escalaAplicada ? ' · escala mudada' : ''}
+                          </span>
+                        ) : t.status === 'recusada' ? (
+                          <span className="rounded bg-red-100 px-2 py-0.5 text-red-800">
+                            ✗ colega recusou{t.respondidaEm ? ` ${t.respondidaEm}` : ''}
+                          </span>
+                        ) : (
+                          <span className="rounded bg-amber-100 px-2 py-0.5 text-amber-800">⏳ esperando o colega</span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-4 text-slate-500">{t.criadaEm}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </section>
     </main>
   );
