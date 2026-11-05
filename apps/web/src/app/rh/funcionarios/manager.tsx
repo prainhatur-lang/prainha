@@ -4,6 +4,7 @@ import { useEffect, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import { hojeBr } from '@/lib/datas';
 import { normalizaBusca } from '@/lib/texto';
+import { EMPREGADORES } from '@/lib/rh/empregadores';
 
 interface Pagamento {
   papel: string;
@@ -814,6 +815,28 @@ function FuncionarioForm({
         {/* Registro em carteira: o que a folha do contador traz. A importação
             da folha preenche sozinha; aqui dá pra conferir e corrigir. */}
         <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">
+          {/* Escolher a empresa já cadastrada preenche nome e CNPJ de uma vez
+              (pedido do dono 05/11/2026). Os campos de digitar continuam. */}
+          <label className="col-span-2 text-xs text-slate-500 sm:col-span-3">
+            Escolher a empresa
+            <select
+              value={EMPREGADORES.find((x) => x.cnpj === cnpjRegistro.replace(/\D/g, ''))?.cnpj ?? ''}
+              onChange={(e) => {
+                const emp = EMPREGADORES.find((x) => x.cnpj === e.target.value);
+                if (!emp) return;
+                setEmpresaRegistro(emp.empresaRegistro);
+                setCnpjRegistro(fmtCnpj(emp.cnpj));
+              }}
+              className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm"
+            >
+              <option value="">— outra / digitar abaixo —</option>
+              {EMPREGADORES.map((x) => (
+                <option key={x.cnpj} value={x.cnpj}>
+                  {x.rotulo} · {fmtCnpj(x.cnpj)}
+                </option>
+              ))}
+            </select>
+          </label>
           <label className="col-span-2 text-xs text-slate-500">
             Empresa que registra
             <input

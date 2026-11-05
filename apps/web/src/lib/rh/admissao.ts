@@ -31,13 +31,8 @@ export const ADMISSAO_VALIDADE_DIAS = 15;
 export const LINK_BASE_ADMISSAO = 'https://app.prainhabar.com/op/admissao/';
 
 /** Quem pode registrar (CNPJ → nome que vai no cadastro, igual ao já usado). */
-export const EMPREGADORES: { cnpj: string; empresaRegistro: string; rotulo: string }[] = [
-  { cnpj: '33159574000166', empresaRegistro: 'PRAINHA TURISMO LTDA', rotulo: 'Prainha Turismo — Prainha Bar (0001-66)' },
-  { cnpj: '33159574000328', empresaRegistro: 'PRAINHA TURISMO LTDA', rotulo: 'Prainha Turismo — Prainha Mar (0003-28)' },
-  { cnpj: '33159574000247', empresaRegistro: 'PRAINHA TURISMO LTDA', rotulo: 'Prainha Turismo — Tabuará (0002-47)' },
-  { cnpj: '05486249000172', empresaRegistro: 'E.B.SERVICOS LTDA', rotulo: 'E.B. Serviços' },
-  { cnpj: '54228128000136', empresaRegistro: 'LELIS ATACADISTA E VAREJISTA DE ALIMENTO', rotulo: 'Lelis' },
-];
+import { EMPREGADORES } from './empregadores';
+export { EMPREGADORES };
 
 /** Endereço e razão do empregador: cadastro fiscal da casa com o CNPJ (E.B. fixo). */
 export async function empregadorDoCnpj(cnpj: string): Promise<Empregador> {
