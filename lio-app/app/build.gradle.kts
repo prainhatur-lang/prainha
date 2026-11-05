@@ -42,7 +42,10 @@ android {
     defaultConfig {
         // ID imutável depois do primeiro upload na Cielo Store — decidido junto
         // com o nome: o app é do PRODUTO (Concilia), o Prainha é a filial.
-        applicationId = "com.concilia.garcom"
+        // LIO_APP_ID (05/11/2026): a Cielo Store pública é um app NOVO no console e
+        // recusa "com.concilia.garcom" (já é do app privado das casas). O build da
+        // loja pública sai com LIO_APP_ID=com.conciliabr.garcom; sem a env, igual.
+        applicationId = System.getenv("LIO_APP_ID")?.takeIf { it.isNotBlank() } ?: "com.concilia.garcom"
         minSdk = 25
         targetSdk = 34
         // v1.0.0 — a venda do garçom NA maquininha: abrir mesa, lançar itens do
