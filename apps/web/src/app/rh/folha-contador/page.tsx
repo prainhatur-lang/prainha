@@ -4,8 +4,8 @@
 //
 // Só leitura. Os números entram pela importação dos PDFs
 // (`pnpm --filter @concilia/db importar:folha-contador`). É outra trilha de
-// pagamento, separada da folha semanal de equipe — nada aqui gera conta a
-// pagar. A casa é a do DEPARTAMENTO da folha, que pode não ser a casa do
+// pagamento, separada da folha semanal de equipe. Conta a pagar só pelo botão
+// "Lançar pagamentos da folha" (lancar-pagamentos.tsx, 05/11/2026). A casa é a do DEPARTAMENTO da folha, que pode não ser a casa do
 // cadastro da pessoa (a tela avisa).
 
 import { redirect } from 'next/navigation';
@@ -14,6 +14,7 @@ import { exigirPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { AppHeader } from '@/components/app-header';
+import { LancarPagamentosFolha } from './lancar-pagamentos';
 import { brl } from '@/lib/format';
 import { db, schema } from '@concilia/db';
 import { and, asc, desc, eq, ne, sql } from 'drizzle-orm';
@@ -238,6 +239,7 @@ export default async function FolhaContadorPage(props: { searchParams: Promise<S
           >
             🧮 Nossa folha × contador
           </a>
+          <LancarPagamentosFolha filialId={filial.id} comp={comp} />
         </div>
 
         <div className="mb-5 space-y-2">
