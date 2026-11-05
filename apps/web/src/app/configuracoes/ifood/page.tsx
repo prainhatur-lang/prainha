@@ -68,7 +68,7 @@ export default async function IfoodPage() {
         <h1 className="text-2xl font-semibold text-slate-900">iFood</h1>
         <p className="mt-1 text-sm text-slate-600">
           Credencial do iFood de cada casa. Ligada, a loja recebe o pedido direto no PDV
-          (cozinha, entrega e caixa). Desligada, quem recebe continua sendo o Consumer.
+          (cozinha, entrega e caixa). Desligada, quem recebe continua sendo o PDV antigo.
         </p>
         <IfoodClient filiais={dados} podeEditar={podeEditar} segredoOk={segredoConfigurado()} />
       </section>

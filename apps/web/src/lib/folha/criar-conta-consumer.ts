@@ -39,7 +39,7 @@ export async function criarComandosContaPagarConsumer(args: {
 }): Promise<WriteBackResult> {
   const avisos: string[] = [];
   if (!writeBackLigado()) {
-    return { comandos: 0, pulados: 0, avisos: ['write-back Consumer desligado (flag)'], ligado: false };
+    return { comandos: 0, pulados: 0, avisos: ['envio de contas pro PDV desligado (flag)'], ligado: false };
   }
 
   const { filialId, folhaId, lancamentos, categoriaPorTipo, dataVencimento, competencia, userId } =
@@ -105,7 +105,7 @@ export async function criarComandosContaPagarConsumer(args: {
     if (codForn == null || codCat == null) {
       pulados++;
       avisos.push(
-        `${l.pessoaNome}: lançamento ${l.tipo} não espelhado no Consumer (sem código de ${
+        `${l.pessoaNome}: lançamento ${l.tipo} não espelhado no PDV (sem código de ${
           codForn == null ? 'fornecedor' : 'categoria'
         }).`,
       );

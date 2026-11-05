@@ -302,7 +302,7 @@ export async function ConferirOutraCasa({
             </p>
             <p>
               {conta.dataPagamento ? `✓ baixada em ${formatDate(conta.dataPagamento)}` : '⚠ em aberto'} · origem{' '}
-              {conta.origem}
+              {conta.origem === 'CONSUMER' ? 'PDV' : conta.origem}
             </p>
             {conta.descricao && <p className="mt-1 text-slate-600">{conta.descricao}</p>}
             {extra?.observacao && <p className="text-slate-500">Obs.: {extra.observacao}</p>}

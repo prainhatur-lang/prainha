@@ -311,7 +311,7 @@ export function AbaPdv(p: Props) {
     return (
       <div className="rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-900">
         Este produto <b>só existe na nuvem</b> (insumo criado aqui) — não há cadastro no PDV pra mostrar
-        ou alterar. Produtos do Consumer aparecem com código do PDV.
+        ou alterar. Produtos importados do PDV aparecem com o código do PDV.
       </div>
     );
   }
@@ -358,7 +358,7 @@ export function AbaPdv(p: Props) {
           <span className="font-mono text-xs text-slate-400">cód {p.codigoExterno}</span>
         </div>
         <p className="mt-1 text-xs text-slate-500">
-          O Consumer é o dono deste cadastro. O que você mudar aqui vai pra loja e é aplicado lá dentro.
+          O PDV é o dono deste cadastro. O que você mudar aqui vai pra loja e é aplicado lá dentro.
         </p>
 
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -477,7 +477,7 @@ export function AbaPdv(p: Props) {
         <div className="border-b border-slate-200 px-5 py-3">
           <h2 className="text-sm font-semibold text-slate-900">Tamanhos e preços</h2>
           <p className="mt-1 text-xs text-slate-500">
-            No Consumer o preço de venda e a pausa são <b>por tamanho</b> — cada linha é um código de PDV.
+            No PDV o preço de venda e a pausa são <b>por tamanho</b> — cada linha é um código de PDV.
           </p>
         </div>
         {p.variantes.length === 0 ? (
@@ -556,7 +556,7 @@ export function AbaPdv(p: Props) {
         <div className="border-b border-slate-200 px-5 py-3">
           <h2 className="text-sm font-semibold text-slate-900">Insumos — ficha do PDV</h2>
           <p className="mt-1 text-xs text-slate-500">
-            É <b>esta</b> ficha que baixa estoque no Consumer ao vender — não a da aba
+            É <b>esta</b> ficha que baixa estoque no PDV ao vender — não a da aba
             &quot;Ficha técnica&quot;, que é a do Concilia. Só leitura por enquanto: mexer na
             composição por aqui, sem a conferência do PDV, é pedir divergência de estoque.
           </p>

@@ -207,7 +207,7 @@ export function ConfiguracaoForm({ filialId, filialNome, initial, categorias }: 
         {categorias.length === 0 && (
           <p className="mt-3 text-sm text-amber-700">
             Nenhuma categoria de folha encontrada nessa filial. Cadastre &quot;Comissão&quot;, &quot;Diaria&quot;,
-            &quot;Gratificação&quot; e &quot;Vale Transporte&quot; no plano de contas do Consumer.
+            &quot;Gratificação&quot; e &quot;Vale Transporte&quot; no plano de contas do PDV.
           </p>
         )}
       </section>

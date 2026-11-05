@@ -44,9 +44,9 @@ export default async function EditarContaPage(props: { params: Promise<{ id: str
             ← Voltar pra conta
           </Link>
           <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-            Essa conta tem origem <b>{conta.origem}</b> e não se edita aqui:{' '}
+            Essa conta tem origem <b>{conta.origem === 'CONSUMER' ? 'PDV' : conta.origem}</b> e não se edita aqui:{' '}
             {conta.origem === 'CONSUMER'
-              ? 'ela veio do PDV da loja — altere no Consumer (o sync sobrescreveria qualquer mudança feita na nuvem).'
+              ? 'ela veio do PDV da loja — altere lá (o sync sobrescreveria qualquer mudança feita na nuvem).'
               : conta.origem === 'FOLHA'
                 ? 'ela foi gerada pelo fechamento da folha (snapshot imutável) — reabra a folha pra mexer.'
                 : 'ela nasceu de uma nota fiscal — gerencie pela nota de origem.'}

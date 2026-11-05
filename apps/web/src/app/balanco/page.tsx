@@ -398,7 +398,7 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
                       {velho ? ' · a loja parou de mandar?' : ''}
                       {' · '}
                       {linha.length} foto{linha.length === 1 ? '' : 's'} no dia
-                      {d?.fonte ? ` · ${d.fonte === 'local' ? 'PDV próprio' : 'Consumer'}` : ''}
+                      {d?.fonte ? ` · ${d.fonte === 'local' ? 'PDV próprio' : 'PDV externo'}` : ''}
                       {ultimo.versao ? ` · v${ultimo.versao}` : ''}
                     </span>
                   ) : (

@@ -571,7 +571,7 @@ export default async function ProdutoDetalhePage(props: {
               )}
               {produto.codigoExterno && (
                 <span className="text-slate-400">
-                  Consumer #{produto.codigoExterno}
+                  PDV #{produto.codigoExterno}
                 </span>
               )}
               {produto.criadoNaNuvem && (

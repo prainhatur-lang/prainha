@@ -180,7 +180,7 @@ export function IndicadoresCalculados({
           nota={
             <>
               Contas a pagar em aberto (sem borderô) pelo vencimento; a receber = cartão previsto + delivery em aberto.
-              {fluxo.pagarVencidoAntigo > 0 && ` Há ainda ${brl(fluxo.pagarVencidoAntigo)} vencidos há mais de 90 dias (quase tudo resto antigo do Consumer).`}
+              {fluxo.pagarVencidoAntigo > 0 && ` Há ainda ${brl(fluxo.pagarVencidoAntigo)} vencidos há mais de 90 dias (quase tudo resto antigo do PDV anterior).`}
             </>
           }
         >

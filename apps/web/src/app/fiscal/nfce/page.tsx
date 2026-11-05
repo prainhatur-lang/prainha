@@ -317,7 +317,7 @@ export default async function NfcePage({
         {/* ---- visão do contador: cobertura pedido × nota ---- */}
         <h2 className="mt-10 text-lg font-bold text-slate-900">Cobertura fiscal (14 dias)</h2>
         <p className="mt-0.5 text-xs text-slate-500">
-          Pedidos fechados no PDV × notas emitidas (pelo Concilia ou pelo Consumer). "Sem nota"
+          Pedidos fechados no PDV × notas emitidas (pelo Concilia ou pelo PDV externo). "Sem nota"
           inclui o que estiver na fila de reenvio da loja até a nota sair.
         </p>
         <div className="mt-3 overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
@@ -329,7 +329,7 @@ export default async function NfcePage({
                 <th className="px-3 py-2 text-right font-medium text-slate-700">Pedidos</th>
                 <th className="px-3 py-2 text-right font-medium text-slate-700">Vendido</th>
                 <th className="px-3 py-2 text-right font-medium text-slate-700">Nota Concilia</th>
-                <th className="px-3 py-2 text-right font-medium text-slate-700">Nota Consumer</th>
+                <th className="px-3 py-2 text-right font-medium text-slate-700">Nota PDV externo</th>
                 <th className="px-3 py-2 text-right font-medium text-slate-700">Sem nota</th>
                 <th className="px-3 py-2 text-right font-medium text-slate-700">R$ sem nota</th>
               </tr>

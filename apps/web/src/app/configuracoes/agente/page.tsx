@@ -100,7 +100,7 @@ export default async function AgentePage() {
       <main className="mx-auto max-w-5xl px-4 py-8">
         <h1 className="mb-2 text-2xl font-bold">Agente local</h1>
         <p className="mb-6 text-sm text-gray-600">
-          Sincroniza dados do Consumer Rede (Firebird) com o concilia. Roda como
+          Sincroniza os dados do PDV da loja (Firebird) com o concilia. Roda como
           serviço Windows em cada filial. Versão atual:{' '}
           <strong>v{VERSAO_RELEASE}</strong>.
         </p>
@@ -205,7 +205,7 @@ export default async function AgentePage() {
               streaming (sem precisar salvar arquivo intermediário)
             </li>
             <li>
-              O instalador detecta o caminho do banco do Consumer
+              O instalador detecta o caminho do banco do PDV
               (consumer.fdb), gera config.json sem BOM, instala como serviço
               Windows via NSSM e valida no log
             </li>

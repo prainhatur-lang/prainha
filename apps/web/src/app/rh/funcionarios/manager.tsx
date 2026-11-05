@@ -1387,7 +1387,7 @@ function VincularClienteModal({
             <div className="rounded-md border border-amber-200 bg-amber-50 p-4 text-sm">
               <p className="mb-2 font-semibold text-amber-800">Nenhum cliente encontrado.</p>
               <p className="text-xs text-amber-700">
-                Pode ser que o cliente exista no Consumer mas o agente ainda não tenha sincronizado.
+                Pode ser que o cliente exista no PDV mas o agente ainda não tenha sincronizado.
               </p>
               <button
                 type="button"
@@ -1398,7 +1398,7 @@ function VincularClienteModal({
                 ➕ Criar cliente &quot;{nome}&quot; com CPF {fmtCpf(cpf)} e vincular
               </button>
               <p className="mt-2 text-xs text-amber-700">
-                Nasce na nuvem e a loja recebe o comando pra criar no Consumer; quando o agente sincronizar, casa por CPF.
+                Nasce na nuvem e a loja recebe o comando pra criar no PDV; quando o agente sincronizar, casa por CPF.
               </p>
             </div>
           )}

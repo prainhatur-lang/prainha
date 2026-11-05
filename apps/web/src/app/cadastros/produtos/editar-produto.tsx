@@ -188,7 +188,7 @@ export function EditarProdutoButton({ produto }: { produto: Produto }) {
               </h2>
               {!produto.criadoNaNuvem && (
                 <p className="mt-0.5 text-xs text-slate-500">
-                  Nome, preço e código vêm do Consumer — não são editáveis aqui.
+                  Nome, preço e código vêm do PDV — não são editáveis aqui.
                 </p>
               )}
             </div>

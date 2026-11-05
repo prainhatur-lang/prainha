@@ -226,7 +226,7 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
               <>
                 <AcoesConta contaId={conta.id} descricao={conta.descricao ?? 'sem histórico'} soExcluir />
                 <span className="max-w-56 text-right text-[10px] leading-4 text-slate-400">
-                  Previsão do Consumer (a loja não usa mais o Consumer). Já foi paga em outro
+                  Previsão importada do PDV antigo (a loja não usa mais esse PDV). Já foi paga em outro
                   lançamento? Exclua com o motivo. Pagou esta mesma? Registre o pagamento abaixo.
                 </span>
               </>
@@ -236,7 +236,7 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
                 title="Só conta lançada manualmente na nuvem tem Alterar/Excluir aqui"
               >
                 {conta.origem === 'CONSUMER'
-                  ? 'conta do PDV — altera/exclui no Consumer da loja'
+                  ? 'conta do PDV — altera/exclui no PDV da loja'
                   : conta.origem === 'FOLHA'
                     ? 'gerada pela folha — reabra a folha pra mexer'
                     : 'nascida de NFe — gerencie pela nota de origem'}
@@ -292,7 +292,7 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
           <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
             <p><span className="text-slate-400">Lançada em:</span> {lancamento}</p>
             <p><span className="text-slate-400">Competência:</span> {conta.competencia ?? '—'}</p>
-            <p><span className="text-slate-400">Origem:</span> {conta.origem}</p>
+            <p><span className="text-slate-400">Origem:</span> {conta.origem === 'CONSUMER' ? 'PDV' : conta.origem}</p>
             <p>
               <span className="text-slate-400">Pagamento:</span>{' '}
               {conta.dataPagamento ? formatDate(conta.dataPagamento) : '—'}
@@ -305,7 +305,7 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
             ) : conta.criadoEm ? (
               'caixa da loja (ver observação)'
             ) : consumer ? (
-              'veio do Consumer'
+              'veio do PDV'
             ) : (
               'sem registro — conta anterior a 13/10/2026'
             )}
@@ -370,17 +370,17 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
 
           {consumer && !consumerAqui ? (
             <p className="mt-3 rounded bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
-              Conta do Consumer: a baixa é feita no PDV da loja e sincroniza sozinha.
+              Conta do PDV: a baixa é feita no PDV da loja e sincroniza sozinha.
             </p>
           ) : pagaNoConsumer ? (
             <p className="mt-3 rounded bg-emerald-50 px-3 py-2 text-[11px] text-emerald-700">
-              Conta paga no Consumer da loja.
+              Conta paga no PDV da loja.
             </p>
           ) : saldo > 0.005 ? (
             <>
               {consumerAqui && (
                 <p className="mt-3 rounded bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
-                  Conta que veio do Consumer. A loja não usa mais o Consumer, então a baixa é feita aqui.
+                  Conta que veio do PDV antigo. A loja não usa mais esse PDV, então a baixa é feita aqui.
                 </p>
               )}
               <BaixaForm contaId={conta.id} saldo={saldo} vencimento={conta.dataVencimento} />

@@ -831,8 +831,8 @@ function DestinoWhatsapp({
         </div>
       )}
       {!fixo && doConsumer && (
-        <div className="text-[10px] text-amber-700" title="Número veio do cadastro do Consumer (costuma ser o telefone da empresa). Cadastre o vendedor pra garantir.">
-          fone do Consumer
+        <div className="text-[10px] text-amber-700" title="Número veio do cadastro importado do PDV (costuma ser o telefone da empresa). Cadastre o vendedor pra garantir.">
+          fone do cadastro
         </div>
       )}
     </div>

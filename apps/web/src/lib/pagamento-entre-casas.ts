@@ -269,7 +269,7 @@ export async function lancarPagamentoManualEntreCasas(opts: {
   let baixar = opts.darBaixa && saldo > 0.005;
   if (baixar && c.origem === 'CONSUMER') {
     if (!(await consumerParado(c.filialId))) {
-      throw new RecusaTransf('conta do Consumer: a baixa é feita no PDV — desmarque "dar baixa" pra só lançar no encontro');
+      throw new RecusaTransf('conta do PDV: a baixa é feita no PDV da loja — desmarque "dar baixa" pra só lançar no encontro');
     }
     if (c.dataPagamento && baixasDaqui.length === 0) baixar = false; // o Consumer já pagou
   }

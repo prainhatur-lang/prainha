@@ -455,7 +455,7 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
                 </p>
                 {tp.qtdProvisoesAbertas > 0 && (
                   <p>
-                    Nas contas sem pagar há {brl(tp.provisoesAbertas)} de provisão do Consumer ({int(tp.qtdProvisoesAbertas)}), valor estimado.
+                    Nas contas sem pagar há {brl(tp.provisoesAbertas)} de provisão do PDV ({int(tp.qtdProvisoesAbertas)}), valor estimado.
                   </p>
                 )}
                 {deOutrosMeses > 0.004 && (
@@ -519,7 +519,7 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
                 </p>
                 {tp.qtdProvisoesAbertas > 0 && (
                   <p>
-                    Dentro do em aberto há {brl(tp.provisoesAbertas)} de provisão do Consumer ({int(tp.qtdProvisoesAbertas)}) sem conta de
+                    Dentro do em aberto há {brl(tp.provisoesAbertas)} de provisão do PDV ({int(tp.qtdProvisoesAbertas)}) sem conta de
                     verdade lançada no mês — valor estimado, confira na lista.
                   </p>
                 )}
@@ -527,7 +527,7 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
                   <p>
                     Não entra:
                     {tp.qtdProvisoesCobertas > 0 && (
-                      <> provisão do Consumer que já tem a conta de verdade no mês {brl(tp.provisoesCobertas)} ({int(tp.qtdProvisoesCobertas)})</>
+                      <> provisão do PDV que já tem a conta de verdade no mês {brl(tp.provisoesCobertas)} ({int(tp.qtdProvisoesCobertas)})</>
                     )}
                     {tp.qtdProvisoesCobertas > 0 && tp.qtdEncontro > 0 && ' ·'}
                     {tp.qtdEncontro > 0 && (

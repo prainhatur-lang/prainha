@@ -279,7 +279,7 @@ export function LojaIfoodClient({ podeAgir, podeHorario }: { podeAgir: boolean; 
 
           {!c.ativo && (
             <p className="mt-2 text-xs text-slate-500">
-              A integração desta casa está <b>desligada</b> no Concilia — quem recebe os pedidos é o Consumer.
+              A integração desta casa está <b>desligada</b> no Concilia — quem recebe os pedidos é o PDV antigo.
             </p>
           )}
 

@@ -720,7 +720,7 @@ function Linha({ r, hist, fiado, membro, podeAtualizar, podeExcluir = false, mos
               </span>
             )}
             {r.bebidaLancamentoStatus === 'aguardando' && (
-              <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-semibold text-sky-700" title="Aguardando a mesa abrir no Consumer pra lançar sozinho">
+              <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-semibold text-sky-700" title="Aguardando a mesa abrir no PDV pra lançar sozinho">
                 ⏳ lançando na comanda...
               </span>
             )}

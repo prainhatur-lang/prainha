@@ -60,13 +60,13 @@ async function carregarConta(id: string, userId: string) {
       .limit(1);
     if (conta.dataPagamento && !daqui) {
       return {
-        erro: NextResponse.json({ error: 'conta já paga no Consumer da loja' }, { status: 400 }),
+        erro: NextResponse.json({ error: 'conta já paga no PDV da loja' }, { status: 400 }),
       };
     }
   } else if (conta.origem === 'CONSUMER') {
     return {
       erro: NextResponse.json(
-        { error: 'conta do Consumer: a baixa é feita no PDV e sincroniza sozinha' },
+        { error: 'conta do PDV: a baixa é feita no PDV da loja e sincroniza sozinha' },
         { status: 400 },
       ),
     };

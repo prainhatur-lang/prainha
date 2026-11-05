@@ -143,7 +143,7 @@ export function ConferenciaBox({ id, podeEditar }: { id: string; podeEditar: boo
         <div className="mt-4">
           {comandas.length === 0 ? (
             <p className="text-sm text-slate-500">
-              Nenhuma comanda fechada no PDV no dia do evento (o sync do Consumer pode levar até o
+              Nenhuma comanda fechada no PDV no dia do evento (o sync do PDV pode levar até o
               dia seguinte).
             </p>
           ) : (

@@ -70,7 +70,7 @@ export default async function NovaContaPage(props: {
       <div className="mx-auto max-w-3xl px-6 py-6">
         <h1 className="text-xl font-semibold text-slate-900">Nova conta a pagar</h1>
         <p className="mt-0.5 text-xs text-slate-500">
-          Lançamento manual na nuvem (não passa pelo Consumer). Pagamento parcial é
+          Lançamento manual na nuvem (não passa pelo PDV). Pagamento parcial é
           registrado depois, na página da conta.
         </p>
         <NovaContaForm

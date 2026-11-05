@@ -443,7 +443,7 @@ export default async function ClientesPage(props: { searchParams: Promise<SP> })
         )}
 
         <p className="mt-4 text-xs text-slate-400">
-          Unifica o cadastro do PDV (Consumer), as reservas do concilia e os contatos
+          Unifica o cadastro do PDV, as reservas do concilia e os contatos
           importados (Tagme), casando pelo telefone.
         </p>
       </section>

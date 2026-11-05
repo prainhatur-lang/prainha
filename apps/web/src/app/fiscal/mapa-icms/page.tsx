@@ -431,7 +431,7 @@ export default async function MapaIcmsPage({
               &quot;a&quot;) e dependem do Cadastur e do parecer anual da EMSETUR.
             </li>
             <li>
-              <b>Base tributada</b> é a nota sem o acréscimo de serviço (os 10%), menos a parte dos itens com ST. Nas notas do Consumer a ST vem do CFOP do item (5405); nas do Concilia, do NCM (lista acima).
+              <b>Base tributada</b> é a nota sem o acréscimo de serviço (os 10%), menos a parte dos itens com ST. Nas notas do PDV externo a ST vem do CFOP do item (5405); nas do Concilia, do NCM (lista acima).
             </li>
             <li>
               <b>Falta</b>: notas de entrada que a SEFAZ entregou só como resumo, sem os itens. Estão em Compras, mas

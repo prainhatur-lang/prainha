@@ -591,7 +591,7 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                     Das {int(abertas.length)} em aberto, {int(abertas.length - lote.length)} ficam
                     fora do botão de baixar todas:
                     {foraLote.consumer > 0 &&
-                      ` ${int(foraLote.consumer)} do Consumer (a baixa é no PDV);`}
+                      ` ${int(foraLote.consumer)} do PDV (a baixa é lá);`}
                     {foraLote.outraCasa > 0 &&
                       ` ${int(foraLote.outraCasa)} de outra casa (baixe pela linha);`}
                     {foraLote.conferir > 0 &&
@@ -814,7 +814,7 @@ export default async function BoletosInterPage(props: { searchParams: Promise<SP
                               )}
                               {situacao === 'aberta' && baixaNoPdv(conta) && (
                                 <span className="ml-1.5 text-[10px] text-slate-500">
-                                  conta do Consumer, baixa no PDV
+                                  conta do PDV, baixa no PDV
                                 </span>
                               )}
                             </td>

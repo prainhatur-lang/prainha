@@ -242,7 +242,7 @@ export function PagaOutraCasa({
             </label>
           ) : (
             <p className="mt-2 text-[11px] text-slate-500">
-              Só lança no encontro: a conta já está paga ou a baixa dela é no Consumer.
+              Só lança no encontro: a conta já está paga ou a baixa dela é no PDV.
             </p>
           )}
           <div className="mt-2 flex items-center gap-2">

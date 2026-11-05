@@ -192,7 +192,7 @@ export function FormNovoProduto({
         {erro && <span className="text-sm text-rose-700">{erro}</span>}
       </div>
       <p className="text-[11px] text-slate-400">
-        O produto entra no cardápio da loja em até 5 minutos, sem passar pelo Consumer.
+        O produto entra no cardápio da loja em até 5 minutos.
       </p>
     </div>
   );

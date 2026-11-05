@@ -903,7 +903,7 @@ export const MENU_AREAS: MenuArea[] = [
             label: 'Sincronização com o servidor da loja',
             href: '/sync',
             perm: 'configuracao.read',
-            aka: ['Sincronização dos agentes', 'agente', 'Consumer'],
+            aka: ['Sincronização dos agentes', 'agente'],
           },
         ],
       },

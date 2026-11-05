@@ -131,7 +131,7 @@ export default async function VendedoresPage(props: { searchParams: Promise<SP> 
         <div className="mb-4">
           <h1 className="text-xl font-semibold text-slate-900">Vendedores</h1>
           <p className="mt-0.5 text-xs text-slate-500">
-            O WhatsApp mora aqui, na pessoa — não no cadastro da empresa, que o Consumer
+            O WhatsApp mora aqui, na pessoa — não no cadastro da empresa, que o PDV
             sobrescreve a cada sincronização. Um vendedor atende vários fornecedores; um
             fornecedor pode ter vários vendedores.
           </p>

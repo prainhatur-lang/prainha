@@ -170,7 +170,8 @@ export function FormCadastro({ origem, zap, plano, demo }: { origem: string; zap
           <>
         <p className="mt-2 text-[#3d4a58]">
           Seu teste com <b>todos os módulos</b> vai até <b>{fim}</b>, sem pagar nada. A loja{' '}
-          <b>{f.nomeFantasia}</b> e o seu acesso chegam no WhatsApp {f.whatsapp} e no e-mail {f.email}.
+          <b>{f.nomeFantasia}</b> está sendo preparada: nossa equipe chama você no WhatsApp {f.whatsapp} pra
+          entregar o acesso e ajudar a começar.
         </p>
         <p className="mt-2 text-[#3d4a58]">
           No fim do teste, se quiser continuar, a mensalidade é paga por Pix. Se não quiser, não precisa fazer nada.

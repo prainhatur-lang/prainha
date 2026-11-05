@@ -189,9 +189,9 @@ export default async function CategorizarPage(props: { searchParams: Promise<SP>
       <AppHeader userEmail={user.email} />
       <div className="mx-auto max-w-6xl px-6 py-6">
         <div className="mb-4">
-          <h1 className="text-xl font-semibold text-slate-900">Categorizar produtos do Consumer</h1>
+          <h1 className="text-xl font-semibold text-slate-900">Categorizar produtos do PDV</h1>
           <p className="mt-0.5 text-xs text-slate-500">
-            Atribua <code>categoria_compras</code> aos insumos/produtos sincronizados do Consumer
+            Atribua <code>categoria_compras</code> aos insumos/produtos sincronizados do PDV
             pra eles entrarem no fluxo de cotação. Replica automaticamente em filiais irmãs (por
             nome).
           </p>

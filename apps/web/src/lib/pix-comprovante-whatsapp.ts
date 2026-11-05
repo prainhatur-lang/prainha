@@ -298,7 +298,7 @@ export const ROTULO_ORIGEM: Record<string, string> = {
   fone_whatsapp: 'WhatsApp do cadastro',
   funcionario: 'telefone do funcionário (RH)',
   vendedor: 'WhatsApp do vendedor',
-  fone_principal: 'telefone do Consumer',
+  fone_principal: 'telefone do cadastro da empresa',
   outra_casa: 'WhatsApp do cadastro em outra casa',
   chave_pix: 'chave Pix é o celular dele',
 };

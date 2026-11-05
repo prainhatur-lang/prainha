@@ -123,7 +123,7 @@ export function CardapioIfoodClient({
             <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
               <b>{dados.comProblema} {dados.comProblema === 1 ? 'item' : 'itens'} com código de PDV que não casa.</b>{' '}
               Pedido desses itens entra no Concilia mas não vira prato na cozinha. Corrija o código
-              no Portal do Parceiro (ou cadastre o produto no Consumer).
+              no Portal do Parceiro (ou cadastre o produto no PDV).
             </div>
           )}
 

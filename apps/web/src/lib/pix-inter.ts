@@ -450,7 +450,7 @@ export async function baixarPorPix(opts: { userId: string; itens: Array<{ pixId:
     if (c.dataPagamento) { recusa('a conta já está paga'); continue; }
     if (!contaCabeNoPix(pix, c)) { recusa('o saldo da conta não bate com o Pix (ou o vencimento está longe demais)'); continue; }
     if (c.origem === 'CONSUMER' && !(await consumerParado(c.filialId))) {
-      recusa('conta do Consumer: a baixa é feita no PDV');
+      recusa('conta do PDV: a baixa é feita no PDV da loja');
       continue;
     }
 
@@ -579,7 +579,7 @@ export async function pagarVariasPorPix(userId: string, pixId: string, contaIds:
   for (const c of contas) {
     if (c.filialId !== pix.filialId) throw new RecusaTransf('todas as contas têm que ser da casa do Pix');
     if (!c.dataPagamento && c.origem === 'CONSUMER' && !(await consumerParado(c.filialId))) {
-      throw new RecusaTransf(`conta do Consumer (${c.fornecedorNome ?? c.descricao}): a baixa é feita no PDV`);
+      throw new RecusaTransf(`conta do PDV (${c.fornecedorNome ?? c.descricao}): a baixa é feita no PDV da loja`);
     }
   }
   // baixas sem Pix das contas já pagas

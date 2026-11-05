@@ -33,7 +33,7 @@ export function IfoodClient({
       )}
       <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-600">
         O iFood aceita <b>uma integradora por loja</b>. No dia em que você liga uma casa aqui, o
-        Consumer para de receber os pedidos dela — e eles deixam de existir no Firebird.
+        PDV antigo para de receber os pedidos dela.
       </div>
       {filiais.map((f) => (
         <CardFilial key={f.id} filial={f} podeEditar={podeEditar && segredoOk} />
@@ -98,7 +98,7 @@ function CardFilial({ filial, podeEditar }: { filial: FilialIfood; podeEditar: b
   // A chavinha é a ação com consequência: liga/desliga o recebimento daquela
   // casa. Salva na hora, sem depender de a pessoa lembrar de apertar Salvar.
   async function virarChave(novo: boolean) {
-    if (novo && !confirm(`Ligar o iFood de ${filial.nome}?\n\nA partir daí os pedidos chegam pelo Concilia e o Consumer para de recebê-los.`)) return;
+    if (novo && !confirm(`Ligar o iFood de ${filial.nome}?\n\nA partir daí os pedidos chegam pelo Concilia e o PDV antigo para de recebê-los.`)) return;
     setAtivo(novo);
     const ok = await salvar({ ativo: novo ? '1' : '0' });
     if (!ok) setAtivo(!novo);
@@ -221,7 +221,7 @@ function CardFilial({ filial, podeEditar }: { filial: FilialIfood; podeEditar: b
           </select>
           <span className="mt-1 block text-xs text-slate-500">
             O cardápio da Prainha usa o código do <b>produto</b>. Os dois códigos se sobrepõem no
-            Consumer, então errar aqui manda o prato errado pra cozinha — o item sempre sai
+            PDV, então errar aqui manda o prato errado pra cozinha — o item sempre sai
             conferido pelo nome.
           </span>
         </label>

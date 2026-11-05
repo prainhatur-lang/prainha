@@ -331,7 +331,7 @@ export function CategorizarForm({
                       {p.criadoNaNuvem
                         ? 'criado-na-nuvem'
                         : p.codigoExterno
-                          ? `Consumer #${p.codigoExterno}`
+                          ? `PDV #${p.codigoExterno}`
                           : '—'}
                     </td>
                     <td className="px-3 py-1.5">

@@ -107,7 +107,7 @@ export async function PATCH(
   if (nome !== undefined) {
     if (!prod.criadoNaNuvem) {
       return NextResponse.json(
-        { error: 'nome de produto do Consumer nao pode ser editado aqui' },
+        { error: 'nome de produto do PDV nao pode ser editado aqui' },
         { status: 400 },
       );
     }

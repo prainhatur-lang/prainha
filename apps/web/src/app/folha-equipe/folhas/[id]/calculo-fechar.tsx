@@ -168,7 +168,7 @@ export function CalculoFechar({
   async function baixarFiadosNoConsumer() {
     if (
       !confirm(
-        'Vai criar comandos pro agente ZERAR o saldo de fiado dos garçons no Consumer Rede.\n\n' +
+        'Vai criar comandos pro agente ZERAR o saldo de fiado dos garçons no PDV.\n\n' +
           'Use isso depois de aplicar os fiados como desconto na folha — pra que próxima semana ' +
           'o saldo comece do zero.\n\nContinuar?',
       )
@@ -871,7 +871,7 @@ export function CalculoFechar({
               return (
                 <div className="mt-6">
                   <h3 className="mb-2 text-sm font-semibold text-slate-900">
-                    🤖 Fiado (consumo a compensar no Consumer)
+                    🤖 Fiado (consumo a compensar no PDV)
                   </h3>
                   <table className="w-full text-sm">
                     <thead className="bg-slate-50 text-xs">
@@ -895,7 +895,7 @@ export function CalculoFechar({
                           <td className="px-2 py-1.5 text-xs">
                             {l.vaiBaixar ? (
                               <span className="text-emerald-700">
-                                ✓ cobrado na folha — zera no Consumer
+                                ✓ cobrado na folha — zera no PDV
                               </span>
                             ) : (
                               <span className="text-amber-700">
@@ -918,8 +918,8 @@ export function CalculoFechar({
                     </tbody>
                   </table>
                   <p className="mt-1 text-[11px] text-slate-400">
-                    &ldquo;Vai baixar&rdquo; = valor que o agente credita no CONTACORRENTE do
-                    Consumer ao fechar. O que fica em aberto não é zerado.
+                    &ldquo;Vai baixar&rdquo; = valor que o agente credita na conta corrente do
+                    PDV ao fechar. O que fica em aberto não é zerado.
                   </p>
                 </div>
               );

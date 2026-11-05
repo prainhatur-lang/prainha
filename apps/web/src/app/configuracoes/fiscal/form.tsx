@@ -369,7 +369,7 @@ export function FiscalForm({
 
       <div>
         <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-          Padrão fiscal dos itens (quando o produto no Consumer não tem NCM/CFOP)
+          Padrão fiscal dos itens (quando o produto não tem NCM/CFOP)
         </h4>
         <div className="grid grid-cols-3 gap-3 sm:w-2/3">
           <Campo label="NCM" valor={p?.ncm ?? '21069090'} onChange={(v) => setPadrao({ ncm: v })} mono />
@@ -377,7 +377,7 @@ export function FiscalForm({
           <Campo label="CSOSN" valor={p?.csosn ?? '102'} onChange={(v) => setPadrao({ csosn: v })} mono />
         </div>
         <p className="mt-1 text-[11px] text-slate-500">
-          Produto com CFOP 5405 no Consumer (bebida com ICMS-ST) sai automaticamente com CSOSN 500.
+          Produto com CFOP 5405 no cadastro (bebida com ICMS-ST) sai automaticamente com CSOSN 500.
         </p>
       </div>
 

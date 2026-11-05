@@ -69,7 +69,7 @@ async function carregarContaManual(id: string, userId: string, paraExcluir = fal
   } else if (conta.origem !== 'MANUAL') {
     const motivo =
       conta.origem === 'CONSUMER'
-        ? 'conta do Consumer: altere no PDV da loja (o sync sobrescreveria)'
+        ? 'conta do PDV: altere no PDV da loja (o sync sobrescreveria)'
         : conta.origem === 'FOLHA'
           ? 'conta gerada pelo fechamento da folha: reabra a folha pra mexer'
           : 'conta nascida de nota fiscal: gerencie pela nota de origem';

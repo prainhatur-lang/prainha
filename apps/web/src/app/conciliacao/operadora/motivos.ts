@@ -27,9 +27,9 @@ export const MOTIVO_LABEL: Record<Motivo, string> = {
 };
 
 export const MOTIVO_DESCRICAO: Record<Motivo, string> = {
-  FORA_DO_TEF: 'Pagamento standalone na maquininha sem integração com Consumer (TEF caiu, garçom passou cartão direto).',
+  FORA_DO_TEF: 'Pagamento standalone na maquininha sem integração com o PDV (TEF caiu, garçom passou cartão direto).',
   FORMA_ERRADA_GARCOM: 'Garçom marcou forma errada no PDV (ex: "Pix Manual" mas passou na maquininha Cielo, "Crédito" mas era Débito). Casa por valor próximo no canal correto.',
-  VENDA_DA_CASA: 'Venda direta sem fechamento de pedido no Consumer (cortesia, ajuste manual).',
+  VENDA_DA_CASA: 'Venda direta sem fechamento de pedido no PDV (cortesia, ajuste manual).',
   GORJETA: 'Cielo recebeu valor maior por gorjeta agregada que não foi lançada como pagamento separado no PDV.',
   DESCONTO_OU_AJUSTE: 'PDV registrou valor diferente da Cielo por desconto/ajuste manual aplicado em uma das pontas.',
   ESTORNO: 'Transação estornada após captura. PDV cancelou ou Cielo desfez.',

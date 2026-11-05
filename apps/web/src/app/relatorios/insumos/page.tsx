@@ -175,7 +175,7 @@ export default async function RelatorioInsumosPage(props: { searchParams: Promis
         <div className="mb-4">
           <h1 className="text-xl font-semibold text-slate-900">Insumos mais utilizados</h1>
           <p className="mt-0.5 text-xs text-slate-500">
-            {filial.nome} · consumo calculado por vendas × ficha técnica do Consumer · custo pela
+            {filial.nome} · consumo calculado por vendas × ficha técnica do PDV · custo pela
             última nota fiscal de compra vinculada
           </p>
         </div>
@@ -256,7 +256,7 @@ export default async function RelatorioInsumosPage(props: { searchParams: Promis
         {pctFicha < 100 && (
           <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900">
             <strong>Atenção à cobertura:</strong> {100 - pctFicha}% dos itens vendidos no período
-            não têm ficha técnica no Consumer — o consumo de insumos deles não aparece aqui. A
+            não têm ficha técnica no PDV — o consumo de insumos deles não aparece aqui. A
             lista "campeões sem ficha" abaixo é a ordem sugerida de cadastro.
           </div>
         )}
@@ -358,7 +358,7 @@ export default async function RelatorioInsumosPage(props: { searchParams: Promis
               Campeões de venda SEM ficha técnica
             </h2>
             <p className="mb-3 text-[11px] text-slate-500">
-              O consumo de insumos destes itens está invisível. Cadastrar a ficha deles no Consumer
+              O consumo de insumos destes itens está invisível. Cadastrar a ficha deles no PDV
               (nesta ordem) é o que mais aumenta a cobertura do relatório.
             </p>
             <table className="w-full text-xs">

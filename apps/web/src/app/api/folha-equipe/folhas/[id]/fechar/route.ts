@@ -185,7 +185,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     if (wb.ligado && wb.avisos.length) resultado.avisos.push(...wb.avisos);
   } catch (e) {
     resultado.avisos.push(
-      `Folha fechada OK, mas write-back Consumer falhou: ${(e as Error).message}.`,
+      `Folha fechada OK, mas o envio das contas pro PDV falhou: ${(e as Error).message}.`,
     );
   }
 

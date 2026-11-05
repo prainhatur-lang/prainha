@@ -50,7 +50,7 @@ export default async function NovoProdutoPage(props: {
         </nav>
         <h1 className="mt-2 text-2xl font-bold text-slate-900">Novo produto de venda</h1>
         <p className="mt-1 text-sm text-slate-600">
-          Nasce no nosso banco e vai pro cardápio da loja direto — não passa pelo Consumer.
+          Nasce no nosso banco e vai pro cardápio da loja direto.
         </p>
 
         {filiais.length > 1 && (

@@ -134,7 +134,7 @@ export function ConverterUnidadeButton({
                 <br />
                 Custo: R$ {fmt(custo)} por un → <strong>R$ {fmt(custo / f, 4)} por ml</strong>
                 <br />
-                Fichas: dose do Consumer é em litro (0,06 → 60 ml); 1 ou {fmt(f / 1000, 3)} →{' '}
+                Fichas: dose do PDV é em litro (0,06 → 60 ml); 1 ou {fmt(f / 1000, 3)} →{' '}
                 {fmt(f, 0)} ml (a {embalagem || 'garrafa'} inteira). Histórico, mínimo,
                 fornecedores e embalagens também.
               </div>

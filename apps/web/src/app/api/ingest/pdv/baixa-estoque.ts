@@ -284,7 +284,7 @@ async function reverterMovimentos(
       dataHora: new Date(),
       pedidoItemId,
       movimentoPaiId: m.id,
-      observacao: 'Estorno automatico: pedido_item deletado no Consumer',
+      observacao: 'Estorno automatico: item excluído no PDV',
     });
     await db
       .update(schema.produto)

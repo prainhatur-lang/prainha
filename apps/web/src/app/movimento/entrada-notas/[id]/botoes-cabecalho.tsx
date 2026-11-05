@@ -824,7 +824,7 @@ function ModalLancar({
             )}
             {opcoesCategoria.length === 0 && (
               <p className="mt-1 text-[10px] text-amber-700">
-                Nenhuma categoria DESPESA. Sincronize o plano de contas do Consumer.
+                Nenhuma categoria DESPESA. Sincronize o plano de contas do PDV.
               </p>
             )}
           </div>
