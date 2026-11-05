@@ -533,6 +533,9 @@ function FuncionarioForm({
   const [bonusDia, setBonusDia] = useState(pg?.bonusPorDia ?? '');
   const [dezPctCasas, setDezPctCasas] = useState<number>(pg?.dezPctCasas ?? 1);
   const [diaristaAte, setDiaristaAte] = useState(pg?.diaristaAte ?? '');
+  // Quem está em várias casas: a data de registro vale pra todas (marcado).
+  const [diaristaAteTodas, setDiaristaAteTodas] = useState(true);
+  const temOutrasCasas = (funcionario?.acordosOutrasLojas.length ?? 0) > 0 || filiaisExtras.length > 0;
   const [chavePix, setChavePix] = useState(contaIni?.chavePix ?? '');
   const [bancoNome, setBancoNome] = useState(contaIni?.bancoNome ?? '');
   const [bancoAgencia, setBancoAgencia] = useState(contaIni?.bancoAgencia ?? '');
@@ -639,6 +642,9 @@ function FuncionarioForm({
               // Idem: só manda quando preencheu ou já tinha.
               ...(diaristaAte || pg?.diaristaAte
                 ? { diaristaAte: papel === 'funcionario' && diaristaAte ? diaristaAte : null }
+                : {}),
+              ...((diaristaAte || pg?.diaristaAte) && temOutrasCasas && diaristaAteTodas
+                ? { diaristaAteTodasCasas: true }
                 : {}),
               tambemCliente,
               formaPagamento,
@@ -977,6 +983,25 @@ function FuncionarioForm({
                   className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm font-mono"
                 />
               </label>
+              {papel === 'diarista' && (
+                <label
+                  className="text-xs text-slate-500"
+                  title="Foi registrado? Ponha o último dia como diarista: esta casa passa a Funcionário e os dias até esta data (inclusive) continuam saindo como diária na folha. Os dias depois, só o 10%."
+                >
+                  Registrado? Diarista até
+                  <input
+                    type="date"
+                    value=""
+                    onChange={(e) => {
+                      if (!e.target.value) return;
+                      setDiaristaAte(e.target.value);
+                      setPapel('funcionario');
+                    }}
+                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                  />
+                  <span className="mt-0.5 block text-[11px] text-slate-400">preencher passa pra Funcionário</span>
+                </label>
+              )}
               {papel === 'funcionario' && (
                 <label
                   className="text-xs text-slate-500"
@@ -989,6 +1014,16 @@ function FuncionarioForm({
                     onChange={(e) => setDiaristaAte(e.target.value)}
                     className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
                   />
+                  {temOutrasCasas && (diaristaAte || pg?.diaristaAte) && (
+                    <span className="mt-1 flex items-center gap-1 text-[11px] text-slate-500">
+                      <input
+                        type="checkbox"
+                        checked={diaristaAteTodas}
+                        onChange={(e) => setDiaristaAteTodas(e.target.checked)}
+                      />
+                      mesma data nas outras casas dele
+                    </span>
+                  )}
                 </label>
               )}
               <label

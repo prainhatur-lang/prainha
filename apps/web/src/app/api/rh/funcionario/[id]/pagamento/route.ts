@@ -39,6 +39,10 @@ const Body = z.object({
   /** Funcionário registrado no meio da semana: dias até esta data
    *  (YYYY-MM-DD, inclusive) pagam diária. null = limpa. Ausente = não mexe. */
   diaristaAte: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  /** true = grava o mesmo "diarista até" nas outras casas da pessoa (mesmo
+   *  CPF, na folha de lá); quem lá é diarista passa a funcionário. Gerente
+   *  continua gerente. Ausente/false = só esta casa (como antes). */
+  diaristaAteTodasCasas: z.boolean().optional(),
   /** false = sai da folha semanal DESTA loja (mantém histórico/ajustes). */
   ativo: z.boolean().optional(),
   /** marcar a pessoa também como cliente (consumo/fiado) — escolha de quem cadastra */
@@ -256,8 +260,38 @@ export async function PUT(req: Request, ctx: { params: Promise<{ id: string }> }
     contaRepassada = repassados.length;
   }
 
+  // Registro no meio da semana vale pra pessoa, não pra casa: quem circula
+  // pelas casas (Roberto, 05/11/2026) recebe a mesma data em todas de uma vez.
+  let diaristaAteRepassado = 0;
+  if (b.diaristaAteTodasCasas && b.diaristaAte !== undefined && cpfDigitos.length === 11) {
+    const repassados = await db
+      .update(schema.fornecedorFolha)
+      .set({
+        diaristaAte: b.diaristaAte,
+        ...(b.diaristaAte
+          ? { papel: sql`case when ${schema.fornecedorFolha.papel} = 'diarista' then 'funcionario' else ${schema.fornecedorFolha.papel} end` }
+          : {}),
+        atualizadoEm: new Date(),
+      })
+      .where(
+        and(
+          eq(schema.fornecedorFolha.ativo, true),
+          sql`${schema.fornecedorFolha.fornecedorId} in (
+            select f.id from fornecedor f
+            where f.filial_id <> ${filialId}
+              and f.data_delete is null
+              and regexp_replace(coalesce(f.cnpj_ou_cpf, ''), '[^0-9]', '', 'g') = ${cpfDigitos}
+              and f.filial_id in (select uf.filial_id from usuario_filial uf where uf.usuario_id = ${user.id})
+          )`,
+        ),
+      )
+      .returning({ id: schema.fornecedorFolha.fornecedorId });
+    diaristaAteRepassado = repassados.length;
+  }
+
   return NextResponse.json({
     ok: true,
+    diaristaAteRepassado,
     filialId,
     fornecedorId,
     clienteId: papeis.clienteId,
