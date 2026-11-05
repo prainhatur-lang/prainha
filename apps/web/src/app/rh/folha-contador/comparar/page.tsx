@@ -11,6 +11,7 @@ import { escolherFilial } from '@/lib/filial-ativa';
 import { brl } from '@/lib/format';
 import { hojeBr } from '@/lib/datas';
 import { AppHeader } from '@/components/app-header';
+import { LancarPagamentosFolha } from '../lancar-pagamentos';
 import { comRegimeDoMes } from '@/lib/rh/regime-no-mes';
 import { calcularFolhaMensal, type FolhaCalc, type RegimeFolha } from '@/lib/rh/folha-mensal';
 import { ajudaCustoPorCpf, horasDoMesPorCpf, salarioFamiliaPorCpf } from '@/lib/rh/folha-mensal-dados';
@@ -245,6 +246,8 @@ export default async function CompararFolhaPage(props: { searchParams: Promise<S
             </div>
           ))}
         </div>
+
+        <LancarPagamentosFolha filialId={filial.id} comp={comp} />
 
         {!compsContador.includes(comp) && (
           <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">

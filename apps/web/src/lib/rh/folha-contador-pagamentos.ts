@@ -1,7 +1,8 @@
-// Pagamentos da folha do contador → contas a pagar (pedido do dono 05/11/2026:
-// "Sim, fazer o botão").
+// Pagamentos da folha → contas a pagar (pedido do dono 05/11/2026: "Sim, fazer
+// o botão"; mesmo dia: "vamos lançar pela nossa folha do sistema").
 //
-// Pro mês e pra casa que paga, a folha do contador (folha_contador) vira conta:
+// Pro mês e pra casa, a folha calculada pelo sistema (lib/rh/nossa-folha.ts,
+// funcionários com cadastro na casa) vira conta, pela empresa de registro:
 //   - E.B. Serviços: UMA conta "Repasse E.B. — Folha MM/AAAA" com a soma dos
 //     líquidos da casa, favorecido E.B. (a casa faz um Pix pra E.B., que paga
 //     as pessoas — igual à rescisão).
@@ -18,6 +19,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq, ilike, inArray, isNull, sql } from 'drizzle-orm';
 import { EB_CNPJ } from '@/lib/eb/faturas';
 import { LELIS_CNPJ, fornecedorPagadorNaCasa } from '@/lib/impostos/guia';
+import { nossaFolhaDoMes } from '@/lib/rh/nossa-folha';
 
 export interface ItemPagamentoFolha {
   ref: string;
@@ -63,49 +65,30 @@ export function quintoDiaUtil(comp: string): string {
   return `${ano}-${String(mes).padStart(2, '0')}-05`;
 }
 
-/** O que a casa tem pra pagar da folha do contador daquele mês. */
+/** O que a casa tem pra pagar da NOSSA folha (calculada pelo sistema) daquele mês. */
 export async function pagamentosDaFolha(casaFilialId: string, comp: string): Promise<ItemPagamentoFolha[]> {
-  const fc = schema.folhaContador;
-  const f = schema.funcionario;
-  const linhas = await db
-    .select({
-      filialId: fc.filialId,
-      empresa: fc.empresa,
-      cnpj: fc.cnpj,
-      nome: fc.nome,
-      cpf: fc.cpf,
-      liquido: fc.liquido,
-      funcionarioId: fc.funcionarioId,
-      funcFilialId: f.filialId,
-      funcFornecedorId: f.fornecedorId,
-    })
-    .from(fc)
-    .leftJoin(f, eq(f.id, fc.funcionarioId))
-    .where(eq(fc.competencia, comp));
-
   const [casa] = await db
-    .select({ cnpj: schema.filial.cnpj })
+    .select({ cnpj: schema.filial.cnpj, nome: schema.filial.nome })
     .from(schema.filial)
     .where(eq(schema.filial.id, casaFilialId))
     .limit(1);
   const casaCnpj = digitos(casa?.cnpj);
+  const linhas = await nossaFolhaDoMes(casaFilialId, comp);
 
   const itens = new Map<string, ItemPagamentoFolha>();
   for (const l of linhas) {
-    const cnpj = digitos(l.cnpj);
-    const liquido = Number(l.liquido ?? 0);
+    // sem empresa de registro = a própria casa paga
+    const cnpj = digitos(l.cnpjRegistro) || casaCnpj;
+    const empresa = l.empresaRegistro || casa?.nome || '';
+    const liquido = l.liquido;
     if (!(liquido > 0)) continue;
     const pessoa = { nome: l.nome, cpf: l.cpf, liquido };
+    const refPessoa = `fc:${comp}:${cnpj}:${digitos(l.cpf) || l.nome}`.slice(0, 50);
     if (cnpj === LELIS_CNPJ) {
-      // folha da Lelis: desde 10/2026 fica na filial Lelis e quem faz o Pix é a
-      // casa do cadastro; antes vinha com o departamento já na casa
-      const pagadora = l.filialId === casaFilialId ? casaFilialId : l.funcFilialId;
-      if (pagadora !== casaFilialId) continue;
-      const ref = `fc:${comp}:${cnpj}:${digitos(l.cpf) || l.nome}`.slice(0, 50);
-      itens.set(ref, {
-        ref,
+      itens.set(refPessoa, {
+        ref: refPessoa,
         casaFilialId,
-        empresa: l.empresa,
+        empresa,
         cnpj,
         tipo: 'repasse_lelis',
         descricao: `Repasse Lelis — Folha ${mmAaaa(comp)} — ${l.nome}`,
@@ -117,13 +100,12 @@ export async function pagamentosDaFolha(casaFilialId: string, comp: string): Pro
       });
       continue;
     }
-    if (l.filialId !== casaFilialId) continue;
     if (cnpj === EB_CNPJ) {
       const ref = `fc:${comp}:${cnpj}`;
       const it = itens.get(ref) ?? {
         ref,
         casaFilialId,
-        empresa: l.empresa,
+        empresa,
         cnpj,
         tipo: 'repasse_eb' as const,
         descricao: `Repasse E.B. — Folha ${mmAaaa(comp)}`,
@@ -139,11 +121,10 @@ export async function pagamentosDaFolha(casaFilialId: string, comp: string): Pro
       continue;
     }
     if (cnpj === casaCnpj) {
-      const ref = `fc:${comp}:${cnpj}:${digitos(l.cpf) || l.nome}`.slice(0, 50);
-      itens.set(ref, {
-        ref,
+      itens.set(refPessoa, {
+        ref: refPessoa,
         casaFilialId,
-        empresa: l.empresa,
+        empresa,
         cnpj,
         tipo: 'direto',
         descricao: `Salário ${mmAaaa(comp)} — ${l.nome}`,
@@ -151,7 +132,7 @@ export async function pagamentosDaFolha(casaFilialId: string, comp: string): Pro
         valor: liquido,
         jaLancadaId: null,
         pareceLancada: null,
-        semFavorecido: l.funcFornecedorId ? [] : [l.nome],
+        semFavorecido: l.fornecedorId ? [] : [l.nome],
       });
     }
     // outra empresa que não é E.B./Lelis/da casa: fica fora (não tem regra de quem paga)
@@ -261,7 +242,7 @@ export async function lancarPagamentosDaFolha(p: {
         dataVencimento: p.vencimento,
         valor: i.valor.toFixed(2),
         descricao: i.descricao,
-        observacao: `Folha do contador ${mmAaaa(p.comp)} — ${i.empresa} (líquido do extrato mensal). ${comoPagar}\n${linhasPessoas}`,
+        observacao: `Folha do sistema ${mmAaaa(p.comp)} — ${i.empresa} (líquido calculado pelo ponto + salário do cadastro). ${comoPagar}\n${linhasPessoas}`,
         competencia: p.comp,
         codigoReferencia: i.ref,
         origem: 'FOLHA',

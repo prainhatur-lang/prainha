@@ -25,6 +25,8 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
   const [itens, setItens] = useState<Item[] | null>(null);
   const [marcados, setMarcados] = useState<Set<string>>(new Set());
   const [venc, setVenc] = useState('');
+  const [semSalario, setSemSalario] = useState<string[]>([]);
+  const [previa, setPrevia] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [erro, setErro] = useState<string | null>(null);
 
@@ -37,6 +39,8 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
       if (!r.ok) throw new Error(j.error ?? 'erro');
       setItens(j.itens);
       setVenc(j.vencimento);
+      setSemSalario(j.semSalario ?? []);
+      setPrevia(!!j.previa);
       setMarcados(new Set((j.itens as Item[]).filter((i) => !i.jaLancadaId && !i.pareceLancada).map((i) => i.ref)));
     } catch (e) {
       setErro(e instanceof Error ? e.message : 'erro');
@@ -93,8 +97,16 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
         </button>
       </div>
       <p className="mb-3 text-xs text-slate-500">
-        Líquido do extrato do contador. E.B.: uma conta de repasse pra E.B. (ela paga as pessoas). Lelis: repasse por pessoa. Empresa da própria casa: uma conta por funcionário.
+        Líquido da nossa folha (ponto + salário do cadastro), o mesmo do imprimir. E.B.: uma conta de repasse pra E.B. (ela paga as pessoas). Lelis: repasse por pessoa. Empresa da própria casa: uma conta por funcionário.
       </p>
+      {previa && (
+        <p className="mb-2 rounded bg-amber-50 px-2 py-1 text-xs text-amber-800">Mês ainda não fechou: dá pra ver, mas só lança depois do dia 1º do mês seguinte.</p>
+      )}
+      {semSalario.length > 0 && (
+        <p className="mb-2 rounded bg-amber-50 px-2 py-1 text-xs text-amber-800">
+          Fora da folha por falta de salário/valor da hora no cadastro: {semSalario.join(', ')}. Acerte o cadastro antes de lançar.
+        </p>
+      )}
       {carregando && !itens && <p className="text-xs text-slate-500">Carregando…</p>}
       {itens && itens.length === 0 && <p className="text-xs text-slate-500">Nada pra lançar nesta casa neste mês.</p>}
       {itens && itens.length > 0 && (
@@ -149,7 +161,7 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
             </span>
             <button
               type="button"
-              disabled={carregando || !marcados.size || !venc}
+              disabled={carregando || previa || !marcados.size || !venc}
               onClick={() => void lancar()}
               className="ml-auto rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
             >

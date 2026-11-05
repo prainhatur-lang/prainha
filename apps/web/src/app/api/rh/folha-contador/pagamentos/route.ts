@@ -1,4 +1,4 @@
-// Pagamentos da folha do contador → contas a pagar (05/11/2026). Regra em
+// Pagamentos da folha (do sistema: ponto + salário do cadastro) → contas a pagar (05/11/2026). Regra em
 // lib/rh/folha-contador-pagamentos.ts.
 // GET  ?filialId&comp → o que a casa tem pra lançar (simulação, não grava)
 // POST { filialId, comp, refs[], vencimento } → cria as contas (pula as já lançadas)
@@ -8,6 +8,8 @@ import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { exigirPermApi, negarSemPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { hojeBr } from '@/lib/datas';
+import { semSalarioNoMes } from '@/lib/rh/nossa-folha';
 import { lancarPagamentosDaFolha, pagamentosDaFolha, quintoDiaUtil } from '@/lib/rh/folha-contador-pagamentos';
 
 export const dynamic = 'force-dynamic';
@@ -28,8 +30,8 @@ export async function GET(req: Request) {
   const comp = url.searchParams.get('comp') ?? '';
   if (!COMP.test(comp) || !filialId) return NextResponse.json({ error: 'dados inválidos' }, { status: 400 });
   if (!(await podeCasa(auth.user.id, filialId))) return NextResponse.json({ error: 'sem acesso à casa' }, { status: 403 });
-  const itens = await pagamentosDaFolha(filialId, comp);
-  return NextResponse.json({ itens, vencimento: quintoDiaUtil(comp) });
+  const [itens, semSalario] = await Promise.all([pagamentosDaFolha(filialId, comp), semSalarioNoMes(filialId, comp)]);
+  return NextResponse.json({ itens, semSalario, vencimento: quintoDiaUtil(comp), previa: comp >= hojeBr().slice(0, 7) });
 }
 
 const Body = z.object({
@@ -47,6 +49,7 @@ export async function POST(req: Request) {
   const parsed = Body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: 'dados inválidos' }, { status: 400 });
   const d = parsed.data;
+  if (d.comp >= hojeBr().slice(0, 7)) return NextResponse.json({ error: 'mês ainda não fechou: a folha é prévia' }, { status: 400 });
   if (!(await podeCasa(auth.user.id, d.filialId))) return NextResponse.json({ error: 'sem acesso à casa' }, { status: 403 });
   const r = await lancarPagamentosDaFolha({ casaFilialId: d.filialId, comp: d.comp, refs: d.refs, vencimento: d.vencimento, usuarioId: auth.user.id });
   return NextResponse.json(r);
