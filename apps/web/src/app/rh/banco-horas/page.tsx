@@ -268,8 +268,10 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
         if (t.semIntervalo) semIntervaloDias++;
       }
       if (dia < inicio) continue;
-      if (t) trabalhadoNaContaMin += t.min;
       const j = jornadaNoDia(vigencias, dia);
+      // Dia em que a jornada era intermitente (ex.: virou CLT no meio do caminho)
+      // foi pago por hora: não entra no banco (05/11/2026, caso Antonio Ferreira).
+      if (t && j?.tipo !== 'intermitente') trabalhadoNaContaMin += t.min;
       const prev = j
         ? minutosPrevistos(j, dia)
         : escalaFixa && escalaMes!.get(dia) === false
