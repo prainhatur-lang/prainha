@@ -402,7 +402,13 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
       l.origem === 'BORDERO' ||
       (ehNota
         ? !l.temBoleto && notaAVistaPix(o?.nf_pagamento ?? null, o?.nf_dups ?? 0)
-        : (semNota && !l.temBoleto) || (!boleto && (l.origem === 'MANUAL' || temChave)));
+        : (semNota && !l.temBoleto) ||
+          // Recibo/foto de pedido (05/11/2026, Vidromax da Mar sem chave): é
+          // Pix como o "Pedido sem nota" — entra pra cadastrar a chave e pagar.
+          // NFS-e em PDF (Preshh) segue de fora.
+          ((o?.nota_origem === 'PEDIDO_FOTO' || /^recibo de servi/i.test(descricao)) &&
+            !l.temBoleto && !boleto) ||
+          (!boleto && (l.origem === 'MANUAL' || temChave)));
     if (!ehPix && !verTodas) {
       escondidas += 1;
       continue;
