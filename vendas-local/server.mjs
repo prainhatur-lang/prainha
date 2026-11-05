@@ -21257,6 +21257,7 @@ function pixStatus() {
   const diag = PIX_PROVEDOR === 'cielo'
     ? { merchant_id: fmt(c?.id), merchant_key: fmt(c?.key) }
     : { chave: interCred()?.chave ? 'ok' : 'ausente' };
+  if (PIX_PROVEDOR === 'sicredi') return { disponivel: !!sicrediCred(), provedor: 'sicredi', diag: sicrediDiag() };
   if (PIX_PROVEDOR === 'cielo') return { disponivel: !!c, provedor: 'cielo', diag };
   return { disponivel: PIX_PROVEDOR === 'inter' && !!interCred(), provedor: PIX_PROVEDOR, diag };
 }
@@ -21340,6 +21341,136 @@ async function interToken(c) {
   tokenPix = { valor: r.data.access_token, expira: Date.now() + (Number(r.data.expires_in || 300) - 30) * 1000 };
   return tokenPix.valor;
 }
+// ---- PIX SICREDI (provedor 'sicredi') — decisão do dono 05/11/2026 ----
+// A casa passa a receber Pix na Sicredi. API Pix padrão BACEN (cob imediata),
+// igual à do Inter: mTLS com o certificado que a Sicredi emite + token OAuth
+// client_credentials (na Sicredi o client_id/secret vai em Basic, não no corpo).
+// Liga com PIX_PROVEDOR=sicredi no start.bat + as envs abaixo. Sem elas nada
+// muda (Cielo/Inter seguem como estão).
+//   SICREDI_CLIENT_ID / SICREDI_CLIENT_SECRET — do portal da Sicredi
+//   SICREDI_CHAVE      — chave Pix da conta da casa
+//   SICREDI_CERT / SICREDI_KEY — CAMINHO dos arquivos (.cer/.pem e .key) na
+//     pasta do servidor; ou SICREDI_CERT_B64 / SICREDI_KEY_B64 com o conteúdo
+//   SICREDI_CA (opcional) — cadeia da Sicredi, se o certificado deles pedir
+//   SICREDI_HOST (padrão api-pix.sicredi.com.br; homologação api-pix-h.sicredi.com.br)
+//   SICREDI_COB_PATH (padrão /api/v2/cob) e SICREDI_TOKEN_PATH (padrão /oauth/token)
+const SICREDI_HOST = process.env.SICREDI_HOST || 'api-pix.sicredi.com.br';
+const SICREDI_COB_PATH = (process.env.SICREDI_COB_PATH || '/api/v2/cob').replace(/\/$/, '');
+const SICREDI_TOKEN_PATH = process.env.SICREDI_TOKEN_PATH || '/oauth/token';
+/** Certificado: aceita PEM ou o .cer binário (DER) que o portal costuma
+ *  entregar — o Node só entende PEM, então o DER é embrulhado aqui. */
+function sicrediArquivo(caminho, b64, tipo) {
+  let buf = null;
+  try {
+    if (caminho) buf = readFileSync(path.isAbsolute(caminho) ? caminho : path.join(path.dirname(fileURLToPath(import.meta.url)), caminho));
+    else if (b64) buf = Buffer.from(b64, 'base64');
+  } catch { return null; }
+  if (!buf || !buf.length) return null;
+  const txt = buf.toString('latin1');
+  if (txt.includes('-----BEGIN')) return buf;
+  if (tipo !== 'CERTIFICATE') return buf; // chave sem cabeçalho: deixa o Node reclamar com o erro dele
+  const corpo = buf.toString('base64').match(/.{1,64}/g).join('\n');
+  return Buffer.from('-----BEGIN CERTIFICATE-----\n' + corpo + '\n-----END CERTIFICATE-----\n');
+}
+let sicrediCache = null;
+function sicrediCred() {
+  if (sicrediCache) return sicrediCache;
+  const id = process.env.SICREDI_CLIENT_ID, secret = process.env.SICREDI_CLIENT_SECRET, chave = process.env.SICREDI_CHAVE;
+  const cert = sicrediArquivo(process.env.SICREDI_CERT, process.env.SICREDI_CERT_B64, 'CERTIFICATE');
+  const key = sicrediArquivo(process.env.SICREDI_KEY, process.env.SICREDI_KEY_B64, 'KEY');
+  const ca = sicrediArquivo(process.env.SICREDI_CA, process.env.SICREDI_CA_B64, 'CERTIFICATE');
+  if (!(id && secret && chave && cert && key)) return null;
+  sicrediCache = { id, secret, chave, cert, key, ca };
+  return sicrediCache;
+}
+/** O que falta pra ligar — aparece no /api/pix/status pra conferir de longe. */
+function sicrediDiag() {
+  const tem = (v) => (v ? 'ok' : 'ausente');
+  return {
+    host: SICREDI_HOST,
+    client_id: tem(process.env.SICREDI_CLIENT_ID), client_secret: tem(process.env.SICREDI_CLIENT_SECRET),
+    chave: tem(process.env.SICREDI_CHAVE),
+    certificado: sicrediArquivo(process.env.SICREDI_CERT, process.env.SICREDI_CERT_B64, 'CERTIFICATE') ? 'ok' : 'ausente/ilegível',
+    chave_privada: sicrediArquivo(process.env.SICREDI_KEY, process.env.SICREDI_KEY_B64, 'KEY') ? 'ok' : 'ausente/ilegível',
+  };
+}
+function sicrediAgent(c) {
+  return new https.Agent({ cert: c.cert, key: c.key, ...(c.ca ? { ca: [...tls.rootCertificates, c.ca.toString()] } : {}), keepAlive: false });
+}
+function sicrediReq(c, { method, path: caminho, body, token, form, basic }) {
+  const dados = form != null ? form : body ? JSON.stringify(body) : null;
+  return new Promise((ok) => {
+    const headers = { accept: 'application/json' };
+    if (token) headers.authorization = 'Bearer ' + token;
+    if (basic) headers.authorization = 'Basic ' + Buffer.from(c.id + ':' + c.secret).toString('base64');
+    if (dados != null) {
+      headers['content-type'] = form != null ? 'application/x-www-form-urlencoded' : 'application/json';
+      headers['content-length'] = Buffer.byteLength(dados);
+    }
+    const [host, porta] = SICREDI_HOST.split(':');
+    const r = https.request({ hostname: host, ...(porta ? { port: Number(porta) } : {}), path: caminho, method, agent: sicrediAgent(c), headers, timeout: 15000 }, (res) => {
+      let d = ''; res.on('data', (x) => (d += x));
+      res.on('end', () => { try { ok({ status: res.statusCode, data: d ? JSON.parse(d) : null }); }
+        catch { ok({ status: res.statusCode, data: null, raw: d.slice(0, 300) }); } });
+    });
+    r.on('timeout', () => { r.destroy(); ok({ status: 0, data: null, raw: 'timeout' }); });
+    r.on('error', (e) => ok({ status: 0, data: null, raw: e.message }));
+    if (dados != null) r.write(dados);
+    r.end();
+  });
+}
+let tokenSicredi = { valor: null, expira: 0 };
+async function sicrediToken(c) {
+  if (tokenSicredi.valor && tokenSicredi.expira > Date.now()) return tokenSicredi.valor;
+  const escopo = 'cob.write cob.read';
+  const q = new URLSearchParams({ grant_type: 'client_credentials', scope: escopo }).toString();
+  // grant/scope vão na URL E no corpo: a Sicredi já foi vista aceitando os dois
+  // jeitos, e mandar nos dois não atrapalha nenhum.
+  const r = await sicrediReq(c, { method: 'POST', path: SICREDI_TOKEN_PATH + '?' + q, form: q, basic: true });
+  if (r.status !== 200 || !r.data?.access_token) {
+    throw new Error('Sicredi recusou o token: ' + (r.data?.error_description || r.data?.detail || r.data?.error || r.raw || 'HTTP ' + r.status));
+  }
+  tokenSicredi = { valor: r.data.access_token, expira: Date.now() + (Number(r.data.expires_in || 300) - 30) * 1000 };
+  return tokenSicredi.valor;
+}
+async function sicrediPixCriar(nMesa, valor, rotulo) {
+  const c = sicrediCred();
+  if (!c) return { ok: false, erro: 'Pix Sicredi sem credencial nesta casa' };
+  let token;
+  try { token = await sicrediToken(c); } catch (e) { return { ok: false, erro: e.message }; }
+  // txid BACEN: 26 a 35 caracteres [a-zA-Z0-9]
+  const base = ('PRAINHA' + (nMesa == null ? 'K' : nMesa) + Date.now().toString(36) + randomBytes(8).toString('hex')).replace(/[^A-Za-z0-9]/g, '');
+  const txid = base.slice(0, 35);
+  const r = await sicrediReq(c, { method: 'PUT', path: SICREDI_COB_PATH + '/' + txid, token, body: {
+    calendario: { expiracao: 1800 },
+    valor: { original: valor.toFixed(2) },
+    chave: c.chave,
+    solicitacaoPagador: ((rotulo || 'Mesa ' + nMesa) + ' - ' + LOJA_NOME).slice(0, 140),
+  } });
+  if (r.status === 401) tokenSicredi = { valor: null, expira: 0 };
+  if (r.status !== 201 && r.status !== 200) {
+    return { ok: false, erro: 'Sicredi recusou a cobrança: ' + (r.data?.detail || r.data?.title || r.raw || 'HTTP ' + r.status) };
+  }
+  const copia = r.data?.pixCopiaECola || null;
+  if (!copia) return { ok: false, erro: 'Sicredi não devolveu o código Pix (copia e cola)' };
+  return { ok: true, txid, copia };
+}
+async function sicrediPixStatus(txid) {
+  const c = sicrediCred();
+  if (!c) return { ok: false, erro: 'Pix Sicredi sem credencial nesta casa' };
+  let token;
+  try { token = await sicrediToken(c); } catch (e) { return { ok: false, erro: e.message }; }
+  const r = await sicrediReq(c, { method: 'GET', path: SICREDI_COB_PATH + '/' + encodeURIComponent(txid), token });
+  if (r.status === 401) tokenSicredi = { valor: null, expira: 0 };
+  if (r.status !== 200) return { ok: false, erro: 'consulta na Sicredi falhou: HTTP ' + r.status };
+  const st = r.data?.status || '?';
+  if (st !== 'CONCLUIDA') return { ok: true, pago: false, status: st };
+  // Confere o VALOR que entrou — cob concluída com valor menor não fecha conta.
+  const pix = Array.isArray(r.data?.pix) ? r.data.pix : [];
+  const recebido = pix.reduce((s, p) => s + Number(p.valor || 0), 0);
+  return { ok: true, pago: true, status: st, e2e: pix[0]?.endToEndId || null, recebido };
+}
+
 /** Cobrança imediata (cob) — o cliente paga e a gente confere por polling. */
 /** Quanto cobrar: o cliente pode pagar SÓ A PARTE DELE e escolher a gorjeta.
  *  O teto é sempre o que falta pagar — ninguém paga a mais por engano, e
@@ -21389,6 +21520,13 @@ async function pixCriarCobranca({ valor, mesa = null, rotulo = null, origem = nu
     if (!r.ok) return r;
     await sql`INSERT INTO pix_cobranca (txid, mesa, valor, copia_cola, provedor, origem, pedido_fb)
       VALUES (${r.txid}, ${nMesa}, ${valor}, ${r.copia}, 'cielo', ${origem}, ${nPed}) ON CONFLICT (txid) DO NOTHING`;
+    return { ok: true, txid: r.txid, copia: r.copia };
+  }
+  if (PIX_PROVEDOR === 'sicredi') {
+    const r = await sicrediPixCriar(nMesa, valor, rotulo);
+    if (!r.ok) return r;
+    await sql`INSERT INTO pix_cobranca (txid, mesa, valor, copia_cola, provedor, origem, pedido_fb)
+      VALUES (${r.txid}, ${nMesa}, ${valor}, ${r.copia}, 'sicredi', ${origem}, ${nPed}) ON CONFLICT (txid) DO NOTHING`;
     return { ok: true, txid: r.txid, copia: r.copia };
   }
   const c = interCred();
@@ -22907,6 +23045,16 @@ async function apiPixConferir(txid) {
     if (!s.ok) return s;
     if (!s.pago) return { ok: true, pago: false, status: s.status };
     pago = true; e2e = s.e2e; autorizacao = s.nsu;
+  } else if (cob.provedor === 'sicredi') {
+    // Sicredi: não tem NSU — vai o E2E, igual ao Inter. Só baixa se entrou o
+    // valor inteiro da cobrança (centavo de folga pra arredondamento).
+    const s = await sicrediPixStatus(String(txid));
+    if (!s.ok) return s;
+    if (!s.pago) return { ok: true, pago: false, status: s.status };
+    if (s.recebido > 0 && s.recebido + 0.01 < Number(cob.valor)) {
+      return { ok: false, erro: 'Sicredi diz que entrou R$ ' + s.recebido.toFixed(2) + ' e a cobrança é de R$ ' + Number(cob.valor).toFixed(2) + ' — confira no extrato antes de baixar' };
+    }
+    pago = true; e2e = s.e2e; autorizacao = e2e;
   } else {
     const c = interCred();
     if (!c) return { ok: false, erro: 'Pix não habilitado' };
