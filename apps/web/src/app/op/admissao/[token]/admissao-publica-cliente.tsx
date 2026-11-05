@@ -7,6 +7,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
+import { abrirCameraFrontal, carregarImagem, pararStream, useCameraLigada } from '@/lib/camera-celular';
 
 const FACELIB = '/agente-release/facelib/';
 
@@ -172,6 +173,7 @@ export function AdmissaoPublicaCliente({ token }: { token: string }) {
   const stream = useRef<MediaStream | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pRef = useRef<Pessoais>({});
+  const camera = useCameraLigada(fase === 'camera', video, stream);
 
   const post = useCallback(
     async (corpo: Record<string, unknown>) => {
@@ -272,18 +274,10 @@ export function AdmissaoPublicaCliente({ token }: { token: string }) {
     setAviso(null);
     carregarMotor().catch(() => {});
     try {
-      const s = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
-        audio: false,
-      });
-      stream.current = s;
+      pararStream(stream.current);
+      stream.current = await abrirCameraFrontal();
+      // o vídeo liga no useCameraLigada, depois do <video> montado (iPhone ficava preto)
       setFase('camera');
-      requestAnimationFrame(() => {
-        if (video.current) {
-          video.current.srcObject = s;
-          video.current.play().catch(() => {});
-        }
-      });
     } catch {
       setAviso('Não consegui abrir a câmera. Libere a câmera para o navegador e tente de novo.');
     }
@@ -291,18 +285,40 @@ export function AdmissaoPublicaCliente({ token }: { token: string }) {
 
   async function tirarFoto() {
     const v = video.current;
-    if (!v || !v.videoWidth) return;
+    if (!v || !v.videoWidth) {
+      setAviso('A câmera ainda não abriu. Toque em “Tentar de novo” ou tire pela câmera do celular.');
+      return;
+    }
+    await guardarFoto(v, v.videoWidth, v.videoHeight, true);
+  }
+
+  // Câmera do próprio celular (quando a do navegador fica preta no iPhone).
+  async function fotoDoCelular(arquivos: FileList | null) {
+    const f = arquivos?.[0];
+    if (!f) return;
+    setAviso(null);
+    try {
+      const img = await carregarImagem(f);
+      await guardarFoto(img, img.naturalWidth, img.naturalHeight, false);
+    } catch (e) {
+      setStatus('');
+      setAviso((e as Error).message || 'Não consegui ler a foto. Tente de novo.');
+    }
+  }
+
+  async function guardarFoto(fonte: HTMLVideoElement | HTMLImageElement, fw: number, fh: number, espelhar: boolean) {
+    if (!fw || !fh) return;
     setStatus('Conferindo o rosto…');
     let descr: number[] | null = null;
     try {
       const faceapi = await carregarMotor();
       let det = null;
-      for (let i = 0; i < 6 && !det; i++) {
+      for (let i = 0; i < (espelhar ? 6 : 1) && !det; i++) {
         det = await faceapi
-          .detectSingleFace(v, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }))
+          .detectSingleFace(fonte, new faceapi.TinyFaceDetectorOptions({ inputSize: espelhar ? 224 : 416, scoreThreshold: 0.5 }))
           .withFaceLandmarks()
           .withFaceDescriptor();
-        if (!det) await new Promise((r) => setTimeout(r, 300));
+        if (!det && espelhar) await new Promise((r) => setTimeout(r, 300));
       }
       if (!det) {
         setStatus('');
@@ -314,15 +330,17 @@ export function AdmissaoPublicaCliente({ token }: { token: string }) {
       descr = null; // celular antigo: a selfie vale do mesmo jeito
     }
     const w = 480;
-    const h = Math.round((v.videoHeight / v.videoWidth) * w);
+    const h = Math.round((fh / fw) * w);
     const cv = document.createElement('canvas');
     cv.width = w;
     cv.height = h;
     const ctx = cv.getContext('2d');
     if (!ctx) return;
-    ctx.translate(w, 0);
-    ctx.scale(-1, 1);
-    ctx.drawImage(v, 0, 0, w, h);
+    if (espelhar) {
+      ctx.translate(w, 0);
+      ctx.scale(-1, 1);
+    }
+    ctx.drawImage(fonte, 0, 0, w, h);
     setSelfie(cv.toDataURL('image/jpeg', 0.75));
     setDescritor(descr);
     setStatus('');
@@ -655,11 +673,34 @@ export function AdmissaoPublicaCliente({ token }: { token: string }) {
           <p className="mb-2 text-sm font-semibold text-slate-800">8. Sua foto (selfie)</p>
           {fase === 'camera' ? (
             <div className="space-y-2">
-              <video ref={video} playsInline muted className="w-full rounded-md bg-black" style={{ transform: 'scaleX(-1)' }} />
+              <video ref={video} playsInline muted autoPlay className="w-full rounded-md bg-black" style={{ transform: 'scaleX(-1)' }} />
+              {camera.preta ? (
+                <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                  A câmera ficou preta. Toque em “Tentar de novo” ou tire pela câmera do celular.
+                </p>
+              ) : null}
               <button type="button" onClick={tirarFoto} className="w-full rounded-md bg-sky-600 px-4 py-3 text-sm font-medium text-white">
                 📸 Tirar a foto
               </button>
               {status ? <p className="text-center text-xs text-slate-500">{status}</p> : null}
+              <div className="flex items-center justify-between gap-2 text-sm">
+                <button type="button" onClick={() => camera.tentarDeNovo()} className="text-sky-700 underline">
+                  🔄 Tentar de novo
+                </button>
+                <label className="cursor-pointer text-sky-700 underline">
+                  📱 Tirar pela câmera do celular
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture="user"
+                    className="hidden"
+                    onChange={(e) => {
+                      fotoDoCelular(e.target.files);
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+              </div>
             </div>
           ) : selfie ? (
             <div className="flex items-center gap-3">

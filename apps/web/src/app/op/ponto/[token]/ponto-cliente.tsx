@@ -5,6 +5,7 @@
 // manda pro servidor. A foto não sai do celular — só os 128 números.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { abrirCameraFrontal, pararStream, useCameraLigada } from '@/lib/camera-celular';
 
 const FACELIB = '/agente-release/facelib/';
 
@@ -98,6 +99,7 @@ export function PontoCelularCliente({ token }: { token: string }) {
   const [status, setStatus] = useState('');
   const video = useRef<HTMLVideoElement>(null);
   const stream = useRef<MediaStream | null>(null);
+  const camera = useCameraLigada(fase !== 'inicio', video, stream);
   const gps = useRef<Promise<Geo> | null>(null);
   // Intervalo (descanso) não cobra a área; entrada/saída do dia continuam cobrando.
   const modo = useRef<'sair' | 'voltar' | null>(null);
@@ -156,19 +158,11 @@ export function PontoCelularCliente({ token }: { token: string }) {
     gps.current = pegarGps();
     gps.current.catch(() => {});
     try {
-      const s = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
-        audio: false,
-      });
-      stream.current = s;
+      pararStream(stream.current);
+      stream.current = await abrirCameraFrontal();
+      // o vídeo liga no useCameraLigada, depois do <video> montado (iPhone ficava preto)
       setFase('camera');
       setStatus('Olhe de frente pra câmera e toque em “Bater ponto”.');
-      requestAnimationFrame(() => {
-        if (video.current) {
-          video.current.srcObject = s;
-          video.current.play().catch(() => {});
-        }
-      });
     } catch {
       setStatus('');
       setAviso({ ok: false, texto: 'Não consegui abrir a câmera. Libere a câmera pro navegador e tente de novo.' });
@@ -338,7 +332,15 @@ export function PontoCelularCliente({ token }: { token: string }) {
 
         {fase !== 'inicio' && (
           <div className="overflow-hidden rounded-lg bg-black">
-            <video ref={video} playsInline muted className="w-full -scale-x-100" />
+            <video ref={video} playsInline muted autoPlay className="w-full -scale-x-100" />
+          </div>
+        )}
+        {fase === 'camera' && camera.preta && (
+          <div className="rounded-md bg-amber-50 px-3 py-3 text-sm text-amber-800">
+            A câmera ficou preta.{' '}
+            <button type="button" onClick={() => camera.tentarDeNovo()} className="font-semibold underline">
+              🔄 Tentar de novo
+            </button>
           </div>
         )}
         {status && <p className="text-center text-sm text-slate-600">{status}</p>}
