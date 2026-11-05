@@ -419,7 +419,7 @@ export function GrupoPix({
               </span>
               <BotaoCopiar texto={chave} rotulo="Copiar chave" />
               {chaveEhCpfRescisao && (
-                <span className="text-[11px] text-slate-500">CPF do funcionário (rescisão)</span>
+                <span className="text-[11px] text-slate-500">CPF do funcionário (rescisão/folha)</span>
               )}
             </div>
           ) : (

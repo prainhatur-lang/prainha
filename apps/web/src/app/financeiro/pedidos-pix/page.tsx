@@ -12,7 +12,8 @@
 // conta, ou conta à mão que é só o número da nota) só entra se o XML diz Pix
 // à vista (tPag 17/20, ou dinheiro 01 sem duplicata); boleto, duplicata,
 // várias parcelas ou XML sem forma = fica de fora, mesmo com "Pedido sem nota"
-// na descrição. Pedido sem nota de verdade (foto), borderô e rescisão seguem. Folha, transferência, encontro de contas e
+// na descrição. Pedido sem nota de verdade (foto), borderô e rescisão seguem. Folha mensal do
+// sistema (botão "Lançar pagamentos da folha") entra desde 05/11/2026. Folha semanal, transferência, encontro de contas e
 // conta do Consumer ficam de fora (têm fluxo próprio).
 // Nada aqui manda dinheiro: a baixa usa a rota de sempre
 // (/api/financeiro/contas/[id]/baixas) e a chave, a do cadastro de fornecedor.
@@ -50,6 +51,7 @@ import {
 import { urlFotoPedido } from '@/lib/pedido-sem-nota';
 import { recebedorBate } from '@/lib/pix-titular';
 import { rescisoesDasContas, sqlEhRescisao } from '@/lib/rh/rescisao-pix';
+import { folhaMensalDasContas, sqlEhFolhaMensal } from '@/lib/rh/folha-mensal-pix';
 import { consumerParado, FORNECEDORES_CONSUMER_NO_PIX } from '@/lib/consumer-contas';
 
 export const dynamic = 'force-dynamic';
@@ -268,6 +270,8 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
         or(
           notInArray(c.origem, ORIGENS_FORA),
           sqlEhRescisao(c.id),
+          // Folha mensal do sistema (05/11/2026): "Lançar pagamentos da folha" → Pix aqui.
+          sqlEhFolhaMensal(c),
           consumerDaCasaParado ? eq(c.origem, 'CONSUMER') : undefined,
         ),
         lte(c.dataVencimento, ate),
@@ -367,6 +371,8 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
 
   // Rescisões da lista: CPF do funcionário vira a chave quando falta chave.
   const rescisoes = await rescisoesDasContas(linhas.map((l) => l.id)).catch(() => new Map());
+  // Folha mensal do sistema (05/11/2026): mesma regra da rescisão.
+  for (const [id, fm] of await folhaMensalDasContas(linhas.map((l) => l.id)).catch(() => new Map())) if (!rescisoes.has(id)) rescisoes.set(id, fm);
 
   let escondidas = 0;
   const grupos = new Map<string, GrupoPedidos>();

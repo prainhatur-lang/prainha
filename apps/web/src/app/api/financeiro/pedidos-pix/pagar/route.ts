@@ -25,6 +25,7 @@ import { ebLiberadaNoFinanceiro } from '@/lib/eb/acesso-financeiro';
 import { consultarPagamentoPixInter, incluirPagamentoPixInter, InterPixRecusado, InterSaldoErro, resolverCredenciaisInterPagamentos } from '@/lib/inter';
 import { conferirChavePix, recebedorBate } from '@/lib/pix-titular';
 import { rescisoesDasContas } from '@/lib/rh/rescisao-pix';
+import { folhaMensalDasContas } from '@/lib/rh/folha-mensal-pix';
 import { consumerParado, FORNECEDORES_CONSUMER_NO_PIX } from '@/lib/consumer-contas';
 import { baixarContasDoPix, lerSaldoParaPix, podePagarPix, sincronizarPixAbertos, type SaldoParaPix } from '@/lib/pix-pagamento';
 
@@ -80,6 +81,8 @@ export async function POST(req: Request) {
   // Rescisão (26/10/2026): conta ligada ao termo na ficha do funcionário. Sem
   // chave no cadastro, o Pix sai pelo CPF do próprio funcionário.
   const rescisoes = await rescisoesDasContas(contaIds);
+  // Folha mensal do sistema (05/11/2026): entra como a rescisão — CPF do funcionário no salário direto, repasse sem CPF.
+  for (const [id, fm] of await folhaMensalDasContas(contaIds)) if (!rescisoes.has(id)) rescisoes.set(id, fm);
   const cpfRescisao = contaIds.map((id) => rescisoes.get(id)?.cpf).find(Boolean) ?? null;
   const chave = forn.chave?.trim() || cpfRescisao;
   if (!chave) return NextResponse.json({ error: 'Fornecedor sem chave Pix cadastrada.' }, { status: 400 });

@@ -20,6 +20,8 @@ import { and, eq, ilike, inArray, isNull, lte, sql } from 'drizzle-orm';
 import { EB_CNPJ } from '@/lib/eb/faturas';
 import { LELIS_CNPJ, fornecedorPagadorNaCasa } from '@/lib/impostos/guia';
 import { nossaFolhaDoMes } from '@/lib/rh/nossa-folha';
+import { contasEmPixAberto } from '@/lib/pix-pagamento';
+import { registrarExclusao, resumoConta } from '@/lib/registro-exclusao';
 
 export interface ItemPagamentoFolha {
   ref: string;
@@ -32,6 +34,8 @@ export interface ItemPagamentoFolha {
   valor: number;
   /** Conta já criada por este botão. */
   jaLancadaId: string | null;
+  /** Valor da conta já lançada (pra mostrar "valor mudou" e oferecer Relançar). */
+  valorLancado?: number | null;
   /** Conta manual que parece ser a mesma (não lança por padrão). */
   pareceLancada: string | null;
   /** Funcionário sem cadastro de favorecido (só no 'direto'). */
@@ -217,15 +221,17 @@ export async function pagamentosDaFolha(casaFilialId: string, comp: string): Pro
   // já lançadas por este botão
   const cp = schema.contaPagar;
   const ja = await db
-    .select({ id: cp.id, ref: cp.codigoReferencia })
+    .select({ id: cp.id, ref: cp.codigoReferencia, valor: cp.valor })
     .from(cp)
     .where(and(eq(cp.filialId, casaFilialId), inArray(cp.codigoReferencia, lista.map((i) => i.ref)), isNull(cp.dataDelete)));
   const porRef = new Map(ja.map((j) => [j.ref, j.id]));
+  const valorPorRef = new Map(ja.map((j) => [j.ref, Number(j.valor)]));
 
   // lançamento manual parecido: nome da pessoa + "mes MM"/"mês MM" na casa
   const mm = comp.split('-')[1]!;
   for (const i of lista) {
     i.jaLancadaId = porRef.get(i.ref) ?? null;
+    i.valorLancado = valorPorRef.get(i.ref) ?? null;
     if (i.jaLancadaId || i.tipo === 'repasse_eb') continue;
     const nome = i.pessoas[0]!.nome.split(/\s+/).slice(0, 2).join(' ');
     const [man] = await db
@@ -344,4 +350,70 @@ export async function lancarPagamentosDaFolha(p: {
     }
   });
   return { criadas: escolhidos.length, puladas: p.refs.length - escolhidos.length, total: Math.round(total * 100) / 100 };
+}
+
+/**
+ * Relançar (pedido do dono 05/11/2026: "alterei a hora do Rivaldo" / "como
+ * relançar tudo?"). Exclui as contas já lançadas pelo botão (soft delete, com
+ * registro de exclusão: quem, quando, motivo e a foto da conta) e lança de novo
+ * com o valor de agora. Só mexe em conta SEM pagamento: paga, com baixa, presa
+ * num Pix do sistema ou num borderô → recusa tudo e não apaga nada.
+ */
+export async function relancarPagamentosDaFolha(p: {
+  casaFilialId: string;
+  comp: string;
+  refs: string[];
+  vencimento: string;
+  usuarioId: string;
+  fora?: string[];
+  motivo?: string | null;
+}): Promise<{ excluidas: number; criadas: number; puladas: number; total: number }> {
+  const itens = await pagamentosDaFolha(p.casaFilialId, p.comp);
+  const ids = itens.filter((i) => p.refs.includes(i.ref) && i.jaLancadaId).map((i) => i.jaLancadaId!);
+  if (ids.length) {
+    const cp = schema.contaPagar;
+    const contas = await db
+      .select({
+        id: cp.id,
+        descricao: cp.descricao,
+        valor: cp.valor,
+        venc: cp.dataVencimento,
+        dataPagamento: cp.dataPagamento,
+        borderoId: cp.borderoId,
+        fornecedorId: cp.fornecedorId,
+        observacao: cp.observacao,
+        codigoReferencia: cp.codigoReferencia,
+        baixas: sql<string>`(select count(*) from conta_pagar_baixa b where b.conta_pagar_id = ${cp.id})::text`,
+      })
+      .from(cp)
+      .where(and(eq(cp.filialId, p.casaFilialId), inArray(cp.id, ids), isNull(cp.dataDelete)));
+    const emPix = await contasEmPixAberto(p.casaFilialId);
+    const presas = contas.filter((c) => c.dataPagamento || Number(c.baixas) > 0 || c.borderoId || emPix.has(c.id));
+    if (presas.length) {
+      throw new Error(
+        `Não dá pra relançar: já tem pagamento (pago, baixa, Pix do sistema ou borderô) em ${presas.map((c) => c.descricao).join('; ')}. Desmarque essas e relance o resto.`,
+      );
+    }
+    for (const c of contas) {
+      await registrarExclusao({
+        tabela: 'conta_pagar',
+        registroId: c.id,
+        filialId: p.casaFilialId,
+        usuarioId: p.usuarioId,
+        resumo: resumoConta(c.descricao, c.venc, c.valor),
+        motivo: `Relançar folha ${mmAaaa(p.comp)}${p.motivo ? `: ${p.motivo}` : ' (valor recalculado)'}`,
+        dados: c,
+      });
+      await db.update(cp).set({ dataDelete: new Date() }).where(and(eq(cp.id, c.id), isNull(cp.dataPagamento)));
+    }
+  }
+  const r = await lancarPagamentosDaFolha({
+    casaFilialId: p.casaFilialId,
+    comp: p.comp,
+    refs: p.refs,
+    vencimento: p.vencimento,
+    usuarioId: p.usuarioId,
+    fora: p.fora,
+  });
+  return { excluidas: ids.length, ...r };
 }

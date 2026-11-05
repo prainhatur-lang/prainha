@@ -13,6 +13,7 @@ interface Item {
   pessoas: { nome: string; cpf: string | null; liquido: number }[];
   valor: number;
   jaLancadaId: string | null;
+  valorLancado?: number | null;
   pareceLancada: string | null;
   semFavorecido: string[];
 }
@@ -36,6 +37,9 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
   const [diaristas, setDiaristas] = useState<string[]>([]);
   const [semExtrato, setSemExtrato] = useState<string[]>([]);
   const [msg, setMsg] = useState<string | null>(null);
+  // Relançar (05/11/2026): conta já lançada cujo valor mudou (ex.: hora do Rivaldo alterada).
+  const [relancar, setRelancar] = useState<Set<string>>(new Set());
+  const mudou = (i: Item) => !!i.jaLancadaId && i.valorLancado != null && Math.abs(i.valorLancado - valorDe(i)) > 0.005;
   const [erro, setErro] = useState<string | null>(null);
 
   async function carregar() {
@@ -53,6 +57,13 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
       setDiaristas(j.diaristas ?? []);
       setSemExtrato(j.semExtrato ?? []);
       setMarcados(new Set((j.itens as Item[]).filter((i) => !i.jaLancadaId && !i.pareceLancada).map((i) => i.ref)));
+      setRelancar(
+        new Set(
+          (j.itens as Item[])
+            .filter((i) => i.jaLancadaId && i.valorLancado != null && Math.abs(i.valorLancado - i.valor) > 0.005)
+            .map((i) => i.ref),
+        ),
+      );
     } catch (e) {
       setErro(e instanceof Error ? e.message : 'erro');
     } finally {
@@ -75,6 +86,35 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
       const j = await r.json();
       if (!r.ok) throw new Error(j.error ?? 'erro');
       setMsg(`${j.criadas} conta(s) lançada(s), ${brl(j.total)}.${j.puladas ? ` ${j.puladas} já estava(m) lançada(s).` : ''}`);
+      await carregar();
+    } catch (e) {
+      setErro(e instanceof Error ? e.message : 'erro');
+    } finally {
+      setCarregando(false);
+    }
+  }
+
+  async function relancarContas() {
+    if (!relancar.size) return;
+    const sel = (itens ?? []).filter((i) => relancar.has(i.ref));
+    const antes = sel.reduce((s, i) => s + (i.valorLancado ?? 0), 0);
+    const agora = sel.reduce((s, i) => s + valorDe(i), 0);
+    const motivo = prompt(
+      `Relançar ${sel.length} conta(s): as contas lançadas (${brl(antes)}) são excluídas, com registro, e lançadas de novo com o valor de agora (${brl(agora)}), vencimento ${venc.split('-').reverse().join('/')}.\n\nSó funciona em conta sem pagamento. Motivo (opcional):`,
+      'valor recalculado',
+    );
+    if (motivo === null) return;
+    setCarregando(true);
+    setErro(null);
+    try {
+      const r = await fetch('/api/rh/folha-contador/pagamentos', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ filialId, comp, refs: [...relancar], vencimento: venc, fora: [...fora], relancar: true, motivo }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error ?? 'erro');
+      setMsg(`${j.excluidas} conta(s) excluída(s) e ${j.criadas} lançada(s) de novo, ${brl(j.total)}.`);
       await carregar();
     } catch (e) {
       setErro(e instanceof Error ? e.message : 'erro');
@@ -161,7 +201,7 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
                     <p className="text-[11px] text-slate-400">
                       {i.empresa} · {i.pessoas.length} pessoa(s)
                     </p>
-                    {i.tipo === 'repasse_eb' && !i.jaLancadaId && (
+                    {i.tipo === 'repasse_eb' && (!i.jaLancadaId || relancar.has(i.ref)) && (
                       <button
                         type="button"
                         onClick={() => setVerPessoas(verPessoas === i.ref ? null : i.ref)}
@@ -192,6 +232,26 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
                       </ul>
                     )}
                     {i.jaLancadaId && <p className="text-[11px] text-emerald-700">✓ já lançada</p>}
+                    {i.jaLancadaId && (
+                      <label className="mt-0.5 flex items-center gap-1 text-[11px] text-slate-600">
+                        <input
+                          type="checkbox"
+                          checked={relancar.has(i.ref)}
+                          onChange={(e) => {
+                            const n = new Set(relancar);
+                            if (e.target.checked) n.add(i.ref);
+                            else n.delete(i.ref);
+                            setRelancar(n);
+                          }}
+                        />
+                        relançar
+                        {mudou(i) && (
+                          <span className="text-amber-700">
+                            {' '}· valor mudou: lançada {brl(i.valorLancado ?? 0)}, agora {brl(valorDe(i))}
+                          </span>
+                        )}
+                      </label>
+                    )}
                     {i.pareceLancada && !i.jaLancadaId && (
                       <p className="text-[11px] text-amber-700">Parece já lançada à mão: {i.pareceLancada}</p>
                     )}
@@ -225,6 +285,16 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
             >
               Lançar contas a pagar
             </button>
+            {relancar.size > 0 && (
+              <button
+                type="button"
+                disabled={carregando || previa || !venc}
+                onClick={() => void relancarContas()}
+                className="rounded-md border border-amber-400 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-800 disabled:opacity-40"
+              >
+                🔁 Relançar {relancar.size} conta(s)
+              </button>
+            )}
           </div>
         </>
       )}
