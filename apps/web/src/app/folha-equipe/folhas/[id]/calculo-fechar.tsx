@@ -30,6 +30,8 @@ interface Lancamento {
   desconto: number;
   valorLiquido: number;
   detalhe: string;
+  /** "Comissão semana — X", "Pró-labore semana — X"... */
+  descricao?: string;
 }
 
 interface Resultado {
@@ -725,7 +727,8 @@ export function CalculoFechar({
                         {l.pessoaNome}
                       </td>
                       <td className="px-2 py-1.5 text-xs">
-                        {l.tipo === 'comissao' && '💰 Comissão'}
+                        {l.tipo === 'comissao' &&
+                          (/^pr[óo]-labore/i.test(l.descricao ?? '') ? '👔 Pró-labore' : '💰 Comissão')}
                         {l.tipo === 'diaria' && '⏰ Diária'}
                         {l.tipo === 'gratificacao' && '🎁 Gratificação'}
                         {l.tipo === 'premiacao' && '🏆 Premiação'}
