@@ -237,6 +237,8 @@ export async function proxy(request: NextRequest) {
     path === '/privacidade' ||
     // Política do app da maquininha (Concilia Garçom), pedida pela loja da Cielo.
     path === '/privacidade/maquininha' ||
+    // Termos de uso do mesmo app, pedidos pela loja pública da Cielo.
+    path === '/termos/maquininha' ||
     /^\/tiktok[A-Za-z0-9_-]*\.txt$/.test(path) ||
     // /convite/[token] é o link do botão do convite de campanha (zap): registra
     // o toque e redireciona pro site da casa. O painel é /campanha (protegido).
