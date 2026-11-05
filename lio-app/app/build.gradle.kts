@@ -170,8 +170,11 @@ android {
         // vêm do /api/config (fidelidade_nome, passe_saida). Servidor antigo =
         // "Cartão Prainha" e passe ligado, como sempre. Código "demo" já preenche
         // login teste / PIN 1234 (o Concilia manda junto com a filial).
-        versionCode = 67
-        versionName = "1.10.43"
+        // 1.10.44 (05/11/2026): servidor de demonstração (/api/config demo) →
+        // tudo o que a maquininha imprime sai com DEMONSTRAÇÃO grande em cima,
+        // no meio e embaixo (Demo.kt). Lojas (sem demo) imprimem igual.
+        versionCode = 68
+        versionName = "1.10.44"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CONCILIA_BASE", "\"$conciliaBase\"")
     }

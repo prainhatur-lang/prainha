@@ -83,6 +83,8 @@ object Api {
         val passeSaida: Boolean = true,
         /** Site de venda do Concilia (só a demo manda) — vazio = sem botão. */
         val conhecaUrl: String = "",
+        /** Servidor de demonstração: tudo o que imprime sai com DEMONSTRAÇÃO grande. */
+        val demo: Boolean = false,
     )
 
     /** Mesa/comanda aberta na grade (espelho local — rápido). */
@@ -352,6 +354,7 @@ object Api {
                 fidelidadeNome = j.optString("fidelidade_nome", "").ifBlank { "Cartão Prainha" },
                 passeSaida = j.optBoolean("passe_saida", true),
                 conhecaUrl = j.optString("conheca_url", "").let { if (it.startsWith("https://")) it else "" },
+                demo = j.optBoolean("demo", false),
             )
         } catch (_: Exception) { null }
     }

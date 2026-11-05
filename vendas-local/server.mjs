@@ -105,6 +105,35 @@ const PASSE_SAIDA = !/^(off|0|false|nao|não)$/i.test(String(process.env.PASSE_S
 // Link do site de venda do Concilia (só na demo): o app mostra "Conheça o sistema completo".
 // Vazio = botão não aparece (lojas do Prainha).
 const CONHECA_URL = /^https:\/\//.test(String(process.env.CONHECA_URL || '').trim()) ? String(process.env.CONHECA_URL).trim() : '';
+// Servidor de demonstração: o app carimba DEMONSTRAÇÃO grande em tudo o que
+// imprime (conta, recibo, ticket...), pra ninguém usar a demo de má-fé.
+// Sem a env = desligado (lojas do Prainha imprimem igual).
+const DEMO = /^(on|1|true|sim)$/i.test(String(process.env.DEMO || '').trim());
+// Na demo, toda página que se imprime pelo navegador (conta, comprovante Pix,
+// sangria…) sai com DEMONSTRAÇÃO no papel: faixa em cima e embaixo + marca
+// atravessada em cada folha. Só na impressão — na tela nada muda.
+const DEMO_FAIXA = '<div class="demo-faixa">DEMONSTRAÇÃO<small>sem valor · só para teste</small></div>';
+const DEMO_CSS = '<style>.demo-faixa,.demo-marca{display:none}' +
+  '@media print{.demo-faixa{display:block!important;text-align:center;font:900 30px/1.1 Arial,Helvetica,sans-serif;color:#000;' +
+  'border:4px solid #000;padding:8px 4px;margin:6px 0;letter-spacing:1px;break-inside:avoid}' +
+  '.demo-faixa small{display:block;font-size:13px;font-weight:700;letter-spacing:0;margin-top:3px}' +
+  '.demo-marca{display:flex!important;position:fixed;inset:0;align-items:center;justify-content:center;pointer-events:none;z-index:2147483647}' +
+  '.demo-marca b{font:900 11vw/1 Arial,Helvetica,sans-serif;color:rgba(0,0,0,.22);transform:rotate(-35deg);white-space:nowrap}}</style>';
+function marcarImpressaoDemo(res) {
+  const end = res.end;
+  res.end = function (chunk, ...resto) {
+    try {
+      if (typeof chunk === 'string' && !res.getHeader('content-length') &&
+          /text\/html/i.test(String(res.getHeader('content-type') || '')) && chunk.includes('</body>')) {
+        const ab = chunk.match(/<body[^>]*>/i);
+        if (ab) chunk = chunk.replace(ab[0], ab[0] + DEMO_CSS + DEMO_FAIXA);
+        const i = chunk.lastIndexOf('</body>');
+        chunk = chunk.slice(0, i) + DEMO_FAIXA + '<div class="demo-marca"><b>DEMONSTRAÇÃO</b></div>' + chunk.slice(i);
+      }
+    } catch { /* marca é extra: nunca derruba a página */ }
+    return end.call(this, chunk, ...resto);
+  };
+}
 // A última palavra sai em destaque, como era o "Prainha <b>Bar</b>".
 const LOJA_HTML = (() => {
   const p = LOJA_NOME.trim().split(/\s+/);
@@ -7407,7 +7436,9 @@ function apiConfig() {
     fidelidade_nome: FIDELIDADE_NOME,
     passe_saida: PASSE_SAIDA,
     // site de venda (demo) — vazio nas lojas
-    conheca_url: CONHECA_URL };
+    conheca_url: CONHECA_URL,
+    // servidor de demonstração: o app marca as impressões — false nas lojas
+    demo: DEMO };
 }
 
 // ---- status efetivo = timestamp do Firebird OU a nossa marca local ----
@@ -32909,6 +32940,8 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('pragma', 'no-cache');
     res.setHeader('expires', '0');
     res.setHeader('x-app-versao', VERSAO);
+    // Servidor de demonstração: impressão pelo navegador sai marcada (ver DEMO_CSS).
+    if (DEMO) marcarImpressaoDemo(res);
 
     // ---- ATALHO DE TELA CHEIA (sem barra de endereço) ----
     // "Adicionar à tela inicial" só abre em modo app quando existe manifest

@@ -24,6 +24,8 @@ object Session {
     private const val K_LOJA = "loja"
     private const val K_PODE_DESCONTO = "pode_desconto"
     private const val K_ENTREGAS = "entregas"       // Consumer: PedidosDelivery (4) ou admin
+    private const val K_DEMO = "demo"               // servidor de demonstração (/api/config demo)
+    private const val K_DEMO_DE = "demo_de"         // servidor configurado que disse que é demo
 
     // Servidor ATIVO (resolverBase): o LOCAL da loja se ele responder agora,
     // senão o configurado (Funnel). Resolvido no arranque, logo depois do login,
@@ -70,6 +72,8 @@ object Session {
         // Trocou de servidor: o IP local aprendido de OUTRO servidor não vale mais
         // (senão a maquininha na rede do Bar, logada na Mar, ia parar no Bar).
         if (p.getString(K_LAN_DE, null) != b) e.remove(K_LAN).remove(K_LAN_DE)
+        // Idem a marca de demonstração: vale só pro servidor que mandou.
+        if (p.getString(K_DEMO_DE, null) != b) e.remove(K_DEMO).remove(K_DEMO_DE)
         e.apply()
     }
 
@@ -87,6 +91,8 @@ object Session {
             .putString("fidelidade_nome", c.fidelidadeNome)
             .putBoolean("passe_saida", c.passeSaida)
             .putString("conheca_url", c.conhecaUrl)
+            .putBoolean(K_DEMO, c.demo)
+            .putString(K_DEMO_DE, de.trimEnd('/'))
             .apply()
         saveLan(ctx, c.lan, de) // aprende o IP local da loja (pra preferir local dentro)
         configEm = SystemClock.elapsedRealtime()
@@ -98,6 +104,14 @@ object Session {
 
     /** A casa usa passe de saída (catraca/cancela)? Sem config = sim, como sempre foi. */
     fun passeSaida(ctx: Context): Boolean = prefs(ctx).getBoolean("passe_saida", true)
+
+    /** Servidor de demonstração? Só vale se quem disse é o servidor configurado
+     *  agora (trocou de servidor = marca cai). Lojas do Prainha = false. */
+    fun demo(ctx: Context): Boolean {
+        val p = prefs(ctx)
+        return p.getBoolean(K_DEMO, false) &&
+            p.getString(K_DEMO_DE, null) == p.getString(K_SERVIDOR, null)?.trimEnd('/')
+    }
 
     /** Link do site de venda do Concilia (só na demo). Vazio = sem botão. */
     fun conhecaUrl(ctx: Context): String = prefs(ctx).getString("conheca_url", null).orEmpty()

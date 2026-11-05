@@ -29,6 +29,7 @@ object Pagamento {
     ) = Lio.cobrar(ref, linhas, valorCentavos, onInicio, onPago, onCancelado, onErro, destino)
     /** O que o terminal tem gravado desse pedido (null = não deu pra saber). */
     fun consultarPedido(pedidoId: String): PedidoTerminal? = Lio.consultarPedido(pedidoId)
+    /** Na demo (/api/config demo), tudo sai carimbado DEMONSTRAÇÃO (ver Demo). */
     fun imprimirBlocos(context: Context, blocos: List<Bloco>, onOk: () -> Unit, onErro: (mensagem: String) -> Unit) =
-        Lio.imprimirBlocos(context, blocos, onOk, onErro)
+        Lio.imprimirBlocos(context, if (Session.demo(context)) Demo.marcar(blocos) else blocos, onOk, onErro)
 }

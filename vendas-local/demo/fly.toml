@@ -20,6 +20,7 @@ primary_region = "gru"
   FIDELIDADE_NOME = "Cartão fidelidade"
   PASSE_SAIDA = "off"   # demo não tem catraca/cancela
   CONHECA_URL = "https://conciliabr.app/conheca?origem=app_demo"
+  DEMO = "on"
 
 [http_service]
   internal_port = 8790
