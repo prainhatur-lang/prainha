@@ -11,6 +11,7 @@ import { createClient } from '@/lib/supabase/server';
 import { exigirPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
+import { semNoturnoIntermitente } from '@/lib/rh/sem-noturno-intermitente';
 import { brl } from '@/lib/format';
 import { db, schema } from '@concilia/db';
 import { and, asc, desc, eq, inArray, or } from 'drizzle-orm';
@@ -74,7 +75,7 @@ export default async function ImprimirFolhaMensalPage(props: { searchParams: Pro
   const comp = sp.comp && competencias.includes(sp.comp) ? sp.comp : competencias[0] ?? null;
   const parte = sp.parte === 'resumo' || sp.parte === 'bordero' || sp.parte === 'contracheques' ? sp.parte : 'tudo';
 
-  const [linhas, resumos] = comp
+  const [linhasDoContador, resumos] = comp
     ? await Promise.all([
         db
           .select()
@@ -88,6 +89,9 @@ export default async function ImprimirFolhaMensalPage(props: { searchParams: Pro
           .orderBy(asc(schema.folhaContadorResumo.empresa), asc(schema.folhaContadorResumo.departamento)),
       ])
     : [[], []];
+
+  // Intermitente sem adicional noturno (decisão do dono 05/11/2026).
+  const linhas = linhasDoContador.map(semNoturnoIntermitente);
 
   // Banco/Pix: fornecedor do funcionário (pelo vínculo; sem vínculo, pelo CPF).
   const ids = [...new Set(linhas.map((l) => l.funcionarioId).filter((x): x is string => !!x))];

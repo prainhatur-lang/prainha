@@ -16,6 +16,7 @@ import { escolherFilial } from '@/lib/filial-ativa';
 import { AppHeader } from '@/components/app-header';
 import { LancarPagamentosFolha } from './lancar-pagamentos';
 import { brl } from '@/lib/format';
+import { semNoturnoIntermitente } from '@/lib/rh/sem-noturno-intermitente';
 import { db, schema } from '@concilia/db';
 import { and, asc, desc, eq, ne, sql } from 'drizzle-orm';
 
@@ -135,7 +136,7 @@ export default async function FolhaContadorPage(props: { searchParams: Promise<S
   const [a, m] = comp.split('-').map(Number);
   const fimComp = `${comp}-${String(new Date(a, m, 0).getDate()).padStart(2, '0')}`;
 
-  const [linhas, resumos, foraDaFolha, emOutraCasa, casas] = await Promise.all([
+  const [linhasDoContador, resumos, foraDaFolha, emOutraCasa, casas] = await Promise.all([
     db
       .select({
         fc: schema.folhaContador,
@@ -194,6 +195,8 @@ export default async function FolhaContadorPage(props: { searchParams: Promise<S
     db.select({ id: schema.filial.id, nome: schema.filial.nome }).from(schema.filial),
   ]);
   const nomeCasa = new Map(casas.map((c) => [c.id, c.nome]));
+  // Intermitente sem adicional noturno (decisão do dono 05/11/2026).
+  const linhas = linhasDoContador.map((l) => ({ ...l, fc: semNoturnoIntermitente(l.fc) }));
 
   // Uma seção por PDF (empresa + departamento).
   const chave = (cnpj: string, depto: string | null) => `${cnpj}|${depto ?? ''}`;
@@ -361,6 +364,11 @@ export default async function FolhaContadorPage(props: { searchParams: Promise<S
                             {brl(fc.liquido)}
                             {rescisao && (
                               <span className="block text-[10px] font-normal text-slate-400">rescisão {brl(rescisao.valor)}</span>
+                            )}
+                            {fc.noturnoRetirado > 0 && (
+                              <span className="block text-[10px] font-normal text-slate-400" title="Adicional noturno do contador retirado (intermitente)">
+                                sem noturno −{brl(fc.noturnoRetirado)}
+                              </span>
                             )}
                           </span>
                         </summary>
