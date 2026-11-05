@@ -290,6 +290,8 @@ export interface RelatorioCasa {
   eventos?: EventoDia[];
   /** pontos incompletos da casa nos últimos dias, ainda sem correção (entrada sem saída / saída sem entrada) */
   pontoEmAberto?: PontoAberto[];
+  /** vendas na maquininha (Cielo) dos últimos dias sem pagamento no nosso sistema e sem exceção aceita (05/11/2026) */
+  cartoesForaDoSistema?: CartaoForaDoSistema[];
   /** documentos da empresa (alvará, certidão…) vencidos ou vencendo em até 30 dias — /empresa/documentos */
   documentosVencendo?: DocVencendo[];
   /** furos de quem saiu e gente nova sem motivo/horário/escala — /rh/escala-mensal (31/10/2026) */
@@ -314,6 +316,15 @@ export interface DocVencendo {
 }
 
 /** Dia de ponto que não fechou: mesma regra do /rh/ponto/relatorio (incompleto ou saída órfã). */
+export interface CartaoForaDoSistema {
+  dia: string;
+  hora: string | null;
+  valor: number;
+  forma: string | null;
+  bandeira: string | null;
+  nsu: string | null;
+}
+
 export interface PontoAberto {
   funcionarioId: string;
   nome: string;
@@ -1600,6 +1611,32 @@ async function pontoEmAbertoDaCasa(filialId: string, dia: string): Promise<Ponto
   return out.sort((a, b) => (a.dia === b.dia ? a.nome.localeCompare(b.nome, 'pt-BR') : a.dia < b.dia ? 1 : -1));
 }
 
+/** Quantos dias pra trás o relatório procura venda da Cielo sem lançamento (o EDI chega D+1). */
+const DIAS_CARTAO_FORA = 7;
+
+/**
+ * Vendas na maquininha (extrato da Cielo) dos últimos 7 dias até `dia` que não
+ * casaram com nenhum pagamento do nosso sistema (match_pdv_cielo nem
+ * conciliacao_pagamento) e que ninguém aceitou como exceção. Pedido do dono
+ * 05/11/2026: "quais cartões não passaram pelo nosso sistema".
+ */
+async function cartoesForaDoSistemaDaCasa(filialId: string, dia: string): Promise<CartaoForaDoSistema[]> {
+  const desde = somaDias(dia, -(DIAS_CARTAO_FORA - 1));
+  const rows = await q<{ dia: string; hora: string | null; valor: string; forma: string | null; bandeira: string | null; nsu: string | null }>(sql`
+    SELECT va.data_venda::text AS dia, left(va.hora_venda, 5) AS hora, va.valor_bruto::text AS valor,
+           va.forma_pagamento AS forma, va.bandeira, va.nsu
+      FROM venda_adquirente va
+     WHERE va.filial_id = ${filialId}
+       AND va.data_venda >= ${desde}::date AND va.data_venda <= ${dia}::date
+       AND va.valor_bruto > 0
+       AND NOT EXISTS (SELECT 1 FROM match_pdv_cielo m WHERE m.venda_adquirente_id = va.id)
+       AND NOT EXISTS (SELECT 1 FROM conciliacao_pagamento c WHERE c.venda_adquirente_id = va.id)
+       AND NOT EXISTS (SELECT 1 FROM excecao x WHERE x.venda_adquirente_id = va.id AND x.aceita_em IS NOT NULL)
+     ORDER BY va.data_venda DESC, va.hora_venda DESC NULLS LAST
+  `);
+  return rows.map((r) => ({ dia: r.dia, hora: r.hora, valor: Number(r.valor), forma: r.forma, bandeira: r.bandeira, nsu: r.nsu }));
+}
+
 /** Eventos de ticket cadastrados na casa nesse dia: encerrado vale a foto, aberto conta ao vivo. */
 export async function eventosDoDia(filialId: string, dia: string): Promise<EventoDia[]> {
   const linhas = await q<{
@@ -1641,6 +1678,11 @@ export async function montarRelatorioFiliais(
       casa.pontoEmAberto = await pontoEmAbertoDaCasa(f.id, dia).catch((e) => {
         console.error('[relatorio-diario] ponto em aberto:', e);
         return [] as PontoAberto[];
+      });
+      // Cartões na maquininha sem lançamento no sistema (05/11/2026, dono). Extra — falhou, sai sem.
+      casa.cartoesForaDoSistema = await cartoesForaDoSistemaDaCasa(f.id, dia).catch((e) => {
+        console.error('[relatorio-diario] cartões fora do sistema:', e);
+        return [] as CartaoForaDoSistema[];
       });
       // Documentos da empresa (26/10/2026): vencido ou vence em até 30 dias. Extra — falhou, sai sem.
       casa.documentosVencendo = await documentosVencendoDaCasa(f.id).catch((e) => {
@@ -1741,10 +1783,13 @@ export function resumoUmaLinha(casas: RelatorioCasa[]): string {
   );
   const abertos = casas.reduce((s, c) => s + (c.pontoEmAberto?.length ?? 0), 0);
   const docs = casas.reduce((s, c) => s + (c.documentosVencendo?.length ?? 0), 0);
+  const cartoes = casas.reduce((s, c) => s + (c.cartoesForaDoSistema?.length ?? 0), 0);
   const escala = casas.reduce((s, c) => s + totalPendencias(c.pendenciasEscala), 0);
   return `${partes.join(' · ')} · Total ${reais(total, false)}${abertos ? ` · Ponto em aberto: ${abertos}` : ''}${
     docs ? ` · Documentos vencendo: ${docs}` : ''
-  }${escala ? ` · Escala: ${escala} ${escala === 1 ? "pendência" : "pendências"}` : ''}`;
+  }${escala ? ` · Escala: ${escala} ${escala === 1 ? "pendência" : "pendências"}` : ''}${
+    cartoes ? ` · Cartões fora do sistema: ${cartoes}` : ''
+  }`;
 }
 
 const nota1 = (n: number | null) => (n == null ? '—' : n.toFixed(1).replace('.', ','));
@@ -1861,6 +1906,24 @@ function linhasPontoAberto(c: RelatorioCasa): string[] {
   return L;
 }
 
+/** Vendas da Cielo sem pagamento no sistema, pro texto do WhatsApp (vazio = nenhuma). */
+function linhasCartoesForaDoSistema(c: RelatorioCasa): string[] {
+  const lista = c.cartoesForaDoSistema ?? [];
+  if (!lista.length) return [];
+  const MAX = 15;
+  const total = lista.reduce((s, x) => s + x.valor, 0);
+  const L = [`💳 Cartões que passaram na maquininha e não estão no sistema (${lista.length}, ${reais(total)}) — últimos ${DIAS_CARTAO_FORA} dias:`];
+  for (const x of lista.slice(0, MAX)) {
+    const [, mm, dd] = x.dia.split('-');
+    const tipo = (x.bandeira && x.forma && x.bandeira === x.forma ? [x.forma] : [x.bandeira, x.forma]).filter(Boolean).join(' ');
+    L.push(`• ${dd}/${mm}${x.hora ? ` ${x.hora}` : ''} — ${reais(x.valor)}${tipo ? ` ${tipo}` : ''}${x.nsu ? ` (NSU ${x.nsu})` : ''}`);
+  }
+  if (lista.length > MAX) L.push(`• e mais ${lista.length - MAX}`);
+  const maisAntigo = lista.reduce((m, x) => (x.dia < m ? x.dia : m), lista[0].dia);
+  L.push(`Ver: https://app.prainhabar.com/conciliacao/operadora?${new URLSearchParams({ filialId: c.filialId, dataInicio: maisAntigo, dataFim: lista[0].dia }).toString()}`);
+  return L;
+}
+
 /** Gaveta, saídas de dinheiro e maquininhas sem fechar, pro texto do WhatsApp. */
 function linhasCaixa(c: RelatorioCasa): string[] {
   const cx = c.caixa;
@@ -1937,6 +2000,7 @@ function textoCasa(c: RelatorioCasa): string {
         for (const a of doCaixa) L.push(`• ${a}`);
       }
     }
+    L.push(...linhasCartoesForaDoSistema(c));
     L.push(...linhasPontoAberto(c));
     L.push(...linhasEscala(c));
     L.push(...linhasDocumentos(c));
@@ -2000,6 +2064,7 @@ function textoCasa(c: RelatorioCasa): string {
     );
   }
   L.push(...linhasCaixa(c));
+  L.push(...linhasCartoesForaDoSistema(c));
   L.push(...linhasPontoAberto(c));
   L.push(...linhasEscala(c));
   L.push(...linhasDocumentos(c));
