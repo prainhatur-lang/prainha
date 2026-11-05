@@ -15,7 +15,7 @@
 import crypto from 'node:crypto';
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { createAdminClient } from '@/lib/supabase/server';
 import { BUCKET_DOC_RH, DOC_RH_EXTENSOES, extensaoDoc, pastaDocRh } from '@/lib/rh/documento-vinculo';
 import { distanciaFacial } from '@/lib/rh/ponto-celular';
@@ -45,6 +45,7 @@ import {
   termosParaContrato,
   textoAceiteAdmissao,
   tituloContrato,
+  vesperaDoRegistro,
   type DocSubido,
   type PessoaisAdmissao,
   type TermosConvite,
@@ -494,6 +495,32 @@ async function assinar(req: Request, c: Convite, body: Record<string, unknown>) 
     await garantirPapeisDaPessoa(funcionarioId, { criadoPor: c.criadoPor ?? undefined, enfileirarNaLoja: true });
   } catch {
     /* o RH garante de novo ao definir o pagamento */
+  }
+
+  // Já trabalha antes do registro: até a véspera recebe por diária na folha
+  // semanal; do registro em diante é funcionário (mesmo "Diarista até" da ficha).
+  if (termos.diariaAntes) {
+    try {
+      const papeis = await garantirPapeisDaPessoa(funcionarioId, { criadoPor: c.criadoPor ?? undefined, filialId: c.filialId });
+      if (papeis) {
+        const FF = schema.fornecedorFolha;
+        const ate = vesperaDoRegistro(termos.admissao);
+        await db
+          .insert(FF)
+          .values({ fornecedorId: papeis.fornecedorId, papel: 'funcionario', diaristaAte: ate })
+          .onConflictDoUpdate({
+            target: FF.fornecedorId,
+            set: {
+              diaristaAte: ate,
+              papel: sql`case when ${FF.papel} = 'diarista' then 'funcionario' else ${FF.papel} end`,
+              ativo: true,
+              atualizadoEm: new Date(),
+            },
+          });
+      }
+    } catch {
+      /* o RH ajusta em RH → Funcionários (Diarista até) */
+    }
   }
 
   return NextResponse.json({ ok: true, assinadoEm: agora.toISOString() });

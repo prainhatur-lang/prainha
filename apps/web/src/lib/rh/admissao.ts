@@ -109,6 +109,16 @@ export interface TermosConvite {
   jornadaId?: string;
   /** Pedido do exame admissional (ASO): onde e quando se apresentar. Vazio = sem pedido. */
   aso?: AsoConvite;
+  /** Já trabalha antes do registro: até a véspera de `admissao` recebe por diária
+   *  na folha semanal (fornecedor_folha.diarista_ate). 05/11/2026. */
+  diariaAntes?: boolean;
+}
+
+/** Véspera do registro (último dia pago como diária). */
+export function vesperaDoRegistro(admissao: string): string {
+  const [y, m, d] = admissao.split('-').map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d - 1));
+  return t.toISOString().slice(0, 10);
 }
 
 /** Encaminhamento pro exame admissional (04/11/2026). O registro é `admissao`. */

@@ -143,6 +143,7 @@ const Termos = z.object({
   setor: z.string().max(20).default(''),
   jornadaId: z.string().uuid().optional(),
   aso: Aso.optional(),
+  diariaAntes: z.boolean().optional(),
 });
 
 const Body = z.discriminatedUnion('acao', [
@@ -159,6 +160,13 @@ const Body = z.discriminatedUnion('acao', [
     folgaNova: z.number().int().min(0).max(6).optional(),
   }),
   z.object({ acao: z.literal('cancelar'), id: z.string().uuid() }),
+  // Data do registro + diária até a véspera (antes de assinar).
+  z.object({
+    acao: z.literal('registro'),
+    id: z.string().uuid(),
+    admissao: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    diariaAntes: z.boolean(),
+  }),
   z.object({
     acao: z.literal('aso'),
     id: z.string().uuid(),
@@ -189,6 +197,18 @@ export async function POST(req: Request) {
       .update(C)
       .set({ status: 'cancelado', canceladoEm: new Date(), canceladoPor: user.id })
       .where(and(eq(C.id, b.id), inArray(C.status, ['enviado', 'aberto'])));
+    return NextResponse.json({ ok: true });
+  }
+
+  if (b.acao === 'registro') {
+    const C = schema.admissaoConvite;
+    const [c] = await db.select({ filialId: C.filialId, status: C.status, termos: C.termos }).from(C).where(eq(C.id, b.id)).limit(1);
+    if (!c) return NextResponse.json({ error: 'convite não encontrado' }, { status: 404 });
+    if (!(await acessoFilial(user.id, c.filialId))) return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
+    if (c.status !== 'enviado' && c.status !== 'aberto')
+      return NextResponse.json({ error: 'já foi assinado ou cancelado — a diária muda em RH → Funcionários (Diarista até)' }, { status: 409 });
+    const t = { ...(c.termos as TermosConvite), admissao: b.admissao, diariaAntes: b.diariaAntes || undefined };
+    await db.update(C).set({ termos: t }).where(and(eq(C.id, b.id), inArray(C.status, ['enviado', 'aberto'])));
     return NextResponse.json({ ok: true });
   }
 

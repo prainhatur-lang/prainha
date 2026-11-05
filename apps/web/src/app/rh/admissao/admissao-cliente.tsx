@@ -50,7 +50,7 @@ interface Convite {
   nome: string;
   telefone: string;
   status: string;
-  termos: { cargo?: string; modelo?: string; valor?: string; admissao?: string; aso?: Aso };
+  termos: { cargo?: string; modelo?: string; valor?: string; admissao?: string; aso?: Aso; diariaAntes?: boolean };
   link: string;
   guiaAso?: string | null;
   email?: string;
@@ -116,6 +116,11 @@ function proximaSegunda(ymd: string): string {
   t.setUTCDate(t.getUTCDate() + (((8 - t.getUTCDay()) % 7) || 7));
   return t.toISOString().slice(0, 10);
 }
+/** Véspera do registro: último dia pago como diária. */
+function vespera(ymd: string): string {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d - 1)).toISOString().slice(0, 10);
+}
 const asoOk = (a: Aso) => a.clinica.trim().length > 1 && /^\d{4}-\d{2}-\d{2}$/.test(a.data);
 
 const MODELOS = [
@@ -149,6 +154,11 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
   const [valor, setValor] = useState('1670,00');
   const [jornada, setJornada] = useState('44 horas semanais, escala 6x1, com intervalo de 1 hora');
   const [admissao, setAdmissao] = useState(hoje);
+  const [diariaAntes, setDiariaAntes] = useState(false);
+  const [regPara, setRegPara] = useState<string | null>(null);
+  const [regData, setRegData] = useState('');
+  const [regDiaria, setRegDiaria] = useState(false);
+  const [regSalvando, setRegSalvando] = useState(false);
   const [expDias, setExpDias] = useState('45');
   const [expProrrogacao, setExpProrrogacao] = useState('45');
   const [local, setLocal] = useState('');
@@ -286,6 +296,7 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
             setor: '',
             ...(jornadaId && folgaNova === undefined ? { jornadaId } : {}),
             ...(pedirAso && asoOk(aso) ? { aso } : {}),
+            ...(diariaAntes && admissao > hoje ? { diariaAntes: true } : {}),
           },
         }),
       });
@@ -311,6 +322,31 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
     });
     if (!r.ok) alert((await r.json()).error ?? 'falhou');
     void carregar();
+  }
+
+  function abrirRegistro(v: Convite) {
+    setRegPara(regPara === v.id ? null : v.id);
+    setRegData(v.termos.admissao ?? proximaSegunda(hoje));
+    setRegDiaria(!!v.termos.diariaAntes);
+  }
+
+  async function salvarRegistro(v: Convite) {
+    setRegSalvando(true);
+    try {
+      const r = await fetch('/api/rh/admissao', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ acao: 'registro', id: v.id, admissao: regData, diariaAntes: regDiaria }),
+      });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error ?? 'falhou');
+      setRegPara(null);
+      void carregar();
+    } catch (e) {
+      alert((e as Error).message);
+    } finally {
+      setRegSalvando(false);
+    }
   }
 
   function abrirAso(v: Convite) {
@@ -584,6 +620,15 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
               <button type="button" className="mt-1 text-xs text-blue-700 underline" onClick={() => setAdmissao(proximaSegunda(hoje))}>
                 próxima segunda ({fmtData(proximaSegunda(hoje))})
               </button>
+              {admissao > hoje && (
+                <span className="mt-2 flex items-start gap-2 text-xs text-slate-700">
+                  <input type="checkbox" className="mt-0.5" checked={diariaAntes} onChange={(e) => setDiariaAntes(e.target.checked)} />
+                  <span>
+                    Já trabalha antes do registro, recebendo por diária
+                    {diariaAntes && <> — diária na folha semanal até {fmtData(vespera(admissao))}, registro a partir de {fmtData(admissao)}</>}
+                  </span>
+                </span>
+              )}
             </label>
             {modelo === 'experiencia' && (
               <>
@@ -662,7 +707,8 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
                   <span className={`rounded px-2 py-0.5 text-xs ${st.c}`}>{st.t}</span>
                   <b>{v.nome}</b>
                   <span className="text-xs text-slate-500">
-                    {v.termos.cargo} · início {fmtData(v.termos.admissao ?? null)} · enviado {fmtHora(v.criadoEm)}
+                    {v.termos.cargo} · {v.termos.diariaAntes ? 'registro' : 'início'} {fmtData(v.termos.admissao ?? null)}
+                    {v.termos.diariaAntes && v.termos.admissao ? ` · diária até ${fmtData(vespera(v.termos.admissao))}` : ''} · enviado {fmtHora(v.criadoEm)}
                     {v.assinadoEm ? ` · assinou ${fmtHora(v.assinadoEm)}` : v.docs ? ` · ${v.docs} doc(s) subidos` : ''}
                   </span>
                   <span className="ml-auto flex gap-3 text-xs">
@@ -681,6 +727,11 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
                         guia ASO
                       </a>
                     )}
+                    {(v.status === 'enviado' || v.status === 'aberto') && (
+                      <button className="text-blue-700 underline" onClick={() => abrirRegistro(v)}>
+                        📅 registro / diária
+                      </button>
+                    )}
                     {v.status !== 'cancelado' && (
                       <button className="text-amber-700 underline" onClick={() => abrirAso(v)}>
                         🩺 {v.termos.aso ? 'reenviar ASO' : 'pedir ASO'}
@@ -698,6 +749,32 @@ export function AdmissaoCliente({ filialId, filialNome, hoje, empregadores, empr
                     )}
                   </span>
                 </div>
+                {regPara === v.id && (
+                  <div className="mt-2 rounded-md border border-blue-200 bg-blue-50/50 p-3 text-xs text-slate-700">
+                    <label className="block">
+                      Data do registro (admissão)
+                      <input type="date" className={inp} value={regData} onChange={(e) => setRegData(e.target.value)} />
+                      <button type="button" className="mt-1 text-blue-700 underline" onClick={() => setRegData(proximaSegunda(hoje))}>
+                        próxima segunda ({fmtData(proximaSegunda(hoje))})
+                      </button>
+                    </label>
+                    <label className="mt-2 flex items-start gap-2">
+                      <input type="checkbox" className="mt-0.5" checked={regDiaria} onChange={(e) => setRegDiaria(e.target.checked)} />
+                      <span>
+                        Até o registro recebe por diária
+                        {regDiaria && regData && <> — diária na folha semanal até {fmtData(vespera(regData))}; quando assinar, a ficha fica com &quot;Diarista até&quot; nessa data</>}
+                      </span>
+                    </label>
+                    <button
+                      className="mt-3 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                      disabled={!/^\d{4}-\d{2}-\d{2}$/.test(regData) || regSalvando}
+                      onClick={() => salvarRegistro(v)}
+                    >
+                      {regSalvando ? 'Salvando…' : 'Salvar'}
+                    </button>
+                    <span className="ml-2 text-slate-500">O contrato que a pessoa assina já sai com a data nova.</span>
+                  </div>
+                )}
                 {asoPara === v.id && (
                   <div className="mt-2 rounded-md border border-amber-200 bg-amber-50/50 p-3">
                     <div className="grid gap-3 sm:grid-cols-2">
