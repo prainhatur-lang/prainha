@@ -1629,6 +1629,9 @@ async function pontoEmAbertoDaCasa(filialId: string, dia: string): Promise<Ponto
  * → escala até 22h): o adicional noturno é lei e continua pago; o jeito de não
  * gastar com ele é a equipe sair até 22h. Diarista fica fora (não tem noturno).
  */
+/** Dono 05/11/2026: tirou o noturno e "não avisa nada" — o bloco 🌙 fica desligado. Voltar = true. */
+const AVISAR_SAIDA_DEPOIS_22 = false;
+
 async function saidasDepoisDas22DaCasa(filialId: string, dia: string): Promise<SaidaDepoisDas22[]> {
   const rows = await q<{ nome: string; saida: string; minutos: number; regime: string | null }>(sql`
     WITH s AS (
@@ -1723,8 +1726,8 @@ export async function montarRelatorioFiliais(
         console.error('[relatorio-diario] ponto em aberto:', e);
         return [] as PontoAberto[];
       });
-      // Saída depois das 22h (05/11/2026, dono: escala até 22h pra não pagar noturno). Extra — falhou, sai sem.
-      casa.saidasDepoisDas22 = await saidasDepoisDas22DaCasa(f.id, dia).catch((e) => {
+      // Saída depois das 22h (05/11/2026). Desligado no mesmo dia (dono: "não avisa nada") — AVISAR_SAIDA_DEPOIS_22.
+      casa.saidasDepoisDas22 = !AVISAR_SAIDA_DEPOIS_22 ? [] : await saidasDepoisDas22DaCasa(f.id, dia).catch((e) => {
         console.error('[relatorio-diario] saída depois das 22h:', e);
         return [] as SaidaDepoisDas22[];
       });

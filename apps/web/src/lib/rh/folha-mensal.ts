@@ -15,6 +15,15 @@
 // O que o sistema não sabe (plano de saúde,
 // afastamento, rescisão, IRRF) fica de fora e aparece como diferença.
 
+/**
+ * Decisão do dono 05/11/2026 ("só retira o add noturno, pode deixar o ponto
+ * normal", "não avisa nada"): a nossa folha mensal não paga adicional noturno
+ * nem avisa horas noturnas. O ponto continua igual (o espelho ainda mostra a
+ * hora noturna). Mesma linha da folha semanal (PAGAR_NOTURNO_NA_FOLHA_SEMANAL,
+ * 27/10). Voltar = true.
+ */
+export const PAGAR_NOTURNO_NA_FOLHA_MENSAL = false;
+
 export type RegimeFolha = 'clt_mensal' | 'intermitente_hora';
 
 export interface DiaHoras {
@@ -182,7 +191,7 @@ export function calcularFolhaMensal(input: {
     if (af && af.casa > 0) avisos.push(`Atestado: ${af.casa} dia(s) no mês até o 15º dia de afastamento, pagos pela casa.`);
     if (diasInss > 0) avisos.push(`Afastado: ${diasInss} dia(s) do 16º dia em diante ficam com o INSS e saem do salário.`);
 
-    if (noturnoMin > 0) {
+    if (PAGAR_NOTURNO_NA_FOLHA_MENSAL && noturnoMin > 0) {
       const hora = r2(salario / 220);
       const hn = noturnoMin / 60;
       const adic = r2(r2(hn) * hora * 0.2);
@@ -214,7 +223,7 @@ export function calcularFolhaMensal(input: {
     D('998', 'I.N.S.S.', 0, calcularInss(semDec));
     D('825', 'INSS 13o SALARIO', 0, calcularInss(dec));
     fgts = r2(tr2(semDec * 0.08) + tr2(dec * 0.08));
-    if (horasNoturnas > 0) avisos.push(`${horasNoturnas.toLocaleString('pt-BR')} h noturnas no ponto — o contador não paga noturno no intermitente.`);
+    if (PAGAR_NOTURNO_NA_FOLHA_MENSAL && horasNoturnas > 0) avisos.push(`${horasNoturnas.toLocaleString('pt-BR')} h noturnas no ponto — o contador não paga noturno no intermitente.`);
     if (dias.length === 0) avisos.push('Sem ponto no mês: intermitente sem horas não recebe.');
   }
 
@@ -234,7 +243,8 @@ export function calcularFolhaMensal(input: {
   return {
     regime,
     horas,
-    horasNoturnas,
+    // Desligado (05/11/2026): a tela não mostra mais "h noturnas".
+    horasNoturnas: PAGAR_NOTURNO_NA_FOLHA_MENSAL ? horasNoturnas : 0,
     diasNoMes,
     diasComPonto: dias.filter((d) => d.min > 0).length,
     rubricas: rub,
