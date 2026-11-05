@@ -107,3 +107,6 @@ vendas-local/server.novo.mjs
 # lixo de build renomeado quando o turbopack corrompe o cache — nunca commitar
 .next-corrompido-*/
 .turbo-corrompido-*/
+
+# banco da instância dos clientes (SaaS)
+.env.clientes
