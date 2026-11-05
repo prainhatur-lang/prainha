@@ -192,6 +192,7 @@
     "migrate:balanco": "tsx scripts/migrate-balanco.ts",
     "migrate:mesa-juntada-lista": "tsx scripts/migrate-mesa-juntada-lista.ts",
     "migrate:fornecedor-grupo": "tsx scripts/migrate-fornecedor-grupo.ts",
+    "migrate:fornecedor-cadastro-unico": "tsx scripts/migrate-fornecedor-cadastro-unico.ts",
     "migrate:volume-unitario": "tsx scripts/migrate-volume-unitario.ts",
     "migrate:transferencia": "tsx scripts/migrate-transferencia.ts",
     "migrate:depara-filial": "tsx scripts/migrate-depara-filial.ts",
