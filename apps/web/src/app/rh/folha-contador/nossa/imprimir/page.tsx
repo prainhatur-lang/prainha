@@ -11,6 +11,7 @@ import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { brl } from '@/lib/format';
 import { hojeBr } from '@/lib/datas';
+import { comRegimeDoMes } from '@/lib/rh/regime-no-mes';
 import { calcularFolhaMensal, type RegimeFolha } from '@/lib/rh/folha-mensal';
 import { ajudaCustoPorCpf, horasDoMesPorCpf, salarioFamiliaPorCpf } from '@/lib/rh/folha-mensal-dados';
 import { proximosFeriados } from '@/lib/reservas/feriados';
@@ -72,10 +73,13 @@ export default async function ImprimirNossaFolhaPage(props: { searchParams: Prom
   const fim = ultimoDiaComp(comp);
   const previa = comp >= mesAtual;
 
-  const todos = await db
-    .select()
-    .from(schema.funcionario)
-    .where(and(eq(schema.funcionario.filialId, filial.id), isNotNull(schema.funcionario.regimeSalarial)));
+  const todos = await comRegimeDoMes(
+    await db
+      .select()
+      .from(schema.funcionario)
+      .where(and(eq(schema.funcionario.filialId, filial.id), isNotNull(schema.funcionario.regimeSalarial))),
+    ini,
+  );
   const doMes = todos
     .filter(
       (f) =>

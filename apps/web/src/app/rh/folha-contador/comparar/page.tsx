@@ -11,6 +11,7 @@ import { escolherFilial } from '@/lib/filial-ativa';
 import { brl } from '@/lib/format';
 import { hojeBr } from '@/lib/datas';
 import { AppHeader } from '@/components/app-header';
+import { comRegimeDoMes } from '@/lib/rh/regime-no-mes';
 import { calcularFolhaMensal, type FolhaCalc, type RegimeFolha } from '@/lib/rh/folha-mensal';
 import { ajudaCustoPorCpf, horasDoMesPorCpf, salarioFamiliaPorCpf } from '@/lib/rh/folha-mensal-dados';
 import { proximosFeriados } from '@/lib/reservas/feriados';
@@ -93,7 +94,7 @@ export default async function CompararFolhaPage(props: { searchParams: Promise<S
   ]);
 
   // Quem entra do nosso lado: tem regime + salário e o contrato pega o mês.
-  const nossosNoMes = nossos.filter(
+  const nossosNoMes = (await comRegimeDoMes(nossos, ini)).filter(
     (f) =>
       (!f.dataAdmissao || f.dataAdmissao <= fim) &&
       (!f.dataDesligamento || f.dataDesligamento >= ini) &&
@@ -103,7 +104,10 @@ export default async function CompararFolhaPage(props: { searchParams: Promise<S
   const cpfsContador = [...new Set(contador.map((c) => so11(c.cpf)).filter((c): c is string => !!c))];
   const faltam = cpfsContador.filter((c) => !nossosNoMes.some((f) => f.cpf === c));
   const deFora = faltam.length
-    ? await db.select().from(schema.funcionario).where(and(inArray(schema.funcionario.cpf, faltam), isNotNull(schema.funcionario.regimeSalarial)))
+    ? await comRegimeDoMes(
+        await db.select().from(schema.funcionario).where(and(inArray(schema.funcionario.cpf, faltam), isNotNull(schema.funcionario.regimeSalarial))),
+        ini,
+      )
     : [];
   const cadastroPorCpf = new Map<string, (typeof nossos)[number]>();
   for (const f of [...deFora, ...nossosNoMes]) if (f.cpf) cadastroPorCpf.set(f.cpf, f);
