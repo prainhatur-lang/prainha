@@ -33,6 +33,8 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
   const [semSalario, setSemSalario] = useState<string[]>([]);
   const [previa, setPrevia] = useState(false);
   const [saidas, setSaidas] = useState<{ nome: string; desligamento: string }[]>([]);
+  const [diaristas, setDiaristas] = useState<string[]>([]);
+  const [semExtrato, setSemExtrato] = useState<string[]>([]);
   const [msg, setMsg] = useState<string | null>(null);
   const [erro, setErro] = useState<string | null>(null);
 
@@ -48,6 +50,8 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
       setSemSalario(j.semSalario ?? []);
       setPrevia(!!j.previa);
       setSaidas(j.saidas ?? []);
+      setDiaristas(j.diaristas ?? []);
+      setSemExtrato(j.semExtrato ?? []);
       setMarcados(new Set((j.itens as Item[]).filter((i) => !i.jaLancadaId && !i.pareceLancada).map((i) => i.ref)));
     } catch (e) {
       setErro(e instanceof Error ? e.message : 'erro');
@@ -120,7 +124,18 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
           {saidas.map((x) => `${x.nome} (${x.desligamento.slice(8, 10)}/${x.desligamento.slice(5, 7)})`).join(', ')}.
         </p>
       )}
-      {carregando && !itens && <p className="text-xs text-slate-500">Carregando…</p>}
+      {diaristas.length > 0 && (
+        <p className="mb-2 rounded bg-slate-50 px-2 py-1 text-xs text-slate-600">
+          Ainda não registrados (nunca apareceram na folha do contador) e ficam fora — diarista recebe pela diária, entra na folha só depois de registrado:{' '}
+          {diaristas.join(', ')}.
+        </p>
+      )}
+      {semExtrato.length > 0 && (
+        <p className="mb-2 rounded bg-amber-50 px-2 py-1 text-xs text-amber-800">
+          Extrato do contador deste mês ainda não importado ({semExtrato.join(', ')}): não dá pra separar diarista de registrado nessas empresas. Importe o extrato antes de lançar.
+        </p>
+      )}
+      {carregando && !itens &&<p className="text-xs text-slate-500">Carregando…</p>}
       {itens && itens.length === 0 && <p className="text-xs text-slate-500">Nada pra lançar nesta casa neste mês.</p>}
       {itens && itens.length > 0 && (
         <>

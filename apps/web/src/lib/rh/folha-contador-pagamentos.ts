@@ -16,7 +16,7 @@
 // "parece já lançada" e fica fora por padrão.
 
 import { db, schema } from '@concilia/db';
-import { and, eq, ilike, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, ilike, inArray, isNull, lte, sql } from 'drizzle-orm';
 import { EB_CNPJ } from '@/lib/eb/faturas';
 import { LELIS_CNPJ, fornecedorPagadorNaCasa } from '@/lib/impostos/guia';
 import { nossaFolhaDoMes } from '@/lib/rh/nossa-folha';
@@ -39,6 +39,74 @@ export interface ItemPagamentoFolha {
 }
 
 const digitos = (s: string | null | undefined) => (s ?? '').replace(/\D/g, '');
+
+// Diarista não entra na folha (regra do dono 05/11/2026: "enquanto ele está
+// diarista, ele não pode entrar na folha. Ele vai receber só por diária. A partir
+// do momento que ele for registrado, aí ele entra na folha"). Registrado = já
+// apareceu no extrato do contador em algum mês até este (o cadastro pode ter
+// admissão e empresa antes do registro de verdade — José e Anthony, Mar,
+// out/2026). "Algum mês" e não "este mês": intermitente registrado que o
+// contador não pôs no mês (Gilmar, Tabuará, out/2026) continua registrado.
+// Quem nunca apareceu só sai quando o extrato daquela empresa (e casa, na E.B.)
+// do mês já foi importado; sem extrato não tira ninguém e avisa.
+export interface RegistroNoMes {
+  /** funcionarioId → nome de quem fica fora por nunca ter estado na folha do contador. */
+  diaristas: Map<string, string>;
+  /** Empresas sem extrato importado no mês (ninguém delas foi tirado). */
+  semExtrato: string[];
+}
+
+export async function registroNoMes(
+  casaFilialId: string,
+  comp: string,
+  linhas: {
+    funcionarioId: string;
+    nome: string;
+    cpf: string | null;
+    cnpjRegistro: string | null;
+    empresaRegistro: string | null;
+    desligamento: string | null;
+    liquido: number;
+  }[],
+  casaCnpj: string,
+): Promise<RegistroNoMes> {
+  const rows = await db
+    .select({
+      competencia: schema.folhaContador.competencia,
+      filialId: schema.folhaContador.filialId,
+      cnpj: schema.folhaContador.cnpj,
+      funcionarioId: schema.folhaContador.funcionarioId,
+      cpf: schema.folhaContador.cpf,
+    })
+    .from(schema.folhaContador)
+    .where(lte(schema.folhaContador.competencia, comp));
+  const ids = new Set(rows.map((r) => r.funcionarioId).filter((x): x is string => !!x));
+  const cpfs = new Set(rows.map((r) => digitos(r.cpf)).filter((x) => x.length === 11));
+  const temExtrato = (cnpj: string) =>
+    rows.some((r) => r.competencia === comp && r.cnpj === cnpj && (cnpj !== EB_CNPJ || r.filialId === casaFilialId));
+  const diaristas = new Map<string, string>();
+  const semExtrato = new Set<string>();
+  for (const l of linhas) {
+    // só quem a folha pagaria (líquido > 0 e não saiu no mês)
+    if (!(l.liquido > 0) || (l.desligamento && l.desligamento.slice(0, 7) === comp)) continue;
+    if (ids.has(l.funcionarioId) || cpfs.has(digitos(l.cpf))) continue;
+    const cnpj = digitos(l.cnpjRegistro) || casaCnpj;
+    if (!temExtrato(cnpj)) {
+      semExtrato.add(l.empresaRegistro || cnpj);
+      continue;
+    }
+    diaristas.set(l.funcionarioId, l.nome);
+  }
+  return { diaristas, semExtrato: [...semExtrato] };
+}
+
+/** Quem fica fora da folha do mês por não ser registrado (pra tela). */
+export async function diaristasForaDaFolha(casaFilialId: string, comp: string): Promise<{ diaristas: string[]; semExtrato: string[] }> {
+  const [casa] = await db.select({ cnpj: schema.filial.cnpj }).from(schema.filial).where(eq(schema.filial.id, casaFilialId)).limit(1);
+  const linhas = await nossaFolhaDoMes(casaFilialId, comp);
+  const r = await registroNoMes(casaFilialId, comp, linhas, digitos(casa?.cnpj));
+  return { diaristas: [...r.diaristas.values()].sort((a, b) => a.localeCompare(b)), semExtrato: r.semExtrato };
+}
 
 function mmAaaa(comp: string): string {
   const [a, m] = comp.split('-');
@@ -74,6 +142,7 @@ export async function pagamentosDaFolha(casaFilialId: string, comp: string): Pro
     .limit(1);
   const casaCnpj = digitos(casa?.cnpj);
   const linhas = await nossaFolhaDoMes(casaFilialId, comp);
+  const registro = await registroNoMes(casaFilialId, comp, linhas, casaCnpj);
 
   const itens = new Map<string, ItemPagamentoFolha>();
   for (const l of linhas) {
@@ -84,6 +153,8 @@ export async function pagamentosDaFolha(casaFilialId: string, comp: string): Pro
     if (!(liquido > 0)) continue;
     // saiu no mês → vai pela rescisão, não pela folha (senão paga em dobro)
     if (l.desligamento && l.desligamento.slice(0, 7) === comp) continue;
+    // diarista (fora do extrato do contador) → recebe pela diária, não pela folha
+    if (registro.diaristas.has(l.funcionarioId)) continue;
     const pessoa = { nome: l.nome, cpf: l.cpf, liquido };
     const refPessoa = `fc:${comp}:${cnpj}:${digitos(l.cpf) || l.nome}`.slice(0, 50);
     if (cnpj === LELIS_CNPJ) {
