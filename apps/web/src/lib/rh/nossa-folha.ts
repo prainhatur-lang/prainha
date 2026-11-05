@@ -17,6 +17,7 @@ export interface LinhaNossaFolha {
   empresaRegistro: string | null;
   cnpjRegistro: string | null;
   fornecedorId: string | null;
+  desligamento: string | null;
   liquido: number;
 }
 
@@ -68,6 +69,7 @@ export async function nossaFolhaDoMes(filialId: string, comp: string): Promise<L
       empresaRegistro: f.empresaRegistro,
       cnpjRegistro: f.cnpjRegistro,
       fornecedorId: f.fornecedorId,
+      desligamento: f.dataDesligamento,
       liquido: calc.liquido,
     };
   });
@@ -95,4 +97,19 @@ export async function semSalarioNoMes(filialId: string, comp: string): Promise<s
         !(Number(f.salarioBase) > 0),
     )
     .map((f) => f.nome);
+}
+
+// Quem saiu dentro do mês: recebe pela rescisão (TRCT), não pela folha do mês —
+// o contador zera o líquido mensal com a linha "LIQUIDO RESCISAO". Lançar a folha
+// dessas pessoas pagaria em dobro (out/2026 na Mar: 10 pessoas, ~R$ 15 mil).
+export async function saidasNoMes(filialId: string, comp: string): Promise<{ nome: string; desligamento: string }[]> {
+  const ini = `${comp}-01`;
+  const fim = ultimoDiaComp(comp);
+  const linhas = await db
+    .select({ nome: schema.funcionario.nome, desligamento: schema.funcionario.dataDesligamento })
+    .from(schema.funcionario)
+    .where(and(eq(schema.funcionario.filialId, filialId), isNotNull(schema.funcionario.regimeSalarial)));
+  return linhas
+    .filter((l): l is { nome: string; desligamento: string } => !!l.desligamento && l.desligamento >= ini && l.desligamento <= fim)
+    .sort((a, b) => a.nome.localeCompare(b.nome));
 }

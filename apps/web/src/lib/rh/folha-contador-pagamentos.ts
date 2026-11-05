@@ -82,6 +82,8 @@ export async function pagamentosDaFolha(casaFilialId: string, comp: string): Pro
     const empresa = l.empresaRegistro || casa?.nome || '';
     const liquido = l.liquido;
     if (!(liquido > 0)) continue;
+    // saiu no mês → vai pela rescisão, não pela folha (senão paga em dobro)
+    if (l.desligamento && l.desligamento.slice(0, 7) === comp) continue;
     const pessoa = { nome: l.nome, cpf: l.cpf, liquido };
     const refPessoa = `fc:${comp}:${cnpj}:${digitos(l.cpf) || l.nome}`.slice(0, 50);
     if (cnpj === LELIS_CNPJ) {

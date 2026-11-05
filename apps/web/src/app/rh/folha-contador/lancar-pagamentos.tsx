@@ -27,6 +27,7 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
   const [venc, setVenc] = useState('');
   const [semSalario, setSemSalario] = useState<string[]>([]);
   const [previa, setPrevia] = useState(false);
+  const [saidas, setSaidas] = useState<{ nome: string; desligamento: string }[]>([]);
   const [msg, setMsg] = useState<string | null>(null);
   const [erro, setErro] = useState<string | null>(null);
 
@@ -41,6 +42,7 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
       setVenc(j.vencimento);
       setSemSalario(j.semSalario ?? []);
       setPrevia(!!j.previa);
+      setSaidas(j.saidas ?? []);
       setMarcados(new Set((j.itens as Item[]).filter((i) => !i.jaLancadaId && !i.pareceLancada).map((i) => i.ref)));
     } catch (e) {
       setErro(e instanceof Error ? e.message : 'erro');
@@ -105,6 +107,12 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
       {semSalario.length > 0 && (
         <p className="mb-2 rounded bg-amber-50 px-2 py-1 text-xs text-amber-800">
           Fora da folha por falta de salário/valor da hora no cadastro: {semSalario.join(', ')}. Acerte o cadastro antes de lançar.
+        </p>
+      )}
+      {saidas.length > 0 && (
+        <p className="mb-2 rounded bg-slate-50 px-2 py-1 text-xs text-slate-600">
+          Saíram no mês e ficam fora (recebem pela rescisão):{' '}
+          {saidas.map((x) => `${x.nome} (${x.desligamento.slice(8, 10)}/${x.desligamento.slice(5, 7)})`).join(', ')}.
         </p>
       )}
       {carregando && !itens && <p className="text-xs text-slate-500">Carregando…</p>}

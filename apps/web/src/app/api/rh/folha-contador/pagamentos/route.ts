@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { exigirPermApi, negarSemPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { hojeBr } from '@/lib/datas';
-import { semSalarioNoMes } from '@/lib/rh/nossa-folha';
+import { saidasNoMes, semSalarioNoMes } from '@/lib/rh/nossa-folha';
 import { lancarPagamentosDaFolha, pagamentosDaFolha, quintoDiaUtil } from '@/lib/rh/folha-contador-pagamentos';
 
 export const dynamic = 'force-dynamic';
@@ -30,8 +30,12 @@ export async function GET(req: Request) {
   const comp = url.searchParams.get('comp') ?? '';
   if (!COMP.test(comp) || !filialId) return NextResponse.json({ error: 'dados inválidos' }, { status: 400 });
   if (!(await podeCasa(auth.user.id, filialId))) return NextResponse.json({ error: 'sem acesso à casa' }, { status: 403 });
-  const [itens, semSalario] = await Promise.all([pagamentosDaFolha(filialId, comp), semSalarioNoMes(filialId, comp)]);
-  return NextResponse.json({ itens, semSalario, vencimento: quintoDiaUtil(comp), previa: comp >= hojeBr().slice(0, 7) });
+  const [itens, semSalario, saidas] = await Promise.all([
+    pagamentosDaFolha(filialId, comp),
+    semSalarioNoMes(filialId, comp),
+    saidasNoMes(filialId, comp),
+  ]);
+  return NextResponse.json({ itens, semSalario, saidas, vencimento: quintoDiaUtil(comp), previa: comp >= hojeBr().slice(0, 7) });
 }
 
 const Body = z.object({
