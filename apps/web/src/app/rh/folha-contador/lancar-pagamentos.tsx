@@ -10,13 +10,14 @@ interface Item {
   empresa: string;
   tipo: 'repasse_eb' | 'repasse_lelis' | 'direto';
   descricao: string;
-  pessoas: { nome: string; liquido: number }[];
+  pessoas: { nome: string; cpf: string | null; liquido: number }[];
   valor: number;
   jaLancadaId: string | null;
   pareceLancada: string | null;
   semFavorecido: string[];
 }
 
+const chave = (x: { cpf: string | null; nome: string }) => (x.cpf ?? '').replace(/\D/g, '') || x.nome;
 const brl = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 
 export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; comp: string }) {
@@ -25,6 +26,10 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
   const [itens, setItens] = useState<Item[] | null>(null);
   const [marcados, setMarcados] = useState<Set<string>>(new Set());
   const [venc, setVenc] = useState('');
+  const [fora, setFora] = useState<Set<string>>(new Set());
+  const [verPessoas, setVerPessoas] = useState<string | null>(null);
+  const valorDe = (i: Item) =>
+    i.tipo === 'repasse_eb' ? Math.round(i.pessoas.filter((x) => !fora.has(chave(x))).reduce((t, x) => t + x.liquido, 0) * 100) / 100 : i.valor;
   const [semSalario, setSemSalario] = useState<string[]>([]);
   const [previa, setPrevia] = useState(false);
   const [saidas, setSaidas] = useState<{ nome: string; desligamento: string }[]>([]);
@@ -53,7 +58,7 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
 
   async function lancar() {
     if (!marcados.size) return;
-    const soma = (itens ?? []).filter((i) => marcados.has(i.ref)).reduce((s, i) => s + i.valor, 0);
+    const soma = (itens ?? []).filter((i) => marcados.has(i.ref)).reduce((s, i) => s + valorDe(i), 0);
     if (!confirm(`Lançar ${marcados.size} conta(s) a pagar, total ${brl(soma)}, vencimento ${venc.split('-').reverse().join('/')}?`)) return;
     setCarregando(true);
     setErro(null);
@@ -61,7 +66,7 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
       const r = await fetch('/api/rh/folha-contador/pagamentos', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ filialId, comp, refs: [...marcados], vencimento: venc }),
+        body: JSON.stringify({ filialId, comp, refs: [...marcados], vencimento: venc, fora: [...fora] }),
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error ?? 'erro');
@@ -141,6 +146,36 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
                     <p className="text-[11px] text-slate-400">
                       {i.empresa} · {i.pessoas.length} pessoa(s)
                     </p>
+                    {i.tipo === 'repasse_eb' && !i.jaLancadaId && (
+                      <button
+                        type="button"
+                        onClick={() => setVerPessoas(verPessoas === i.ref ? null : i.ref)}
+                        className="text-[11px] text-blue-600 hover:underline"
+                      >
+                        {verPessoas === i.ref ? 'esconder pessoas' : 'ver pessoas / tirar alguém'}
+                        {i.pessoas.some((x) => fora.has(chave(x))) && ` (${i.pessoas.filter((x) => fora.has(chave(x))).length} fora)`}
+                      </button>
+                    )}
+                    {verPessoas === i.ref && (
+                      <ul className="mt-1 space-y-0.5">
+                        {i.pessoas.map((x) => (
+                          <li key={chave(x)} className="flex items-center gap-2 text-[11px] text-slate-600">
+                            <input
+                              type="checkbox"
+                              checked={!fora.has(chave(x))}
+                              onChange={(e) => {
+                                const n = new Set(fora);
+                                if (e.target.checked) n.delete(chave(x));
+                                else n.add(chave(x));
+                                setFora(n);
+                              }}
+                            />
+                            <span className={fora.has(chave(x)) ? 'line-through' : ''}>{x.nome}</span>
+                            <span className="ml-auto">{brl(x.liquido)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                     {i.jaLancadaId && <p className="text-[11px] text-emerald-700">✓ já lançada</p>}
                     {i.pareceLancada && !i.jaLancadaId && (
                       <p className="text-[11px] text-amber-700">Parece já lançada à mão: {i.pareceLancada}</p>
@@ -149,7 +184,7 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
                       <p className="text-[11px] text-amber-700">Sem favorecido no cadastro: a conta sai sem fornecedor.</p>
                     )}
                   </td>
-                  <td className="py-1.5 text-right font-medium text-slate-900">{brl(i.valor)}</td>
+                  <td className="py-1.5 text-right font-medium text-slate-900">{brl(valorDe(i))}</td>
                 </tr>
               ))}
             </tbody>
@@ -165,7 +200,7 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
               />
             </label>
             <span className="text-xs text-slate-600">
-              {selecionados.length} marcada(s) · {brl(selecionados.reduce((s, i) => s + i.valor, 0))}
+              {selecionados.length} marcada(s) · {brl(selecionados.reduce((s, i) => s + valorDe(i), 0))}
             </span>
             <button
               type="button"

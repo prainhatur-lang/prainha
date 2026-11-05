@@ -189,6 +189,11 @@ async function categoriaSalario(filialId: string): Promise<string | null> {
   return outra?.id ?? null;
 }
 
+/** Chave de uma pessoa da folha: CPF só dígitos, ou o nome. */
+export function chavePessoa(x: { cpf: string | null; nome: string }): string {
+  return digitos(x.cpf) || x.nome;
+}
+
 /** Cria as contas escolhidas. Pula o que já foi lançado. */
 export async function lancarPagamentosDaFolha(p: {
   casaFilialId: string;
@@ -196,9 +201,21 @@ export async function lancarPagamentosDaFolha(p: {
   refs: string[];
   vencimento: string;
   usuarioId: string;
+  /** chave da pessoa (CPF só dígitos, ou nome) tirada do repasse da E.B. — ex.: admitido no fim do mês que o contador só paga no mês seguinte */
+  fora?: string[];
 }): Promise<{ criadas: number; puladas: number; total: number }> {
   const itens = await pagamentosDaFolha(p.casaFilialId, p.comp);
-  const escolhidos = itens.filter((i) => p.refs.includes(i.ref) && !i.jaLancadaId);
+  const fora = new Set(p.fora ?? []);
+  const tiradas = new Map<string, string[]>();
+  for (const i of itens) {
+    if (i.tipo !== 'repasse_eb' || !fora.size) continue;
+    const sai = i.pessoas.filter((x) => fora.has(chavePessoa(x)));
+    if (!sai.length) continue;
+    tiradas.set(i.ref, sai.map((x) => x.nome));
+    i.pessoas = i.pessoas.filter((x) => !fora.has(chavePessoa(x)));
+    i.valor = Math.round(i.pessoas.reduce((t, x) => t + x.liquido, 0) * 100) / 100;
+  }
+  const escolhidos = itens.filter((i) => p.refs.includes(i.ref) && !i.jaLancadaId && i.valor > 0);
   if (!escolhidos.length) return { criadas: 0, puladas: p.refs.length, total: 0 };
 
   const categoriaId = await categoriaSalario(p.casaFilialId);
@@ -244,7 +261,9 @@ export async function lancarPagamentosDaFolha(p: {
         dataVencimento: p.vencimento,
         valor: i.valor.toFixed(2),
         descricao: i.descricao,
-        observacao: `Folha do sistema ${mmAaaa(p.comp)} — ${i.empresa} (líquido calculado pelo ponto + salário do cadastro). ${comoPagar}\n${linhasPessoas}`,
+        observacao: `Folha do sistema ${mmAaaa(p.comp)} — ${i.empresa} (líquido calculado pelo ponto + salário do cadastro). ${comoPagar}\n${linhasPessoas}${
+          tiradas.get(i.ref)?.length ? `\nFora deste lançamento: ${tiradas.get(i.ref)!.join(', ')}` : ''
+        }`,
         competencia: p.comp,
         codigoReferencia: i.ref,
         origem: 'FOLHA',

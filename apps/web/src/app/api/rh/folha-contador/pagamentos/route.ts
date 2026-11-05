@@ -43,6 +43,7 @@ const Body = z.object({
   comp: z.string().regex(COMP),
   refs: z.array(z.string().min(1).max(50)).min(1).max(200),
   vencimento: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  fora: z.array(z.string().min(1).max(200)).max(200).optional(),
 });
 
 export async function POST(req: Request) {
@@ -55,6 +56,6 @@ export async function POST(req: Request) {
   const d = parsed.data;
   if (d.comp >= hojeBr().slice(0, 7)) return NextResponse.json({ error: 'mês ainda não fechou: a folha é prévia' }, { status: 400 });
   if (!(await podeCasa(auth.user.id, d.filialId))) return NextResponse.json({ error: 'sem acesso à casa' }, { status: 403 });
-  const r = await lancarPagamentosDaFolha({ casaFilialId: d.filialId, comp: d.comp, refs: d.refs, vencimento: d.vencimento, usuarioId: auth.user.id });
+  const r = await lancarPagamentosDaFolha({ casaFilialId: d.filialId, comp: d.comp, refs: d.refs, vencimento: d.vencimento, usuarioId: auth.user.id, fora: d.fora });
   return NextResponse.json(r);
 }
