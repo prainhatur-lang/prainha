@@ -6,11 +6,23 @@ import { fmtHoras, fmtSaldo, folgasDaJornada, lerHoras, minutosSemana } from '@/
 import { createClient } from '@/lib/supabase/client';
 import { AtestadoCelularPainel } from './atestado-celular-painel';
 
+/** Tipo da pessoa pro filtro (pedido do dono 05/11/2026) — mesma regra do
+ *  filtro do /rh/ponto/relatorio. */
+export type TipoPessoa = 'clt' | '12x36' | 'intermitente' | 'diarista' | 'outros';
+const TIPOS: { id: TipoPessoa; txt: string; dica: string }[] = [
+  { id: 'clt', txt: 'CLT', dica: 'carteira assinada, mensalista' },
+  { id: '12x36', txt: '12x36', dica: 'jornada com 12x36 no nome' },
+  { id: 'intermitente', txt: 'Intermitente', dica: 'carteira assinada, contrato intermitente' },
+  { id: 'diarista', txt: 'Diarista', dica: 'papel diarista na folha' },
+  { id: 'outros', txt: 'Sem registro / outros', dica: 'não é registrado nem diarista (ex.: sem folha do contador)' },
+];
+
 export interface LinhaPessoa {
   id: string;
   nome: string;
   cargo: string | null;
   regime: string | null;
+  tipoPessoa?: TipoPessoa;
   jornadaId: string | null;
   jornadaNome: string | null;
   jornadaTipo: string | null;
@@ -123,6 +135,8 @@ export function BancoHorasManager({ filialId, hoje, podeLancar, podeAtestado: po
   const [atestado, setAtestado] = useState<LinhaPessoa | null | undefined>(undefined);
   const [cancelando, setCancelando] = useState<string | null>(null);
   const [celular, setCelular] = useState(false);
+  // Filtro por tipo (nenhum marcado = todos).
+  const [tiposSel, setTiposSel] = useState<TipoPessoa[]>([]);
 
   const todosAtestados = linhas
     .flatMap((l) => (l.atestados ?? []).map((a) => ({ ...a, nome: l.nome })))
@@ -146,9 +160,18 @@ export function BancoHorasManager({ filialId, hoje, podeLancar, podeAtestado: po
     router.refresh();
   }
 
-  const mensalistas = linhas.filter((l) => l.jornadaTipo === 'fixa');
-  const intermitentes = linhas.filter((l) => l.jornadaTipo === 'intermitente');
-  const semEscala = linhas.filter((l) => !l.jornadaId && !l.escalaMes);
+  const porTipo = new Map<TipoPessoa, number>();
+  for (const l of linhas) {
+    const t = l.tipoPessoa ?? 'outros';
+    porTipo.set(t, (porTipo.get(t) ?? 0) + 1);
+  }
+  const filtrando = tiposSel.length > 0 && tiposSel.length < TIPOS.length;
+  const visiveis = filtrando ? linhas.filter((l) => tiposSel.includes(l.tipoPessoa ?? 'outros')) : linhas;
+  const mensalistas = visiveis.filter((l) => l.jornadaTipo === 'fixa');
+  const intermitentes = visiveis.filter((l) => l.jornadaTipo === 'intermitente');
+  const semEscala = visiveis.filter((l) => !l.jornadaId && !l.escalaMes);
+  const alternarTipo = (t: TipoPessoa) =>
+    setTiposSel((at) => (at.includes(t) ? at.filter((x) => x !== t) : [...at, t]));
   const somaSaldo = mensalistas.reduce((s, l) => s + l.saldoMin, 0);
 
   function feito() {
@@ -161,6 +184,42 @@ export function BancoHorasManager({ filialId, hoje, podeLancar, podeAtestado: po
 
   return (
     <div className="space-y-8">
+      {/* ---------- filtro por tipo ---------- */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-slate-200 bg-white px-4 py-3">
+        <span className="text-xs font-medium uppercase tracking-wide text-slate-400">Mostrar</span>
+        {TIPOS.map((t) => {
+          const marcado = filtrando && tiposSel.includes(t.id);
+          const n = porTipo.get(t.id) ?? 0;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => alternarTipo(t.id)}
+              title={t.dica}
+              role="checkbox"
+              aria-checked={marcado}
+              className={`flex items-center gap-1.5 text-sm ${n ? 'text-slate-700' : 'text-slate-400'} hover:text-slate-900`}
+            >
+              <span
+                className={`flex h-4 w-4 items-center justify-center rounded border text-[11px] leading-none ${
+                  marcado ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-300 bg-white'
+                }`}
+              >
+                {marcado ? '✓' : ''}
+              </span>
+              {t.txt} <span className="text-xs text-slate-400">({n})</span>
+            </button>
+          );
+        })}
+        {filtrando ? (
+          <button type="button" onClick={() => setTiposSel([])} className="text-sm text-blue-600 hover:underline">
+            limpar (todos)
+          </button>
+        ) : (
+          <span className="text-xs text-slate-400">nenhum marcado = todos</span>
+        )}
+      </div>
+
       {/* ---------- atestados ---------- */}
       <div className="rounded-xl border border-sky-200 bg-white">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-sky-100 px-4 py-3">

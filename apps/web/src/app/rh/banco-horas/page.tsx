@@ -19,7 +19,7 @@ import { pontoProprioDesde } from '@/lib/rh/ponto-vigencia';
 import { somarDias } from '@/lib/rh/dia-operacional';
 import { MIN_DIA_ESCALA_MES, jornadaNoDia, minutosPrevistos, type VigenciaJornada } from '@/lib/rh/banco-horas';
 import { atestadosNoPeriodo, diasDeAtestado } from '@/lib/rh/atestado';
-import { BancoHorasManager, type LinhaPessoa } from './manager';
+import { BancoHorasManager, type LinhaPessoa, type TipoPessoa } from './manager';
 import { trocasForaDaEscala } from '@/lib/rh/troca-folga';
 
 export const dynamic = 'force-dynamic';
@@ -61,6 +61,10 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
       cargo: schema.funcionario.cargo,
       regime: schema.funcionario.regimeSalarial,
       dataAdmissao: schema.funcionario.dataAdmissao,
+      empresaRegistro: schema.funcionario.empresaRegistro,
+      cnpjRegistro: schema.funcionario.cnpjRegistro,
+      matriculaFolha: schema.funcionario.matriculaFolha,
+      fornecedorId: schema.funcionario.fornecedorId,
     })
     .from(schema.funcionario)
     .where(and(eq(schema.funcionario.filialId, filial.id), eq(schema.funcionario.ativo, true)))
@@ -193,6 +197,33 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
   // faltou pra jornada. A lista mostra o último ano e os que ainda vão vir.
   const atestados = await atestadosNoPeriodo(ids, somarDias(hoje, -365), somarDias(hoje, 60));
   const diaAtestado = diasDeAtestado(atestados, virada, ontem);
+  // Tipo de cada pessoa pro filtro (pedido do dono 05/11/2026). Mesma regra do
+  // filtro do /rh/ponto/relatorio: registrado = contracheque na folha do
+  // contador ou registro no cadastro; vínculo "Intermitente" separa intermitente
+  // de CLT; 12x36 pelo nome da jornada; diarista pelo papel na folha.
+  const fornIds = funcionarios.map((f) => f.fornecedorId).filter((x): x is string => !!x);
+  const [folhaRows, papelRows] = ids.length
+    ? await Promise.all([
+        db
+          .select({ funcionarioId: schema.folhaContador.funcionarioId, competencia: schema.folhaContador.competencia, vinculo: schema.folhaContador.vinculo })
+          .from(schema.folhaContador)
+          .where(and(inArray(schema.folhaContador.funcionarioId, ids), isNull(schema.folhaContador.demitidoEm))),
+        fornIds.length
+          ? db
+              .select({ fornecedorId: schema.fornecedorFolha.fornecedorId, papel: schema.fornecedorFolha.papel })
+              .from(schema.fornecedorFolha)
+              .where(inArray(schema.fornecedorFolha.fornecedorId, fornIds))
+          : Promise.resolve([]),
+      ])
+    : [[], []];
+  const vinculoPor = new Map<string, { competencia: string; vinculo: string | null }>();
+  for (const r of folhaRows) {
+    if (!r.funcionarioId) continue;
+    const at = vinculoPor.get(r.funcionarioId);
+    if (!at || r.competencia > at.competencia) vinculoPor.set(r.funcionarioId, { competencia: r.competencia, vinculo: r.vinculo });
+  }
+  const papelPor = new Map(papelRows.map((r) => [r.fornecedorId, r.papel]));
+
   const linhas: LinhaPessoa[] = funcionarios.map((f) => {
     const vigencias: VigenciaJornada[] = vigRows
       .filter((v) => v.funcionarioId === f.id)
@@ -261,11 +292,25 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
     const temBanco = atual?.tipo === 'fixa' || escalaFixa;
     const diasTrabEscala = usaEscalaMes ? diasEscala.filter((d) => escalaMes!.get(d) === false).length : 0;
     const movimentoMin = temBanco ? trabalhadoNaContaMin + abonadoMin - previstoMin : 0;
+    const folhaC = vinculoPor.get(f.id);
+    const registrado = !!folhaC || !!(f.empresaRegistro || f.cnpjRegistro || f.matriculaFolha);
+    const tipoPessoa: TipoPessoa = /12\s*x\s*36/i.test(atual?.nome ?? '')
+      ? '12x36'
+      : registrado
+        ? folhaC
+          ? /intermit/i.test(folhaC.vinculo ?? '') ? 'intermitente' : 'clt'
+          : atual?.tipo === 'intermitente' || (atual?.tipo !== 'fixa' && f.regime === 'intermitente_hora')
+            ? 'intermitente'
+            : 'clt'
+        : f.fornecedorId && papelPor.get(f.fornecedorId) === 'diarista'
+          ? 'diarista'
+          : 'outros';
     return {
       id: f.id,
       nome: f.nome,
       cargo: f.cargo,
       regime: f.regime,
+      tipoPessoa,
       jornadaId: atual?.jornadaId ?? null,
       jornadaNome: atual?.nome ?? (usaEscalaMes ? 'Escala do mês' : null),
       jornadaTipo: atual?.tipo ?? (usaEscalaMes ? (escalaFixa ? 'fixa' : 'intermitente') : null),
