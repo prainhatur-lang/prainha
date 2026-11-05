@@ -248,3 +248,38 @@ export async function minutosPorCasaDoMes(cpfs: string[], ini: string, fim: stri
   }
   return saida;
 }
+
+/**
+ * Atestados (funcionario_atestado, não cancelados) por CPF que tocam o mês — busca
+ * desde 60 dias antes pra saber em que dia do afastamento o mês começa (16º dia em
+ * diante = INSS). Soma as casas do mesmo CPF.
+ */
+export async function afastamentosPorCpf(
+  cpfs: string[],
+  ini: string,
+  fim: string,
+): Promise<Map<string, { inicio: string; fim: string }[]>> {
+  const saida = new Map<string, { inicio: string; fim: string }[]>();
+  if (cpfs.length === 0) return saida;
+  const [a, m, d] = ini.split('-').map(Number);
+  const desde = new Date(Date.UTC(a!, m! - 1, d! - 60)).toISOString().slice(0, 10);
+  const linhas = await db
+    .select({ cpf: schema.funcionario.cpf, inicio: schema.funcionarioAtestado.dataInicio, fim: schema.funcionarioAtestado.dataFim })
+    .from(schema.funcionarioAtestado)
+    .innerJoin(schema.funcionario, eq(schema.funcionario.id, schema.funcionarioAtestado.funcionarioId))
+    .where(
+      and(
+        inArray(schema.funcionario.cpf, cpfs),
+        isNull(schema.funcionarioAtestado.canceladoEm),
+        lte(schema.funcionarioAtestado.dataInicio, fim),
+        gte(schema.funcionarioAtestado.dataFim, desde),
+      ),
+    );
+  for (const l of linhas) {
+    if (!l.cpf) continue;
+    const lista = saida.get(l.cpf) ?? [];
+    lista.push({ inicio: l.inicio, fim: l.fim });
+    saida.set(l.cpf, lista);
+  }
+  return saida;
+}

@@ -14,7 +14,7 @@ import { AppHeader } from '@/components/app-header';
 import { LancarPagamentosFolha } from '../lancar-pagamentos';
 import { comRegimeDoMes } from '@/lib/rh/regime-no-mes';
 import { calcularFolhaMensal, type FolhaCalc, type RegimeFolha } from '@/lib/rh/folha-mensal';
-import { ajudaCustoPorCpf, horasDoMesPorCpf, salarioFamiliaPorCpf } from '@/lib/rh/folha-mensal-dados';
+import { afastamentosPorCpf, ajudaCustoPorCpf, horasDoMesPorCpf, salarioFamiliaPorCpf } from '@/lib/rh/folha-mensal-dados';
 import { proximosFeriados } from '@/lib/reservas/feriados';
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm';
@@ -114,11 +114,12 @@ export default async function CompararFolhaPage(props: { searchParams: Promise<S
   for (const f of [...deFora, ...nossosNoMes]) if (f.cpf) cadastroPorCpf.set(f.cpf, f);
 
   const cpfs = [...new Set([...nossosNoMes.map((f) => f.cpf).filter((c): c is string => !!c), ...cpfsContador])];
-  const [horas, feriados, salFamilia, ajudaCusto] = await Promise.all([
+  const [horas, feriados, salFamilia, ajudaCusto, afast] = await Promise.all([
     horasDoMesPorCpf(cpfs, ini, fim),
     proximosFeriados(ini, 31).then((l) => l.map((f) => f.data)),
     salarioFamiliaPorCpf(cpfs, comp),
     ajudaCustoPorCpf(cpfs, comp),
+    afastamentosPorCpf(cpfs, ini, fim),
   ]);
 
   interface Linha {
@@ -151,6 +152,7 @@ export default async function CompararFolhaPage(props: { searchParams: Promise<S
             feriados,
             salarioFamilia: cpf ? salFamilia.get(cpf) : null,
             ajudaCusto: cpf ? ajudaCusto.get(cpf) : null,
+            afastamentos: cpf ? afast.get(cpf) : null,
           })
         : null;
     return {

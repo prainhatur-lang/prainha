@@ -87,6 +87,47 @@ export function fatorDsr(comp: string, feriados: string[]): number {
   return descanso / (n - descanso);
 }
 
+const somaDias = (ymd: string, k: number) => {
+  const [a, m, d] = ymd.split('-').map(Number);
+  return new Date(Date.UTC(a!, m! - 1, d! + k)).toISOString().slice(0, 10);
+};
+
+/** Dias de afastamento no mês, em mês comercial de 30 dias (dia 31 não conta; fevereiro
+ *  completa até 30). Atestados colados (o seguinte começa até o dia depois do fim) viram um
+ *  afastamento só. `casa` = até o 15º dia; `inss` = do 16º em diante. */
+export function diasDeAfastamento(
+  periodos: { inicio: string; fim: string }[],
+  ini: string,
+  fim: string,
+  n: number,
+): { casa: number; inss: number } {
+  const ord = [...periodos].filter((p) => p.inicio <= p.fim).sort((a, b) => a.inicio.localeCompare(b.inicio));
+  const juntos: { inicio: string; fim: string }[] = [];
+  for (const p of ord) {
+    const u = juntos[juntos.length - 1];
+    if (u && p.inicio <= somaDias(u.fim, 1)) {
+      if (p.fim > u.fim) u.fim = p.fim;
+    } else juntos.push({ ...p });
+  }
+  const fimMes = `${ini.slice(0, 7)}-${String(n).padStart(2, '0')}`;
+  let casa = 0;
+  let inss = 0;
+  for (const p of juntos) {
+    const inssDesde = somaDias(p.inicio, 15);
+    for (let d = p.inicio > ini ? p.inicio : ini; d <= p.fim && d <= fim; d = somaDias(d, 1)) {
+      if (Number(d.slice(8, 10)) > 30) continue;
+      if (d >= inssDesde) inss++;
+      else casa++;
+    }
+    // Fevereiro: afastado no último dia completa o mês comercial.
+    if (n < 30 && p.fim >= fimMes && fim === fimMes && fimMes >= p.inicio) {
+      if (fimMes >= inssDesde) inss += 30 - n;
+      else casa += 30 - n;
+    }
+  }
+  return { casa, inss };
+}
+
 export function calcularFolhaMensal(input: {
   regime: RegimeFolha;
   /** R$/mês (CLT) ou R$/hora (intermitente). */
@@ -100,6 +141,9 @@ export function calcularFolhaMensal(input: {
   salarioFamilia?: { cotas: number; valorCota: number } | null;
   /** Ajuda de custo fixa (copiada da última folha do contador). Não entra no INSS nem no FGTS. */
   ajudaCusto?: { codigo: string; descricao: string; valor: number }[] | null;
+  /** Atestados (afastamento) da pessoa, YYYY-MM-DD. CLT: até o 15º dia seguido a casa
+   *  paga; do 16º em diante é o INSS e sai do salário (05/11/2026, caso Máxima). */
+  afastamentos?: { inicio: string; fim: string }[] | null;
 }): FolhaCalc {
   const { regime, salario, comp } = input;
   const n = ultimoDia(comp);
@@ -131,8 +175,12 @@ export function calcularFolhaMensal(input: {
     const [, , dIni] = ini.split('-').map(Number);
     const [, , dFim] = fim.split('-').map(Number);
     diasNoMes = ini === inicioMes && fim === fimMes ? 30 : Math.min(30, dFim - dIni + 1);
-    const salDias = r2((salario / 30) * diasNoMes);
-    P('8781', 'DIAS NORMAIS', diasNoMes, salDias);
+    const af = input.afastamentos?.length ? diasDeAfastamento(input.afastamentos, ini, fim, n) : null;
+    const diasInss = af ? Math.min(diasNoMes, af.inss) : 0;
+    const salDias = r2((salario / 30) * (diasNoMes - diasInss));
+    P('8781', 'DIAS NORMAIS', diasNoMes - diasInss, salDias);
+    if (af && af.casa > 0) avisos.push(`Atestado: ${af.casa} dia(s) no mês até o 15º dia de afastamento, pagos pela casa.`);
+    if (diasInss > 0) avisos.push(`Afastado: ${diasInss} dia(s) do 16º dia em diante ficam com o INSS e saem do salário.`);
 
     if (noturnoMin > 0) {
       const hora = r2(salario / 220);
