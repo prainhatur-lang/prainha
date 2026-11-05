@@ -117,6 +117,10 @@ interface Resumo {
   admissao: string | null;
   antesRegistroDias: number;
   antesRegistroMin: number;
+  /** Registrado (folha do contador ou dados de registro no cadastro). */
+  registrado: boolean;
+  /** Salário pro desconto de falta: contracheque mais recente, senão o cadastro. */
+  salario: number | null;
   dias: LinhaDia[];
 }
 
@@ -200,6 +204,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
       cnpjRegistro: schema.funcionario.cnpjRegistro,
       matriculaFolha: schema.funcionario.matriculaFolha,
       fornecedorId: schema.funcionario.fornecedorId,
+      salarioBase: schema.funcionario.salarioBase,
     })
     .from(schema.funcionario)
     .where(eq(schema.funcionario.filialId, filial.id))
@@ -281,7 +286,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
   const [folhaRows, papelRows] = ids.length
     ? await Promise.all([
         db
-          .select({ funcionarioId: schema.folhaContador.funcionarioId, competencia: schema.folhaContador.competencia, vinculo: schema.folhaContador.vinculo })
+          .select({ funcionarioId: schema.folhaContador.funcionarioId, competencia: schema.folhaContador.competencia, vinculo: schema.folhaContador.vinculo, salario: schema.folhaContador.salario })
           .from(schema.folhaContador)
           .where(and(inArray(schema.folhaContador.funcionarioId, ids), isNull(schema.folhaContador.demitidoEm))),
         fornIds.length
@@ -293,10 +298,15 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
       ])
     : [[], []];
   const vinculoPor = new Map<string, { competencia: string; vinculo: string | null }>();
+  // Salário do contracheque mais recente que tem salário (pro desconto de falta).
+  const salarioContadorPor = new Map<string, { competencia: string; salario: number }>();
   for (const r of folhaRows) {
     if (!r.funcionarioId) continue;
     const atual = vinculoPor.get(r.funcionarioId);
     if (!atual || r.competencia > atual.competencia) vinculoPor.set(r.funcionarioId, { competencia: r.competencia, vinculo: r.vinculo });
+    const sal = Number(r.salario ?? 0);
+    const sAtual = salarioContadorPor.get(r.funcionarioId);
+    if (sal > 0 && (!sAtual || r.competencia > sAtual.competencia)) salarioContadorPor.set(r.funcionarioId, { competencia: r.competencia, salario: sal });
   }
   const papelPor = new Map(papelRows.map((r) => [r.fornecedorId, r.papel]));
 
@@ -424,6 +434,8 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
       admissao: f.dataAdmissao ?? null,
       antesRegistroDias: 0,
       antesRegistroMin: 0,
+      registrado,
+      salario: salarioContadorPor.get(f.id)?.salario ?? (Number(f.salarioBase ?? 0) > 0 ? Number(f.salarioBase) : null),
       dias: [],
     };
 
@@ -604,6 +616,41 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
     }),
     { trab: 0, faltas: 0, incompletos: 0, atrasos: 0, atestado: 0, celular: 0, corrigidas: 0 },
   );
+
+  // Faltas pra descontar dos registrados mensalistas (CLT e 12x36 registrado;
+  // intermitente recebe pela hora, não tem falta a abater). Semana seg–dom:
+  // falta sem atestado na semana perde o DSR dela (Lei 605/49, art. 6º).
+  const segundaDa = (d: string) => somarDias(d, -((diaDaSemana(d) + 6) % 7));
+  const faltasClt = resumos
+    .filter((r) => r.registrado && (r.tipo === 'clt' || r.tipo === '12x36') && r.faltas > 0)
+    .map((r) => {
+      const dias = r.dias.filter((d) => d.situacoes.includes('falta')).map((d) => d.dia);
+      const semanas = new Set(dias.map(segundaDa)).size;
+      const valorDia = r.salario ? r.salario / 30 : null;
+      return {
+        r,
+        dias,
+        semanas,
+        valorDia,
+        desconto: valorDia != null ? Math.round(valorDia * (dias.length + semanas) * 100) / 100 : null,
+      };
+    });
+  const brl = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  const csvFaltasClt = csvHref([
+    ['Pessoa', 'Cargo', 'Tipo', 'Faltas (dias)', 'Datas', 'Semanas com falta (perde DSR)', 'Dias a descontar (faltas + DSR)', 'Salário', 'Valor do dia (salário/30)', 'Desconto estimado'],
+    ...faltasClt.map((x) => [
+      x.r.nome,
+      x.r.cargo ?? '',
+      TIPOS.find((t) => t.id === x.r.tipo)?.txt ?? '',
+      x.dias.length,
+      x.dias.map((d) => d.split('-').reverse().slice(0, 2).join('/')).join(' '),
+      x.semanas,
+      x.dias.length + x.semanas,
+      x.r.salario != null ? x.r.salario.toFixed(2).replace('.', ',') : '',
+      x.valorDia != null ? x.valorDia.toFixed(2).replace('.', ',') : '',
+      x.desconto != null ? x.desconto.toFixed(2).replace('.', ',') : '',
+    ]),
+  ]);
 
   const [ano, mm] = mes.split('-').map(Number);
   const nomeMes = `${MESES[mm - 1]} de ${ano}`;
@@ -788,6 +835,70 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
 
         {resumos.length === 0 && (
           <p className="text-sm text-slate-500">{filtrando ? 'Ninguém desse tipo nesta casa.' : 'Ninguém cadastrado nesta casa.'}</p>
+        )}
+
+        {faltasClt.length > 0 && (
+          <div className="mb-5 rounded-lg border border-red-200 bg-white break-inside-avoid-page">
+            <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-red-100 px-4 py-3">
+              <div>
+                <span className="font-semibold text-red-800">Faltas pra descontar — registrados CLT</span>
+                <span className="ml-2 text-xs text-slate-500">
+                  sem atestado, pela escala do mês · semana com falta perde o DSR · desconto = salário ÷ 30 × (faltas + DSR)
+                </span>
+              </div>
+              <a
+                href={csvFaltasClt}
+                download={`faltas-clt-${mes}.csv`}
+                className="rounded-md border border-red-200 bg-white px-3 py-1.5 text-sm text-red-700 hover:bg-red-50 print:hidden"
+              >
+                ⬇ Faltas pro contador (CSV)
+              </a>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="text-left text-xs text-slate-500">
+                  <tr>
+                    <th className="px-4 py-1.5">Pessoa</th>
+                    <th className="px-2 py-1.5">Datas</th>
+                    <th className="px-2 py-1.5 text-right">Faltas</th>
+                    <th className="px-2 py-1.5 text-right" title="Semanas (seg–dom) com falta: perde o descanso semanal remunerado">DSR</th>
+                    <th className="px-2 py-1.5 text-right">Salário</th>
+                    <th className="px-4 py-1.5 text-right">Desconto estimado</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {faltasClt.map((x) => (
+                    <tr key={x.r.id} className="border-t border-slate-100">
+                      <td className="px-4 py-1.5">
+                        <a href={url({ view: 'analitico', pessoa: x.r.id })} className="font-medium text-slate-900 hover:underline">
+                          {x.r.nome}
+                        </a>
+                        {x.r.cargo ? <span className="ml-1 text-xs text-slate-400">{x.r.cargo}</span> : null}
+                      </td>
+                      <td className="px-2 py-1.5 text-xs">
+                        {x.dias.map((d, i) => (
+                          <span key={d}>
+                            {i > 0 ? ', ' : ''}
+                            <a href={ajustarHref(x.r.id, d)} title="Abrir o ponto do dia pra corrigir ou lançar atestado" className="text-red-700 hover:underline print:no-underline">
+                              {ddmm(d)} {SEMANA[diaDaSemana(d)]}
+                            </a>
+                          </span>
+                        ))}
+                      </td>
+                      <td className="px-2 py-1.5 text-right font-semibold text-red-700">{x.dias.length}</td>
+                      <td className="px-2 py-1.5 text-right">{x.semanas}</td>
+                      <td className="px-2 py-1.5 text-right text-slate-600">{x.r.salario != null ? brl(x.r.salario) : <span className="text-slate-300">sem salário</span>}</td>
+                      <td className="px-4 py-1.5 text-right font-semibold">{x.desconto != null ? brl(x.desconto) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="border-t border-slate-100 px-4 py-2 text-xs text-slate-500">
+              Antes de mandar: falta que foi folga trocada ou atestado → corrija no dia (clique na data). Dia incompleto não entra
+              aqui. O valor é estimativa; o contador confirma.
+            </p>
+          </div>
         )}
 
         {view === 'sintetico' && resumos.length > 0 && (
