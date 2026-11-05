@@ -17,6 +17,7 @@ import { and, asc, eq, gte, inArray, isNull, lt, lte, sql } from 'drizzle-orm';
 import { diaDaSemana, jornadaNoDia, minutosPrevistos } from '@/lib/rh/banco-horas';
 import { PONTO_VIRADA_HORA, somarDias } from '@/lib/rh/dia-operacional';
 import { dateToBrYmd } from '@/lib/datas';
+import { trocasForaDaEscala } from '@/lib/rh/troca-folga';
 import { diasDoMes, sugerirMes, type Sexo } from '@/lib/rh/escala-mensal-regras';
 
 export * from '@/lib/rh/escala-mensal-regras';
@@ -243,6 +244,20 @@ export async function diasTrabalhoEscala(ids: string[], inicio: string, fim: str
     x.comLinha++;
     if (!r.folga) x.trabalho.add(r.dia);
     out.set(r.funcionarioId, x);
+  }
+  // Troca de folga do tablet ainda fora da escala (05/11/2026): conta o dia
+  // trocado, pra não virar falta. Falhou a leitura, fica a escala como está.
+  const trocas = await trocasForaDaEscala(ids, inicio, fim).catch((e) => {
+    console.error('[escala] trocas de folga:', e);
+    return new Map<string, Map<string, boolean>>();
+  });
+  for (const [fid, dias] of trocas) {
+    const x = out.get(fid) ?? { trabalho: new Set<string>(), comLinha: 0 };
+    for (const [dia, folga] of dias) {
+      if (folga) x.trabalho.delete(dia);
+      else x.trabalho.add(dia);
+    }
+    out.set(fid, x);
   }
   return out;
 }

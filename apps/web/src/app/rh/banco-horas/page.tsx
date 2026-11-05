@@ -20,6 +20,7 @@ import { somarDias } from '@/lib/rh/dia-operacional';
 import { MIN_DIA_ESCALA_MES, jornadaNoDia, minutosPrevistos, type VigenciaJornada } from '@/lib/rh/banco-horas';
 import { atestadosNoPeriodo, diasDeAtestado } from '@/lib/rh/atestado';
 import { BancoHorasManager, type LinhaPessoa } from './manager';
+import { trocasForaDaEscala } from '@/lib/rh/troca-folga';
 
 export const dynamic = 'force-dynamic';
 
@@ -110,6 +111,16 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
     const m = escalaPorPessoa.get(e.funcionarioId) ?? new Map<string, boolean>();
     m.set(e.dia, e.folga);
     escalaPorPessoa.set(e.funcionarioId, m);
+  }
+  // Troca de folga do tablet ainda fora da escala (05/11/2026): vale o dia trocado.
+  const trocasFora = await trocasForaDaEscala(ids, '2000-01-01', '2100-12-31').catch((e) => {
+    console.error('[banco-horas] trocas de folga:', e);
+    return new Map<string, Map<string, boolean>>();
+  });
+  for (const [fid, dias] of trocasFora) {
+    const m = escalaPorPessoa.get(fid) ?? new Map<string, boolean>();
+    for (const [dia, folga] of dias) m.set(dia, folga);
+    escalaPorPessoa.set(fid, m);
   }
 
   const [vigRows, lancRows, batidas] = ids.length

@@ -42,3 +42,37 @@ export async function trocasFolgaRecentes(filialId: string, desde: string): Prom
     escalaAplicada: !!r.escala_aplicada,
   }));
 }
+
+/**
+ * Troca que a escala ainda não mostra (05/11/2026, pedido do dono: "evitar
+ * que bote como falta"). Esperando o colega, ou confirmada mas ainda não
+ * aplicada. Volta funcionário → dia → folga. Quem pede trabalha em
+ * dia_trabalha e folga em dia_devolve; o colega fica com o contrário.
+ * Recusada não conta. Confirmada e aplicada já está na escala.
+ */
+export async function trocasForaDaEscala(ids: string[], inicio: string, fim: string): Promise<Map<string, Map<string, boolean>>> {
+  const out = new Map<string, Map<string, boolean>>();
+  if (!ids.length) return out;
+  const lista = sql.join(ids.map((i) => sql`${i}::uuid`), sql`, `);
+  const rows = (await db.execute(sql`
+    SELECT solicitante_id::text AS s, colega_id::text AS c,
+           dia_trabalha::text AS t, dia_devolve::text AS d
+      FROM rh_troca_folga
+     WHERE (status = 'aguardando' OR (status = 'confirmada' AND escala_aplicada_em IS NULL))
+       AND (solicitante_id IN (${lista}) OR colega_id IN (${lista}))
+       AND ((dia_trabalha BETWEEN ${inicio}::date AND ${fim}::date) OR (dia_devolve BETWEEN ${inicio}::date AND ${fim}::date))
+     ORDER BY criada_em`)) as unknown as Array<{ s: string; c: string; t: string; d: string }>;
+  const marca = (fid: string, dia: string, folga: boolean) => {
+    if (!ids.includes(fid) || dia < inicio || dia > fim) return;
+    const m = out.get(fid) ?? new Map<string, boolean>();
+    m.set(dia, folga);
+    out.set(fid, m);
+  };
+  for (const r of rows) {
+    marca(r.s, r.t, false);
+    marca(r.s, r.d, true);
+    marca(r.c, r.t, true);
+    marca(r.c, r.d, false);
+  }
+  return out;
+}

@@ -9,6 +9,7 @@
 
 import { db, schema } from '@concilia/db';
 import { and, eq, gte, inArray, isNull, lte } from 'drizzle-orm';
+import { trocasForaDaEscala } from '@/lib/rh/troca-folga';
 
 export interface SemanaFaltas {
   de: string;
@@ -96,6 +97,9 @@ export async function faltasDoPonto(cpf: string, admissao: string | null, afasta
     const d = String(e.dia);
     folgaDia.set(d, (folgaDia.get(d) ?? false) || e.folga);
   }
+  // Troca de folga do tablet ainda fora da escala (05/11/2026): vale o dia trocado.
+  const trocas = await trocasForaDaEscala(ids, ini, afastamento).catch(() => new Map<string, Map<string, boolean>>());
+  for (const dias of trocas.values()) for (const [d, folga] of dias) folgaDia.set(d, folga);
   const abonado = (d: string) => atestados.some((a) => String(a.de) <= d && d <= String(a.ate));
 
   const semanas: SemanaFaltas[] = [];
