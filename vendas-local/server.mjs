@@ -1365,7 +1365,7 @@ async function sincronizarEstornosPdv() {
     for (const x of r.rows) apagados.push(Number(x.CODIGO));
   }
   if (!apagados.length) return;
-  await sql`UPDATE venda_pagamento SET status='estornado', estornado_em=now(), estornado_por='pdv', estorno_motivo='excluído no Consumer'
+  await sql`UPDATE venda_pagamento SET status='estornado', estornado_em=now(), estornado_por='pdv', estorno_motivo='excluído no PDV'
     WHERE status='ok' AND pagamento_fb = ANY(${apagados})`;
   console.log(`[estorno-pdv] ${apagados.length} lançamento(s) excluído(s) no Consumer marcados como estornados no log local`);
 }
@@ -2689,7 +2689,7 @@ async function apiEntregadorAcao(body, garcom) {
     let caixaCodigo = null;
     try { const cx = await fbCaixaMaquininha(login, body.terminal); if (cx.erro) return { ok: false, erro: cx.erro }; caixaCodigo = cx.codigo; }
     catch (e) { return { ok: false, erro: 'caixa do entregador: ' + e.message }; }
-    if (!caixaCodigo) return { ok: false, erro: 'dinheiro exige um caixa aberto no Consumer pro seu login' };
+    if (!caixaCodigo) return { ok: false, erro: 'dinheiro exige um caixa aberto pro seu login' };
     const r = await apiContaPagar({ numero: 0, ped, forma: 'dinheiro', valor, modo: 'manual', origem: 'entregador',
       caixa_codigo: caixaCodigo, observacao: `Entrega · ${login}` });
     if (r.ok && r.quitada) {
@@ -4398,7 +4398,7 @@ async function fbCaixaAberto() {
   }
   const r = await qi(`SELECT FIRST 1 CODIGO FROM CAIXA WHERE DATAFECHAMENTO IS NULL ORDER BY CODIGO DESC`);
   if (!r.ok) throw new Error('FB caixa: ' + r.err);
-  if (!r.rows.length) throw new Error('nenhum caixa aberto no Consumer');
+  if (!r.rows.length) throw new Error('nenhum caixa aberto');
   return Number(r.rows[0].CODIGO);
 }
 async function fbInserirPagamento(ped, pg) {
@@ -5833,7 +5833,7 @@ async function apiVendaEnviar(body) {
     // de novo (com razão — o pedido dele NÃO foi) e a segunda tentativa,
     // legítima, seria barrada como "duplicada" e devolveria sucesso falso.
     if (body._cliente) enviosRecentesPorMesa.delete(Number(numero));
-    return { ok: false, erro: 'Falha ao gravar no Consumer: ' + e.message + ' (lançamento guardado localmente, id ' + log.id + ')' };
+    return { ok: false, erro: 'Falha ao gravar no PDV: ' + e.message + ' (lançamento guardado localmente, id ' + log.id + ')' };
   }
 }
 
@@ -6033,7 +6033,7 @@ async function nsuJaLancado(nsu, valor, ignorarRetido = null) {
         FROM PAGAMENTOS g JOIN PEDIDOS p ON p.CODIGO=g.CODIGOPEDIDO
         WHERE g.NSUTRANSACAO=${n} AND g.VALOR=${fbNum(v)} AND g.DATADELETE IS NULL
           AND g.DATAPAGAMENTO > DATEADD(-7 DAY TO CURRENT_TIMESTAMP) ORDER BY g.CODIGO DESC`);
-      if (!r.ok) falha = 'Consumer: ' + r.err;
+      if (!r.ok) falha = 'PDV: ' + r.err;
       else if (r.rows.length) {
         const x = r.rows[0];
         return { pagamento_fb: Number(x.CODIGO), onde: `na mesa/comanda ${x.NUMERO} (${String(x.Q).slice(11, 16)})` };
@@ -6142,7 +6142,7 @@ async function aberturaDaConta(ped) {
     return x && x.data_abertura ? new Date(x.data_abertura) : null;
   }
   const r = await qi(`SELECT FIRST 1 CAST(DATAABERTURA AS VARCHAR(24)) AB FROM PEDIDOS WHERE CODIGO=${Number(ped)}`);
-  if (!r.ok) throw new Error('Consumer não respondeu a abertura da conta: ' + r.err);
+  if (!r.ok) throw new Error('PDV não respondeu a abertura da conta: ' + r.err);
   const t = r.rows[0] && r.rows[0].AB;
   return t ? new Date(String(t).slice(0, 19).replace(' ', 'T')) : null;
 }
@@ -6160,7 +6160,7 @@ async function contaNoInstante(n, quando) {
   const r = await qi(`SELECT FIRST 1 CODIGO, CAST(DATAABERTURA AS VARCHAR(24)) AB, CAST(DATAFECHAMENTO AS VARCHAR(24)) FE
     FROM PEDIDOS WHERE NUMERO=${Number(n)} AND DATADELETE IS NULL
       AND DATAABERTURA <= '${fbTs(lim)}' ORDER BY CODIGO DESC`);
-  if (!r.ok) throw new Error('Consumer não respondeu ao procurar a conta da transação: ' + r.err);
+  if (!r.ok) throw new Error('PDV não respondeu ao procurar a conta da transação: ' + r.err);
   if (!r.rows.length) return null;
   const x = r.rows[0];
   const fe = x.FE ? String(x.FE).trim() : '';
@@ -6306,7 +6306,7 @@ async function apiContaPagar(body) {
       if (hoje && hoje.indeterminado) {
         console.error(`[pagar] NSU ${nsuTxt} NÃO CONFERIDO no dia (${hoje.erro}) — recusado, nada gravado (${quem})`);
         return { ok: false, indeterminado: true,
-          erro: `Não consegui conferir o NSU ${nsuTxt} no Consumer (${hoje.erro}). NADA foi gravado — espere uns segundos e registre de novo.` };
+          erro: `Não consegui conferir o NSU ${nsuTxt} no PDV (${hoje.erro}). NADA foi gravado — espere uns segundos e registre de novo.` };
       }
       if (hoje) {
         console.error(`[pagar] NSU ${nsuTxt} JÁ USADO HOJE no pedido ${hoje.pedido ?? '?'} (R$ ${hoje.valor.toFixed(2)}) — recusado (${quem})`);
@@ -6494,7 +6494,7 @@ async function apiContaConferir(pagamentoId) {
   // caminho) não entra de novo; Consumer sem resposta = tenta na próxima volta
   let ja = null;
   try { ja = await nsuJaLancado(r.nsu, p.valor); } catch (e) { ja = { indeterminado: true, erro: e.message }; }
-  if (ja && ja.indeterminado) return { ok: false, erro: 'Não consegui conferir o NSU no Consumer (' + ja.erro + ') — tentando de novo' };
+  if (ja && ja.indeterminado) return { ok: false, erro: 'Não consegui conferir o NSU no PDV (' + ja.erro + ') — tentando de novo' };
   if (ja) {
     console.error(`[conta/conferir] NSU ${r.nsu} R$ ${Number(p.valor).toFixed(2)} JÁ LANÇADO ${ja.onde} — não gravei de novo (pagamento ${p.id})`);
     await sql`UPDATE venda_pagamento SET status='duplicado', erro=${'já lançado ' + ja.onde}, nsu=${r.nsu}, autorizacao=${r.autorizacao},
@@ -7780,7 +7780,7 @@ async function nfceDadosDoPedido(ped, numero) {
   } else {
     p = (await qi(`SELECT VALORTOTALITENS I, TOTALSERVICO S, TOTALDESCONTO D, TOTALACRESCIMO A, VALORTOTAL T
       FROM PEDIDOS WHERE CODIGO=${Number(ped)}`)).rows?.[0];
-    if (!p) throw new Error('pedido não encontrado no Consumer');
+    if (!p) throw new Error('pedido não encontrado no PDV');
     const it = await qi(`SELECT i.CODIGO, TRIM(i.NOMEPRODUTO) NOME, i.QUANTIDADE QTD, i.VALORTOTAL VT,
         i.CODIGOITEMPEDIDOTIPO TIPO, i.CODIGOPRODUTODETALHE PDV, pr.NCM, pr.CFOP
       FROM ITENSPEDIDO i
@@ -8968,7 +8968,7 @@ async function apiGarcomEntrar(body) {
   }
   catch (e) { return { ok: false, erro: e.message }; }
   if (!pode.ok) return { ok: false, erro: 'Este login não tem acesso à Comanda Mobile, a Pedidos no Caixa nem a Pedidos Delivery. Fale com o gerente.'
-    + (_fbUsuariosErro ? ' (Consumer sem resposta agora: ' + _fbUsuariosErro + ')' : '') };
+    + (_fbUsuariosErro ? ' (cadastro antigo sem resposta agora: ' + _fbUsuariosErro + ')' : '') };
   // o app mostra o botão Entregas só pra quem pode (admin ou permissão 4)
   const pfEnt = await permsDoUsuario(login).catch(() => null);
   const entregas = !!(pfEnt && pfEnt.ok && (pfEnt.admin || pfEnt.entregas));
@@ -9306,14 +9306,14 @@ async function pagamentosDoPedido(ped) {
   const locais = cods.length ? await sql`SELECT pagamento_fb, origem FROM venda_pagamento WHERE pagamento_fb = ANY(${cods}) AND status='ok'` : [];
   const porFb = new Map(locais.map((l) => [Number(l.pagamento_fb), l]));
   return lista.map((x) => ({ ...x, forma: NOME[x.forma_codigo] || ('forma ' + x.forma_codigo),
-    origem: porFb.get(x.codigo)?.origem || (x.obs ? x.obs.slice(0, 40) : 'Consumer') }));
+    origem: porFb.get(x.codigo)?.origem || (x.obs ? x.obs.slice(0, 40) : 'PDV') }));
 }
 /** CANCELAR UM LANÇAMENTO (perm 31 = Excluir recebimentos): cartão cancelado na
  *  maquininha, valor errado. Marca como o PDV marca (DATADELETE), tira o nosso
  *  registro do resumo do dia/conciliação e guarda o motivo. A conta tem que
  *  estar ABERTA — fechada, primeiro "Reabrir". */
 async function apiCaixaEstornarPagamento(body, quem) {
-  if (!(quem && (quem.admin || quem.excluir_recebimento))) return { ok: false, erro: 'sem permissão (Excluir recebimentos de pedidos — nº 31 no Consumer)' };
+  if (!(quem && (quem.admin || quem.excluir_recebimento))) return { ok: false, erro: 'sem permissão (Excluir recebimentos de pedidos)' };
   const numero = Number(body.numero), pag = Number(body.pagamento);
   if (!(pag > 0)) return { ok: false, erro: 'dados inválidos' };
   const motivo = String(body.motivo || '').trim().slice(0, 120);
@@ -9369,7 +9369,7 @@ async function apiCaixaFechadas() {
  *  pra grade com itens e pagamentos como estavam. Só nas últimas 48h e só se
  *  não houver conta aberta no número. */
 async function apiCaixaReabrir(body, quem) {
-  if (!(quem && (quem.admin || quem.reabrir))) return { ok: false, erro: 'sem permissão (Reabrir Pedido — nº 29 no Consumer)' };
+  if (!(quem && (quem.admin || quem.reabrir))) return { ok: false, erro: 'sem permissão (Reabrir Pedido)' };
   const numero = Number(body.numero);
   if (!(numero > 0)) return { ok: false, erro: 'número inválido' };
   if (await fbAcharPedido(numero)) return { ok: false, erro: 'já existe conta ABERTA nesse número — receba nela ou transfira antes de reabrir a antiga' };
@@ -9496,7 +9496,7 @@ async function validarDuplaSenha(body, quem, status) {
   const gpin = (await sql`SELECT pin_hash, salt FROM garcom_pin WHERE login=${gl}`)[0];
   if (!gpin || !pinConfere(gp, gpin.salt, gpin.pin_hash)) return { precisa: true, erro: 'PIN do gerente não confere.' };
   let g; try { g = await permsDoUsuario(gl); } catch (e) { return { erro: 'não deu pra validar o gerente: ' + e.message }; }
-  if (!(g.ok && (g.admin || g.excluir_pedido))) return { precisa: true, erro: gl + ' não é gerente (precisa de Administrador ou Excluir Pedido no Consumer).' };
+  if (!(g.ok && (g.admin || g.excluir_pedido))) return { precisa: true, erro: gl + ' não é gerente (precisa de Administrador ou Excluir Pedido).' };
   return { gerente: gl };
 }
 /** Aviso no papel pra praça quando o cupom do item já tinha saído. */
@@ -9604,7 +9604,7 @@ async function apiCaixaCancelarItem(body, quem) {
   const novoServ = +(servAtual - servDelta).toFixed(2);
   const novoTot = +(p.total - valor - servDelta).toFixed(2);
   if (novoTot < -0.009) return { ok: false, erro: 'cancelar esse item deixaria o total negativo (tem desconto — ajuste antes)' };
-  if (novoTot + 0.009 < pago) return { ok: false, erro: `já entraram R$ ${pago.toFixed(2)} nessa conta — o total não pode ficar abaixo do pago (estorno é no Consumer)` };
+  if (novoTot + 0.009 < pago) return { ok: false, erro: `já entraram R$ ${pago.toFixed(2)} nessa conta — o total não pode ficar abaixo do pago (estorne o pagamento antes)` };
   if (parcial) {
     // reduz a quantidade da linha; VALORITEM acompanha o VALORTOTAL (mesma
     // convenção do write-back). Filhos (respostas) ficam — valem pra linha.
@@ -9673,7 +9673,7 @@ async function apiCaixaCancelarPedido(body, quem) {
   const ped = await pedidoAlvo(numero, body.ped);
   if (!ped) return { ok: false, erro: 'não há pedido aberto nesse número' };
   const pago = await fbPagoDoPedido(ped);
-  if (pago > 0.009) return { ok: false, erro: `essa conta já tem R$ ${pago.toFixed(2)} pagos — estorno é no Consumer, aqui não` };
+  if (pago > 0.009) return { ok: false, erro: `essa conta já tem R$ ${pago.toFixed(2)} pagos — estorne o pagamento antes` };
   const tot = (await pedTotais(ped))?.total || 0;
   // o aviso pras praças sai ANTES do pedido sumir do espelho
   const vivos = await sql`SELECT ci.item_codigo, ci.area_codigo, ci.nome, ci.quantidade FROM comanda_item ci
@@ -10015,7 +10015,7 @@ async function caixasDeOperadorAbertos() {
 }
 
 async function apiCaixaAbrir(body, quem) {
-  if (!quem.abrir) return { ok: false, erro: 'sem permissão de abrir caixa (Operação de caixa no Consumer)' };
+  if (!quem.abrir) return { ok: false, erro: 'sem permissão de abrir caixa (Operação de caixa)' };
   if (await fbCaixaDoOperador(quem.login)) return { ok: false, erro: 'você já tem um caixa aberto — feche antes de abrir outro' };
   const fundo = +Number(body.fundo || 0).toFixed(2);
   if (!(fundo >= 0)) return { ok: false, erro: 'fundo inválido' };
@@ -10039,7 +10039,7 @@ async function apiCaixaAbrir(body, quem) {
     }
   }
   const u = await fbUsuarioCodigo(quem.login);
-  if (!u) return { ok: false, erro: nativo() ? 'não achei seu usuário' : 'não achei seu usuário no Consumer' };
+  if (!u) return { ok: false, erro: 'não achei seu usuário' };
   const cod = await fbAbrirCaixa(u.codigo, fundo, `Aberto às ${fbHoraLocal()} por ${u.nome || quem.nome}`,
     nativo() ? String(quem.login || '').toLowerCase() : null);
   return { ok: true, codigo: cod, fundo };
@@ -10748,7 +10748,7 @@ async function apiUsuarioLocalExcluir(body, quem) {
   const login = String(body.login || '').trim().toLowerCase();
   if (login === quem.login) return { ok: false, erro: 'não dá pra excluir o próprio usuário' };
   const u = (await sql`SELECT admin FROM usuario_local WHERE login=${login}`)[0];
-  if (!u) return { ok: false, erro: 'esse usuário não foi criado aqui (é do Consumer)' };
+  if (!u) return { ok: false, erro: 'esse usuário não foi criado aqui (veio do cadastro antigo)' };
   if (u.admin) return { ok: false, erro: 'administrador não se exclui por aqui — desative' };
   await sql`DELETE FROM garcom_pin WHERE login=${login}`;
   await sql`DELETE FROM usuario_local WHERE login=${login}`;
@@ -10789,7 +10789,7 @@ async function apiUsuarioLocalSalvar(body, quem) {
   const jaLocal = (await sql`SELECT 1 FROM usuario_local WHERE login=${login}`).length > 0;
   // o espelho inativo (fbEspelhoDoLocal) do próprio usuário nosso não conta
   if (!nativo() && !jaLocal) try { doPdv = await qi(`SELECT FIRST 1 CODIGO FROM VWUSUARIOS WHERE LOWER(TRIM(LOGIN))='${fbEsc(login)}'`); } catch { /* FB fora: segue */ }
-  if (doPdv?.ok && doPdv.rows.length) return { ok: false, erro: `"${login}" já existe no Consumer — use outro nome ou dê a permissão por lá` };
+  if (doPdv?.ok && doPdv.rows.length) return { ok: false, erro: `"${login}" já existe — use outro nome` };
   const ja = (await sql`SELECT login FROM usuario_local WHERE login=${login}`)[0];
   if (!ja && !(pin.length >= 4 && pin.length <= 8)) return { ok: false, erro: 'o PIN tem de 4 a 8 números' };
   if (pin && !(pin.length >= 4 && pin.length <= 8)) return { ok: false, erro: 'o PIN tem de 4 a 8 números' };
@@ -12210,9 +12210,9 @@ async function comandoNuvemExecutar(tipo, pl) {
       return { resultado: { pagamento: pag, de: { numero: deNum, pedido: dePed, pago: pagoDe }, para: { numero: paraNum, pedido: paraPed, pago: pagoPara } } };
     }
     case 'auto_update': case 'instalar_cdc': case 'desinstalar_cdc':
-      return { resultado: { aviso: 'modo próprio: esta loja não tem agente-local nem Consumer — nada a fazer' } };
+      return { resultado: { aviso: 'modo próprio: esta loja não tem agente-local — nada a fazer' } };
     default:
-      return { status: 'erro', resultado: { msg: `tipo ${tipo} não se aplica em modo próprio (sem Consumer)` } };
+      return { status: 'erro', resultado: { msg: `tipo ${tipo} não se aplica em modo próprio` } };
   }
 }
 let comandosNuvemRodando = false;
@@ -13745,7 +13745,7 @@ async function nsuJaUsadoHoje(nsu) {
         AND CAST(DATAPAGAMENTO AS DATE) = CURRENT_DATE`);
     // Consumer sem resposta NÃO é "não tem": quem chama recusa e pede pra
     // registrar de novo (mesma regra de nsuJaLancado — a trava não abre por falha)
-    if (!r.ok) return { indeterminado: true, erro: 'Consumer: ' + r.err };
+    if (!r.ok) return { indeterminado: true, erro: 'PDV: ' + r.err };
     return r.rows.length
       ? { pagamento: Number(r.rows[0].CODIGO), pedido: Number(r.rows[0].PED) || null, valor: Number(r.rows[0].V) || 0 }
       : null;
@@ -13784,7 +13784,7 @@ async function apiCaixaReceberManual(body, quem) {
     // aviso rápido, antes de processar a foto; a conferência que VALE roda
     // dentro da fila de apiContaPagar (mesmo NSU+valor em 7 dias, mesmo NSU hoje)
     const dup = await nsuJaUsadoHoje(nsuLimpo);
-    if (dup && dup.indeterminado) return { ok: false, indeterminado: true, erro: `Não consegui conferir o NSU no Consumer (${dup.erro}). NADA foi gravado — espere uns segundos e registre de novo.` };
+    if (dup && dup.indeterminado) return { ok: false, indeterminado: true, erro: `Não consegui conferir o NSU no PDV (${dup.erro}). NADA foi gravado — espere uns segundos e registre de novo.` };
     if (dup) return { ok: false, erro: `Esse NSU já foi usado HOJE no pedido ${dup.pedido ?? '?'} (R$ ${dup.valor.toFixed(2).replace('.', ',')}). Confira o comprovante — cada cupom vale uma vez.` };
   }
   // dinheiro segue a MESMA trava de sempre: só entra no caixa do operador
@@ -13861,7 +13861,7 @@ async function pedFiado(ped, clienteCod) {
     CODIGOCONTATOCLIENTE=COALESCE(CODIGOCONTATOCLIENTE, ${Number(clienteCod)}) WHERE CODIGO=${Number(ped)}`);
 }
 async function apiCaixaFiado(body, quem) {
-  if (!(quem && quem.fiado)) return { ok: false, erro: 'sem permissão de fiado (Conta Corrente no Consumer)' };
+  if (!(quem && quem.fiado)) return { ok: false, erro: 'sem permissão de fiado (Conta Corrente)' };
   const n = Number(body.numero);
   const ped = await pedidoAlvo(n, body.ped);
   if (!ped) return { ok: false, erro: 'comanda não está aberta' };
@@ -16867,7 +16867,7 @@ async function apiNsuCasar(data) {
     const nsuNum = String(o.nsu).replace(/\D/g, '');
     if (!nsuNum) { pulados.push({ pagamento: Number(p.CODIGO), pedido: Number(p.PED) || null, valor, motivo: 'NSU do par não é numérico' }); continue; }
     const dup = await nsuJaUsadoHoje(nsuNum);
-    if (dup && dup.indeterminado) { pulados.push({ pagamento: Number(p.CODIGO), pedido: Number(p.PED) || null, valor, motivo: 'não deu pra conferir o NSU no Consumer: ' + dup.erro }); continue; }
+    if (dup && dup.indeterminado) { pulados.push({ pagamento: Number(p.CODIGO), pedido: Number(p.PED) || null, valor, motivo: 'não deu pra conferir o NSU no PDV: ' + dup.erro }); continue; }
     if (dup && dup.pagamento !== Number(p.CODIGO)) { pulados.push({ pagamento: Number(p.CODIGO), pedido: Number(p.PED) || null, valor, motivo: `NSU ${nsuNum} já usado no pagamento ${dup.pagamento}` }); continue; }
     const up = await nsuGravar(p.CODIGO, nsuNum, true);
     if (!up.ok) { pulados.push({ pagamento: Number(p.CODIGO), pedido: Number(p.PED) || null, valor, motivo: 'FB: ' + up.err }); continue; }
@@ -16899,7 +16899,7 @@ async function apiNsuLerFotos(data) {
     const nsu = String(d?.nsu ?? '').replace(/\D/g, '');
     if (!nsu) { falhas.push({ pagamento: Number(f.pagamento_codigo), mesa: f.numero, valor: Number(f.valor) || 0, motivo: d ? 'IA não achou NSU no papel' : 'OCR indisponível/foto ilegível' }); continue; }
     const dup = await nsuJaUsadoHoje(nsu);
-    if (dup && dup.indeterminado) { falhas.push({ pagamento: Number(f.pagamento_codigo), mesa: f.numero, valor: Number(f.valor) || 0, motivo: 'não deu pra conferir o NSU no Consumer: ' + dup.erro }); continue; }
+    if (dup && dup.indeterminado) { falhas.push({ pagamento: Number(f.pagamento_codigo), mesa: f.numero, valor: Number(f.valor) || 0, motivo: 'não deu pra conferir o NSU no PDV: ' + dup.erro }); continue; }
     if (dup && dup.pagamento !== Number(f.pagamento_codigo)) { falhas.push({ pagamento: Number(f.pagamento_codigo), mesa: f.numero, valor: Number(f.valor) || 0, motivo: `NSU ${nsu} já usado no pagamento ${dup.pagamento} — mesmo cupom fotografado 2×?` }); continue; }
     const up = await nsuGravar(f.pagamento_codigo, nsu, true);
     if (!up.ok) { falhas.push({ pagamento: Number(f.pagamento_codigo), mesa: f.numero, valor: Number(f.valor) || 0, motivo: 'FB: ' + up.err }); continue; }
@@ -16918,7 +16918,7 @@ async function apiNsuDefinir(body) {
   const nsu = String(body.nsu ?? '').replace(/\D/g, '');
   if (!pagamento || !nsu) return { ok: false, erro: 'pagamento e nsu obrigatórios' };
   const dup = await nsuJaUsadoHoje(nsu);
-  if (dup && dup.indeterminado) return { ok: false, erro: `Não consegui conferir o NSU no Consumer (${dup.erro}) — tente de novo em instantes` };
+  if (dup && dup.indeterminado) return { ok: false, erro: `Não consegui conferir o NSU no PDV (${dup.erro}) — tente de novo em instantes` };
   if (dup && dup.pagamento !== pagamento) {
     return { ok: false, erro: `NSU ${nsu} já usado hoje no pagamento ${dup.pagamento} (pedido ${dup.pedido ?? '?'})` };
   }
@@ -18418,7 +18418,7 @@ async function selecao(){
     return '<button class="abtn'+(a.orfa?' orfa':'')+'" onclick="irArea('+a.codigo+')"><div class="an">'+
       (a.orfa?'⚠ ':'')+escPraca(a.nome)+'</div>'+
       '<div class="ap"><b>'+a.a_produzir+'</b> a produzir · '+a.total+' no total'+
-      (a.orfa?'<br>produto sem cozinha no Consumer':'')+'</div></button>';
+      (a.orfa?'<br>produto sem cozinha no cadastro':'')+'</div></button>';
   }).join('')+'</div></div>';
 }
 async function kds(){
@@ -20291,7 +20291,7 @@ var GERLIST=[];
 async function telaGerentes(){
   app('<button class="back" onclick="telaMesa()">◂ voltar</button>'+
     '<div class="tit" style="margin-top:12px">Gerentes</div>'+
-    '<div class="mut" style="margin-bottom:12px">O gerente vê as <b>reclamações</b> das mesas aqui na comanda (a reclamação também vai pro KDS). Quem é Administrador ou tem Excluir-Pedido no Consumer já é gerente (travado). <b>Chef</b> manda produção pros cozinheiros pelo celular (menu ☰ → Produção); <b>recepção</b> abre as reservas e a lista de espera (menu ☰ → Reservas); gerente também faz os dois.</div>'+
+    '<div class="mut" style="margin-bottom:12px">O gerente vê as <b>reclamações</b> das mesas aqui na comanda (a reclamação também vai pro KDS). Quem é Administrador ou tem Excluir-Pedido já é gerente (travado). <b>Chef</b> manda produção pros cozinheiros pelo celular (menu ☰ → Produção); <b>recepção</b> abre as reservas e a lista de espera (menu ☰ → Reservas); gerente também faz os dois.</div>'+
     '<div id="glist"><span class="mut">carregando…</span></div>');
   var d=await jget('/api/gerentes');
   var el=document.getElementById('glist');if(!el)return;
@@ -20300,7 +20300,7 @@ async function telaGerentes(){
   if(!GERLIST.length){el.innerHTML='<span class="mut">ninguém com PIN ainda — cada um entra 1x pra aparecer aqui</span>';return}
   el.innerHTML=GERLIST.map(function(g,ix){
     return '<div class="ch gar" style="justify-content:space-between;align-items:center">'+
-      '<span>'+(g.gerente?'✅ ':'▫️ ')+esc(g.nome)+' <small style="opacity:.6">'+esc(g.login)+(g.por_consumer?' · Consumer':'')+'</small></span>'+
+      '<span>'+(g.gerente?'✅ ':'▫️ ')+esc(g.nome)+' <small style="opacity:.6">'+esc(g.login)+(g.por_consumer?' · pela permissão':'')+'</small></span>'+
       '<span style="display:flex;gap:6px">'+
       '<button class="ir" onclick="setChefIx('+ix+','+(g.producao?'false':'true')+')">'+(g.producao?'👨‍🍳 chef ✓':'chef?')+'</button>'+
       '<button class="ir" onclick="setRecepIx('+ix+','+(g.recepcao?'false':'true')+')">'+(g.recepcao?'📅 recepção ✓':'recepção?')+'</button>'+
@@ -20329,13 +20329,13 @@ async function setGerenteIx(ix,val){
 function telaLogin(){
   var c=document.getElementById('chamados');if(c)c.innerHTML='';
   app('<div class="tit" style="margin-top:8px">Entrar na comanda</div>'+
-    '<input type="text" id="glogin" autocapitalize="none" autocorrect="off" autocomplete="username" placeholder="seu login do Consumer" value="'+(LOGIN_TMP?esc(LOGIN_TMP):'')+'">'+
+    '<input type="text" id="glogin" autocapitalize="none" autocorrect="off" autocomplete="username" placeholder="seu login" value="'+(LOGIN_TMP?esc(LOGIN_TMP):'')+'">'+
     '<div class="tit" style="margin-top:14px">PIN</div>'+
     '<input type="password" id="gpin" inputmode="numeric" autocomplete="off" placeholder="4 a 8 números">'+
     '<div id="gpin2wrap"></div>'+
     '<div id="gmsg" class="mut" style="margin-top:9px;min-height:18px"></div>'+
     '<button class="big" onclick="fazerLogin()">Entrar</button>'+
-    '<div class="mut" style="margin-top:12px">Só quem tem acesso à <b>Comanda Mobile</b> no Consumer. Na primeira vez, você cria seu PIN.</div>');
+    '<div class="mut" style="margin-top:12px">Só quem tem acesso à <b>Comanda Mobile</b>. Na primeira vez, você cria seu PIN.</div>');
   var gl=document.getElementById('glogin');
   var gp=document.getElementById('gpin');
   if(gl&&!LOGIN_TMP)gl.focus(); else if(gp)gp.focus();
@@ -23793,7 +23793,7 @@ input[type=search]{flex:1;min-width:180px;font:inherit;font-size:15px;padding:9p
 <span class="grow"></span><button class="back" onclick="painelFotos()">🖼 Fotos de outra casa</button>
 <span id="cnt" class="back"></span></header>
 <div class="wrap">
-<div class="dica"><b>Tracejado</b> = herdado do Consumer. Clique pra decidir: <b>verde</b> aparece, <b>vermelho</b> não.
+<div class="dica"><b>Tracejado</b> = herdado do cadastro. Clique pra decidir: <b>verde</b> aparece, <b>vermelho</b> não.
 Clicando de novo volta ao herdado. Clique na foto pra trocar.</div>
 <div class="dica"><b>⏸ Pausar</b> tira o item de venda em todo lugar (garçom, caixa e cliente) — só um <b>tamanho</b> ou o <b>produto inteiro</b>.
 Não apaga nada. Pra voltar a vender, escolha <b>⏸ pausados</b> no filtro lá em cima.</div>
@@ -24262,7 +24262,7 @@ function pinta(){
   var d=D,h='';
   document.getElementById('est').className='tag '+(d.ativo?'on':'off');
   document.getElementById('est').textContent=d.ativo?'ligado':'desligado';
-  if(!d.ativo)h+='<div class="aviso"><b>Integração desligada.</b> Enquanto estiver assim, quem recebe os pedidos do iFood é o Consumer — nada muda na operação. Ligue só depois de autorizar esta loja no Portal do Parceiro: o iFood aceita <b>uma integradora por loja</b>, e ao autorizar aqui o Consumer para de receber.</div>';
+  if(!d.ativo)h+='<div class="aviso"><b>Integração desligada.</b> Enquanto estiver assim, quem recebe os pedidos do iFood é a integradora atual — nada muda na operação. Ligue só depois de autorizar esta loja no Portal do Parceiro: o iFood aceita <b>uma integradora por loja</b>, e ao autorizar aqui a integradora anterior para de receber.</div>';
   // A pergunta que a tela tem que responder sem ninguém clicar em nada é
   // ESTÁ NO AR? Antes só existia a hora da última consulta — quem não sabe
   // que o polling roda a cada 30s não tinha como ler aquilo como bom sinal,
@@ -24282,7 +24282,7 @@ function pinta(){
       '<button class="b '+(d.ativo?'o':'')+'" onclick="liga('+(d.ativo?'0':'1')+')">'+(d.ativo?'desligar':'ligar')+'</button></div>'+
     '<div class="l"><div class="nm">Aceitar o pedido automaticamente<small>o iFood cobra tempo de aceite; no manual alguém precisa apertar Confirmar em cada pedido</small></div>'+
       '<input type="checkbox" id="auto" '+(d.auto_confirmar?'checked':'')+' onchange="salvar({auto_confirmar:this.checked})" style="width:20px;height:20px"></div>'+
-    '<div class="l"><div class="nm">Código de PDV do cardápio<small>o número que já está cadastrado no cardápio do iFood. No Consumer existem dois e eles se sobrepõem — se marcar errado, o pedido vira o prato errado. O item sempre sai conferido pelo nome.</small></div>'+
+    '<div class="l"><div class="nm">Código de PDV do cardápio<small>o número que já está cadastrado no cardápio do iFood. No cadastro existem dois e eles se sobrepõem — se marcar errado, o pedido vira o prato errado. O item sempre sai conferido pelo nome.</small></div>'+
       '<select onchange="salvar({codigo_pdv:this.value})">'+
         '<option value="variante"'+(d.codigo_pdv!=='produto'?' selected':'')+'>variante (PRODUTODETALHE)</option>'+
         '<option value="produto"'+(d.codigo_pdv==='produto'?' selected':'')+'>produto (PRODUTOS)</option>'+
@@ -24294,7 +24294,7 @@ function pinta(){
   h+='<h2>A loja no iFood</h2><div class="card" id="loja">'+lojaHtml()+'</div>';
   // ---- credencial ----
   h+='<h2>1 · Credencial do app (Portal do Desenvolvedor)</h2><div class="card">'+
-    '<div class="l"><div class="nm">Tipo do app<small>centralizado = a loja é do mesmo dono do app (não precisa parear). distribuído = a loja autoriza no Portal do Parceiro, como o Consumer está hoje.</small></div>'+
+    '<div class="l"><div class="nm">Tipo do app<small>centralizado = a loja é do mesmo dono do app (não precisa parear). distribuído = a loja autoriza no Portal do Parceiro.</small></div>'+
       '<select onchange="salvar({modo:this.value})">'+
         '<option value="centralizado"'+(d.modo!=='distribuido'?' selected':'')+'>centralizado</option>'+
         '<option value="distribuido"'+(d.modo==='distribuido'?' selected':'')+'>distribuído</option>'+
@@ -24314,7 +24314,7 @@ function pinta(){
   // ---- pareamento: só existe no app distribuído ----
   if(d.modo==='distribuido'){
     h+='<h2>2 · Autorizar a loja</h2><div class="card"><div class="l"><div class="nm">'+
-      (d.pareado?'Loja já autorizada<small>refaça só se trocar de loja ou se o acesso for revogado no portal</small>':'Gere o código e autorize no Portal do Parceiro<small>o mesmo caminho que o Consumer usou pra ser autorizado</small>')+
+      (d.pareado?'Loja já autorizada<small>refaça só se trocar de loja ou se o acesso for revogado no portal</small>':'Gere o código e autorize no Portal do Parceiro<small>o mesmo caminho de qualquer integradora</small>')+
       '</div><button class="b o" onclick="parear()">gerar código</button></div><div id="par">'+PAR_HTML+'</div></div>';
   }
   // ---- pedidos ----
@@ -24625,7 +24625,7 @@ function pinta(){
   h+='</div><h2>O que o cliente vê no cardápio</h2>'+
      '<div class="mut">Desmarque o que não deve aparecer pra quem pede pela mesa. '+
      'O garçom continua vendo tudo. (Serviço e a maioria dos complementos já saem sozinhos, '+
-     'pela marcação do Consumer.)</div><div class="card" id="grupos" style="margin-top:10px">carregando…</div>'+
+     'pela marcação do cadastro.)</div><div class="card" id="grupos" style="margin-top:10px">carregando…</div>'+
      '<h2>Pratos que demoram mais</h2>'+
     '<div class="mut">Minutos <b>somados</b> ao tempo da praça. Uma picanha na Cozinha de 20min com +15 vira 35min só pra ela.</div>'+
     '<div class="card" style="margin-top:10px">';
@@ -27843,7 +27843,7 @@ async function pagar(){
   if(r.ok){
     FORMA=null;
     document.getElementById('msg').innerHTML='<div class="ok"><b>✓ Pagamento registrado</b><div class="mut" style="margin-top:4px">'+
-      (r.quitada?'Conta quitada. Feche a comanda no Consumer pra sair a nota.':'Falta '+brl(r.saldo))+'</div></div>';
+      (r.quitada?'Conta quitada. Feche a comanda no caixa pra sair a nota.':'Falta '+brl(r.saldo))+'</div></div>';
     await carregar();
   } else {
     document.getElementById('msg').innerHTML='<div class="err">'+esc(r.erro||'erro')+'</div>';
@@ -28553,7 +28553,7 @@ async function inicio(){
 function telaLogin(el){
   setHdr();
   el.innerHTML='<div class="card"><div class="tit" style="margin-top:0">Entrar no caixa</div>'+
-    '<div class="mut" style="margin-bottom:10px">Só quem tem acesso a pagamentos no Consumer.</div>'+
+    '<div class="mut" style="margin-bottom:10px">Só quem tem acesso a pagamentos.</div>'+
     '<input id="lg" placeholder="seu login" autocapitalize="none">'+
     '<input id="pn" class="num" type="password" autocomplete="off" inputmode="numeric" placeholder="PIN" style="margin-top:8px" maxlength="8" readonly onclick="kpAlvo(this)">'+
     '<div id="pn2box"></div>'+kpHtml('pn')+
@@ -29843,9 +29843,9 @@ async function telaUsu(el){
   }).join('')||'<div class="mut" style="margin-top:8px">nenhum ainda</div>';
   h+='</div>';
   if(!d.nativo){
-    h+='<div class="card"><div class="tit" style="margin-top:0">🗂 Do Consumer</div>'+
-      '<div class="mut">Caixa, garçom e gerente desses se mudam no Consumer (ou na Equipe do Concilia). Toque pra marcar Produção, Etiqueta, QR, Reservas e Ponto, ou zerar o PIN.</div>';
-    if(d.consumer_erro)h+='<div class="err">Consumer sem resposta: '+esc(d.consumer_erro)+'</div>';
+    h+='<div class="card"><div class="tit" style="margin-top:0">🗂 Do cadastro antigo</div>'+
+      '<div class="mut">Caixa, garçom e gerente desses se mudam na Equipe do Concilia. Toque pra marcar Produção, Etiqueta, QR, Reservas e Ponto, ou zerar o PIN.</div>';
+    if(d.consumer_erro)h+='<div class="err">Cadastro antigo sem resposta: '+esc(d.consumer_erro)+'</div>';
     h+=(d.consumer||[]).map(function(u){
       return '<div class="it" style="cursor:pointer" onclick="usuEditar(\\''+esc(u.login)+'\\')"><span><b>'+esc(u.login)+'</b> <span class="mut">'+esc(u.nome||'')+'</span><br>'+
         '<span class="mut" style="font-size:12.5px">'+esc(u.acesso)+pin(u)+'</span></span><b class="quit">›</b></div>';
@@ -29900,9 +29900,9 @@ function usuForm(el){
   var eu=!novo&&u.login===USU.eu;
   if(u.consumer){
     el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="usuEditar(null)">◂ usuários</button>'+
-      '<div class="card"><div class="tit" style="margin-top:0">✎ '+esc(u.login)+' <span class="mut">(Consumer)</span></div>'+
+      '<div class="card"><div class="tit" style="margin-top:0">✎ '+esc(u.login)+' <span class="mut">(cadastro antigo)</span></div>'+
       '<div class="mut">'+esc(u.nome||'')+'</div>'+
-      '<div class="mut" style="margin-top:10px">Acessos — Caixa, Garçom e Gerente vêm do Consumer'+(u.gerente?' (é gerente: entra em tudo)':'')+'</div>'+
+      '<div class="mut" style="margin-top:10px">Acessos — Caixa, Garçom e Gerente vêm do cadastro antigo'+(u.gerente?' (é gerente: entra em tudo)':'')+'</div>'+
       acsHtml(u)+'<button class="big" onclick="salvaUsuC()">Salvar</button><div id="uerr" class="err"></div></div>'+
       '<div class="card"><div class="tit" style="margin-top:0">Outras ações</div>'+
       (u.tem_pin?'<button class="big g" onclick="usuZerarPin(\\''+esc(u.login)+'\\')">Zerar PIN (cria outro no próximo acesso)</button>'
@@ -30035,7 +30035,7 @@ function buscaForn(){
     l.innerHTML=r.fornecedores.length
       ? '<div class="lst" style="grid-template-columns:1fr;margin-top:6px">'+r.fornecedores.map(function(f){
           return '<button class="mchip" onclick="escolheForn(\\''+f.codigo+'\\',\\''+esc(f.nome).replace(/'/g,'')+'\\')"><b>'+esc(f.nome)+'</b>'+(f.doc?'<small>'+esc(f.doc)+'</small>':'')+'</button>'}).join('')+'</div>'
-      : (r.livre?'':'<div class="mut" style="margin-top:6px">ninguém com esse nome — cadastre o fornecedor no Consumer primeiro</div>');
+      : (r.livre?'':'<div class="mut" style="margin-top:6px">ninguém com esse nome — cadastre o fornecedor primeiro</div>');
     /* Sem Consumer o cadastro é na nuvem: dá pra lançar com o nome digitado,
        e a nuvem cadastra a pessoa ao criar a conta a pagar. */
     if(r.livre){
@@ -30425,7 +30425,7 @@ function pintaMotivoPedido(){
   }
   ov.innerHTML='<div class="card" style="max-width:430px;width:100%;margin:0;max-height:88vh;overflow:auto">'+
     '<div class="tit" style="margin-top:0">🗑 Cancelar o pedido INTEIRO — mesa/comanda '+MESA+'</div>'+
-    '<div class="mut">A conta inteira some (no Consumer também) e cai no relatório de cancelamentos.</div>'+
+    '<div class="mut">A conta inteira some e cai no relatório de cancelamentos.</div>'+
     chipsMotivoHtml(MOTPED,'selMotivoPed',true)+
     '<button class="big" style="background:var(--red)" onclick="doCancPedido(this)">Confirmar cancelamento</button>'+
     '<button class="big" style="background:#eef2f7;color:#0f172a" onclick="fechaMotivoPed()">Voltar</button>'+
@@ -31473,7 +31473,7 @@ async function apiGerenteEntrar(body) {
   const pin = String(body.pin || '').replace(/\D/g, '');
   if (!login) return { ok: false, erro: 'informe o login' };
   if (!(pin.length >= 4 && pin.length <= 8)) return { ok: false, erro: 'o PIN tem de 4 a 8 números' };
-  if (!(await ehGerente(login))) return { ok: false, erro: 'Este login não é gerente. Precisa de Administrador ou Excluir Pedido no Consumer, ou ser marcado como gerente em Gerentes.' };
+  if (!(await ehGerente(login))) return { ok: false, erro: 'Este login não é gerente. Precisa de Administrador ou Excluir Pedido, ou ser marcado como gerente em Gerentes.' };
   let nome = login;
   try { const p = await permsDoUsuario(login); if (p.ok && p.nome) nome = p.nome; } catch {}
   const atual = (await sql`SELECT pin_hash, salt, nome FROM garcom_pin WHERE login=${login}`)[0];
@@ -32733,7 +32733,7 @@ function secFluxo(f){
       '<div style="display:flex;align-items:flex-end;gap:1px;height:56px"><i class="a" style="flex:1;height:'+Math.round(f.hoje[k].n*56/max)+'px"></i><i class="s" style="flex:1;height:'+Math.round(f.semana[k].n*56/max)+'px"></i></div></div>';
   }
   h+='</div><div class="hx">';for(var k2=de;k2<=ate;k2++)h+='<span>'+k2+'</span>';
-  h+='</div><div class="leg"><span><i style="background:var(--gold2)"></i>hoje</span><span><i style="background:#cfcfd6"></i>semana passada ('+esc(f.semana_dia.slice(8)+'/'+f.semana_dia.slice(5,7))+')</span><span>fonte: '+(f.fonte==='local'?'PDV local':'Consumer')+'</span></div></div>';
+  h+='</div><div class="leg"><span><i style="background:var(--gold2)"></i>hoje</span><span><i style="background:#cfcfd6"></i>semana passada ('+esc(f.semana_dia.slice(8)+'/'+f.semana_dia.slice(5,7))+')</span><span>fonte: '+(f.fonte==='local'?'PDV local':'importado')+'</span></div></div>';
   return h;
 }
 function secSetores(S){
@@ -33534,7 +33534,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
       const pf = await permsDoUsuario(g.login).catch(() => null);
       if (!(pf && pf.ok && (pf.admin || pf.entregas))) {
-        return res.end(JSON.stringify({ ok: false, erro: 'Seu login não tem "Pedidos Delivery" no Consumer — o gerente libera em Equipe da loja (Concilia).' }));
+        return res.end(JSON.stringify({ ok: false, erro: 'Seu login não tem "Pedidos Delivery" — o gerente libera em Equipe da loja (Concilia).' }));
       }
       try {
         if (p === '/api/entregador/pedidos') return res.end(JSON.stringify(await apiEntregadorPedidos(g.login)));
