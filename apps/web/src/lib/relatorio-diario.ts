@@ -290,6 +290,8 @@ export interface RelatorioCasa {
   eventos?: EventoDia[];
   /** pontos incompletos da casa nos últimos dias, ainda sem correção (entrada sem saída / saída sem entrada) */
   pontoEmAberto?: PontoAberto[];
+  /** registrados (CLT/intermitente) que bateram a saída depois das 22h no dia — escala até 22h (05/11/2026) */
+  saidasDepoisDas22?: SaidaDepoisDas22[];
   /** vendas na maquininha (Cielo) dos últimos dias sem pagamento no nosso sistema e sem exceção aceita (05/11/2026) */
   cartoesForaDoSistema?: CartaoForaDoSistema[];
   /** documentos da empresa (alvará, certidão…) vencidos ou vencendo em até 30 dias — /empresa/documentos */
@@ -323,6 +325,16 @@ export interface CartaoForaDoSistema {
   forma: string | null;
   bandeira: string | null;
   nsu: string | null;
+}
+
+/** Saída do ponto depois das 22h (cada minuto depois das 22h tem adicional noturno de 20%). */
+export interface SaidaDepoisDas22 {
+  nome: string;
+  /** "22:37" (ou "00:15" quando passou da meia-noite) */
+  saida: string;
+  /** minutos de relógio depois das 22:00 */
+  minutos: number;
+  regime: string | null;
 }
 
 export interface PontoAberto {
@@ -1611,6 +1623,38 @@ async function pontoEmAbertoDaCasa(filialId: string, dia: string): Promise<Ponto
   return out.sort((a, b) => (a.dia === b.dia ? a.nome.localeCompare(b.nome, 'pt-BR') : a.dia < b.dia ? 1 : -1));
 }
 
+/**
+ * Quem é registrado (CLT mensal ou intermitente) e bateu a última saída do dia
+ * operacional depois das 22h. Decisão do dono 05/11/2026 ("estamos sem recursos"
+ * → escala até 22h): o adicional noturno é lei e continua pago; o jeito de não
+ * gastar com ele é a equipe sair até 22h. Diarista fica fora (não tem noturno).
+ */
+async function saidasDepoisDas22DaCasa(filialId: string, dia: string): Promise<SaidaDepoisDas22[]> {
+  const rows = await q<{ nome: string; saida: string; minutos: number; regime: string | null }>(sql`
+    WITH s AS (
+      SELECT b.funcionario_id, max(b.quando) AS ult
+        FROM ponto_batida b
+       WHERE b.filial_id = ${filialId}
+         AND b.dia_operacional = ${dia}::date
+         AND b.excluida_em IS NULL
+         AND b.tipo = 'saida'
+       GROUP BY b.funcionario_id
+    )
+    SELECT f.nome, f.regime_salarial AS regime,
+           to_char(s.ult AT TIME ZONE ${TZ}, 'HH24:MI') AS saida,
+           floor(extract(epoch FROM (s.ult - ((${dia}::date + time '22:00') AT TIME ZONE ${TZ}))) / 60)::int AS minutos
+      FROM s
+      JOIN funcionario f ON f.id = s.funcionario_id
+     WHERE s.ult > ((${dia}::date + time '22:00') AT TIME ZONE ${TZ})
+       AND f.regime_salarial IN ('clt_mensal', 'intermitente_hora')
+     ORDER BY s.ult DESC, f.nome
+  `);
+  // Segundos depois das 22:00 não contam (saiu na hora).
+  return rows
+    .map((r) => ({ nome: r.nome, saida: r.saida, minutos: Number(r.minutos), regime: r.regime }))
+    .filter((r) => r.minutos >= 1);
+}
+
 /** Quantos dias pra trás o relatório procura venda da Cielo sem lançamento (o EDI chega D+1). */
 const DIAS_CARTAO_FORA = 7;
 
@@ -1678,6 +1722,11 @@ export async function montarRelatorioFiliais(
       casa.pontoEmAberto = await pontoEmAbertoDaCasa(f.id, dia).catch((e) => {
         console.error('[relatorio-diario] ponto em aberto:', e);
         return [] as PontoAberto[];
+      });
+      // Saída depois das 22h (05/11/2026, dono: escala até 22h pra não pagar noturno). Extra — falhou, sai sem.
+      casa.saidasDepoisDas22 = await saidasDepoisDas22DaCasa(f.id, dia).catch((e) => {
+        console.error('[relatorio-diario] saída depois das 22h:', e);
+        return [] as SaidaDepoisDas22[];
       });
       // Cartões na maquininha sem lançamento no sistema (05/11/2026, dono). Extra — falhou, sai sem.
       casa.cartoesForaDoSistema = await cartoesForaDoSistemaDaCasa(f.id, dia).catch((e) => {
@@ -1785,11 +1834,12 @@ export function resumoUmaLinha(casas: RelatorioCasa[]): string {
   const docs = casas.reduce((s, c) => s + (c.documentosVencendo?.length ?? 0), 0);
   const cartoes = casas.reduce((s, c) => s + (c.cartoesForaDoSistema?.length ?? 0), 0);
   const escala = casas.reduce((s, c) => s + totalPendencias(c.pendenciasEscala), 0);
+  const depois22 = casas.reduce((s, c) => s + (c.saidasDepoisDas22?.length ?? 0), 0);
   return `${partes.join(' · ')} · Total ${reais(total, false)}${abertos ? ` · Ponto em aberto: ${abertos}` : ''}${
     docs ? ` · Documentos vencendo: ${docs}` : ''
   }${escala ? ` · Escala: ${escala} ${escala === 1 ? "pendência" : "pendências"}` : ''}${
     cartoes ? ` · Cartões fora do sistema: ${cartoes}` : ''
-  }`;
+  }${depois22 ? ` · Saíram depois das 22h: ${depois22}` : ''}`;
 }
 
 const nota1 = (n: number | null) => (n == null ? '—' : n.toFixed(1).replace('.', ','));
@@ -1906,6 +1956,19 @@ function linhasPontoAberto(c: RelatorioCasa): string[] {
   return L;
 }
 
+/** Registrados que saíram depois das 22h, pro texto do WhatsApp (vazio = ninguém). */
+function linhasSaidaDepoisDas22(c: RelatorioCasa): string[] {
+  const lista = c.saidasDepoisDas22 ?? [];
+  if (!lista.length) return [];
+  const MAX = 15;
+  const total = lista.reduce((s, x) => s + x.minutos, 0);
+  const hm = (m: number) => (m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}` : `${m} min`);
+  const L = [`🌙 Saíram depois das 22h (${lista.length}, ${hm(total)} somados) — escala é até 22h, depois disso paga adicional noturno:`];
+  for (const x of lista.slice(0, MAX)) L.push(`• ${x.nome} — saiu ${x.saida} (+${hm(x.minutos)})`);
+  if (lista.length > MAX) L.push(`• e mais ${lista.length - MAX}`);
+  return L;
+}
+
 /** Vendas da Cielo sem pagamento no sistema, pro texto do WhatsApp (vazio = nenhuma). */
 function linhasCartoesForaDoSistema(c: RelatorioCasa): string[] {
   const lista = c.cartoesForaDoSistema ?? [];
@@ -2002,6 +2065,7 @@ function textoCasa(c: RelatorioCasa): string {
     }
     L.push(...linhasCartoesForaDoSistema(c));
     L.push(...linhasPontoAberto(c));
+    L.push(...linhasSaidaDepoisDas22(c));
     L.push(...linhasEscala(c));
     L.push(...linhasDocumentos(c));
     L.push(...linhasProximosEventos(c));
@@ -2066,6 +2130,7 @@ function textoCasa(c: RelatorioCasa): string {
   L.push(...linhasCaixa(c));
   L.push(...linhasCartoesForaDoSistema(c));
   L.push(...linhasPontoAberto(c));
+  L.push(...linhasSaidaDepoisDas22(c));
   L.push(...linhasEscala(c));
   L.push(...linhasDocumentos(c));
   L.push(...linhasProximosEventos(c));
