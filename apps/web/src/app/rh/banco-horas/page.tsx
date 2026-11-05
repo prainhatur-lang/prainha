@@ -26,6 +26,18 @@ export const dynamic = 'force-dynamic';
 
 interface SP {
   filialId?: string;
+  /** 'AAAA-MM': mostra o banco daquele mês (05/11/2026, pedido do dono). */
+  mes?: string;
+}
+
+function mesAnterior(ym: string): string {
+  const [a, m] = ym.split('-').map(Number);
+  return m === 1 ? `${a - 1}-12` : `${a}-${String(m - 1).padStart(2, '0')}`;
+}
+function ultimoDiaMes(ym: string): string {
+  const [a, m] = ym.split('-').map(Number);
+  const d = new Date(Date.UTC(a, m, 0)).getUTCDate();
+  return `${ym}-${String(d).padStart(2, '0')}`;
 }
 
 export default async function BancoHorasPage(props: { searchParams: Promise<SP> }) {
@@ -193,6 +205,12 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
   }
 
   const ontem = somarDias(hoje, -1);
+  // Meses que dá pra ver: da virada até o mês atual (mais novo primeiro).
+  const meses: string[] = [];
+  for (let m = hoje.slice(0, 7); m >= virada.slice(0, 7); m = mesAnterior(m)) meses.push(m);
+  const mesSel = sp.mes && meses.includes(sp.mes) ? sp.mes : null;
+  const mesIni = mesSel ? `${mesSel}-01` : null;
+  const mesFim = mesSel ? (ultimoDiaMes(mesSel) < ontem ? ultimoDiaMes(mesSel) : ontem) : null;
   // Atestado (21/10/2026): o dia coberto conta como cumprido — abona o que
   // faltou pra jornada. A lista mostra o último ano e os que ainda vão vir.
   const atestados = await atestadosNoPeriodo(ids, somarDias(hoje, -365), somarDias(hoje, 60));
@@ -260,8 +278,12 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
     let semIntervaloDias = 0;
     let abonadoMin = 0;
     let atestadoDias = 0;
+    // Mês escolhido: o que mexeu no banco antes do mês e dentro dele.
+    const m = { antes: 0, prev: 0, trab: 0, trabTotal: 0, abon: 0, semBatidaDias: 0, semBatidaMin: 0 };
+    const noMes = (dia: string) => mesIni != null && dia >= mesIni && dia <= mesFim!;
     for (let dia = virada; dia <= ontem; dia = somarDias(dia, 1)) {
       const t = trabalhado.get(`${f.id}|${dia}`);
+      if (t && noMes(dia)) m.trabTotal += t.min;
       if (t) {
         trabalhadoMin += t.min;
         if (t.incompleto) incompletos++;
@@ -271,7 +293,8 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
       const j = jornadaNoDia(vigencias, dia);
       // Dia em que a jornada era intermitente (ex.: virou CLT no meio do caminho)
       // foi pago por hora: não entra no banco (05/11/2026, caso Antonio Ferreira).
-      if (t && j?.tipo !== 'intermitente') trabalhadoNaContaMin += t.min;
+      const trabConta = t && j?.tipo !== 'intermitente' ? t.min : 0;
+      trabalhadoNaContaMin += trabConta;
       const prev = j
         ? minutosPrevistos(j, dia)
         : escalaFixa && escalaMes!.get(dia) === false
@@ -280,9 +303,20 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
       previstoMin += prev;
       // atestado guardado "sem abonar" (abona=false) segue a conta normal do dia
       const atest = diaAtestado.get(`${f.id}|${dia}`);
+      const abonaHoje = atest && atest.abona !== false ? (prev > 0 ? Math.max(prev - (t?.min ?? 0), 0) : 0) : 0;
+      if (mesIni && dia < mesIni) m.antes += trabConta + abonaHoje - prev;
+      else if (noMes(dia)) {
+        m.trab += trabConta;
+        m.prev += prev;
+        m.abon += abonaHoje;
+        if (!(atest && atest.abona !== false) && prev > 0 && !t) {
+          m.semBatidaDias++;
+          m.semBatidaMin += prev;
+        }
+      }
       if (atest && atest.abona !== false) {
         atestadoDias++;
-        if (prev > 0) abonadoMin += Math.max(prev - (t?.min ?? 0), 0);
+        abonadoMin += abonaHoje;
         continue;
       }
       if (prev > 0 && !t) {
@@ -294,6 +328,34 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
     const temBanco = atual?.tipo === 'fixa' || escalaFixa;
     const diasTrabEscala = usaEscalaMes ? diasEscala.filter((d) => escalaMes!.get(d) === false).length : 0;
     const movimentoMin = temBanco ? trabalhadoNaContaMin + abonadoMin - previstoMin : 0;
+    // Saldo no começo e no fim do mês escolhido: saldo do Stelanto + acertos com
+    // data até ali + o que o ponto somou até ali (mesma conta do "Saldo hoje").
+    const acertosAte = (lim: string, incluso: boolean) =>
+      lancamentos
+        .filter((l) => l.tipo !== 'saldo_inicial' && (incluso ? l.dia <= lim : l.dia < lim))
+        .reduce((s, l) => s + l.minutos, 0);
+    const mes =
+      mesIni && mesFim
+        ? (() => {
+            const ini = inicial?.minutos ?? 0;
+            const acertosMes = acertosAte(mesFim, true) - acertosAte(mesIni, false);
+            const movMes = temBanco ? m.trab + m.abon - m.prev : 0;
+            const saldoAntesMin = ini + acertosAte(mesIni, false) + (temBanco ? m.antes : 0);
+            return {
+              ini: mesIni,
+              fim: mesFim,
+              saldoAntesMin,
+              acertosMin: acertosMes,
+              previstoMin: m.prev,
+              trabalhadoMin: temBanco ? m.trab : m.trabTotal,
+              abonadoMin: temBanco ? m.abon : 0,
+              semBatidaDias: m.semBatidaDias,
+              semBatidaMin: m.semBatidaMin,
+              movimentoMin: movMes,
+              saldoFimMin: saldoAntesMin + acertosMes + movMes,
+            };
+          })()
+        : null;
     const folhaC = vinculoPor.get(f.id);
     const registrado = !!folhaC || !!(f.empresaRegistro || f.cnpjRegistro || f.matriculaFolha);
     const tipoPessoa: TipoPessoa = /12\s*x\s*36/i.test(atual?.nome ?? '')
@@ -346,6 +408,7 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
           origem: a.origem,
         })),
       movimentoMin,
+      mes,
       saldoMin: (inicial?.minutos ?? 0) + acertosMin + movimentoMin,
       lancamentos: lancamentos.map((l) => ({
         id: l.id,
@@ -415,6 +478,9 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
           podeLancar={podeLancar}
           podeAtestado={podeAtestado}
           linhas={linhas}
+          meses={meses}
+          mesSel={mesSel}
+          filialNome={filial.nome}
           jornadas={jornadas.map((j) => ({
             id: j.id,
             nome: j.nome,

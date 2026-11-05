@@ -44,11 +44,27 @@ export interface LinhaPessoa {
   semIntervaloDias?: number;
   movimentoMin: number;
   saldoMin: number;
+  /** Mês escolhido no seletor (05/11/2026): saldo no começo, o que mexeu no mês e saldo no fim. */
+  mes?: LinhaMes | null;
   /** Atestado (21/10/2026): minutos abonados no banco e dias cobertos desde a virada. */
   abonadoMin?: number;
   atestadoDias?: number;
   atestados?: AtestadoPessoa[];
   lancamentos: { id: string; dia: string; minutos: number; tipo: string; descricao: string | null }[];
+}
+
+export interface LinhaMes {
+  ini: string;
+  fim: string;
+  saldoAntesMin: number;
+  acertosMin: number;
+  previstoMin: number;
+  trabalhadoMin: number;
+  abonadoMin: number;
+  semBatidaDias: number;
+  semBatidaMin: number;
+  movimentoMin: number;
+  saldoFimMin: number;
 }
 
 export interface AtestadoPessoa {
@@ -86,7 +102,24 @@ interface Props {
   podeAtestado?: boolean;
   linhas: LinhaPessoa[];
   jornadas: Jornada[];
+  /** Meses que dá pra escolher ('AAAA-MM', mais novo primeiro) e o escolhido. */
+  meses?: string[];
+  mesSel?: string | null;
+  filialNome?: string;
 }
+
+const NOME_MES = ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho', 'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'];
+function nomeMes(ym: string): string {
+  const [a, m] = ym.split('-').map(Number);
+  return `${NOME_MES[m - 1]}/${a}`;
+}
+const TIPO_TXT: Record<TipoPessoa, string> = {
+  clt: 'CLT',
+  '12x36': '12x36',
+  intermitente: 'Intermitente',
+  diarista: 'Diarista',
+  outros: 'Sem registro / outros',
+};
 
 const TIPO_LABEL: Record<string, string> = {
   saldo_inicial: 'Saldo do Stelanto',
@@ -124,7 +157,7 @@ async function enviar(body: unknown): Promise<string | null> {
   return j?.error ?? 'Não deu pra salvar';
 }
 
-export function BancoHorasManager({ filialId, hoje, podeLancar, podeAtestado: podeAtestadoProp, linhas, jornadas }: Props) {
+export function BancoHorasManager({ filialId, hoje, podeLancar, podeAtestado: podeAtestadoProp, linhas, jornadas, meses = [], mesSel = null, filialNome }: Props) {
   const podeAtestado = podeAtestadoProp ?? podeLancar;
   const router = useRouter();
   const [aberta, setAberta] = useState<string | null>(null);
@@ -173,6 +206,79 @@ export function BancoHorasManager({ filialId, hoje, podeLancar, podeAtestado: po
   const alternarTipo = (t: TipoPessoa) =>
     setTiposSel((at) => (at.includes(t) ? at.filter((x) => x !== t) : [...at, t]));
   const somaSaldo = mensalistas.reduce((s, l) => s + l.saldoMin, 0);
+  const somaMes = mensalistas.reduce((s, l) => s + (l.mes?.saldoFimMin ?? 0), 0);
+  const [exportando, setExportando] = useState(false);
+
+  function trocarMes(ym: string) {
+    const q = new URLSearchParams();
+    if (filialId) q.set('filialId', filialId);
+    if (ym) q.set('mes', ym);
+    router.push(`?${q.toString()}`);
+  }
+
+  // Exporta pro Excel o que está na tela (casa, mês e filtro de tipo).
+  async function exportar() {
+    setExportando(true);
+    try {
+      const XLSX = await import('xlsx');
+      const wb = XLSX.utils.book_new();
+      const tipoDe = (l: LinhaPessoa) => TIPO_TXT[l.tipoPessoa ?? 'outros'];
+      const horasDec = (min: number) => Math.round((min / 60) * 100) / 100;
+      const banco = mesSel
+        ? mensalistas.map((l) => {
+            const x = l.mes!;
+            return {
+              Pessoa: l.nome,
+              Cargo: l.cargo ?? '',
+              Tipo: tipoDe(l),
+              Escala: l.jornadaNome ?? '',
+              'Saldo no começo do mês': fmtSaldo(x.saldoAntesMin),
+              'Acertos no mês': fmtSaldo(x.acertosMin),
+              'Previsto no mês': fmtHoras(x.previstoMin),
+              'Batido no mês': fmtHoras(x.trabalhadoMin),
+              'Atestado abonado': fmtHoras(x.abonadoMin),
+              'Dias sem batida': x.semBatidaDias,
+              'Movimento do mês': fmtSaldo(x.movimentoMin),
+              'Saldo no fim do mês': fmtSaldo(x.saldoFimMin),
+              'Saldo no fim (horas decimais)': horasDec(x.saldoFimMin),
+            };
+          })
+        : mensalistas.map((l) => ({
+            Pessoa: l.nome,
+            Cargo: l.cargo ?? '',
+            Tipo: tipoDe(l),
+            Escala: l.jornadaNome ?? '',
+            'Veio do Stelanto': l.inicialMin === null ? '' : fmtSaldo(l.inicialMin),
+            Acertos: fmtSaldo(l.acertosMin),
+            'Conta desde': dmy(l.contaDesde),
+            Previsto: fmtHoras(l.previstoMin),
+            Batido: fmtHoras(l.trabalhadoMin),
+            'Atestado abonado': fmtHoras(l.abonadoMin ?? 0),
+            'Dias sem batida': l.semBatidaDias,
+            'Desde a virada': fmtSaldo(l.movimentoMin),
+            'Saldo hoje': fmtSaldo(l.saldoMin),
+            'Saldo hoje (horas decimais)': horasDec(l.saldoMin),
+          }));
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(banco.length ? banco : [{ Pessoa: 'Ninguém' }]), 'Banco de horas');
+      if (intermitentes.length) {
+        const inter = intermitentes.map((l) => ({
+          Pessoa: l.nome,
+          Cargo: l.cargo ?? '',
+          Tipo: tipoDe(l),
+          [mesSel ? 'Horas batidas no mês' : 'Horas batidas desde a virada']: fmtHoras(mesSel ? (l.mes?.trabalhadoMin ?? 0) : l.trabalhadoMin),
+          'Horas (decimal)': horasDec(mesSel ? (l.mes?.trabalhadoMin ?? 0) : l.trabalhadoMin),
+        }));
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(inter), 'Intermitentes');
+      }
+      const casa = (filialNome ?? 'casa').toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      XLSX.writeFile(wb, `banco-horas-${casa}-${mesSel ?? `ate-${hoje}`}.xlsx`);
+    } catch (e) {
+      console.error(e);
+      window.alert('Não deu pra gerar a planilha.');
+    } finally {
+      setExportando(false);
+    }
+  }
 
   function feito() {
     setAcerto(null);
@@ -219,6 +325,120 @@ export function BancoHorasManager({ filialId, hoje, podeLancar, podeAtestado: po
           <span className="text-xs text-slate-400">nenhum marcado = todos</span>
         )}
       </div>
+
+      {/* ---------- mês e exportar ---------- */}
+      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3">
+        <label className="text-xs font-medium uppercase tracking-wide text-slate-400" htmlFor="bh-mes">
+          Ver mês
+        </label>
+        <select
+          id="bh-mes"
+          value={mesSel ?? ''}
+          onChange={(e) => trocarMes(e.target.value)}
+          className="rounded-md border border-slate-300 bg-white px-2 py-1 text-sm text-slate-800"
+        >
+          <option value="">Saldo de hoje (tudo)</option>
+          {meses.map((m) => (
+            <option key={m} value={m}>
+              {nomeMes(m)}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={exportar}
+          disabled={exportando}
+          className="ml-auto rounded-md border border-emerald-300 bg-white px-3 py-1.5 text-sm font-medium text-emerald-800 hover:bg-emerald-50 disabled:opacity-50"
+          title="Baixa a planilha do que está na tela (casa, mês e filtro de tipo)"
+        >
+          {exportando ? 'Gerando…' : '⬇ Exportar Excel'}
+        </button>
+      </div>
+
+      {mesSel && (
+        <div className="rounded-xl border border-indigo-200 bg-white">
+          <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-indigo-100 px-4 py-3">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-900">
+                📅 Banco de horas de {nomeMes(mesSel)} <span className="font-normal text-slate-500">({mensalistas.length})</span>
+              </h2>
+              {mensalistas[0]?.mes && (
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Conta de {dmy(mensalistas[0].mes.ini)} a {dmy(mensalistas[0].mes.fim)}
+                  {mesSel === hoje.slice(0, 7) ? ' (mês em andamento: até ontem)' : ''}
+                </p>
+              )}
+            </div>
+            <p className="text-xs text-slate-500">
+              Soma da casa no fim do mês: <span className={`font-semibold ${corSaldo(somaMes)}`}>{fmtSaldo(somaMes)}</span>
+            </p>
+          </div>
+          {mensalistas.length === 0 ? (
+            <p className="px-4 py-6 text-sm text-slate-500">Ninguém com banco de horas nesta casa.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-xs text-slate-500">
+                  <tr>
+                    <th className="px-4 py-2 text-left">Pessoa</th>
+                    <th className="px-3 py-2 text-right">Saldo no começo</th>
+                    <th className="px-3 py-2 text-right">Acertos no mês</th>
+                    <th className="px-3 py-2 text-right">Previsto</th>
+                    <th className="px-3 py-2 text-right">Batido</th>
+                    <th className="px-3 py-2 text-right">Movimento do mês</th>
+                    <th className="px-3 py-2 text-right">Saldo no fim</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {mensalistas.map((l) => {
+                    const x = l.mes;
+                    if (!x) return null;
+                    return (
+                      <tr key={l.id} className="align-top hover:bg-slate-50">
+                        <td className="px-4 py-2">
+                          <div className="font-medium text-slate-900">{l.nome}</div>
+                          {l.cargo && <div className="text-xs text-slate-500">{l.cargo}</div>}
+                        </td>
+                        <td className={`px-3 py-2 text-right tabular-nums ${corSaldo(x.saldoAntesMin)}`}>{fmtSaldo(x.saldoAntesMin)}</td>
+                        <td className={`px-3 py-2 text-right tabular-nums ${corSaldo(x.acertosMin)}`}>
+                          {x.acertosMin === 0 ? <span className="text-slate-300">—</span> : fmtSaldo(x.acertosMin)}
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums text-slate-600">{fmtHoras(x.previstoMin)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-slate-600">
+                          {fmtHoras(x.trabalhadoMin)}
+                          {x.semBatidaDias > 0 && (
+                            <div className="text-[11px] text-amber-700">
+                              {x.semBatidaDias} dia{x.semBatidaDias > 1 ? 's' : ''} sem batida
+                            </div>
+                          )}
+                          {x.abonadoMin > 0 && <div className="text-[11px] text-sky-700">🩺 +{fmtHoras(x.abonadoMin)} abonadas</div>}
+                        </td>
+                        <td className={`px-3 py-2 text-right tabular-nums ${corSaldo(x.movimentoMin)}`}>{fmtSaldo(x.movimentoMin)}</td>
+                        <td className={`px-3 py-2 text-right text-base font-semibold tabular-nums ${corSaldo(x.saldoFimMin)}`}>
+                          {fmtSaldo(x.saldoFimMin)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {intermitentes.length > 0 && (
+            <div className="border-t border-indigo-100 px-4 py-3">
+              <p className="mb-1 text-xs text-slate-500">Intermitentes — horas batidas no mês:</p>
+              <ul className="grid gap-x-6 text-sm sm:grid-cols-2">
+                {intermitentes.map((l) => (
+                  <li key={l.id} className="flex justify-between gap-2 border-b border-slate-100 py-1">
+                    <span className="truncate text-slate-800">{l.nome}</span>
+                    <span className="tabular-nums text-slate-600">{fmtHoras(l.mes?.trabalhadoMin ?? 0)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ---------- atestados ---------- */}
       <div className="rounded-xl border border-sky-200 bg-white">
