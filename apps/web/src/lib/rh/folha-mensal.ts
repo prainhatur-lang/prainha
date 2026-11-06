@@ -153,6 +153,10 @@ export function calcularFolhaMensal(input: {
   /** Atestados (afastamento) da pessoa, YYYY-MM-DD. CLT: até o 15º dia seguido a casa
    *  paga; do 16º em diante é o INSS e sai do salário (05/11/2026, caso Máxima). */
   afastamentos?: { inicio: string; fim: string }[] | null;
+  /** Quebra de caixa (copiada da última folha do contador, ex. 221 CLT 6% / 8907
+   *  intermitente). Entra no INSS e no FGTS (06/11/2026, faltou na da Arleide).
+   *  CLT: referência % sobre os dias pagos; intermitente: valor fixo do contador. */
+  quebraCaixa?: { codigo: string; descricao: string; referencia: number; valor: number } | null;
 }): FolhaCalc {
   const { regime, salario, comp } = input;
   const n = ultimoDia(comp);
@@ -188,6 +192,10 @@ export function calcularFolhaMensal(input: {
     const diasInss = af ? Math.min(diasNoMes, af.inss) : 0;
     const salDias = r2((salario / 30) * (diasNoMes - diasInss));
     P('8781', 'DIAS NORMAIS', diasNoMes - diasInss, salDias);
+    if (input.quebraCaixa) {
+      const q = input.quebraCaixa;
+      P(q.codigo, q.descricao, q.referencia, q.referencia > 0 ? salDias * (q.referencia / 100) : q.valor);
+    }
     if (af && af.casa > 0) avisos.push(`Atestado: ${af.casa} dia(s) no mês até o 15º dia de afastamento, pagos pela casa.`);
     if (diasInss > 0) avisos.push(`Afastado: ${diasInss} dia(s) do 16º dia em diante ficam com o INSS e saem do salário.`);
 
@@ -218,7 +226,9 @@ export function calcularFolhaMensal(input: {
     P('9442', 'FERIAS PROPORC TRAB INTERMITENTE', 0, ferias);
     P('9443', '1/3 FERIAS PROPORC TRAB INTERMITENTE', 0, terco);
     P('9441', '13 SALARIO TRAB INTERMITENTE', 0, dec);
-    const semDec = r2(h + dsr + ferias + terco);
+    const quebra = input.quebraCaixa && h > 0 ? r2(input.quebraCaixa.valor) : 0;
+    if (input.quebraCaixa) P(input.quebraCaixa.codigo, input.quebraCaixa.descricao, input.quebraCaixa.referencia, quebra);
+    const semDec = r2(h + dsr + ferias + terco + quebra);
     baseInss = r2(semDec + dec);
     D('998', 'I.N.S.S.', 0, calcularInss(semDec));
     D('825', 'INSS 13o SALARIO', 0, calcularInss(dec));

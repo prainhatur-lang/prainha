@@ -14,7 +14,7 @@ import { AppHeader } from '@/components/app-header';
 import { LancarPagamentosFolha } from '../lancar-pagamentos';
 import { comRegimeDoMes } from '@/lib/rh/regime-no-mes';
 import { calcularFolhaMensal, type FolhaCalc, type RegimeFolha } from '@/lib/rh/folha-mensal';
-import { afastamentosPorCpf, ajudaCustoPorCpf, horasDoMesPorCpf, salarioFamiliaPorCpf } from '@/lib/rh/folha-mensal-dados';
+import { afastamentosPorCpf, ajudaCustoPorCpf, horasDoMesPorCpf, quebraCaixaPorCpf, salarioFamiliaPorCpf } from '@/lib/rh/folha-mensal-dados';
 import { proximosFeriados } from '@/lib/reservas/feriados';
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm';
@@ -45,7 +45,7 @@ const so11 = (c: string | null | undefined) => {
   const d = (c ?? '').replace(/\D/g, '');
   return d.length === 11 ? d : null;
 };
-const CODIGOS_NOSSOS = new Set(['998', '825', '8781', '9435', '9438', '9442', '9443', '9441', '25', '219', '205', '250', '854']);
+const CODIGOS_NOSSOS = new Set(['998', '825', '8781', '9435', '9438', '9442', '9443', '9441', '25', '219', '205', '250', '854', '221', '8907']);
 const ultimoDiaComp = (comp: string) => {
   const [a, m] = comp.split('-').map(Number);
   return `${comp}-${String(new Date(Date.UTC(a, m, 0)).getUTCDate()).padStart(2, '0')}`;
@@ -114,12 +114,13 @@ export default async function CompararFolhaPage(props: { searchParams: Promise<S
   for (const f of [...deFora, ...nossosNoMes]) if (f.cpf) cadastroPorCpf.set(f.cpf, f);
 
   const cpfs = [...new Set([...nossosNoMes.map((f) => f.cpf).filter((c): c is string => !!c), ...cpfsContador])];
-  const [horas, feriados, salFamilia, ajudaCusto, afast] = await Promise.all([
+  const [horas, feriados, salFamilia, ajudaCusto, afast, quebraCaixa] = await Promise.all([
     horasDoMesPorCpf(cpfs, ini, fim),
     proximosFeriados(ini, 31).then((l) => l.map((f) => f.data)),
     salarioFamiliaPorCpf(cpfs, comp),
     ajudaCustoPorCpf(cpfs, comp),
     afastamentosPorCpf(cpfs, ini, fim),
+    quebraCaixaPorCpf(cpfs, comp),
   ]);
 
   interface Linha {
@@ -152,6 +153,7 @@ export default async function CompararFolhaPage(props: { searchParams: Promise<S
             feriados,
             salarioFamilia: cpf ? salFamilia.get(cpf) : null,
             ajudaCusto: cpf ? ajudaCusto.get(cpf) : null,
+            quebraCaixa: cpf ? quebraCaixa.get(cpf) : null,
             afastamentos: cpf ? afast.get(cpf) : null,
           })
         : null;

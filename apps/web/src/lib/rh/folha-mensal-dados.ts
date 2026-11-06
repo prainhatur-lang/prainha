@@ -162,6 +162,36 @@ export async function ajudaCustoPorCpf(
 }
 
 /**
+ * Quebra de caixa por CPF (rubrica "QUEBRA DE CAIXA", ex. 221 CLT e 8907
+ * intermitente) da última folha do contador antes da competência. Referência
+ * é o % (6); no intermitente o contador paga valor fixo (6% do mínimo).
+ */
+export async function quebraCaixaPorCpf(
+  cpfs: string[],
+  comp: string,
+): Promise<Map<string, { codigo: string; descricao: string; referencia: number; valor: number }>> {
+  const saida = new Map<string, { codigo: string; descricao: string; referencia: number; valor: number }>();
+  if (cpfs.length === 0) return saida;
+  const linhas = await db
+    .select({ cpf: schema.folhaContador.cpf, rubricas: schema.folhaContador.rubricas })
+    .from(schema.folhaContador)
+    .where(and(lt(schema.folhaContador.competencia, comp), inArray(schema.folhaContador.cpf, cpfs)))
+    .orderBy(desc(schema.folhaContador.competencia));
+  const vistos = new Set<string>();
+  const alvo = new Set(cpfs);
+  for (const l of linhas) {
+    const cpf = String(l.cpf ?? '').replace(/\D/g, '');
+    if (!alvo.has(cpf) || vistos.has(cpf)) continue;
+    vistos.add(cpf);
+    const r = ((l.rubricas as { codigo: string; descricao: string; referencia?: number; tipo: string; valor: number }[] | null) ?? []).find(
+      (x) => x.tipo === 'P' && x.valor > 0 && /QUEBRA\s+DE\s+CAIXA/i.test(x.descricao ?? ''),
+    );
+    if (r) saida.set(cpf, { codigo: r.codigo, descricao: r.descricao, referencia: Number(r.referencia) || 0, valor: Number(r.valor) });
+  }
+  return saida;
+}
+
+/**
  * Minutos do mês por CPF e por casa — pra dividir o custo de quem trabalha em
  * mais de uma casa (rateio da E.B. pelas horas). Mesma regra de
  * horasDoMesPorCpf: no dia em que o Stelanto tem hora vale ele (casa = equipe
