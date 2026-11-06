@@ -274,7 +274,9 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
           sqlEhFolhaMensal(c),
           consumerDaCasaParado ? eq(c.origem, 'CONSUMER') : undefined,
         ),
-        lte(c.dataVencimento, ate),
+        // Rescisão entra mesmo vencendo depois do "até" (06/11/2026, Felipe
+        // Feitosa vencia 15/11 e não aparecia): o dono paga assim que assina.
+        or(lte(c.dataVencimento, ate), sqlEhRescisao(c.id)),
       ),
     )
     .orderBy(c.dataVencimento);
