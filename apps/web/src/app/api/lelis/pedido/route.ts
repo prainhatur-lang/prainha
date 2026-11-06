@@ -20,7 +20,12 @@ const Body = z.object({
   vencimento: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   observacao: z.string().max(500).optional().nullable(),
   itens: z
-    .array(z.object({ produtoId: z.string().uuid(), quantidade: z.number().positive(), precoUnit: z.number().positive() }))
+    .array(z.object({
+        produtoId: z.string().uuid(),
+        quantidade: z.number().positive(),
+        precoUnit: z.number().positive(),
+        produtoCasaId: z.string().uuid().optional().nullable(),
+      }))
     .min(1)
     .max(200),
 });
@@ -45,7 +50,7 @@ export async function DELETE(req: Request) {
   const id = new URL(req.url).searchParams.get('id') ?? '';
   if (!/^[0-9a-f-]{36}$/i.test(id)) return NextResponse.json({ error: 'id inválido' }, { status: 400 });
   try {
-    await cancelarPedidoLelis({ lelisId: a.filialId, pedidoId: id, email: a.email });
+    await cancelarPedidoLelis({ lelisId: a.filialId, pedidoId: id, email: a.email, userId: a.userId });
     return NextResponse.json({ ok: true });
   } catch (e) {
     if (e instanceof RecusaPedido) return NextResponse.json({ error: e.message }, { status: 400 });
