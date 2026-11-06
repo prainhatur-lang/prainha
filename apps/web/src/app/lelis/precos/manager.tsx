@@ -3,7 +3,7 @@
 import { useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { brl } from '@/lib/format';
-import { calcularPreco, cargaPorOrigem } from '@/lib/lelis/preco';
+import { calcularDestinos, calcularPreco, cargaPorOrigem } from '@/lib/lelis/preco';
 import type { FiscalEndereco, RevendaFiscal } from '@concilia/db/schema';
 import { VendaNfe } from './venda';
 
@@ -26,6 +26,8 @@ export interface ProdutoLinha {
   pctMargem: number | null;
   pctImpostosVenda: number | null;
   precoManual: number | null;
+  /** CST PIS da nota de compra: 01 tributado; 04/06 etc. não paga PIS/COFINS na venda */
+  cstPisSaida?: string | null;
   ultimaCompraEm: string | null;
   ativo: boolean;
 }
@@ -103,6 +105,22 @@ export function PrecosLelisManager({ config, produtos }: { config: ConfigLelis; 
       pctMargem: p.pctMargem ?? padrao.pctMargem,
       pctImpostosVenda: p.pctImpostosVenda ?? padrao.pctImpostosVenda,
     });
+
+  // Preço pra empresa × consumidor final (06/11/2026): PIS/COFINS do Lucro Real
+  // com crédito da compra; consumidor final paga ICMS cheio (ver lib/lelis/preco.ts).
+  const fiscalAtual = config.fiscal ?? {};
+  const pctPcPadrao = (fiscalAtual.cstPis ?? '01') === '01' ? (fiscalAtual.aliqPis ?? 1.65) + (fiscalAtual.aliqCofins ?? 7.6) : 0;
+  const pctIcmsCF = fiscalAtual.icmsConsumidorFinal ?? 20;
+  const destinos = (p: ProdutoLinha) =>
+    calcularDestinos(
+      {
+        ...p,
+        pctOperacional: p.pctOperacional ?? padrao.pctOperacional,
+        pctMargem: p.pctMargem ?? padrao.pctMargem,
+        pctImpostosVenda: 0,
+      },
+      { pctPisCofins: p.cstPisSaida && p.cstPisSaida !== '01' ? 0 : pctPcPadrao, pctIcmsConsumidor: pctIcmsCF },
+    );
 
   const visiveis = useMemo(() => {
     const b = busca.trim().toLowerCase();
@@ -276,6 +294,8 @@ export function PrecosLelisManager({ config, produtos }: { config: ConfigLelis; 
               <th className="px-2 py-2 text-right">Preço</th>
               <th className="px-2 py-2 text-right">Preço à mão</th>
               <th className="px-2 py-2 text-right">Lucro un.</th>
+              <th className="bg-sky-50 px-2 py-2 text-right" title="Venda pra empresa (CNPJ). Custo = nota + IPI + carga do decreto + frete − crédito de PIS/COFINS. Preço com PIS/COFINS por dentro; ICMS destacado não custa nada a mais.">Pra empresa</th>
+              <th className="bg-violet-50 px-2 py-2 text-right" title="Venda pra pessoa física: sem o benefício do Termo de Acordo (art. 1º §2). ICMS cheio por dentro, abatendo o ICMS da nota de compra. Confirmar com o contador.">Consumidor final</th>
               <th className="px-2 py-2 text-right">Vender (qtd)</th>
               <th className="px-2 py-2"></th>
             </tr>
@@ -283,13 +303,14 @@ export function PrecosLelisManager({ config, produtos }: { config: ConfigLelis; 
           <tbody>
             {visiveis.length === 0 && (
               <tr>
-                <td colSpan={14} className="px-3 py-6 text-center text-slate-500">
+                <td colSpan={16} className="px-3 py-6 text-center text-slate-500">
                   Nenhum produto ainda. Importe o XML das notas de compra da Lelis ou cadastre à mão.
                 </td>
               </tr>
             )}
             {visiveis.map((p) => {
               const c = calc(p);
+              const dst = destinos(p);
               const sujo = sujos.has(p.id);
               return (
                 <tr key={p.id} className={`border-t border-slate-100 align-top ${p.ativo ? '' : 'opacity-50'} ${sujo ? 'bg-amber-50' : ''}`}>
@@ -348,6 +369,20 @@ export function PrecosLelisManager({ config, produtos }: { config: ConfigLelis; 
                     {brl(c.lucro)}
                     <div className="text-xs text-slate-500">{fmt(c.margemReal, 1)}%</div>
                   </td>
+                  {[
+                    { r: dst.empresa, cor: 'bg-sky-50/50', extra: `PIS/COF ${brl(dst.empresa.pisCofins)}` },
+                    { r: dst.consumidor, cor: 'bg-violet-50/50', extra: `ICMS ${brl(dst.consumidor.icms)} · PIS/COF ${brl(dst.consumidor.pisCofins)}` },
+                  ].map(({ r, cor, extra }, i) => (
+                    <td key={i} className={`px-2 py-1.5 text-right tabular-nums ${cor}`} title={`Crédito PIS/COFINS ${brl(r.creditoPisCofins)}${r.creditoIcms ? ` · crédito ICMS ${brl(r.creditoIcms)}` : ''} · lucro ${brl(r.lucro)} (${fmt(r.margemReal, 1)}%)`}>
+                      {r.erro ? (
+                        <span className="text-xs text-red-600">{r.erro}</span>
+                      ) : (
+                        <span className="font-semibold text-slate-900">{brl(r.preco)}</span>
+                      )}
+                      <div className="text-xs text-slate-600">custo {brl(r.custoLiquido)}</div>
+                      <div className="whitespace-nowrap text-xs text-slate-500">{extra}</div>
+                    </td>
+                  ))}
                   <td className="px-2 py-1.5 text-right">
                     <CampoNum valor={qtds[p.id] ?? null} placeholder="0" casas={0} onChange={(v) => setQtds((q) => ({ ...q, [p.id]: v ?? 0 }))} />
                   </td>
@@ -478,6 +513,7 @@ function DadosFiscais({
     });
     const j = await r.json().catch(() => ({}));
     setMsg(r.ok ? 'Dados da nota salvos.' : j.error ?? 'erro');
+    if (r.ok) setTimeout(() => window.location.reload(), 600);
   }
 
   async function subirCert() {
@@ -599,6 +635,13 @@ function DadosFiscais({
                     <option value="500">500 — ICMS já cobrado por ST</option>
                     <option value="400">400 — não tributada</option>
                   </select>
+                </label>
+              )}
+              {e.crt === 3 && (
+                <label className="block">
+                  <span className="text-xs text-slate-500">ICMS cheio pro consumidor final (%)</span>
+                  <CampoNum largura={inp} valor={fi.icmsConsumidorFinal ?? 20} onChange={(v) => setFi({ ...fi, icmsConsumidorFinal: v ?? 0 })} />
+                  <span className="text-[11px] text-slate-400">só pra calcular o preço (19% + 1% FECOEP)</span>
                 </label>
               )}
               <label className="block sm:col-span-4">

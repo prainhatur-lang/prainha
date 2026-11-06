@@ -79,6 +79,8 @@ export interface RevendaFiscal {
   aliqCofins?: number;
   /** Texto fixo em informações complementares (ex.: número do Termo de Acordo). */
   infCpl?: string;
+  /** Alíquota interna cheia usada no preço pra consumidor final (padrão 20 = 19% + 1% FECOEP). */
+  icmsConsumidorFinal?: number;
 }
 
 export const revendaConfig = pgTable('revenda_config', {

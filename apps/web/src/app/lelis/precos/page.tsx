@@ -98,6 +98,7 @@ export default async function PrecosLelisPage() {
     pctMargem: num(p.pctMargem),
     pctImpostosVenda: num(p.pctImpostosVenda),
     precoManual: num(p.precoManual),
+    cstPisSaida: p.cstPisSaida,
     ultimaCompraEm: p.ultimaCompraEm,
     ativo: p.ativo,
   }));

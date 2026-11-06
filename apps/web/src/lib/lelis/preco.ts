@@ -82,3 +82,67 @@ export function calcularPreco(e: EntradaPreco): ResultadoPreco {
     erro,
   };
 }
+
+// ── Preço por destino (06/11/2026) ──────────────────────────────────────────
+// A Lelis é Lucro Real com Termo de Acordo (Decreto 40.949/2021). Mesmo custo da
+// nota, dois destinos:
+//
+//   EMPRESA (contribuinte, não varejista): o ICMS da carga já foi pago na
+//   entrada; o ICMS destacado na nota é só pro comprador se creditar, não custa
+//   nada a mais. Sem o adicional do art. 4º (comprador não é varejista).
+//
+//   CONSUMIDOR FINAL (pessoa física): o art. 1º §2 diz que venda a pessoa
+//   natural não é atividade de atacado → sem o benefício. Conta conservadora:
+//   ICMS cheio da alíquota interna sobre o preço, abatendo só o ICMS destacado na
+//   nota de compra (alíquota de origem); a carga do decreto fica como custo.
+//   CONFIRMAR COM O CONTADOR.
+//
+// Nos dois: PIS/COFINS não cumulativo (Lucro Real) por dentro no preço, com
+// crédito sobre a compra (valor + IPI). IRPJ/CSLL saem do lucro (dentro da margem).
+//   preço = (custo − créditos) ÷ (1 − %oper − %margem − %PIS/COFINS − %ICMS venda)
+
+export interface EntradaDestino {
+  /** PIS + COFINS da venda (ex.: 1,65 + 7,6). 0 quando o produto é alíquota zero/monofásico. */
+  pctPisCofins: number;
+  /** Alíquota interna cheia pra consumidor final (SE: 19% + 1% FECOEP = 20%). */
+  pctIcmsConsumidor: number;
+}
+
+export interface ResultadoDestino {
+  /** custo da nota − créditos: o que a mercadoria custa de fato pra esse destino */
+  custoLiquido: number;
+  creditoPisCofins: number;
+  creditoIcms: number;
+  pisCofins: number;
+  icms: number;
+  preco: number | null;
+  lucro: number;
+  margemReal: number;
+  erro: string | null;
+}
+
+function destino(base: ResultadoPreco, e: EntradaPreco, pctPc: number, pctIcms: number, creditoIcms: number): ResultadoDestino {
+  const v = n(e.custoUnit);
+  const creditoPisCofins = ((v + base.ipi) * pctPc) / 100;
+  const custoLiquido = base.custo - creditoPisCofins - creditoIcms;
+  const pct = n(e.pctOperacional) + n(e.pctMargem) + pctPc + pctIcms;
+  if (pct >= 100) {
+    return { custoLiquido, creditoPisCofins, creditoIcms, pisCofins: 0, icms: 0, preco: null, lucro: 0, margemReal: 0, erro: 'A soma dos percentuais passou de 100%' };
+  }
+  const preco = r2(custoLiquido / (1 - pct / 100));
+  const pisCofins = (preco * pctPc) / 100;
+  const icms = (preco * pctIcms) / 100;
+  const operacional = (preco * n(e.pctOperacional)) / 100;
+  const lucro = preco - custoLiquido - pisCofins - icms - operacional;
+  return { custoLiquido, creditoPisCofins, creditoIcms, pisCofins, icms, preco, lucro, margemReal: preco ? (lucro / preco) * 100 : 0, erro: null };
+}
+
+export function calcularDestinos(e: EntradaPreco, d: EntradaDestino): { empresa: ResultadoDestino; consumidor: ResultadoDestino } {
+  const base = calcularPreco(e);
+  const pc = n(d.pctPisCofins);
+  const creditoOrigem = (n(e.custoUnit) * (e.aliqOrigem != null && Number.isFinite(e.aliqOrigem) ? Math.min(e.aliqOrigem, n(d.pctIcmsConsumidor)) : 0)) / 100;
+  return {
+    empresa: destino(base, e, pc, 0, 0),
+    consumidor: destino(base, e, pc, n(d.pctIcmsConsumidor), creditoOrigem),
+  };
+}

@@ -24,6 +24,7 @@ const Body = z.object({
     cstCofins: z.string().trim().max(2).optional(),
     aliqCofins: z.number().finite().min(0).max(20).optional(),
     infCpl: z.string().max(1500).optional(),
+    icmsConsumidorFinal: z.number().finite().min(0).max(40).optional(),
   }),
   emitente: z
     .object({
