@@ -838,7 +838,7 @@ export const MENU_AREAS: MenuArea[] = [
             label: 'Folha mensal',
             href: '/rh/folha-contador',
             perm: 'folha_equipe.read',
-            aka: ['Folha de pagamento', 'Nossa folha', 'Folha da contabilidade', 'Folha do contador', 'contracheque', 'holerite', 'CLT'],
+            aka: ['Folha de pagamento', 'Nossa folha', 'contracheque', 'holerite', 'CLT'],
           },
           {
             label: 'Pagamentos da E.B. (extrato)',

@@ -245,7 +245,7 @@ export default async function ImprimirNossaFolhaPage(props: { searchParams: Prom
               </tbody>
             </table>
             <p className="mt-2 text-[10px] text-slate-500">
-              Salário-família: cotas da última folha do contador. Fora do cálculo: plano de saúde, ajuda de custo, quebra de caixa, afastamento, rescisão, IRRF, faltas e INSS patronal.
+              Quebra de caixa e afastamento (até 15 dias pela casa) já calculados. Fora do cálculo: plano de saúde, ajuda de custo, rescisão, IRRF, faltas e INSS patronal.
             </p>
             {(semSalario.length > 0 || linhas.some((l) => l.calc.avisos.length)) && (
               <div className="mt-3 rounded border border-slate-300 p-2 text-[11px]">

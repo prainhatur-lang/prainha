@@ -125,7 +125,7 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
           <a href="/rh/folha-contador" className="text-xs text-slate-500 hover:underline">← Folha mensal</a>
           <h1 className="mt-1 text-xl font-semibold text-slate-900">Pagamentos da {empresa.nome}</h1>
           <p className="mt-1 text-sm text-slate-500">
-            O líquido de cada pessoa na {fonte === 'nossa' ? 'nossa folha (calculada pelo ponto)' : 'folha do contador'}, conferido com o que saiu da conta da {empresa.nome} no Inter.
+            O líquido de cada pessoa na nossa folha (calculada pelo ponto), conferido com o que saiu da conta da {empresa.nome} no Inter.
             Só leitura — nada aqui dá baixa nem gera conta.
           </p>
           {comp && (

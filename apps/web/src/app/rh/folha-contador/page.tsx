@@ -143,29 +143,12 @@ export default async function FolhaContadorPage(props: { searchParams: Promise<S
           <p className="mt-0.5 text-xs text-slate-500">{filial.nome}</p>
           <div className="mt-4">{seletorFilial}</div>
           <p className="mt-6 rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-500">
-            Nenhuma folha do contador gravada pra esta casa ainda.
+            Nenhuma folha gravada pra esta casa ainda.
           </p>
         </div>
       </main>
     );
   }
-
-  const seletorVer = (
-    <div className="mb-3 inline-flex rounded-lg border border-slate-300 bg-white p-0.5 text-xs">
-      <a
-        href={`/rh/folha-contador?filialId=${filial.id}&comp=${comp}`}
-        className={`rounded-md px-3 py-1 ${ver === 'nossa' ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-50'}`}
-      >
-        Nossa folha
-      </a>
-      <a
-        href={`/rh/folha-contador?filialId=${filial.id}&comp=${comp}&ver=contador`}
-        className={`rounded-md px-3 py-1 ${ver === 'contador' ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-50'}`}
-      >
-        Comparar com o contador
-      </a>
-    </div>
-  );
 
   if (ver === 'nossa') {
     return (
@@ -318,7 +301,6 @@ export default async function FolhaContadorPage(props: { searchParams: Promise<S
           <LancarPagamentosFolha filialId={filial.id} comp={comp} />
         </div>
 
-        {seletorVer}
         <div className="mb-5 space-y-2">
           {seletorFilial}
           <div className="flex flex-wrap items-center gap-2 text-sm">

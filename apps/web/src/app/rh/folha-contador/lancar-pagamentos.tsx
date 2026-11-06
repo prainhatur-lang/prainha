@@ -166,13 +166,13 @@ export function LancarPagamentosFolha({ filialId, comp }: { filialId: string; co
       )}
       {diaristas.length > 0 && (
         <p className="mb-2 rounded bg-slate-50 px-2 py-1 text-xs text-slate-600">
-          Ainda não registrados (nunca apareceram na folha do contador) e ficam fora — diarista recebe pela diária, entra na folha só depois de registrado:{' '}
+          Ainda não registrados e ficam fora — diarista recebe pela diária, entra na folha só depois de registrado:{' '}
           {diaristas.join(', ')}.
         </p>
       )}
       {semExtrato.length > 0 && (
         <p className="mb-2 rounded bg-amber-50 px-2 py-1 text-xs text-amber-800">
-          Extrato do contador deste mês ainda não importado ({semExtrato.join(', ')}): não dá pra separar diarista de registrado nessas empresas. Importe o extrato antes de lançar.
+          Folha registrada deste mês ainda não carregada ({semExtrato.join(', ')}): não dá pra separar diarista de registrado nessas empresas. Importe o extrato antes de lançar.
         </p>
       )}
       {carregando && !itens &&<p className="text-xs text-slate-500">Carregando…</p>}
