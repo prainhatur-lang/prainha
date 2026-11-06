@@ -1,6 +1,7 @@
 // Pedido sem nota da Lelis aberto inteiro (06/11/2026, dono: "não consigo abrir o pedido").
 // Só leitura: itens com preço, o que a casa conferiu e em qual produto entrou no estoque,
-// conta a pagar da casa e a receber da Lelis. Criar/cancelar continua em /lelis/vender.
+// conta a pagar da casa e a receber da Lelis. Imprimir e cancelar aqui; criar continua em /lelis/vender
+// (cancelar também segue na lista de lá).
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
@@ -9,7 +10,7 @@ import { ehAdmin } from '@/lib/usuario-admin';
 import { lelisFilialId } from '@/lib/lelis/sincronizar';
 import { pedidoLelisDetalhe } from '@/lib/lelis/pedido';
 import { brl } from '@/lib/format';
-import { BotaoImprimirPedido } from './imprimir';
+import { BotaoCancelarPedido, BotaoImprimirPedido } from './imprimir';
 
 export const dynamic = 'force-dynamic';
 
@@ -53,7 +54,17 @@ export default async function PedidoLelisPage(props: { params: Promise<{ id: str
               {p.criado_por ? ` por ${p.criado_por}` : ''}. Vence {dataBr(p.vencimento)}.
             </p>
           </div>
-          <BotaoImprimirPedido />
+          <div className="flex flex-wrap items-start gap-2">
+            <BotaoImprimirPedido />
+            {!cancelado && !p.casa_pagou_em && recebidoLelis.length === 0 && (
+              <BotaoCancelarPedido id={p.id} numero={p.numero} casa={p.casa} totalBr={brl(p.total)} />
+            )}
+            {!cancelado && (p.casa_pagou_em || recebidoLelis.length > 0) && (
+              <span className="max-w-[14rem] text-xs text-slate-500 print:hidden">
+                Pra cancelar, estorne antes o pagamento da casa / o recebimento da Lelis.
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="flex flex-wrap gap-2 text-sm">
