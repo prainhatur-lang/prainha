@@ -11,6 +11,7 @@ import { and, asc, eq, gte, inArray, isNotNull, notInArray, sql } from 'drizzle-
 import { AppHeader } from '@/components/app-header';
 import { hojeBr } from '@/lib/datas';
 import { estimarCustos } from '@/lib/transferencia';
+import { ehAdmin } from '@/lib/usuario-admin';
 import { NovaTransferenciaForm, type ProdOpc, type ItemInicial } from './form';
 
 export const dynamic = 'force-dynamic';
@@ -27,6 +28,8 @@ export default async function NovaTransferenciaPage(props: {
   await exigirPerm(user.id, 'nota_compra.lancar_estoque');
 
   const filiais = await filiaisDoUsuario(user.id);
+  // Lelis (06/11/2026): não é casa do usuario_filial; o pedido sem nota sai de /lelis/precos.
+  const admin = await ehAdmin(user.id);
   const sp = await props.searchParams;
   const notaId = sp.notaId && /^[0-9a-f-]{36}$/i.test(sp.notaId) ? sp.notaId : null;
 
@@ -214,6 +217,15 @@ export default async function NovaTransferenciaPage(props: {
                   {f.nome}
                 </Link>
               ))}
+            {admin && (
+              <Link
+                href="/lelis/precos"
+                className="rounded-md border border-violet-300 bg-violet-50 px-3 py-1 text-xs text-violet-800 hover:bg-violet-100"
+                title="A Lelis manda sem nota pela tela de preços dela; a casa confere em Transferências"
+              >
+                🍷 Lelis (pedido sem nota) →
+              </Link>
+            )}
           </div>
         )}
 

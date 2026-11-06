@@ -16,6 +16,7 @@ import { CancelarTransfButton } from './cancelar-btn';
 import { nfesDasTransferencias } from '@/lib/nfe/emitir';
 import { EmitirNfeButton } from './nfe-btn';
 import { pedidosLelisAConferir } from '@/lib/lelis/pedido';
+import { ehAdmin } from '@/lib/usuario-admin';
 
 export const dynamic = 'force-dynamic';
 
@@ -37,6 +38,7 @@ export default async function TransferenciasPage(props: {
   await exigirPerm(user.id, 'nota_compra.read');
 
   const filiais = await filiaisDoUsuario(user.id);
+  const admin = await ehAdmin(user.id);
   const sp = await props.searchParams;
   const sel = await escolherFilial(filiais, sp.filialId);
   if (!sel) {
@@ -147,6 +149,15 @@ export default async function TransferenciasPage(props: {
             >
               ⚖️ Encontro de contas
             </Link>
+            {admin && (
+              <Link
+                href="/lelis/precos"
+                className="rounded-md border border-violet-300 bg-violet-50 px-3 py-2 text-sm text-violet-800 hover:bg-violet-100"
+                title="Pedido sem nota da Lelis pras casas: marque 'Vender (qtd)' e use o quadro 'Pedido sem nota'"
+              >
+                🍷 Pedido da Lelis
+              </Link>
+            )}
             <Link
               href={`/movimento/transferencias/nova?filialId=${filial.id}`}
               className="rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800"
