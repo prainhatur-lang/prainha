@@ -6,6 +6,7 @@
 // Não mexe no estoque da casa: cada casa confere o que chegou e dá entrada
 // (Transferências → "Pedidos da Lelis a conferir").
 
+import Link from 'next/link';
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { hojeBr } from '@/lib/datas';
 import type { ProdutoLinha } from './manager';
@@ -261,6 +262,9 @@ export function PedidoSemNota({ itens, onLimpar }: { itens: ItemPedido[]; onLimp
                         {p.recebido_em && (
                           <div className="mt-1 text-emerald-700">Conferido por {p.recebido_por ?? '—'} em {dataBr(p.recebido_em.slice(0, 10))}</div>
                         )}
+                        <Link href={`/lelis/pedido/${p.id}`} className="mt-1 inline-block text-sky-700 hover:underline">
+                          Abrir o pedido inteiro →
+                        </Link>
                       </td>
                     </tr>
                   )}

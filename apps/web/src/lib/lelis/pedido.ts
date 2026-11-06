@@ -532,3 +532,42 @@ export async function pedidoLelisParaConferir(pedidoId: string, casaId: string) 
   const sug = await sugerirProdutosCasa({ lelisId: ped.filial_id, casaId, revIds: [...new Set(itens.map((i) => i.revenda_produto_id))] });
   return { pedido: ped, itens, produtos: sug.produtos, sugestoes: sug.sugestoes };
 }
+
+/** Pedido inteiro pra tela /lelis/pedido/[id] (dono 06/11/2026: "não consigo abrir o pedido"). */
+export async function pedidoLelisDetalhe(lelisId: string, pedidoId: string) {
+  const [ped] = linhas<{
+    id: string; numero: number; destino_filial_id: string; status: string; total: number; vencimento: string;
+    observacao: string | null; observacao_recebimento: string | null; criado_em: string; criado_por: string | null;
+    recebido_em: string | null; recebido_por: string | null; cancelado_em: string | null; cancelado_por: string | null;
+    conta_pagar_id: string | null; casa_pagou_em: string | null;
+  }>(
+    await db.execute(sql`
+      SELECT p.id, p.numero, p.destino_filial_id, p.status, p.total::float AS total, p.vencimento::text AS vencimento,
+             p.observacao, p.observacao_recebimento,
+             to_char(p.criado_em AT TIME ZONE 'America/Sao_Paulo', 'DD/MM/YYYY HH24:MI') AS criado_em, p.criado_por,
+             to_char(p.recebido_em AT TIME ZONE 'America/Sao_Paulo', 'DD/MM/YYYY HH24:MI') AS recebido_em, p.recebido_por,
+             to_char(p.cancelado_em AT TIME ZONE 'America/Sao_Paulo', 'DD/MM/YYYY HH24:MI') AS cancelado_em, p.cancelado_por,
+             p.conta_pagar_id, c.data_pagamento::text AS casa_pagou_em
+        FROM revenda_pedido p
+        LEFT JOIN conta_pagar c ON c.id = p.conta_pagar_id
+       WHERE p.id = ${pedidoId}::uuid AND p.filial_id = ${lelisId}::uuid`),
+  );
+  if (!ped) return null;
+  const itens = linhas<{
+    id: string; descricao: string; quantidade: number; preco_unit: number; total: number;
+    quantidade_recebida: number | null; produto_casa_id: string | null; produto_casa: string | null;
+  }>(
+    await db.execute(sql`
+      SELECT i.id, i.descricao, i.quantidade::float AS quantidade, i.preco_unit::float AS preco_unit, i.total::float AS total,
+             i.quantidade_recebida::float AS quantidade_recebida, i.produto_casa_id, pc.nome AS produto_casa
+        FROM revenda_pedido_item i LEFT JOIN produto pc ON pc.id = i.produto_casa_id
+       WHERE i.pedido_id = ${ped.id}::uuid ORDER BY i.descricao`),
+  );
+  const receber = linhas<{ vencimento: string; valor: number; recebido_em: string | null; valor_recebido: number | null; cancelado: boolean }>(
+    await db.execute(sql`
+      SELECT vencimento::text AS vencimento, valor::float AS valor, recebido_em::text AS recebido_em,
+             valor_recebido::float AS valor_recebido, cancelado
+        FROM revenda_receber WHERE revenda_pedido_id = ${ped.id}::uuid ORDER BY vencimento`),
+  );
+  return { pedido: { ...ped, casa: CASAS_PEDIDO[ped.destino_filial_id] ?? '?' }, itens, receber };
+}

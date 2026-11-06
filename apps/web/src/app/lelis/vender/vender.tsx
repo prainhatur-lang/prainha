@@ -4,6 +4,7 @@
 // fornecedor — mostra no máximo 30 resultados, nunca a lista inteira — e monta o
 // pedido no carrinho. Grava em POST /api/lelis/pedido (mesmo fluxo do sem nota).
 
+import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { hojeBr } from '@/lib/datas';
 
@@ -306,12 +307,17 @@ export function VenderLelis({ produtos }: { produtos: ProdutoVenda[] }) {
             <tbody>
               {pedidos.map((p) => (
                 <tr key={p.id} className="border-t border-slate-100 align-top">
-                  <td className="py-1.5 pr-2 text-slate-500">nº {p.numero}</td>
+                  <td className="py-1.5 pr-2">
+                    <Link href={`/lelis/pedido/${p.id}`} className="text-sky-700 hover:underline" title="Abrir o pedido inteiro">
+                      nº {p.numero}
+                    </Link>
+                  </td>
                   <td className="py-1.5 pr-2">{p.criadoEmBr}</td>
                   <td className="py-1.5 pr-2 font-medium">{p.casa}</td>
                   <td className="py-1.5 pr-2 text-xs text-slate-500">
                     {p.itens.slice(0, 3).map((i) => `${fmtQ(i.quantidade)} × ${i.descricao}`).join(' · ')}
-                    {p.itens.length > 3 ? ` · +${p.itens.length - 3}` : ''}
+                    {p.itens.length > 3 ? ` · +${p.itens.length - 3}` : ''}{' '}
+                    <Link href={`/lelis/pedido/${p.id}`} className="text-sky-700 hover:underline">abrir</Link>
                   </td>
                   <td className="py-1.5 pr-2 text-right font-semibold">{brl(p.total)}</td>
                   <td className="py-1.5 pr-2 text-xs">
