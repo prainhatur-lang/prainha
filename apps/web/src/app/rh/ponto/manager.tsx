@@ -10,6 +10,7 @@ import {
   msgMadrugadaFutura,
   somarDias,
 } from '@/lib/rh/dia-operacional';
+import { TIPO_PESSOA_ROTULO, type TipoPessoa } from '@/lib/rh/tipo-pessoa-rotulo';
 
 interface BatidaCrua {
   id: string;
@@ -36,7 +37,7 @@ interface Props {
   /** Casa aberta na tela: a correção grava nela, não na casa do cadastro. */
   filialId: string;
   dias: { iso: string; label: string }[];
-  funcionarios: { id: string; nome: string; temRosto: boolean }[];
+  funcionarios: { id: string; nome: string; temRosto: boolean; tipo?: TipoPessoa }[];
   grade: Celula[];
   /** Quem está marcado como gêmeo(a) de alguém (a câmera do ponto não separa
    *  gêmeos idênticos; o tablet pergunta "Quem é você?" pra esse par). */
@@ -58,6 +59,13 @@ function fmtHora(iso: string): string {
   const d = new Date(iso);
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
+const TIPO_COR: Record<TipoPessoa, string> = {
+  clt: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  intermitente: 'border-sky-200 bg-sky-50 text-sky-700',
+  '12x36': 'border-indigo-200 bg-indigo-50 text-indigo-700',
+  diarista: 'border-amber-200 bg-amber-50 text-amber-700',
+  outros: 'border-slate-200 bg-slate-50 text-slate-500',
+};
 // Dois primeiros nomes: gêmeos costumam dividir o primeiro (Ana Laiza × Ana Luiza).
 function nomeCurto(nome: string): string {
   return nome.trim().split(/\s+/).slice(0, 2).join(' ');
@@ -238,6 +246,14 @@ export function PontoManager({ filialId, dias, funcionarios, grade, gemeos = [],
                 <tr key={f.id} className="hover:bg-slate-50">
                   <td className="sticky left-0 bg-white px-4 py-2 font-medium text-slate-900">
                     {f.nome}
+                    {f.tipo && (
+                      <span
+                        title="Tipo de contrato (mesma regra do relatório do ponto)"
+                        className={`ml-2 rounded border px-1.5 py-0.5 text-[10px] font-semibold ${TIPO_COR[f.tipo]}`}
+                      >
+                        {TIPO_PESSOA_ROTULO[f.tipo]}
+                      </span>
+                    )}
                     {f.temRosto && (
                       <button
                         type="button"

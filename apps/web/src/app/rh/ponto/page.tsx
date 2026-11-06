@@ -16,6 +16,7 @@ import { PontoManager } from './manager';
 import { atestadosNoPeriodo, diasDeAtestado } from '@/lib/rh/atestado';
 import { PontoCelularPainel } from './ponto-celular-painel';
 import { RESULTADO_ROTULO, type ResultadoTentativa } from '@/lib/rh/ponto-celular';
+import { tiposDasPessoas } from '@/lib/rh/tipo-pessoa';
 
 export const dynamic = 'force-dynamic';
 
@@ -96,6 +97,9 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
       gemeoDeId: f.gemeoDeId as string,
       gemeoNome: nomesGemeos.find((n) => n.id === f.gemeoDeId)?.nome ?? 'outra pessoa',
     }));
+
+  // Selo CLT / Intermitente / Diarista ao lado do nome (dono 06/11/2026).
+  const tipoPessoa = await tiposDasPessoas(funcionarios.map((f) => f.id), dias[dias.length - 1]!);
 
   const batidas = await db
     .select({
@@ -317,7 +321,7 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
         <PontoManager
           filialId={filialSelecionada.id}
           dias={dias.map((d) => ({ iso: d, label: nomeDia(d) }))}
-          funcionarios={funcionarios}
+          funcionarios={funcionarios.map((f) => ({ ...f, tipo: tipoPessoa.get(f.id) ?? 'outros' }))}
           gemeos={gemeos}
           grade={[...grade.entries()].map(([chave, v]) => ({ chave, ...v }))}
           atestados={[...diaAtestado.entries()].map(([chave, a]) => ({ chave, descricao: a.descricao }))}
