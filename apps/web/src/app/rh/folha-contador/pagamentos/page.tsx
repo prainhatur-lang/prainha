@@ -148,11 +148,25 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
                   <input type="date" name="data" defaultValue={hojeBr()} min={hojeBr()} className="mt-0.5 block rounded border border-slate-300 px-2 py-1 text-sm" />
                 </label>
                 <label className="text-xs text-slate-600">
+                  Casa
+                  <select name="casa" defaultValue="" className="mt-0.5 block rounded border border-slate-300 px-2 py-1 text-sm">
+                    <option value="">Todas as casas</option>
+                    {filiais.map((f) => {
+                      const daCasa = inter.pagar.filter((l) => l.casaId === f.id);
+                      return (
+                        <option key={f.id} value={f.id}>
+                          {f.nome} — {daCasa.length} pessoas, {brl(daCasa.reduce((t, l) => t + l.valor, 0))}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </label>
+                <label className="text-xs text-slate-600">
                   Conta Inter da E.B. (opcional)
                   <input name="conta" placeholder="00000000-0" className="mt-0.5 block w-36 rounded border border-slate-300 px-2 py-1 text-sm" />
                 </label>
                 <button className="rounded-lg border border-orange-300 bg-white px-3 py-1.5 text-sm font-medium text-orange-800 hover:bg-orange-100">
-                  🟠 Arquivo do Inter (folha de pagamento) — {inter.pagar.length} pessoas, {brl(totalInter)}
+                  🟠 Arquivo do Inter (folha de pagamento) — todas: {inter.pagar.length} pessoas, {brl(totalInter)}
                 </button>
               </form>
               <p className="mt-1 text-xs text-slate-600">

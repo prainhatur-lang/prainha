@@ -1,4 +1,4 @@
-// GET /api/rh/folha-pagamento-inter?comp=AAAA-MM&data=AAAA-MM-DD[&conta=<conta E.B.>]
+// GET /api/rh/folha-pagamento-inter?comp=AAAA-MM&data=AAAA-MM-DD[&conta=<conta E.B.>][&casa=<filialId>]
 // Arquivo no modelo "Folha de pagamento" do Inter (abas Pagador e
 // Beneficiarios), pra subir no Inter da E.B. e pagar todo mundo num lote só —
 // do mesmo jeito que a E.B. já paga desde maio/2026. Pela NOSSA folha, todas as
@@ -36,9 +36,11 @@ export async function GET(req: Request) {
   const contaPagador = (sp.get('conta') ?? '').trim();
 
   const filiais = await filiaisDoUsuario(auth.user.id);
-  if (filiais.length === 0) return NextResponse.json({ error: 'sem casa' }, { status: 404 });
+  const casa = sp.get('casa');
+  const casas = casa ? filiais.filter((f) => f.id === casa) : filiais;
+  if (casas.length === 0) return NextResponse.json({ error: 'casa não encontrada' }, { status: 404 });
   const { pagar } = await linhasArquivoInter(
-    filiais.map((f) => f.id),
+    casas.map((f) => f.id),
     comp,
   );
 
@@ -85,10 +87,11 @@ export async function GET(req: Request) {
 
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
   const [ano, mes] = comp.split('-');
+  const sufixo = casa && casas[0] ? `-${casas[0].nome.toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, '-')}` : '';
   return new NextResponse(new Uint8Array(buf), {
     headers: {
       'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'content-disposition': `attachment; filename="folha-inter-${mes}-${ano}.xlsx"`,
+      'content-disposition': `attachment; filename="folha-inter-${mes}-${ano}${sufixo}.xlsx"`,
       'cache-control': 'no-store',
     },
   });
