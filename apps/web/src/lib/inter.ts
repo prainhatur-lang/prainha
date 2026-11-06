@@ -183,10 +183,65 @@ function requestJson<T>(opts: {
 // Cache de token por clientId — cada conta tem o seu.
 const tokenCache = new Map<string, { token: string; expiraEm: number }>();
 
+// Token guardado no banco (tabela inter_token, cifrado) pra todos os servidores
+// da Vercel usarem o mesmo. Antes cada servidor novo pedia o seu e uma rajada
+// de Pix estourava o limite do Inter (429 no Pix da Márcia, 06/11/2026).
+// Qualquer falha aqui cai no caminho antigo (pedir token ao Inter).
+function chaveBanco(chaveCache: string): string {
+  return crypto.createHash('sha256').update(chaveCache).digest('hex');
+}
+
+async function lerTokenBanco(chaveCache: string): Promise<{ token: string; expiraEm: number } | null> {
+  try {
+    const [{ db }, { sql }, { decifrar }] = await Promise.all([
+      import('@concilia/db'),
+      import('drizzle-orm'),
+      import('@/lib/segredo'),
+    ]);
+    const r = (await db.execute(sql`
+      SELECT token, extract(epoch from expira_em) * 1000 AS expira
+        FROM inter_token
+       WHERE chave = ${chaveBanco(chaveCache)} AND expira_em > now() + interval '30 seconds'`)) as unknown as {
+      token: string;
+      expira: string | number;
+    }[];
+    const linha = r[0];
+    if (!linha) return null;
+    return { token: decifrar(linha.token), expiraEm: Number(linha.expira) };
+  } catch (e) {
+    console.warn('[inter] token do banco indisponível:', (e as Error).message);
+    return null;
+  }
+}
+
+async function gravarTokenBanco(chaveCache: string, token: string, expiraEm: number): Promise<void> {
+  try {
+    const [{ db }, { sql }, { cifrar, segredoConfigurado }] = await Promise.all([
+      import('@concilia/db'),
+      import('drizzle-orm'),
+      import('@/lib/segredo'),
+    ]);
+    if (!segredoConfigurado()) return;
+    const exp = new Date(expiraEm).toISOString();
+    await db.execute(sql`
+      INSERT INTO inter_token (chave, token, expira_em, atualizado_em)
+      VALUES (${chaveBanco(chaveCache)}, ${cifrar(token)}, ${exp}::timestamptz, now())
+      ON CONFLICT (chave) DO UPDATE SET token = excluded.token, expira_em = excluded.expira_em, atualizado_em = now()`);
+  } catch (e) {
+    console.warn('[inter] não gravou token no banco:', (e as Error).message);
+  }
+}
+
 async function getAccessToken(cred: InterCredenciais, scope = 'extrato.read'): Promise<string> {
   const chaveCache = scope === 'extrato.read' ? cred.clientId : `${cred.clientId}|${scope}`;
   const cached = tokenCache.get(chaveCache);
   if (cached && cached.expiraEm > Date.now()) return cached.token;
+
+  const doBanco = await lerTokenBanco(chaveCache);
+  if (doBanco) {
+    tokenCache.set(chaveCache, doBanco);
+    return doBanco.token;
+  }
 
   const body = new URLSearchParams({
     client_id: cred.clientId,
@@ -210,12 +265,20 @@ async function getAccessToken(cred: InterCredenciais, scope = 'extrato.read'): P
       cred,
     }));
     if (status !== 429) break;
+    // Outro servidor pode ter pegado um token enquanto esperávamos.
+    const outro = await lerTokenBanco(chaveCache);
+    if (outro) {
+      tokenCache.set(chaveCache, outro);
+      return outro.token;
+    }
   }
   if (status !== 200 || !data.access_token) {
     throw new Error(`Inter OAuth erro (${status}): ${JSON.stringify(data)}`);
   }
 
-  tokenCache.set(chaveCache, { token: data.access_token, expiraEm: Date.now() + (data.expires_in - 60) * 1000 });
+  const expiraEm = Date.now() + (data.expires_in - 60) * 1000;
+  tokenCache.set(chaveCache, { token: data.access_token, expiraEm });
+  await gravarTokenBanco(chaveCache, data.access_token, expiraEm);
   return data.access_token;
 }
 
