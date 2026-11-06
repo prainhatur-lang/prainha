@@ -9,7 +9,7 @@
 // parte. Só leitura: não lança, não dá baixa.
 
 import { NextResponse } from 'next/server';
-import * as XLSX from 'xlsx';
+import { gerarArquivoFolhaInter } from '@/lib/rh/arquivo-folha-inter-xlsx';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { linhasArquivoInter, PAGADOR_FOLHA } from '@/lib/rh/arquivo-pagamento-folha';
@@ -17,12 +17,6 @@ import { hojeBr } from '@/lib/datas';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
-
-/** AAAA-MM-DD → número de série do Excel (célula de data de verdade). */
-function serialExcel(ymd: string): number {
-  const [a, m, d] = ymd.split('-').map(Number);
-  return Date.UTC(a, m - 1, d) / 86400000 + 25569;
-}
 
 export async function GET(req: Request) {
   const auth = await exigirPermApi('folha_equipe.read');
@@ -35,6 +29,13 @@ export async function GET(req: Request) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) return NextResponse.json({ error: 'data inválida (AAAA-MM-DD)' }, { status: 400 });
   if (data < hoje) return NextResponse.json({ error: 'O Inter não aceita data de débito antes de hoje.' }, { status: 400 });
   const contaPagador = (sp.get('conta') ?? '').trim();
+  // Regra 4 do modelo do Inter: nenhuma célula em branco.
+  if (!contaPagador) {
+    return NextResponse.json(
+      { error: 'Preencha a conta corrente do Inter da empresa que paga (campo "Conta"). Sem ela o Inter recusa o arquivo.' },
+      { status: 400 },
+    );
+  }
   const empresa = sp.get('empresa') === 'PRAINHA' ? 'PRAINHA' : 'EB';
   const pagador = PAGADOR_FOLHA[empresa];
 
@@ -61,37 +62,14 @@ export async function GET(req: Request) {
   const linhas = [...porCpf.values()].sort((a, b) => a.nome.localeCompare(b.nome));
   const total = Math.round(linhas.reduce((t, l) => t + l.valor, 0) * 100) / 100;
 
-  const wb = XLSX.utils.book_new();
-  const pag = XLSX.utils.aoa_to_sheet([
-    ['Empresa', 'CNPJ', 'Conta Corrente', 'Valor Total da Folha de Pagamento'],
-    [pagador.nome, pagador.cnpj, contaPagador, total],
-  ]);
-  pag['!cols'] = [{ wch: 36 }, { wch: 40 }, { wch: 20 }, { wch: 34 }];
-  for (const c of ['A2', 'B2', 'C2']) if (pag[c]) pag[c].t = 's';
-  if (pag.D2) pag.D2.z = '"R$"\\ #,##0.00';
-  XLSX.utils.book_append_sheet(wb, pag, 'Pagador');
-
-  const serial = serialExcel(data);
-  const ben = XLSX.utils.aoa_to_sheet([
-    ['Nome', 'CPF', 'Conta Corrente - Receb', 'Valor', 'Data do Débito', 'Data do Pagamento'],
-    ...linhas.map((l) => [l.nome, l.cpf, l.conta, l.valor, serial, serial]),
-  ]);
-  ben['!cols'] = [{ wch: 40 }, { wch: 14 }, { wch: 22 }, { wch: 14 }, { wch: 14 }, { wch: 16 }];
-  for (let r = 1; r <= linhas.length; r++) {
-    for (const c of [0, 1, 2]) {
-      const cel = ben[XLSX.utils.encode_cell({ r, c })];
-      if (cel) cel.t = 's';
-    }
-    const v = ben[XLSX.utils.encode_cell({ r, c: 3 })];
-    if (v) v.z = '"R$"\\ #,##0.00';
-    for (const c of [4, 5]) {
-      const cel = ben[XLSX.utils.encode_cell({ r, c })];
-      if (cel) cel.z = 'dd/mm/yyyy';
-    }
-  }
-  XLSX.utils.book_append_sheet(wb, ben, 'Beneficiarios');
-
-  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+  // 06/11/2026: o Inter recusou ("Houve um erro por aqui") o arquivo montado do
+  // zero — faltava a aba Instruções e a conta do pagador veio vazia. Agora
+  // preenche o modelo oficial do Inter, com as 3 abas e as tabelas dele.
+  const buf = gerarArquivoFolhaInter(
+    { nome: pagador.nome, cnpj: pagador.cnpj, conta: contaPagador, total },
+    linhas,
+    data,
+  );
   const [ano, mes] = comp.split('-');
   const sufixo = casa && casas.length > 0 ? `-${casas.map((c) => c.nome).join('-').toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, '-')}` : '';
   return new NextResponse(new Uint8Array(buf), {

@@ -176,7 +176,7 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
                 </label>
                 <label className="text-xs text-slate-600">
                   Conta Inter da E.B. (opcional)
-                  <input name="conta" placeholder="00000000-0" className="mt-0.5 block w-36 rounded border border-slate-300 px-2 py-1 text-sm" />
+                  <input name="conta" required placeholder="00000000-0" className="mt-0.5 block w-36 rounded border border-slate-300 px-2 py-1 text-sm" />
                 </label>
                 <button className="rounded-lg border border-orange-300 bg-white px-3 py-1.5 text-sm font-medium text-orange-800 hover:bg-orange-100">
                   🟠 Arquivo do Inter (folha de pagamento) — todas: {inter.pagar.length} pessoas, {brl(totalInter)}
@@ -236,7 +236,7 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
                 </label>
                 <label className="text-xs text-slate-600">
                   Conta Inter da Prainha (opcional)
-                  <input name="conta" placeholder="00000000-0" className="mt-0.5 block w-36 rounded border border-slate-300 px-2 py-1 text-sm" />
+                  <input name="conta" required placeholder="00000000-0" className="mt-0.5 block w-36 rounded border border-slate-300 px-2 py-1 text-sm" />
                 </label>
                 <button className="rounded-lg border border-sky-300 bg-white px-3 py-1.5 text-sm font-medium text-sky-800 hover:bg-sky-100">
                   🔵 Arquivo do Inter da Prainha — todas: {interPrainha.pagar.length} pessoas, {brl(totalInterPrainha)}
