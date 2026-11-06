@@ -11,6 +11,9 @@ import { and, desc, eq, gte, inArray, isNull, lt, lte } from 'drizzle-orm';
 import { calcularDia, faltaIntervalo, minutosNoturnos, type Batida } from './calcular-ponto';
 import type { DiaHoras } from './folha-mensal';
 
+/** Salário mínimo 2026 (base da quebra de caixa do intermitente). */
+const SALARIO_MINIMO_2026 = 1621;
+
 export async function horasDoMesPorCpf(cpfs: string[], ini: string, fim: string): Promise<Map<string, DiaHoras[]>> {
   const saida = new Map<string, DiaHoras[]>();
   if (cpfs.length === 0) return saida;
@@ -187,6 +190,23 @@ export async function quebraCaixaPorCpf(
       (x) => x.tipo === 'P' && x.valor > 0 && /QUEBRA\s+DE\s+CAIXA/i.test(x.descricao ?? ''),
     );
     if (r) saida.set(cpf, { codigo: r.codigo, descricao: r.descricao, referencia: Number(r.referencia) || 0, valor: Number(r.valor) });
+  }
+  // Sem folha do contador (dono 06/11/2026: "esquece o contador ... tem que ter
+  // a quebra de caixa, quem for de caixa"): quem tem "caixa" no cargo do
+  // cadastro recebe 6% — CLT sobre os dias pagos, intermitente 6% do salário
+  // mínimo (o mesmo que o contador pagava: Arleide 100,20, Matheus 97,26).
+  const faltam = cpfs.filter((c) => !saida.has(c));
+  if (faltam.length > 0) {
+    const caixas = await db
+      .select({ cpf: schema.funcionario.cpf, cargo: schema.funcionario.cargo, cargoRegistro: schema.funcionario.cargoRegistro })
+      .from(schema.funcionario)
+      .where(inArray(schema.funcionario.cpf, faltam));
+    for (const f of caixas) {
+      const cpf = f.cpf ?? '';
+      if (!cpf || saida.has(cpf)) continue;
+      if (!/caixa/i.test(`${f.cargo ?? ''} ${f.cargoRegistro ?? ''}`)) continue;
+      saida.set(cpf, { codigo: '221', descricao: 'QUEBRA DE CAIXA', referencia: 6, valor: Math.round(SALARIO_MINIMO_2026 * 6) / 100 });
+    }
   }
   return saida;
 }

@@ -106,7 +106,10 @@ export default async function FolhaContadorPage(props: { searchParams: Promise<S
   ).map((c) => c.competencia);
   // Padrão = nossa folha (dono 06/11/2026: "vamos fazer por nossa folha, não
   // pelo do contador"). A do contador continua igual em ?ver=contador.
-  const ver = sp.ver === 'contador' ? 'contador' : 'nossa';
+  // Dono 06/11/2026: "esquece esse negócio de fora do contador ... retira tudo
+  // que for de contador, comparação". A tela só mostra a nossa folha; a vista
+  // do contador saiu da tela (o dado importado continua no banco).
+  const ver = 'nossa' as 'nossa' | 'contador';
   const qVer = ver === 'contador' ? '&ver=contador' : '';
   const mesAtual = hojeBr().slice(0, 7);
   const [ma, mm] = mesAtual.split('-').map(Number);
@@ -179,16 +182,9 @@ export default async function FolhaContadorPage(props: { searchParams: Promise<S
               className="mt-2 inline-block rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
             >
               🖨️ Imprimir nossa folha
-            </a>{' '}
-            <a
-              href={`/rh/folha-contador/comparar?filialId=${filial.id}&comp=${comp}`}
-              className="mt-2 inline-block rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-            >
-              🧮 Nossa folha × contador
             </a>
             <LancarPagamentosFolha filialId={filial.id} comp={comp} />
           </div>
-          {seletorVer}
           <div className="mb-5 space-y-2">
             {seletorFilial}
             <div className="flex flex-wrap items-center gap-2 text-sm">

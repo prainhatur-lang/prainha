@@ -23,6 +23,14 @@
  * 27/10). Voltar = true.
  */
 export const PAGAR_NOTURNO_NA_FOLHA_MENSAL = false;
+/**
+ * Dono 06/11/2026: "a partir do próximo mês ... gerar o adicional noturno para
+ * quem for celetista. Intermitente não tem adicional noturno." O CLT volta a
+ * receber noturno da competência 2026-11 em diante (outubro fica como foi
+ * lançado). Intermitente continua sem.
+ */
+export const NOTURNO_CLT_A_PARTIR = '2026-11';
+const pagaNoturnoClt = (comp: string) => PAGAR_NOTURNO_NA_FOLHA_MENSAL || comp >= NOTURNO_CLT_A_PARTIR;
 
 export type RegimeFolha = 'clt_mensal' | 'intermitente_hora';
 
@@ -109,7 +117,7 @@ export function diasDeAfastamento(
   ini: string,
   fim: string,
   n: number,
-): { casa: number; inss: number } {
+): { casa: number; inss: number; casaLongo: number } {
   const ord = [...periodos].filter((p) => p.inicio <= p.fim).sort((a, b) => a.inicio.localeCompare(b.inicio));
   const juntos: { inicio: string; fim: string }[] = [];
   for (const p of ord) {
@@ -121,8 +129,14 @@ export function diasDeAfastamento(
   const fimMes = `${ini.slice(0, 7)}-${String(n).padStart(2, '0')}`;
   let casa = 0;
   let inss = 0;
+  let casaLongo = 0;
   for (const p of juntos) {
     const inssDesde = somaDias(p.inicio, 15);
+    // Afastamento que passa do 15º dia: os dias pagos pela casa saem em rubrica
+    // própria e não entram na base do INSS (dono 06/11/2026: "só tributa sob 12 dias
+    // trabalhados, devido o afastamento superior a 15 dias").
+    const longo = p.fim >= inssDesde;
+    const casaAntes = casa;
     for (let d = p.inicio > ini ? p.inicio : ini; d <= p.fim && d <= fim; d = somaDias(d, 1)) {
       if (Number(d.slice(8, 10)) > 30) continue;
       if (d >= inssDesde) inss++;
@@ -133,8 +147,9 @@ export function diasDeAfastamento(
       if (fimMes >= inssDesde) inss += 30 - n;
       else casa += 30 - n;
     }
+    if (longo) casaLongo += casa - casaAntes;
   }
-  return { casa, inss };
+  return { casa, inss, casaLongo };
 }
 
 export function calcularFolhaMensal(input: {
@@ -190,8 +205,9 @@ export function calcularFolhaMensal(input: {
     diasNoMes = ini === inicioMes && fim === fimMes ? 30 : Math.min(30, dFim - dIni + 1);
     const af = input.afastamentos?.length ? diasDeAfastamento(input.afastamentos, ini, fim, n) : null;
     const diasInss = af ? Math.min(diasNoMes, af.inss) : 0;
-    const salDias = r2((salario / 30) * (diasNoMes - diasInss));
-    P('8781', 'DIAS NORMAIS', diasNoMes - diasInss, salDias);
+    const diasAfastCasa = af ? Math.min(diasNoMes - diasInss, af.casaLongo) : 0;
+    const salDias = r2((salario / 30) * (diasNoMes - diasInss - diasAfastCasa));
+    P('8781', 'DIAS NORMAIS', diasNoMes - diasInss - diasAfastCasa, salDias);
     if (input.quebraCaixa) {
       const q = input.quebraCaixa;
       P(q.codigo, q.descricao, q.referencia, q.referencia > 0 ? salDias * (q.referencia / 100) : q.valor);
@@ -199,7 +215,7 @@ export function calcularFolhaMensal(input: {
     if (af && af.casa > 0) avisos.push(`Atestado: ${af.casa} dia(s) no mês até o 15º dia de afastamento, pagos pela casa.`);
     if (diasInss > 0) avisos.push(`Afastado: ${diasInss} dia(s) do 16º dia em diante ficam com o INSS e saem do salário.`);
 
-    if (PAGAR_NOTURNO_NA_FOLHA_MENSAL && noturnoMin > 0) {
+    if (pagaNoturnoClt(comp) && noturnoMin > 0) {
       const hora = r2(salario / 220);
       const hn = noturnoMin / 60;
       const adic = r2(r2(hn) * hora * 0.2);
@@ -213,7 +229,10 @@ export function calcularFolhaMensal(input: {
     }
     baseInss = r2(rub.filter((x) => x.tipo === 'P').reduce((s, x) => s + x.valor, 0));
     D('998', 'I.N.S.S.', 0, calcularInss(baseInss));
-    fgts = tr2(baseInss * 0.08);
+    // Até o 15º dia de afastamento longo: paga a casa, sem INSS, com FGTS.
+    const vAfastCasa = diasAfastCasa > 0 ? r2((salario / 30) * diasAfastCasa) : 0;
+    P('9523', 'DIAS AFAST IGUAL/INF 15 DIA', diasAfastCasa, vAfastCasa);
+    fgts = tr2((baseInss + vAfastCasa) * 0.08);
     if (dias.length === 0) avisos.push('Sem ponto no mês: salário sai inteiro pelos dias de contrato.');
   } else {
     const h = r2(horas * salario);
@@ -254,7 +273,8 @@ export function calcularFolhaMensal(input: {
     regime,
     horas,
     // Desligado (05/11/2026): a tela não mostra mais "h noturnas".
-    horasNoturnas: PAGAR_NOTURNO_NA_FOLHA_MENSAL ? horasNoturnas : 0,
+    // CLT de 2026-11 em diante mostra as horas noturnas pagas.
+    horasNoturnas: PAGAR_NOTURNO_NA_FOLHA_MENSAL || (regime === 'clt_mensal' && pagaNoturnoClt(comp)) ? horasNoturnas : 0,
     diasNoMes,
     diasComPonto: dias.filter((d) => d.min > 0).length,
     rubricas: rub,

@@ -63,17 +63,22 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
   const nomeFilial = new Map(filiais.map((f) => [f.id, f.nome]));
   const sp = await props.searchParams;
 
-  const competencias = (
+  const compsContador = (
     await db
       .selectDistinct({ competencia: schema.folhaContador.competencia })
       .from(schema.folhaContador)
       .where(eq(schema.folhaContador.cnpj, empresa.cnpj))
       .orderBy(desc(schema.folhaContador.competencia))
   ).map((c) => c.competencia);
-  // Desde 05/11/2026 confere a NOSSA folha ("vou pagar pela nossa folha");
-  // ?fonte=contador volta pro jeito antigo.
-  const fonte: 'nossa' | 'contador' = sp.fonte === 'contador' ? 'contador' : 'nossa';
-  const comp = sp.comp && competencias.includes(sp.comp) ? sp.comp : competencias[0] ?? null;
+  // Nossa folha não depende do contador: o mês atual e o anterior sempre aparecem.
+  const mesAtual = hojeBr().slice(0, 7);
+  const [ma, mm] = mesAtual.split('-').map(Number);
+  const mesPassado = `${mm === 1 ? ma! - 1 : ma}-${String(mm === 1 ? 12 : mm! - 1).padStart(2, '0')}`;
+  const competencias = [...new Set([mesAtual, mesPassado, ...compsContador])].sort().reverse();
+  // Desde 05/11/2026 confere a NOSSA folha ("vou pagar pela nossa folha"). Dono
+  // 06/11/2026: "retira tudo que for de contador" — a vista do contador saiu da tela.
+  const fonte = 'nossa' as 'nossa' | 'contador';
+  const comp = sp.comp && competencias.includes(sp.comp) ? sp.comp : compsContador[0] ?? mesPassado;
 
   const configurado = extratoEmpresaConfigurado(sigla);
   const resumo = await resumoExtratoEmpresa(sigla);
@@ -122,13 +127,6 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
           <p className="mt-1 text-sm text-slate-500">
             O líquido de cada pessoa na {fonte === 'nossa' ? 'nossa folha (calculada pelo ponto)' : 'folha do contador'}, conferido com o que saiu da conta da {empresa.nome} no Inter.
             Só leitura — nada aqui dá baixa nem gera conta.
-          </p>
-          <p className="mt-1 text-xs text-slate-500">
-            {fonte === 'nossa' ? (
-              <a href={`?${comp ? `comp=${comp}&` : ''}fonte=contador`} className="hover:underline">Ver pela folha do contador →</a>
-            ) : (
-              <a href={`?${comp ? `comp=${comp}` : ''}`} className="hover:underline">← Voltar pra nossa folha</a>
-            )}
           </p>
           {comp && (
             <p className="mt-3">
@@ -518,15 +516,6 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
                       <td className="px-3 py-2 text-xs text-slate-500">{nomeFilial.get(l.filialId) ?? '—'}</td>
                       <td className="px-3 py-2 text-right tabular-nums">
                         {brl(l.liquido)}
-                        {fonte === 'nossa' && (
-                          <div className="text-[11px] text-slate-400">
-                            {l.liquidoContador == null
-                              ? 'fora do contador'
-                              : Math.abs(l.liquidoContador - l.liquido) >= 0.01
-                                ? `contador ${brl(l.liquidoContador)}`
-                                : ''}
-                          </div>
-                        )}
                       </td>
                       <td className="px-3 py-2 text-xs text-slate-600">
                         {l.debitos.length === 0
@@ -557,18 +546,6 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
                 </tbody>
               </table>
             </div>
-
-            {conf.soNoContador.length > 0 && (
-              <div className="rounded-lg border border-slate-200 bg-white p-3 text-xs text-slate-600">
-                <div className="font-medium text-slate-700">
-                  Só na folha do contador ({conf.soNoContador.length} ·{' '}
-                  {brl(conf.soNoContador.reduce((t, x) => t + x.liquido, 0))}) — não entram na nossa folha (diarista, saiu no mês ou sem salário no cadastro)
-                </div>
-                <div className="mt-1">
-                  {conf.soNoContador.map((x) => `${x.nome} (${nomeFilial.get(x.filialId) ?? '—'}, ${brl(x.liquido)})`).join(' · ')}
-                </div>
-              </div>
-            )}
 
             {conf.debitosSemPessoa.length > 0 && (
               <details className="rounded-xl border border-slate-200 bg-white p-4">
