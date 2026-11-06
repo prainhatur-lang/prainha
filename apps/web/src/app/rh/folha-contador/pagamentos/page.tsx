@@ -175,7 +175,7 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
                   </select>
                 </label>
                 <label className="text-xs text-slate-600">
-                  Conta Inter da E.B. (opcional)
+                  Conta corrente do Inter da E.B. (obrigatório)
                   <input name="conta" required placeholder="00000000-0" className="mt-0.5 block w-36 rounded border border-slate-300 px-2 py-1 text-sm" />
                 </label>
                 <button className="rounded-lg border border-orange-300 bg-white px-3 py-1.5 text-sm font-medium text-orange-800 hover:bg-orange-100">
@@ -235,7 +235,7 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
                   </select>
                 </label>
                 <label className="text-xs text-slate-600">
-                  Conta Inter da Prainha (opcional)
+                  Conta corrente do Inter da Prainha (obrigatório)
                   <input name="conta" required placeholder="00000000-0" className="mt-0.5 block w-36 rounded border border-slate-300 px-2 py-1 text-sm" />
                 </label>
                 <button className="rounded-lg border border-sky-300 bg-white px-3 py-1.5 text-sm font-medium text-sky-800 hover:bg-sky-100">
