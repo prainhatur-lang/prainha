@@ -268,6 +268,7 @@
     "migrate:permuta-tipo": "tsx scripts/migrate-permuta-tipo.ts",
     "migrate:revenda-preco": "tsx scripts/migrate-revenda-preco.ts",
     "migrate:lelis-entrada": "tsx scripts/migrate-lelis-entrada.ts",
+    "migrate:lelis-pedido": "tsx scripts/migrate-lelis-pedido.ts",
     "migrate:estoque-local": "tsx scripts/migrate-estoque-local.ts",
     "migrate:ifood-entrega-endereco": "tsx scripts/migrate-ifood-entrega-endereco.ts",
     "migrate:ifood-homolog-log": "tsx scripts/migrate-ifood-homolog-log.ts",

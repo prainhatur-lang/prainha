@@ -32,7 +32,7 @@ export async function GET() {
            p.cst_pis_entrada, p.icms_st_unit::float AS icms_st_unit,
            coalesce(sum(m.quantidade), 0)::float AS saldo,
            coalesce(sum(m.quantidade) FILTER (WHERE m.tipo = 'ENTRADA_COMPRA'), 0)::float AS entrou,
-           coalesce(-sum(m.quantidade) FILTER (WHERE m.tipo IN ('SAIDA_VENDA','ESTORNO_VENDA')), 0)::float AS vendeu,
+           coalesce(-sum(m.quantidade) FILTER (WHERE m.tipo IN ('SAIDA_VENDA','ESTORNO_VENDA','SAIDA_PEDIDO','ESTORNO_PEDIDO')), 0)::float AS vendeu,
            (p.custo_unit + p.frete_unit)::float AS custo
       FROM revenda_produto p
       LEFT JOIN revenda_movimento m ON m.revenda_produto_id = p.id

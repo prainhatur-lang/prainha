@@ -6,6 +6,7 @@ import { brl } from '@/lib/format';
 import { calcularDestinos, calcularPreco, cargaPorOrigem } from '@/lib/lelis/preco';
 import type { FiscalEndereco, RevendaFiscal } from '@concilia/db/schema';
 import { VendaNfe } from './venda';
+import { PedidoSemNota } from './pedido';
 
 export interface ProdutoLinha {
   id: string;
@@ -404,6 +405,16 @@ export function PrecosLelisManager({ config, produtos }: { config: ConfigLelis; 
       </div>
 
       <VendaNfe config={config} itens={itensVenda} onLimpar={() => setQtds({})} />
+
+      <PedidoSemNota
+        itens={itensVenda.map((i) => ({
+          produto: i.produto,
+          quantidade: i.quantidade,
+          precoEmpresa: destinos(i.produto).empresa.preco,
+          precoAtual: i.preco,
+        }))}
+        onLimpar={() => setQtds({})}
+      />
     </div>
   );
 }
