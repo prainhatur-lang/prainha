@@ -2,6 +2,7 @@
 // A Lelis é empresa própria: compra mercadoria e vende pra outras lojas.
 // Só o Admin entra (a Lelis fica fora de usuario_filial).
 
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
 import { AppHeader } from '@/components/app-header';
@@ -108,7 +109,12 @@ export default async function PrecosLelisPage() {
       <AppHeader userEmail={user.email} />
       <div className="mx-auto max-w-7xl space-y-5 px-4 py-8 sm:px-6">
         <div>
-          <h1 className="text-xl font-semibold text-slate-900">Lelis Distribuidora — preço de venda e nota</h1>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <h1 className="text-xl font-semibold text-slate-900">Lelis Distribuidora — preço de venda e nota</h1>
+            <Link href="/lelis/vender" className="rounded-md bg-violet-700 px-3 py-2 text-sm font-medium text-white hover:bg-violet-800">
+              🛒 Vender pras casas (pedido) →
+            </Link>
+          </div>
           <p className="mt-1 text-sm text-slate-500">
             Custo de entrada (valor da nota + IPI + carga do Decreto 40.949 + frete) e, em cima dele, os percentuais de
             custo operacional, margem e impostos da venda. O preço sai “por dentro”: preço = custo ÷ (1 − soma dos %).

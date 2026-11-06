@@ -219,7 +219,7 @@ export default async function NovaTransferenciaPage(props: {
               ))}
             {admin && (
               <Link
-                href="/lelis/precos"
+                href="/lelis/vender"
                 className="rounded-md border border-violet-300 bg-violet-50 px-3 py-1 text-xs text-violet-800 hover:bg-violet-100"
                 title="A Lelis manda sem nota pela tela de preços dela; a casa confere em Transferências"
               >

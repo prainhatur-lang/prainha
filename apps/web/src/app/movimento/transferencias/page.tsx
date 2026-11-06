@@ -151,7 +151,7 @@ export default async function TransferenciasPage(props: {
             </Link>
             {admin && (
               <Link
-                href="/lelis/precos"
+                href="/lelis/vender"
                 className="rounded-md border border-violet-300 bg-violet-50 px-3 py-2 text-sm text-violet-800 hover:bg-violet-100"
                 title="Pedido sem nota da Lelis pras casas: marque 'Vender (qtd)' e use o quadro 'Pedido sem nota'"
               >

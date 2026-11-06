@@ -641,6 +641,13 @@ export const MENU_AREAS: MenuArea[] = [
             interno: true,
             aka: ['Lelis', 'distribuidora'],
           },
+          {
+            label: 'Lelis: vender pras casas (pedido)',
+            href: '/lelis/vender',
+            perm: 'configuracao.read',
+            interno: true,
+            aka: ['Lelis pedido', 'vender Lelis', 'saída Lelis'],
+          },
         ],
       },
       {
