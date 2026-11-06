@@ -136,7 +136,7 @@ export default async function FolhaContadorPage(props: { searchParams: Promise<S
       <main className="min-h-screen bg-slate-50">
         <AppHeader userEmail={user.email} />
         <div className="mx-auto max-w-5xl px-6 py-6">
-          <h1 className="text-xl font-semibold text-slate-900">Folha do contador</h1>
+          <h1 className="text-xl font-semibold text-slate-900">Folha mensal</h1>
           <p className="mt-0.5 text-xs text-slate-500">{filial.nome}</p>
           <div className="mt-4">{seletorFilial}</div>
           <p className="mt-6 rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-500">
@@ -303,7 +303,7 @@ export default async function FolhaContadorPage(props: { searchParams: Promise<S
       <AppHeader userEmail={user.email} />
       <div className="mx-auto max-w-5xl px-6 py-6">
         <div className="mb-4">
-          <h1 className="text-xl font-semibold text-slate-900">Folha do contador</h1>
+          <h1 className="text-xl font-semibold text-slate-900">Folha mensal</h1>
           <p className="mt-0.5 text-xs text-slate-500">
             {filial.nome} · {nomeComp(comp)} · registro em carteira, o que cada um recebeu no mês e os encargos
           </p>

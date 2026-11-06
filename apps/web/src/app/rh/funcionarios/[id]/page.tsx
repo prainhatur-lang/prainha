@@ -722,7 +722,7 @@ export default async function FichaFuncionarioPage(props: { params: Promise<{ id
           <Bloco
             titulo="Folha do contador"
             sub="O holerite de cada mês, do jeito que veio no extrato do contador."
-            link={{ href: `/rh/folha-contador?filialId=${filialLink}`, texto: 'Folha do contador' }}
+            link={{ href: `/rh/folha-contador?filialId=${filialLink}`, texto: 'Folha mensal' }}
           >
             {holerites.length === 0 ? (
               <p className="text-sm text-slate-500">Não está em nenhuma folha do contador importada.</p>

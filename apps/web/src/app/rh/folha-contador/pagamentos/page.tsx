@@ -117,7 +117,7 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
       <AppHeader userEmail={user.email} />
       <div className="mx-auto max-w-5xl space-y-5 px-6 py-8">
         <div>
-          <a href="/rh/folha-contador" className="text-xs text-slate-500 hover:underline">← Folha de pagamento</a>
+          <a href="/rh/folha-contador" className="text-xs text-slate-500 hover:underline">← Folha mensal</a>
           <h1 className="mt-1 text-xl font-semibold text-slate-900">Pagamentos da {empresa.nome}</h1>
           <p className="mt-1 text-sm text-slate-500">
             O líquido de cada pessoa na {fonte === 'nossa' ? 'nossa folha (calculada pelo ponto)' : 'folha do contador'}, conferido com o que saiu da conta da {empresa.nome} no Inter.

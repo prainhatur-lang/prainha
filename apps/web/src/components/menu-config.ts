@@ -834,10 +834,11 @@ export const MENU_AREAS: MenuArea[] = [
           {
             // Dono 06/11/2026: "esquece o contador... suba a nossa folha".
             // A tela abre na nossa folha; a do contador fica como comparação.
-            label: 'Folha de pagamento',
+            // Dono 06/11/2026 (depois): "tira o nome contador, coloca folha mensal".
+            label: 'Folha mensal',
             href: '/rh/folha-contador',
             perm: 'folha_equipe.read',
-            aka: ['Nossa folha', 'Folha da contabilidade', 'Folha do contador', 'contracheque', 'holerite', 'CLT'],
+            aka: ['Folha de pagamento', 'Nossa folha', 'Folha da contabilidade', 'Folha do contador', 'contracheque', 'holerite', 'CLT'],
           },
           {
             label: 'Pagamentos da E.B. (extrato)',

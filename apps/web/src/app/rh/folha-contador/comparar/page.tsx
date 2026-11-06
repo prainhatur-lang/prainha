@@ -202,7 +202,7 @@ export default async function CompararFolhaPage(props: { searchParams: Promise<S
       <AppHeader userEmail={user.email} />
       <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6">
         <Link href={`/rh/folha-contador?filialId=${filial.id}`} className="text-sm text-blue-600 hover:underline">
-          ← Folha do contador
+          ← Folha mensal
         </Link>
         <Link href={`/rh/folha-contador/nossa/imprimir?filialId=${filial.id}&comp=${comp}`} className="ml-4 text-sm text-blue-600 hover:underline">
           🖨 Imprimir nossa folha (resumo, borderô, contracheques)
