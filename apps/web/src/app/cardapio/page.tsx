@@ -90,6 +90,12 @@ export default async function CardapioPage(props: {
           🏷️ Promoções (preço no horário, paga 1 leva 2) →
         </a>
         <a
+          href={`/cardapio/vinhos?filialId=${filialId}`}
+          className="ml-2 mt-2 inline-block rounded-md border border-rose-300 bg-rose-50 px-3 py-1.5 text-sm font-medium text-rose-800 hover:bg-rose-100"
+        >
+          🍷 Carta de vinhos (imprimir) →
+        </a>
+        <a
           href={`/cardapio/totem?filialId=${filialId}`}
           className="ml-2 mt-2 inline-block rounded-md border border-violet-300 bg-violet-50 px-3 py-1.5 text-sm font-medium text-violet-800 hover:bg-violet-100"
         >

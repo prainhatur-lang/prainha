@@ -208,6 +208,12 @@ export const MENU_AREAS: MenuArea[] = [
             aka: ['cardápio inclusivo', 'alérgenos', 'vegano', 'sem glúten'],
           },
           {
+            label: 'Carta de vinhos (imprimir)',
+            href: '/cardapio/vinhos',
+            perm: 'produto.read',
+            aka: ['carta de vinho', 'vinhos', 'imprimir cardápio', 'menu impresso'],
+          },
+          {
             label: 'Totem de autoatendimento',
             href: '/cardapio/totem', soNaBusca: true,
             perm: 'produto.read',
