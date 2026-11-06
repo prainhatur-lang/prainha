@@ -23,6 +23,10 @@ export interface LinhaNossaFolha {
   proventos: number;
   fgts: number;
   horas: number;
+  /** Regime no mês (agenda aplicada): clt_mensal | intermitente_hora. */
+  regime: string;
+  /** Valor da hora (intermitente) ou salário do mês (CLT) no cadastro. */
+  salario: number;
 }
 
 const ultimoDiaComp = (comp: string) => {
@@ -80,6 +84,8 @@ export async function nossaFolhaDoMes(filialId: string, comp: string): Promise<L
       proventos: calc.proventos,
       fgts: calc.fgts,
       horas: calc.horas,
+      regime: f.regimeSalarial as string,
+      salario: Number(f.salarioBase),
     };
   });
 }

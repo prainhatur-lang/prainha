@@ -15,6 +15,8 @@ import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { AppHeader } from '@/components/app-header';
 import { LancarPagamentosFolha } from './lancar-pagamentos';
+import { NossaFolhaView } from './nossa-folha-view';
+import { hojeBr } from '@/lib/datas';
 import { brl } from '@/lib/format';
 import { semNoturnoIntermitente } from '@/lib/rh/sem-noturno-intermitente';
 import { db, schema } from '@concilia/db';
@@ -25,6 +27,8 @@ export const dynamic = 'force-dynamic';
 interface SP {
   filialId?: string;
   comp?: string;
+  /** 'contador' = folha importada do contador; padrão = nossa folha (dono 06/11/2026). */
+  ver?: string;
 }
 
 const MESES = ['', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
@@ -100,7 +104,17 @@ export default async function FolhaContadorPage(props: { searchParams: Promise<S
       .where(eq(schema.folhaContador.filialId, filial.id))
       .orderBy(desc(schema.folhaContador.competencia))
   ).map((c) => c.competencia);
-  const comp = sp.comp && competencias.includes(sp.comp) ? sp.comp : competencias[0] ?? null;
+  // Padrão = nossa folha (dono 06/11/2026: "vamos fazer por nossa folha, não
+  // pelo do contador"). A do contador continua igual em ?ver=contador.
+  const ver = sp.ver === 'contador' ? 'contador' : 'nossa';
+  const qVer = ver === 'contador' ? '&ver=contador' : '';
+  const mesAtual = hojeBr().slice(0, 7);
+  const [ma, mm] = mesAtual.split('-').map(Number);
+  const mesPassado = `${mm === 1 ? ma! - 1 : ma}-${String(mm === 1 ? 12 : mm! - 1).padStart(2, '0')}`;
+  const compsTela =
+    ver === 'nossa' ? [...new Set([mesAtual, mesPassado, ...competencias])].sort().reverse() : competencias;
+  const comp =
+    sp.comp && compsTela.includes(sp.comp) ? sp.comp : (competencias[0] ?? (ver === 'nossa' ? mesPassado : null));
 
   const seletorFilial = filiais.length > 1 && (
     <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -108,7 +122,7 @@ export default async function FolhaContadorPage(props: { searchParams: Promise<S
       {filiais.map((f) => (
         <a
           key={f.id}
-          href={`/rh/folha-contador?filialId=${f.id}${comp ? `&comp=${comp}` : ''}`}
+          href={`/rh/folha-contador?filialId=${f.id}${comp ? `&comp=${comp}` : ''}${qVer}`}
           className={`rounded-md border px-3 py-1 text-xs ${f.id === filial.id ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'}`}
         >
           {f.nome}
@@ -128,6 +142,69 @@ export default async function FolhaContadorPage(props: { searchParams: Promise<S
           <p className="mt-6 rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-500">
             Nenhuma folha do contador gravada pra esta casa ainda.
           </p>
+        </div>
+      </main>
+    );
+  }
+
+  const seletorVer = (
+    <div className="mb-3 inline-flex rounded-lg border border-slate-300 bg-white p-0.5 text-xs">
+      <a
+        href={`/rh/folha-contador?filialId=${filial.id}&comp=${comp}`}
+        className={`rounded-md px-3 py-1 ${ver === 'nossa' ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-50'}`}
+      >
+        Nossa folha
+      </a>
+      <a
+        href={`/rh/folha-contador?filialId=${filial.id}&comp=${comp}&ver=contador`}
+        className={`rounded-md px-3 py-1 ${ver === 'contador' ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-50'}`}
+      >
+        Folha do contador
+      </a>
+    </div>
+  );
+
+  if (ver === 'nossa') {
+    return (
+      <main className="min-h-screen bg-slate-50">
+        <AppHeader userEmail={user.email} />
+        <div className="mx-auto max-w-5xl px-6 py-6">
+          <div className="mb-4">
+            <h1 className="text-xl font-semibold text-slate-900">Nossa folha</h1>
+            <p className="mt-0.5 text-xs text-slate-500">
+              {filial.nome} · {nomeComp(comp)} · calculada pelo ponto e pelo salário do cadastro — é a que a gente paga
+            </p>
+            <a
+              href={`/rh/folha-contador/nossa/imprimir?filialId=${filial.id}&comp=${comp}`}
+              className="mt-2 inline-block rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+            >
+              🖨️ Imprimir nossa folha
+            </a>{' '}
+            <a
+              href={`/rh/folha-contador/comparar?filialId=${filial.id}&comp=${comp}`}
+              className="mt-2 inline-block rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+            >
+              🧮 Nossa folha × contador
+            </a>
+            <LancarPagamentosFolha filialId={filial.id} comp={comp} />
+          </div>
+          {seletorVer}
+          <div className="mb-5 space-y-2">
+            {seletorFilial}
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="text-slate-500">Competência:</span>
+              {compsTela.map((c) => (
+                <a
+                  key={c}
+                  href={`/rh/folha-contador?filialId=${filial.id}&comp=${c}`}
+                  className={`rounded-md border px-2.5 py-1 text-xs ${c === comp ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'}`}
+                >
+                  {nomeComp(c)}
+                </a>
+              ))}
+            </div>
+          </div>
+          <NossaFolhaView filialId={filial.id} comp={comp} />
         </div>
       </main>
     );
@@ -245,14 +322,15 @@ export default async function FolhaContadorPage(props: { searchParams: Promise<S
           <LancarPagamentosFolha filialId={filial.id} comp={comp} />
         </div>
 
+        {seletorVer}
         <div className="mb-5 space-y-2">
           {seletorFilial}
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <span className="text-slate-500">Competência:</span>
-            {competencias.map((c) => (
+            {compsTela.map((c) => (
               <a
                 key={c}
-                href={`/rh/folha-contador?filialId=${filial.id}&comp=${c}`}
+                href={`/rh/folha-contador?filialId=${filial.id}&comp=${c}${qVer}`}
                 className={`rounded-md border px-2.5 py-1 text-xs ${c === comp ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'}`}
               >
                 {nomeComp(c)}
