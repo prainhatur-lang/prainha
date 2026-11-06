@@ -85,6 +85,10 @@
       "schedule": "*/5 * * * *"
     },
     {
+      "path": "/api/cron/marketing-metricas",
+      "schedule": "*/20 * * * *"
+    },
+    {
       "path": "/api/cron/marketing-espelho",
       "schedule": "*/10 * * * *"
     },
