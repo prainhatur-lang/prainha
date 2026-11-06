@@ -38,10 +38,10 @@ export async function empregadorEbDoFuncionario(funcionarioId: string, cpf: stri
   return { cnpj, empresa: u.empresa ?? 'E.B. Serviços', competencia: u.competencia };
 }
 
-type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+export type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
 /** Cadastro do funcionário na filial da E.B. (pelo CPF); cria copiando a chave/banco do cadastro da casa. */
-async function fornecedorFuncionarioNaEb(
+export async function fornecedorFuncionarioNaEb(
   tx: Tx,
   ebFilialId: string,
   nome: string,

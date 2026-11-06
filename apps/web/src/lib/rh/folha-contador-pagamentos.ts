@@ -9,6 +9,10 @@
 //   - Lelis: UMA conta por pessoa "Repasse Lelis — Folha MM/AAAA — Fulano",
 //     favorecido Lelis, na casa do cadastro da pessoa (era o lançamento manual
 //     "pix para Lelis ref. ao pagamento de Claudio…" do Bar).
+//     Na filial da E.B. sai UMA conta por pessoa "Salário MM/AAAA — Fulano",
+//     favorecido o funcionário (pedido do dono 06/11/2026: "se EB pagou a folha,
+//     não deveria aparecer no contas a pagar de EB, pagamentos individuais, tipo
+//     Álvaro"). codigo_referencia `fe:<comp>:<casa 8>:<cpf>` na E.B.
 //   - Empresa da própria casa (Prainha Turismo no Bar): UMA conta por pessoa,
 //     favorecido o funcionário (a casa paga direto).
 // Não lança duas vezes: codigo_referencia `fc:<comp>:<cnpj>[:<cpf>]` na casa (coluna tem 50).
@@ -18,7 +22,8 @@
 import { db, schema } from '@concilia/db';
 import { and, eq, ilike, inArray, isNull, lte, sql } from 'drizzle-orm';
 import { EB_CNPJ } from '@/lib/eb/faturas';
-import { LELIS_CNPJ, fornecedorPagadorNaCasa } from '@/lib/impostos/guia';
+import { LELIS_CNPJ, filialDoCnpj, fornecedorPagadorNaCasa } from '@/lib/impostos/guia';
+import { fornecedorFuncionarioNaEb, type Tx } from '@/lib/rh/rescisao-empregador';
 import { nossaFolhaDoMes } from '@/lib/rh/nossa-folha';
 import { contasEmPixAberto } from '@/lib/pix-pagamento';
 import { registrarExclusao, resumoConta } from '@/lib/registro-exclusao';
@@ -30,7 +35,7 @@ export interface ItemPagamentoFolha {
   cnpj: string;
   tipo: 'repasse_eb' | 'repasse_lelis' | 'direto';
   descricao: string;
-  pessoas: { nome: string; cpf: string | null; liquido: number }[];
+  pessoas: { nome: string; cpf: string | null; liquido: number; fornecedorId?: string | null }[];
   valor: number;
   /** Conta já criada por este botão. */
   jaLancadaId: string | null;
@@ -199,7 +204,7 @@ export async function pagamentosDaFolha(casaFilialId: string, comp: string): Pro
     if (l.desligamento && l.desligamento.slice(0, 7) === comp) continue;
     // diarista (fora do extrato do contador) → recebe pela diária, não pela folha
     if (registro.diaristas.has(l.funcionarioId)) continue;
-    const pessoa = { nome: l.nome, cpf: l.cpf, liquido };
+    const pessoa = { nome: l.nome, cpf: l.cpf, liquido, fornecedorId: l.fornecedorId };
     const refPessoa = `fc:${comp}:${cnpj}:${digitos(l.cpf) || l.nome}`.slice(0, 50);
     if (cnpj === LELIS_CNPJ) {
       itens.set(refPessoa, {
@@ -311,6 +316,79 @@ export function chavePessoa(x: { cpf: string | null; nome: string }): string {
   return digitos(x.cpf) || x.nome;
 }
 
+/** Prefixo do codigo_referencia das contas por pessoa na filial da E.B. (casa + mês). */
+export function prefixoContaEb(casaFilialId: string, comp: string): string {
+  return `fe:${comp}:${casaFilialId.slice(0, 8)}:`;
+}
+
+/**
+ * Na filial da E.B., uma conta por pessoa do repasse da folha ("Salário MM/AAAA —
+ * Fulano", favorecido o funcionário). A conta do repasse na casa não muda.
+ * Pula quem já tem conta (mesmo codigo_referencia). Devolve quantas criou.
+ */
+export async function lancarContasEbDaFolha(
+  tx: Tx,
+  p: {
+    ebFilialId: string;
+    casaFilialId: string;
+    casaNome: string;
+    comp: string;
+    vencimento: string;
+    usuarioId: string;
+    pessoas: ItemPagamentoFolha['pessoas'];
+    /** Já pago (retroativo): grava data_pagamento/valor_pago e a baixa. */
+    pagoEm?: string | null;
+    obsBaixa?: string | null;
+  },
+): Promise<number> {
+  const cp = schema.contaPagar;
+  const pref = prefixoContaEb(p.casaFilialId, p.comp);
+  const ja = await tx
+    .select({ ref: cp.codigoReferencia })
+    .from(cp)
+    .where(and(eq(cp.filialId, p.ebFilialId), ilike(cp.codigoReferencia, `${pref}%`), isNull(cp.dataDelete)));
+  const jaRefs = new Set(ja.map((j) => j.ref));
+  const categoriaId = await categoriaSalario(p.ebFilialId);
+  let criadas = 0;
+  for (const x of p.pessoas) {
+    if (!(x.liquido > 0)) continue;
+    const ref = `${pref}${digitos(x.cpf) || x.nome}`.slice(0, 50);
+    if (jaRefs.has(ref)) continue;
+    const fornecedorId = await fornecedorFuncionarioNaEb(tx, p.ebFilialId, x.nome, x.cpf, x.fornecedorId ?? null);
+    const valor = x.liquido.toFixed(2);
+    const [nova] = await tx.insert(cp).values({
+      filialId: p.ebFilialId,
+      criadoPor: p.usuarioId,
+      criadoEm: new Date(),
+      codigoExterno: null,
+      fornecedorId,
+      categoriaId,
+      dataVencimento: p.vencimento,
+      valor,
+      descricao: `Salário ${mmAaaa(p.comp)} — ${x.nome}`,
+      observacao: `Folha do sistema ${mmAaaa(p.comp)} — empregado da E.B. lotado na ${p.casaNome}. A E.B. paga a pessoa com o "Repasse E.B. — Folha ${mmAaaa(p.comp)}" da casa.`,
+      competencia: p.comp,
+      codigoReferencia: ref,
+      origem: 'FOLHA',
+      folhaSemanaId: null,
+      ...(p.pagoEm ? { dataPagamento: p.pagoEm, valorPago: valor } : {}),
+    }).returning({ id: cp.id });
+    if (p.pagoEm && nova) {
+      await tx.insert(schema.contaPagarBaixa).values({
+        filialId: p.ebFilialId,
+        contaPagarId: nova.id,
+        data: p.pagoEm,
+        valor,
+        observacao: p.obsBaixa ?? null,
+        criadoPor: p.usuarioId,
+      });
+    }
+    jaRefs.add(ref);
+    criadas++;
+  }
+  return criadas;
+}
+
 /** Cria as contas escolhidas. Pula o que já foi lançado. */
 export async function lancarPagamentosDaFolha(p: {
   casaFilialId: string;
@@ -353,6 +431,13 @@ export async function lancarPagamentosDaFolha(p: {
     for (const r of rows) if (r.fornecedorId) fornPorCpf.set(digitos(r.cpf), r.fornecedorId);
   }
 
+  const ebFilial = escolhidos.some((i) => i.tipo === 'repasse_eb') ? await filialDoCnpj(EB_CNPJ) : null;
+  const [casaRow] = await db
+    .select({ nome: schema.filial.nome })
+    .from(schema.filial)
+    .where(eq(schema.filial.id, p.casaFilialId))
+    .limit(1);
+
   let total = 0;
   await db.transaction(async (tx) => {
     for (const i of escolhidos) {
@@ -386,6 +471,17 @@ export async function lancarPagamentosDaFolha(p: {
         origem: 'FOLHA',
         folhaSemanaId: null,
       });
+      if (i.tipo === 'repasse_eb' && ebFilial) {
+        await lancarContasEbDaFolha(tx, {
+          ebFilialId: ebFilial.id,
+          casaFilialId: p.casaFilialId,
+          casaNome: casaRow?.nome ?? '',
+          comp: p.comp,
+          vencimento: p.vencimento,
+          usuarioId: p.usuarioId,
+          pessoas: i.pessoas,
+        });
+      }
       total += i.valor;
     }
   });
@@ -445,6 +541,44 @@ export async function relancarPagamentosDaFolha(p: {
         dados: c,
       });
       await db.update(cp).set({ dataDelete: new Date() }).where(and(eq(cp.id, c.id), isNull(cp.dataPagamento)));
+    }
+    // contas por pessoa na E.B. do repasse relançado: saem junto (só as sem pagamento)
+    const repasseEb = itens.find((i) => p.refs.includes(i.ref) && i.tipo === 'repasse_eb' && i.jaLancadaId);
+    const ebFilial = repasseEb ? await filialDoCnpj(EB_CNPJ) : null;
+    if (ebFilial) {
+      const doEb = await db
+        .select({
+          id: cp.id,
+          descricao: cp.descricao,
+          valor: cp.valor,
+          venc: cp.dataVencimento,
+          dataPagamento: cp.dataPagamento,
+          borderoId: cp.borderoId,
+          codigoReferencia: cp.codigoReferencia,
+          baixas: sql<string>`(select count(*) from conta_pagar_baixa b where b.conta_pagar_id = ${cp.id})::text`,
+        })
+        .from(cp)
+        .where(
+          and(
+            eq(cp.filialId, ebFilial.id),
+            ilike(cp.codigoReferencia, `${prefixoContaEb(p.casaFilialId, p.comp)}%`),
+            isNull(cp.dataDelete),
+          ),
+        );
+      const emPixEb = await contasEmPixAberto(ebFilial.id);
+      for (const c of doEb) {
+        if (c.dataPagamento || Number(c.baixas) > 0 || c.borderoId || emPixEb.has(c.id)) continue;
+        await registrarExclusao({
+          tabela: 'conta_pagar',
+          registroId: c.id,
+          filialId: ebFilial.id,
+          usuarioId: p.usuarioId,
+          resumo: resumoConta(c.descricao, c.venc, c.valor),
+          motivo: `Relançar folha ${mmAaaa(p.comp)}${p.motivo ? `: ${p.motivo}` : ' (valor recalculado)'}`,
+          dados: c,
+        });
+        await db.update(cp).set({ dataDelete: new Date() }).where(and(eq(cp.id, c.id), isNull(cp.dataPagamento)));
+      }
     }
   }
   const r = await lancarPagamentosDaFolha({
