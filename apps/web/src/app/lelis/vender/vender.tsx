@@ -57,7 +57,7 @@ export function VenderLelis({ produtos }: { produtos: ProdutoVenda[] }) {
   const [venc, setVenc] = useState(hojeBr());
   const [obs, setObs] = useState('');
   const [ocupado, setOcupado] = useState(false);
-  const [msg, setMsg] = useState<{ tipo: 'ok' | 'erro'; texto: string } | null>(null);
+  const [msg, setMsg] = useState<{ tipo: 'ok' | 'erro'; texto: string; pedidoId?: string } | null>(null);
   const [pedidos, setPedidos] = useState<PedidoLista[]>([]);
   const buscaRef = useRef<HTMLInputElement>(null);
 
@@ -130,7 +130,7 @@ export function VenderLelis({ produtos }: { produtos: ProdutoVenda[] }) {
     const js = await r.json().catch(() => ({}));
     setOcupado(false);
     if (!r.ok) return setMsg({ tipo: 'erro', texto: js.error ?? 'erro ao gravar o pedido' });
-    setMsg({ tipo: 'ok', texto: `Pedido nº ${js.numero} pra ${nomeCasa}: ${brl(js.total)}. Já aparece em Transferências de ${nomeCasa} pra conferir.` });
+    setMsg({ tipo: 'ok', texto: `Pedido nº ${js.numero} pra ${nomeCasa}: ${brl(js.total)}. Já aparece em Transferências de ${nomeCasa} pra conferir.`, pedidoId: js.id });
     setCarrinho([]);
     setObs('');
     void carregar();
@@ -293,6 +293,14 @@ export function VenderLelis({ produtos }: { produtos: ProdutoVenda[] }) {
         {msg && (
           <p className={`mt-3 rounded-lg border p-2 text-sm ${msg.tipo === 'ok' ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-red-200 bg-red-50 text-red-700'}`}>
             {msg.texto}
+            {msg.pedidoId && (
+              <>
+                {' '}
+                <Link href={`/lelis/pedido/${msg.pedidoId}`} className="font-medium text-sky-700 hover:underline">
+                  Ver os itens / imprimir →
+                </Link>
+              </>
+            )}
           </p>
         )}
       </div>
@@ -316,8 +324,17 @@ export function VenderLelis({ produtos }: { produtos: ProdutoVenda[] }) {
                   <td className="py-1.5 pr-2 font-medium">{p.casa}</td>
                   <td className="py-1.5 pr-2 text-xs text-slate-500">
                     {p.itens.slice(0, 3).map((i) => `${fmtQ(i.quantidade)} × ${i.descricao}`).join(' · ')}
-                    {p.itens.length > 3 ? ` · +${p.itens.length - 3}` : ''}{' '}
-                    <Link href={`/lelis/pedido/${p.id}`} className="text-sky-700 hover:underline">abrir</Link>
+                    {p.itens.length > 3 ? (
+                      <Link href={`/lelis/pedido/${p.id}`} className="text-sky-700 hover:underline">{` · +${p.itens.length - 3}`}</Link>
+                    ) : null}
+                    <div className="mt-1">
+                      <Link
+                        href={`/lelis/pedido/${p.id}`}
+                        className="inline-block rounded border border-sky-200 bg-sky-50 px-2 py-0.5 font-medium text-sky-700 hover:bg-sky-100"
+                      >
+                        Ver os {p.itens.length} itens / imprimir →
+                      </Link>
+                    </div>
                   </td>
                   <td className="py-1.5 pr-2 text-right font-semibold">{brl(p.total)}</td>
                   <td className="py-1.5 pr-2 text-xs">
