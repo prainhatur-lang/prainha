@@ -121,6 +121,19 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
               <a href={`?${comp ? `comp=${comp}` : ''}`} className="hover:underline">← Voltar pra nossa folha</a>
             )}
           </p>
+          {comp && (
+            <p className="mt-3">
+              <a
+                href={`/api/rh/folha-pagamento-arquivo?comp=${comp}`}
+                className="inline-flex items-center gap-1 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-sm font-medium text-emerald-800 hover:bg-emerald-100"
+              >
+                📄 Planilha de pagamento de {nomeComp(comp)} (nossa folha)
+              </a>
+              <span className="ml-2 text-xs text-slate-500">
+                Uma aba por casa com conta e líquido; quem tem conta em nome de outra pessoa vai pra aba “Não pagar”.
+              </span>
+            </p>
+          )}
         </div>
 
         <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm">
