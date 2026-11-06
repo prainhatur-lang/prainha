@@ -3,8 +3,8 @@
 // Pedido SEM NOTA pras casas (06/11/2026): os itens marcados em "Vender (qtd)"
 // vão pra uma casa sem emitir NF-e. Baixa o estoque da Lelis, lança o a receber
 // da Lelis e a conta a pagar na casa. A nota sai depois.
-// Também dá entrada no estoque da casa, no produto escolhido pra cada item
-// (sugerido pelo vínculo salvo, código de barras ou nome; fica salvo).
+// Não mexe no estoque da casa: cada casa confere o que chegou e dá entrada
+// (Transferências → "Pedidos da Lelis a conferir").
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { hojeBr } from '@/lib/datas';
@@ -28,15 +28,9 @@ interface PedidoLista {
   criadoEmBr: string;
   casa_pagou: boolean | null;
   lelis_recebeu: boolean | null;
-  itens: { descricao: string; quantidade: number; preco_unit: number; total: number; produto_casa?: string | null }[];
-}
-
-interface ProdutoCasa {
-  id: string;
-  nome: string;
-  tipo: string | null;
-  unidade: string | null;
-  estoque: number;
+  recebido_em?: string | null;
+  recebido_por?: string | null;
+  itens: { descricao: string; quantidade: number; preco_unit: number; total: number; produto_casa?: string | null; quantidade_recebida?: number | null }[];
 }
 
 const CASAS = [
@@ -59,31 +53,6 @@ export function PedidoSemNota({ itens, onLimpar }: { itens: ItemPedido[]; onLimp
   const [msg, setMsg] = useState<{ tipo: 'ok' | 'erro'; texto: string } | null>(null);
   const [pedidos, setPedidos] = useState<PedidoLista[]>([]);
   const [aberto, setAberto] = useState<string | null>(null);
-  const [prodCasa, setProdCasa] = useState<ProdutoCasa[]>([]);
-  const [sugestoes, setSugestoes] = useState<Record<string, { produtoId: string; fonte: string }>>({});
-  // escolha manual por item da Lelis: id do produto da casa, ou '' = sem entrada
-  const [escolha, setEscolha] = useState<Record<string, string>>({});
-
-  const idsItens = itens.map((i) => i.produto.id).sort().join(',');
-  useEffect(() => {
-    setProdCasa([]);
-    setSugestoes({});
-    setEscolha({});
-    if (!casa || !idsItens) return;
-    let vivo = true;
-    void (async () => {
-      const r = await fetch(`/api/lelis/pedido/vinculo?casaId=${casa}&ids=${idsItens}`);
-      const js = await r.json().catch(() => ({}));
-      if (!vivo || !r.ok) return;
-      setProdCasa(js.produtos ?? []);
-      setSugestoes(js.sugestoes ?? {});
-    })();
-    return () => {
-      vivo = false;
-    };
-  }, [casa, idsItens]);
-  const destinoDe = (revId: string) => (revId in escolha ? escolha[revId] : sugestoes[revId]?.produtoId ?? '');
-
   const carregar = useCallback(async () => {
     const r = await fetch('/api/lelis/pedido');
     const js = await r.json().catch(() => ({}));
@@ -110,11 +79,7 @@ export function PedidoSemNota({ itens, onLimpar }: { itens: ItemPedido[]; onLimp
     if (!casa) return setMsg({ tipo: 'erro', texto: 'Escolha a casa que recebe.' });
     if (linhas.some((l) => !(l.preco > 0))) return setMsg({ tipo: 'erro', texto: 'Tem item sem preço.' });
     const nome = CASAS.find((c) => c.id === casa)?.nome;
-    const semEntrada = linhas.filter((l) => !destinoDe(l.produto.id)).length;
-    const avisoEstoque = semEntrada
-      ? `\n\n⚠️ ${semEntrada} item(ns) sem produto da casa escolhido: NÃO entram no estoque de ${nome}.`
-      : `\n\nTodos os itens entram no estoque de ${nome}.`;
-    if (!confirm(`Mandar ${linhas.length} item(ns) pra ${nome} sem nota, total ${brl(total)}?\n\nBaixa o estoque da Lelis, lança o a receber e a conta a pagar na casa.${avisoEstoque}`)) return;
+    if (!confirm(`Mandar ${linhas.length} item(ns) pra ${nome} sem nota, total ${brl(total)}?\n\nBaixa o estoque da Lelis, lança o a receber e a conta a pagar na casa.\n\nNão entra no estoque de ${nome} agora: lá eles conferem o que chegou e dão entrada.`)) return;
     setOcupado(true);
     const r = await fetch('/api/lelis/pedido', {
       method: 'POST',
@@ -127,14 +92,13 @@ export function PedidoSemNota({ itens, onLimpar }: { itens: ItemPedido[]; onLimp
           produtoId: l.produto.id,
           quantidade: l.quantidade,
           precoUnit: l.preco,
-          produtoCasaId: destinoDe(l.produto.id) || null,
         })),
       }),
     });
     const js = await r.json().catch(() => ({}));
     setOcupado(false);
     if (!r.ok) return setMsg({ tipo: 'erro', texto: js.error ?? 'erro ao gravar o pedido' });
-    setMsg({ tipo: 'ok', texto: `Pedido nº ${js.numero} gravado: ${brl(js.total)} a receber de ${nome}, conta a pagar e entrada no estoque lançadas lá.` });
+    setMsg({ tipo: 'ok', texto: `Pedido nº ${js.numero} gravado: ${brl(js.total)} a receber de ${nome}, conta a pagar lançada lá. Agora a casa confere e dá entrada no estoque.` });
     setPrecos({});
     setObs('');
     onLimpar();
@@ -142,7 +106,7 @@ export function PedidoSemNota({ itens, onLimpar }: { itens: ItemPedido[]; onLimp
   }
 
   async function cancelar(p: PedidoLista) {
-    if (!confirm(`Cancelar o pedido nº ${p.numero} (${p.casa}, ${brl(p.total)})?\n\nO estoque volta pra Lelis, sai do estoque da casa e a conta da casa é apagada.`)) return;
+    if (!confirm(`Cancelar o pedido nº ${p.numero} (${p.casa}, ${brl(p.total)})?\n\nO estoque volta pra Lelis, sai do estoque da casa o que ela já tiver conferido e a conta da casa é apagada.`)) return;
     const r = await fetch(`/api/lelis/pedido?id=${p.id}`, { method: 'DELETE' });
     const js = await r.json().catch(() => ({}));
     if (!r.ok) return setMsg({ tipo: 'erro', texto: js.error ?? 'erro ao cancelar' });
@@ -155,8 +119,8 @@ export function PedidoSemNota({ itens, onLimpar }: { itens: ItemPedido[]; onLimp
       <h2 className="text-base font-semibold text-slate-900">Pedido sem nota pras casas</h2>
       <p className="mt-1 text-xs text-slate-500">
         Usa os mesmos itens marcados em “Vender (qtd)”. Não emite NF-e: baixa o estoque da Lelis, lança o valor a receber
-        da casa aqui na Lelis, a conta a pagar lá na casa (fornecedor Lelis) e dá entrada das garrafas no estoque da casa, no
-        produto escolhido em cada linha (a escolha fica salva pros próximos pedidos). A nota pode sair depois.
+        da casa aqui na Lelis e a conta a pagar lá na casa (fornecedor Lelis). A casa confere o que chegou e dá entrada no
+        estoque dela (em Transferências). A nota pode sair depois.
       </p>
 
       {msg && (
@@ -201,7 +165,6 @@ export function PedidoSemNota({ itens, onLimpar }: { itens: ItemPedido[]; onLimp
               <thead className="text-xs text-slate-500">
                 <tr>
                   <th className="py-1 pr-2">Item</th>
-                  {casa && <th className="py-1 pr-2">Entra no estoque da casa como</th>}
                   <th className="py-1 pr-2 text-right">Qtd</th>
                   <th className="py-1 pr-2 text-right">Preço un.</th>
                   <th className="py-1 text-right">Total</th>
@@ -211,25 +174,6 @@ export function PedidoSemNota({ itens, onLimpar }: { itens: ItemPedido[]; onLimp
                 {linhas.map((l) => (
                   <tr key={l.produto.id} className="border-t border-slate-100">
                     <td className="py-1 pr-2">{l.produto.descricao}</td>
-                    {casa && (
-                      <td className="py-1 pr-2">
-                        <select
-                          value={destinoDe(l.produto.id)}
-                          onChange={(e) => setEscolha((x) => ({ ...x, [l.produto.id]: e.target.value }))}
-                          className={`w-64 rounded border px-1 py-0.5 text-xs ${destinoDe(l.produto.id) ? 'border-slate-300' : 'border-amber-400 bg-amber-50'}`}
-                        >
-                          <option value="">— sem entrada no estoque —</option>
-                          {prodCasa.map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {p.nome}{p.tipo === 'INSUMO' ? ' (insumo)' : ''} · est. {Number(p.estoque).toLocaleString('pt-BR')}
-                            </option>
-                          ))}
-                        </select>
-                        {!(l.produto.id in escolha) && sugestoes[l.produto.id] && (
-                          <div className="text-[10px] text-slate-400">{sugestoes[l.produto.id]!.fonte}</div>
-                        )}
-                      </td>
-                    )}
                     <td className="py-1 pr-2 text-right">{l.quantidade} {l.produto.unidade}</td>
                     <td className="py-1 pr-2 text-right">
                       <input
@@ -287,6 +231,11 @@ export function PedidoSemNota({ itens, onLimpar }: { itens: ItemPedido[]; onLimp
                     <td className="py-1 pr-2">{dataBr(p.vencimento)}</td>
                     <td className="py-1 pr-2 text-xs">
                       {p.status === 'CANCELADO' ? 'cancelado' : p.lelis_recebeu ? 'recebido' : p.casa_pagou ? 'casa pagou' : 'a receber'}
+                      {p.status !== 'CANCELADO' && (
+                        <div className={p.recebido_em ? 'text-emerald-700' : 'text-amber-700'}>
+                          {p.recebido_em ? 'casa conferiu' : 'aguardando conferência'}
+                        </div>
+                      )}
                     </td>
                     <td className="py-1 text-right">
                       {p.status !== 'CANCELADO' && !p.casa_pagou && !p.lelis_recebeu && (
@@ -300,10 +249,18 @@ export function PedidoSemNota({ itens, onLimpar }: { itens: ItemPedido[]; onLimp
                         {p.itens.map((i, k) => (
                           <div key={k}>
                             {i.quantidade} × {i.descricao} a {brl(i.preco_unit)} = {brl(i.total)}
-                            {i.produto_casa ? <span className="text-slate-400"> → estoque: {i.produto_casa}</span> : <span className="text-amber-600"> → sem entrada no estoque</span>}
+                            {p.recebido_em &&
+                              (i.quantidade_recebida != null && i.quantidade_recebida < i.quantidade ? (
+                                <span className="text-amber-700"> · chegou {i.quantidade_recebida}</span>
+                              ) : null)}
+                            {p.recebido_em &&
+                              (i.produto_casa ? <span className="text-slate-400"> → estoque: {i.produto_casa}</span> : <span className="text-slate-400"> → sem entrada no estoque</span>)}
                           </div>
                         ))}
                         {p.observacao && <div className="mt-1 italic">{p.observacao}</div>}
+                        {p.recebido_em && (
+                          <div className="mt-1 text-emerald-700">Conferido por {p.recebido_por ?? '—'} em {dataBr(p.recebido_em.slice(0, 10))}</div>
+                        )}
                       </td>
                     </tr>
                   )}

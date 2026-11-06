@@ -6,8 +6,8 @@
 //  - baixa o estoque da Lelis (revenda_movimento SAIDA_PEDIDO);
 //  - lança o a receber da Lelis (revenda_receber, comprador = a casa);
 //  - lança a conta a pagar NA CASA (origem LELIS, fornecedor Lelis);
-//  - dá ENTRADA no estoque da casa (movimento_estoque ENTRADA_COMPRA + custo
-//    médio) no produto da casa vinculado ao da Lelis (revenda_produto_casa).
+//  - NÃO mexe no estoque da casa: a casa confere o que chegou e dá entrada
+//    (receberPedidoLelis, tela /movimento/lelis/[id]/receber).
 // Cancelar devolve o estoque, cancela o a receber e apaga a conta da casa
 // (só se a casa ainda não pagou).
 
@@ -57,8 +57,6 @@ export interface ItemPedido {
   produtoId: string;
   quantidade: number;
   precoUnit: number;
-  /** Produto da casa que recebe a entrada. null = não dá entrada nesse item. */
-  produtoCasaId?: string | null;
 }
 
 export async function criarPedidoLelis(opts: {
@@ -94,17 +92,6 @@ export async function criarPedidoLelis(opts: {
         throw new RecusaPedido(`${p.descricao}: só tem ${p.saldo} no estoque, pedido de ${it.quantidade}`);
       }
     }
-    const idsCasa = [...new Set(itens.map((i) => i.produtoCasaId).filter((x): x is string => !!x))];
-    const nomeCasa = new Map<string, string>();
-    if (idsCasa.length) {
-      const pc = linhas<{ id: string; nome: string }>(
-        await tx.execute(sql`
-          SELECT id, nome FROM produto
-           WHERE filial_id = ${opts.destinoId}::uuid AND id IN (${sql.join(idsCasa.map((i) => sql`${i}::uuid`), sql`, `)})`),
-      );
-      for (const p of pc) nomeCasa.set(p.id, p.nome);
-      if (pc.length !== idsCasa.length) throw new RecusaPedido(`produto escolhido não é do estoque de ${casa}`);
-    }
     const total = r2(itens.reduce((s, i) => s + r2(i.quantidade * i.precoUnit), 0));
 
     const [ped] = linhas<{ id: string; numero: number }>(
@@ -117,42 +104,13 @@ export async function criarPedidoLelis(opts: {
     if (!ped) throw new Error('falha ao gravar o pedido');
     const rotulo = `Pedido Lelis nº ${ped.numero} (sem nota)`;
 
-    const agora = new Date();
     for (const it of itens) {
       const p = porId.get(it.produtoId)!;
-      // Entrada no estoque da casa, ao preço do pedido (vira o custo médio lá).
-      let movCasaId: string | null = null;
-      if (it.produtoCasaId) {
-        const valor = r2(it.quantidade * it.precoUnit);
-        const [mov] = await tx
-          .insert(schema.movimentoEstoque)
-          .values({
-            filialId: opts.destinoId,
-            produtoId: it.produtoCasaId,
-            tipo: 'ENTRADA_COMPRA',
-            quantidade: it.quantidade.toFixed(4),
-            precoUnitario: it.precoUnit.toFixed(6),
-            valorTotal: valor.toFixed(2),
-            dataHora: agora,
-            observacao: `${rotulo} — ${p.descricao}`,
-            criadoPor: opts.userId,
-          })
-          .returning({ id: schema.movimentoEstoque.id });
-        await aplicarMpmEntrada({ produtoId: it.produtoCasaId, qtdEntrada: it.quantidade, custoEntrada: it.precoUnit, exec: tx });
-        movCasaId = mov?.id ?? null;
-        await tx.execute(sql`
-          INSERT INTO revenda_produto_casa (revenda_produto_id, casa_filial_id, produto_id, atualizado_em, atualizado_por)
-          VALUES (${p.id}::uuid, ${opts.destinoId}::uuid, ${it.produtoCasaId}::uuid, now(), ${opts.email})
-          ON CONFLICT (revenda_produto_id, casa_filial_id)
-          DO UPDATE SET produto_id = excluded.produto_id, atualizado_em = now(), atualizado_por = excluded.atualizado_por`);
-      }
       await tx.execute(sql`
-        INSERT INTO revenda_pedido_item (pedido_id, revenda_produto_id, descricao, quantidade, preco_unit, custo_unit, total,
-                                         produto_casa_id, movimento_casa_id)
+        INSERT INTO revenda_pedido_item (pedido_id, revenda_produto_id, descricao, quantidade, preco_unit, custo_unit, total)
         VALUES (${ped.id}::uuid, ${p.id}::uuid, ${p.descricao}, ${String(it.quantidade)}::numeric,
                 ${it.precoUnit.toFixed(4)}::numeric, ${p.custo.toFixed(4)}::numeric,
-                ${r2(it.quantidade * it.precoUnit).toFixed(2)}::numeric,
-                ${it.produtoCasaId ?? null}::uuid, ${movCasaId}::uuid)`);
+                ${r2(it.quantidade * it.precoUnit).toFixed(2)}::numeric)`);
       await tx.execute(sql`
         INSERT INTO revenda_movimento (filial_id, revenda_produto_id, tipo, quantidade, custo_unit, revenda_pedido_id, observacao, criado_por)
         VALUES (${opts.lelisId}::uuid, ${p.id}::uuid, 'SAIDA_PEDIDO', ${String(-it.quantidade)}::numeric,
@@ -209,15 +167,17 @@ export async function cancelarPedidoLelis(opts: { lelisId: string; pedidoId: str
 
     await tx.execute(sql`
       INSERT INTO revenda_movimento (filial_id, revenda_produto_id, tipo, quantidade, custo_unit, revenda_pedido_id, observacao, criado_por)
-      SELECT filial_id, revenda_produto_id, 'ESTORNO_PEDIDO', -quantidade, custo_unit, revenda_pedido_id,
-             'Cancelamento: ' || coalesce(observacao, 'pedido'), ${opts.email}
+      SELECT filial_id, revenda_produto_id, 'ESTORNO_PEDIDO', -sum(quantidade), max(custo_unit), revenda_pedido_id,
+             'Cancelamento: Pedido Lelis nº ' || ${ped.numero} || ' (sem nota)', ${opts.email}
         FROM revenda_movimento
-       WHERE revenda_pedido_id = ${ped.id}::uuid AND tipo = 'SAIDA_PEDIDO'
-      ON CONFLICT DO NOTHING`);
+       WHERE revenda_pedido_id = ${ped.id}::uuid AND tipo IN ('SAIDA_PEDIDO', 'ESTORNO_PEDIDO')
+       GROUP BY filial_id, revenda_produto_id, revenda_pedido_id
+      HAVING sum(quantidade) <> 0`);
+    // (falta da conferência já voltou como ESTORNO_PEDIDO: soma tudo pra não devolver em dobro)
     // Tira da casa o que entrou no estoque dela (mesmo custo da entrada).
     const entradas = linhas<{ id: string; produto_casa_id: string; quantidade: number; preco_unit: number; descricao: string; destino: string }>(
       await tx.execute(sql`
-        SELECT i.id, i.produto_casa_id, i.quantidade::float AS quantidade, i.preco_unit::float AS preco_unit, i.descricao,
+        SELECT i.id, i.produto_casa_id, coalesce(i.quantidade_recebida, i.quantidade)::float AS quantidade, i.preco_unit::float AS preco_unit, i.descricao,
                p.destino_filial_id AS destino
           FROM revenda_pedido_item i JOIN revenda_pedido p ON p.id = i.pedido_id
          WHERE i.pedido_id = ${ped.id}::uuid AND i.movimento_casa_id IS NOT NULL AND i.produto_casa_id IS NOT NULL`),
@@ -251,10 +211,12 @@ export async function listarPedidosLelis(lelisId: string) {
   const peds = linhas<{
     id: string; numero: number; destino_filial_id: string; status: string; total: number; vencimento: string;
     observacao: string | null; criado_em: string; criado_por: string | null; casa_pagou: boolean | null; lelis_recebeu: boolean | null;
+    recebido_em: string | null; recebido_por: string | null;
   }>(
     await db.execute(sql`
       SELECT p.id, p.numero, p.destino_filial_id, p.status, p.total::float AS total, p.vencimento::text AS vencimento,
              p.observacao, p.criado_em::text AS criado_em, p.criado_por,
+             (p.recebido_em AT TIME ZONE 'America/Sao_Paulo')::text AS recebido_em, p.recebido_por,
              (c.data_pagamento IS NOT NULL) AS casa_pagou,
              (SELECT bool_or(r.recebido_em IS NOT NULL) FROM revenda_receber r WHERE r.revenda_pedido_id = p.id) AS lelis_recebeu
         FROM revenda_pedido p
@@ -264,10 +226,10 @@ export async function listarPedidosLelis(lelisId: string) {
        LIMIT 100`),
   );
   const itens = peds.length
-    ? linhas<{ pedido_id: string; descricao: string; quantidade: number; preco_unit: number; total: number; produto_casa: string | null }>(
+    ? linhas<{ pedido_id: string; descricao: string; quantidade: number; preco_unit: number; total: number; produto_casa: string | null; quantidade_recebida: number | null }>(
         await db.execute(sql`
           SELECT i.pedido_id, i.descricao, i.quantidade::float AS quantidade, i.preco_unit::float AS preco_unit, i.total::float AS total,
-                 pc.nome AS produto_casa
+                 pc.nome AS produto_casa, i.quantidade_recebida::float AS quantidade_recebida
             FROM revenda_pedido_item i
             LEFT JOIN produto pc ON pc.id = i.produto_casa_id
            WHERE i.pedido_id IN (${sql.join(peds.map((p) => sql`${p.id}::uuid`), sql`, `)})
@@ -399,4 +361,174 @@ export async function sugerirProdutosCasa(opts: { lelisId: string; casaId: strin
     if (melhor && melhor.nota >= 0.6) sugestoes[r.id] = { produtoId: melhor.id, fonte: 'nome parecido — confira' };
   }
   return { produtos: produtos.map(({ controla: _c, ...p }) => p), sugestoes };
+}
+
+
+// ---------------------------------------------------------------------------
+// Conferência na casa: cada item diz o que chegou e em qual produto da casa
+// entra. Entrada = ENTRADA_COMPRA ao preço do pedido (custo médio). Falta volta
+// pro estoque da Lelis e abate o valor do pedido (a receber e conta a pagar).
+
+export interface ItemConferencia {
+  itemId: string;
+  quantidadeRecebida: number;
+  /** null = chegou mas não controla estoque na casa (não dá entrada) */
+  produtoCasaId: string | null;
+}
+
+export async function receberPedidoLelis(opts: {
+  pedidoId: string;
+  casaId: string;
+  itens: ItemConferencia[];
+  observacao?: string | null;
+  userId: string;
+  email: string;
+}): Promise<{ numero: number; total: number; faltas: number }> {
+  return db.transaction(async (tx) => {
+    const [ped] = linhas<{ id: string; numero: number; status: string; destino: string; recebido_em: string | null; conta_pagar_id: string | null; total: number; filial_id: string }>(
+      await tx.execute(sql`
+        SELECT id, numero, status, destino_filial_id AS destino, recebido_em::text, conta_pagar_id, total::float AS total, filial_id
+          FROM revenda_pedido WHERE id = ${opts.pedidoId}::uuid FOR UPDATE`),
+    );
+    if (!ped || ped.destino !== opts.casaId) throw new RecusaPedido('pedido não encontrado nesta casa');
+    if (ped.status === 'CANCELADO') throw new RecusaPedido('pedido cancelado pela Lelis');
+    if (ped.recebido_em) throw new RecusaPedido('esse pedido já foi conferido');
+
+    const itens = linhas<{ id: string; revenda_produto_id: string; descricao: string; quantidade: number; preco_unit: number; custo_unit: number }>(
+      await tx.execute(sql`
+        SELECT id, revenda_produto_id, descricao, quantidade::float AS quantidade, preco_unit::float AS preco_unit, custo_unit::float AS custo_unit
+          FROM revenda_pedido_item WHERE pedido_id = ${ped.id}::uuid`),
+    );
+    const inf = new Map(opts.itens.map((i) => [i.itemId, i]));
+    if (opts.itens.some((i) => !itens.some((x) => x.id === i.itemId))) throw new RecusaPedido('item não é desse pedido');
+
+    const idsCasa = [...new Set(opts.itens.map((i) => i.produtoCasaId).filter((x): x is string => !!x))];
+    if (idsCasa.length) {
+      const pc = linhas<{ id: string }>(
+        await tx.execute(sql`
+          SELECT id FROM produto WHERE filial_id = ${opts.casaId}::uuid
+             AND id IN (${sql.join(idsCasa.map((i) => sql`${i}::uuid`), sql`, `)}) FOR UPDATE`),
+      );
+      if (pc.length !== idsCasa.length) throw new RecusaPedido('produto escolhido não é do estoque desta casa');
+    }
+
+    if (itens.every((it) => (inf.get(it.id)?.quantidadeRecebida ?? it.quantidade) <= 0)) {
+      throw new RecusaPedido('nada chegou — peça pra Lelis cancelar o pedido');
+    }
+    const agora = new Date();
+    const rotulo = `Pedido Lelis nº ${ped.numero} (sem nota)`;
+    let novoTotal = 0;
+    let faltas = 0;
+    for (const it of itens) {
+      const c = inf.get(it.id);
+      const qr = c ? c.quantidadeRecebida : it.quantidade;
+      if (!(qr >= 0) || qr > it.quantidade + 1e-9) {
+        throw new RecusaPedido(`"${it.descricao}": recebido tem que ficar entre 0 e ${it.quantidade}`);
+      }
+      const prodCasa = c ? c.produtoCasaId : null;
+      if (qr > 0 && !c) throw new RecusaPedido(`"${it.descricao}": escolha o produto da casa`);
+      novoTotal += r2(qr * it.preco_unit);
+      let movId: string | null = null;
+      if (qr > 0 && prodCasa) {
+        const [mov] = await tx
+          .insert(schema.movimentoEstoque)
+          .values({
+            filialId: opts.casaId,
+            produtoId: prodCasa,
+            tipo: 'ENTRADA_COMPRA',
+            quantidade: qr.toFixed(4),
+            precoUnitario: it.preco_unit.toFixed(6),
+            valorTotal: r2(qr * it.preco_unit).toFixed(2),
+            dataHora: agora,
+            observacao: `${rotulo} — ${it.descricao} — conferido no recebimento`,
+            criadoPor: opts.userId,
+          })
+          .returning({ id: schema.movimentoEstoque.id });
+        await aplicarMpmEntrada({ produtoId: prodCasa, qtdEntrada: qr, custoEntrada: it.preco_unit, exec: tx });
+        movId = mov?.id ?? null;
+        await tx.execute(sql`
+          INSERT INTO revenda_produto_casa (revenda_produto_id, casa_filial_id, produto_id, atualizado_em, atualizado_por)
+          VALUES (${it.revenda_produto_id}::uuid, ${opts.casaId}::uuid, ${prodCasa}::uuid, now(), ${opts.email})
+          ON CONFLICT (revenda_produto_id, casa_filial_id)
+          DO UPDATE SET produto_id = excluded.produto_id, atualizado_em = now(), atualizado_por = excluded.atualizado_por`);
+      }
+      const falta = Math.round((it.quantidade - qr) * 10000) / 10000;
+      if (falta > 0) {
+        faltas++;
+        // não chegou: volta pro estoque da Lelis
+        await tx.execute(sql`
+          INSERT INTO revenda_movimento (filial_id, revenda_produto_id, tipo, quantidade, custo_unit, revenda_pedido_id, observacao, criado_por)
+          VALUES (${ped.filial_id}::uuid, ${it.revenda_produto_id}::uuid, 'ESTORNO_PEDIDO', ${String(falta)}::numeric,
+                  ${it.custo_unit.toFixed(4)}::numeric, ${ped.id}::uuid,
+                  ${`${rotulo}: faltou no recebimento (enviado ${it.quantidade}, chegou ${qr})`}, ${opts.email})`);
+      }
+      await tx.execute(sql`
+        UPDATE revenda_pedido_item
+           SET quantidade_recebida = ${qr.toFixed(4)}::numeric, produto_casa_id = ${prodCasa}::uuid, movimento_casa_id = ${movId}::uuid
+         WHERE id = ${it.id}::uuid`);
+    }
+    novoTotal = r2(novoTotal);
+
+    if (Math.abs(novoTotal - ped.total) > 0.004) {
+      // faltou item: abate o valor dos dois lados (só se ninguém pagou ainda)
+      if (ped.conta_pagar_id) {
+        const [cp] = linhas<{ pago: boolean }>(
+          await tx.execute(sql`
+            SELECT (c.data_pagamento IS NOT NULL OR EXISTS (SELECT 1 FROM conta_pagar_baixa b WHERE b.conta_pagar_id = c.id)) AS pago
+              FROM conta_pagar c WHERE c.id = ${ped.conta_pagar_id}::uuid`),
+        );
+        if (cp?.pago) throw new RecusaPedido('a conta desse pedido já foi paga — fale com a Lelis pra acertar a falta');
+        await tx.execute(sql`UPDATE conta_pagar SET valor = ${novoTotal.toFixed(2)}::numeric WHERE id = ${ped.conta_pagar_id}::uuid`);
+      }
+      const [rec] = linhas<{ recebido: boolean }>(
+        await tx.execute(sql`SELECT bool_or(recebido_em IS NOT NULL) AS recebido FROM revenda_receber WHERE revenda_pedido_id = ${ped.id}::uuid`),
+      );
+      if (rec?.recebido) throw new RecusaPedido('a Lelis já deu esse pedido como recebido — fale com a Lelis pra acertar a falta');
+      await tx.execute(sql`UPDATE revenda_receber SET valor = ${novoTotal.toFixed(2)}::numeric WHERE revenda_pedido_id = ${ped.id}::uuid AND NOT cancelado`);
+    }
+    await tx.execute(sql`
+      UPDATE revenda_pedido
+         SET recebido_em = now(), recebido_por = ${opts.email}, observacao_recebimento = ${opts.observacao?.trim() || null},
+             total = ${novoTotal.toFixed(2)}::numeric
+       WHERE id = ${ped.id}::uuid`);
+    return { numero: ped.numero, total: novoTotal, faltas };
+  });
+}
+
+/** Pedidos da Lelis pra esta casa que ainda não foram conferidos. */
+export async function pedidosLelisAConferir(casaId: string) {
+  const peds = linhas<{ id: string; numero: number; total: number; criado: string; observacao: string | null }>(
+    await db.execute(sql`
+      SELECT id, numero, total::float AS total, (criado_em AT TIME ZONE 'America/Sao_Paulo')::date::text AS criado, observacao
+        FROM revenda_pedido
+       WHERE destino_filial_id = ${casaId}::uuid AND status <> 'CANCELADO' AND recebido_em IS NULL
+       ORDER BY numero`),
+  );
+  if (!peds.length) return [];
+  const its = linhas<{ pedido_id: string; descricao: string; quantidade: number }>(
+    await db.execute(sql`
+      SELECT pedido_id, descricao, quantidade::float AS quantidade FROM revenda_pedido_item
+       WHERE pedido_id IN (${sql.join(peds.map((p) => sql`${p.id}::uuid`), sql`, `)}) ORDER BY descricao`),
+  );
+  return peds.map((p) => ({ ...p, itens: its.filter((i) => i.pedido_id === p.id) }));
+}
+
+/** Pedido + itens pra tela de conferência (com sugestão de produto da casa). */
+export async function pedidoLelisParaConferir(pedidoId: string, casaId: string) {
+  const [ped] = linhas<{ id: string; numero: number; total: number; criado: string; observacao: string | null; status: string; recebido_em: string | null; filial_id: string; vencimento: string }>(
+    await db.execute(sql`
+      SELECT id, numero, total::float AS total, (criado_em AT TIME ZONE 'America/Sao_Paulo')::date::text AS criado, observacao,
+             status, recebido_em::text, filial_id, vencimento::text
+        FROM revenda_pedido WHERE id = ${pedidoId}::uuid AND destino_filial_id = ${casaId}::uuid`),
+  );
+  if (!ped) return null;
+  const itens = linhas<{ id: string; revenda_produto_id: string; descricao: string; quantidade: number; preco_unit: number; quantidade_recebida: number | null; produto_casa: string | null }>(
+    await db.execute(sql`
+      SELECT i.id, i.revenda_produto_id, i.descricao, i.quantidade::float AS quantidade, i.preco_unit::float AS preco_unit,
+             i.quantidade_recebida::float AS quantidade_recebida, pc.nome AS produto_casa
+        FROM revenda_pedido_item i LEFT JOIN produto pc ON pc.id = i.produto_casa_id
+       WHERE i.pedido_id = ${ped.id}::uuid ORDER BY i.descricao`),
+  );
+  const sug = await sugerirProdutosCasa({ lelisId: ped.filial_id, casaId, revIds: [...new Set(itens.map((i) => i.revenda_produto_id))] });
+  return { pedido: ped, itens, produtos: sug.produtos, sugestoes: sug.sugestoes };
 }

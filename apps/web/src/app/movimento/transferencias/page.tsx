@@ -15,6 +15,7 @@ import { compLabel } from '@/lib/transferencia';
 import { CancelarTransfButton } from './cancelar-btn';
 import { nfesDasTransferencias } from '@/lib/nfe/emitir';
 import { EmitirNfeButton } from './nfe-btn';
+import { pedidosLelisAConferir } from '@/lib/lelis/pedido';
 
 export const dynamic = 'force-dynamic';
 
@@ -82,6 +83,7 @@ export default async function TransferenciasPage(props: {
     )
     .orderBy(desc(schema.transferenciaFilial.data), desc(schema.transferenciaFilial.numero));
   const aConferir = emTransito.filter((t) => t.filialDestinoId === filial.id);
+  const lelisAConferir = await pedidosLelisAConferir(filial.id);
   const aCaminho = emTransito.filter((t) => t.filialOrigemId === filial.id);
 
   const idsItens = [...new Set([...lista, ...emTransito].map((t) => t.id))];
@@ -204,6 +206,38 @@ export default async function TransferenciasPage(props: {
                   </li>
                 );
               })}
+            </ul>
+          </div>
+        )}
+
+        {lelisAConferir.length > 0 && (
+          <div className="mt-4 rounded-xl border border-violet-300 bg-violet-50 p-4">
+            <p className="text-sm font-semibold text-violet-900">
+              🍷 Pedidos da Lelis pra {filial.nome} — {lelisAConferir.length} a conferir
+            </p>
+            <p className="text-xs text-violet-800">
+              Mercadoria sem nota da Lelis. Confira o que chegou e escolha em qual produto daqui cada item entra: só aí entra no estoque.
+            </p>
+            <ul className="mt-3 space-y-2">
+              {lelisAConferir.map((p) => (
+                <li key={p.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-violet-200 bg-white px-3 py-2">
+                  <div className="text-sm">
+                    <span className="font-mono text-xs text-slate-500">nº {p.numero}</span>{' '}
+                    <span className="font-medium text-slate-800">Lelis Distribuidora</span>{' '}
+                    <span className="text-slate-500">· enviado em {dataBr(p.criado)} · {p.itens.length} item(ns) · {brl(p.total)}</span>
+                    <div className="text-xs text-slate-500">
+                      {p.itens.slice(0, 3).map((i) => `${i.quantidade.toLocaleString('pt-BR', { maximumFractionDigits: 3 })} × ${i.descricao}`).join(' · ')}
+                      {p.itens.length > 3 ? ` · +${p.itens.length - 3}` : ''}
+                    </div>
+                  </div>
+                  <Link
+                    href={`/movimento/lelis/${p.id}/receber`}
+                    className="rounded-md bg-violet-700 px-3 py-2 text-sm font-medium text-white hover:bg-violet-800"
+                  >
+                    Conferir e dar entrada
+                  </Link>
+                </li>
+              ))}
             </ul>
           </div>
         )}
