@@ -174,6 +174,15 @@ export default async function FuncionariosPage(props: { searchParams: Promise<SP
     })
     .map((f) => f.cpf as string);
   const contasOutraCasa = await contasPorCpf(cpfsSemConta, filialId);
+  // Conta corrente do Inter que paga a FOLHA (a dos 10% é a de cima).
+  const cpfsInter = [...new Set(funcionarios.map((f) => f.cpf).filter((c): c is string => !!c))];
+  const contasInter = cpfsInter.length
+    ? await db
+        .select({ cpf: schema.contaInterFolha.cpf, conta: schema.contaInterFolha.conta })
+        .from(schema.contaInterFolha)
+        .where(and(eq(schema.contaInterFolha.empresa, 'EB'), inArray(schema.contaInterFolha.cpf, cpfsInter)))
+    : [];
+  const contaInterPorCpf = new Map(contasInter.map((c) => [c.cpf, c.conta]));
 
   // Resumo do acordo nas OUTRAS lojas (só leitura — pra ver de relance que a
   // pessoa é gerente fixo lá e diarista aqui, por exemplo).
@@ -332,6 +341,7 @@ export default async function FuncionariosPage(props: { searchParams: Promise<SP
               naoMarcadoAqui:
                 f.filialId !== filialId && !(extrasPorFuncionario.get(f.id) ?? []).includes(filialId),
               contaOutraCasa: f.cpf ? contasOutraCasa.get(f.cpf) ?? null : null,
+              contaInterFolha: f.cpf ? contaInterPorCpf.get(f.cpf) ?? null : null,
             };
           })}
           cargos={[...FUNCOES_TALENTO]}

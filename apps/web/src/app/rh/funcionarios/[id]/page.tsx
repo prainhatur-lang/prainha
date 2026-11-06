@@ -337,6 +337,14 @@ export default async function FichaFuncionarioPage(props: { params: Promise<{ id
   const acordos = fornecedores.filter((x) => x.papel);
   const pix = fornecedores.find((x) => x.chavePix) ?? null;
   const banco = fornecedores.find((x) => x.bancoNome || x.bancoConta) ?? null;
+  // Conta do Inter que paga a FOLHA (PIX/banco acima = conta dos 10%).
+  const [contaInter] = f.cpf
+    ? await db
+        .select({ conta: schema.contaInterFolha.conta })
+        .from(schema.contaInterFolha)
+        .where(and(eq(schema.contaInterFolha.empresa, 'EB'), eq(schema.contaInterFolha.cpf, f.cpf)))
+        .limit(1)
+    : [];
 
   // Folhas FECHADAS: o retrato do que foi fechado são as contas geradas no
   // fechamento (folha aberta ainda não tem conta; cancelada não conta).
@@ -802,6 +810,11 @@ export default async function FichaFuncionarioPage(props: { params: Promise<{ id
               {banco && <>{[banco.bancoNome, banco.bancoAgencia && `ag. ${banco.bancoAgencia}`, banco.bancoConta && `conta ${banco.bancoConta}`].filter(Boolean).join(' ')}</>}
             </p>
           )}
+          <p className="mt-1 text-xs text-slate-500">
+            {(pix || banco) && <>↑ conta dos 10% · </>}
+            Conta da folha (Inter):{' '}
+            {contaInter ? <span className="font-mono text-slate-700">{contaInter.conta}</span> : <span className="text-amber-700">não cadastrada</span>}
+          </p>
 
           {veFolha && semanas.length > 0 && (
             <>

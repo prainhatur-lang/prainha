@@ -79,6 +79,8 @@ interface Funcionario {
     bancoConta: string | null;
     filialNome: string;
   } | null;
+  /** Conta corrente do Inter que paga a FOLHA (a de cima paga os 10%). */
+  contaInterFolha?: string | null;
 }
 
 interface Props {
@@ -548,6 +550,8 @@ function FuncionarioForm({
   const [formaPagamento, setFormaPagamento] = useState<'pix' | 'banco'>(
     contaIni?.bancoNome || contaIni?.bancoConta ? 'banco' : 'pix',
   );
+  const contaInterIni = funcionario?.contaInterFolha ?? '';
+  const [contaInter, setContaInter] = useState(contaInterIni);
   const [desligando, setDesligando] = useState(false);
   const [motivoDesligamento, setMotivoDesligamento] = useState('');
   const [salvando, setSalvando] = useState(false);
@@ -658,6 +662,22 @@ function FuncionarioForm({
           if (!rp.ok) {
             const jp = await rp.json().catch(() => ({}));
             onError(`Cadastro salvo, mas o pagamento falhou: ${jp.error ?? rp.status}`);
+            return;
+          }
+        }
+      }
+      // Conta do Inter (folha): grava à parte, só quando mudou.
+      if (contaInter.trim() !== contaInterIni) {
+        const idFunc = editar ? funcionario.id : json.funcionario?.id;
+        if (idFunc) {
+          const ri = await fetch(`/api/rh/funcionario/${idFunc}/conta-inter`, {
+            method: 'PUT',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ conta: contaInter.trim() || null }),
+          });
+          if (!ri.ok) {
+            const ji = await ri.json().catch(() => ({}));
+            onError(`Cadastro salvo, mas a conta do Inter falhou: ${ji.error ?? ri.status}`);
             return;
           }
         }
@@ -1124,6 +1144,21 @@ function FuncionarioForm({
               )}
             </>
           )}
+        </div>
+        <div className="mt-3 grid gap-2 rounded-md border border-orange-200 bg-orange-50 p-2 sm:grid-cols-3">
+          <p className="text-[11px] text-orange-800 sm:col-span-3">
+            Duas contas: a de cima (PIX/depósito) paga os <b>10%</b> pela Caixa; esta paga a <b>folha</b> pelo
+            arquivo do Inter. Só conta Inter no CPF da própria pessoa.
+          </p>
+          <label className="text-xs text-slate-500">
+            Conta corrente da folha (Inter)
+            <input
+              value={contaInter}
+              onChange={(e) => setContaInter(e.target.value)}
+              placeholder="12345678-9"
+              className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm font-mono"
+            />
+          </label>
         </div>
         <label className="mt-3 flex items-start gap-2 rounded-md border border-slate-200 bg-white p-2 text-xs text-slate-700">
           <input
