@@ -38,6 +38,7 @@ export * from './rh-escala';
 export * from './vale-transporte';
 export * from './folha-contador';
 export * from './extrato-empresa';
+export * from './conta-inter-folha';
 export * from './escuta';
 export * from './vendedor';
 export * from './kids';

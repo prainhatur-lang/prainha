@@ -9,12 +9,13 @@
 // tipo "CAIXA( FULANO )" ou "titular: FULANO", ou favorecido do Pix com outro
 // nome) vai pra aba "Não pagar", fora do total. Sem conta ou sem CPF também.
 //
-// Por que não é o modelo "Folha de pagamento" do Inter: aquele arquivo só
-// credita conta do próprio Inter (só tem a coluna "Conta Corrente"), e a
-// equipe recebe na Caixa.
+// Arquivo "Folha de pagamento" do Inter (linhasArquivoInter, abaixo): só
+// credita conta do próprio Inter. A E.B. já paga assim desde maio/2026 (lote
+// mensal no extrato): cada pessoa tem conta Inter no próprio CPF, guardada em
+// conta_inter_folha. Quem não tem conta lá fica de fora do arquivo.
 
 import { db, schema } from '@concilia/db';
-import { inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { folhaEbDaCasa } from '@/lib/rh/folha-contador-pagamentos';
 
 export interface LinhaPagamentoFolha {
@@ -104,4 +105,46 @@ export async function linhasPagamentoFolha(casaIds: string[], comp: string): Pro
     }
   }
   return out;
+}
+
+export interface LinhaArquivoInter {
+  casaId: string;
+  nome: string;
+  cpf: string;
+  /** Conta Inter do cadastro (conta_inter_folha); null = não tem. */
+  conta: string | null;
+  /** Nome como está no Inter. */
+  nomeInter: string | null;
+  valor: number;
+}
+
+/**
+ * Quem entra no arquivo de folha do Inter: a mesma gente da planilha
+ * (linhasPagamentoFolha), casada pelo CPF com a conta Inter da empresa.
+ * A trava "conta de outra pessoa" da planilha não vale aqui: a conta Inter é
+ * aberta no CPF da própria pessoa.
+ */
+export async function linhasArquivoInter(
+  casaIds: string[],
+  comp: string,
+  empresa = 'EB',
+): Promise<{ pagar: LinhaArquivoInter[]; semConta: LinhaArquivoInter[] }> {
+  const base = await linhasPagamentoFolha(casaIds, comp);
+  const cpfs = [...new Set(base.map((l) => l.cpf).filter((c) => c.length === 11))];
+  const contas = cpfs.length
+    ? await db
+        .select()
+        .from(schema.contaInterFolha)
+        .where(and(eq(schema.contaInterFolha.empresa, empresa), inArray(schema.contaInterFolha.cpf, cpfs)))
+    : [];
+  const porCpf = new Map(contas.map((c) => [c.cpf, c]));
+  const pagar: LinhaArquivoInter[] = [];
+  const semConta: LinhaArquivoInter[] = [];
+  for (const l of base) {
+    if (l.valor <= 0) continue;
+    const c = porCpf.get(l.cpf);
+    const linha = { casaId: l.casaId, nome: l.nome, cpf: l.cpf, conta: c?.conta ?? null, nomeInter: c?.nome ?? null, valor: l.valor };
+    (c ? pagar : semConta).push(linha);
+  }
+  return { pagar, semConta };
 }

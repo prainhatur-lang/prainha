@@ -274,6 +274,7 @@
     "migrate:saas-interessado": "tsx scripts/migrate-saas-interessado.ts",
     "migrate:saas-conta": "tsx scripts/migrate-saas-conta.ts",
     "migrate:diarista-ate": "tsx scripts/migrate-diarista-ate.ts",
+    "migrate:conta-inter-folha": "tsx scripts/migrate-conta-inter-folha.ts",
     "instancia:clientes-schema": "tsx scripts/instancia-clientes-schema.ts"
   },
   "dependencies": {

@@ -22,6 +22,8 @@ import {
   type SituacaoPagamento,
 } from '@/lib/extrato-empresa';
 import { BuscarExtrato } from './buscar-extrato';
+import { linhasArquivoInter } from '@/lib/rh/arquivo-pagamento-folha';
+import { hojeBr } from '@/lib/datas';
 import { rateioFolhaPelasHoras } from '@/lib/eb/rateio-horas';
 
 export const dynamic = 'force-dynamic';
@@ -102,6 +104,9 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
   const porCasa = conf?.porCasa ?? [];
   const nomeDaLinha = new Map(linhas.map((l) => [l.folhaId, l.nome]));
   const repassado = porCasa.reduce((t, c) => t + (c.repasse?.valor ?? 0), 0);
+  // Arquivo da folha no Inter: quem entra e quem fica de fora (sem conta Inter).
+  const inter = comp ? await linhasArquivoInter(filialIds, comp) : null;
+  const totalInter = inter ? inter.pagar.reduce((t, l) => t + l.valor, 0) : 0;
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -133,6 +138,41 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
                 Uma aba por casa com conta e líquido; quem tem conta em nome de outra pessoa vai pra aba “Não pagar”.
               </span>
             </p>
+          )}
+          {comp && inter && (
+            <div className="mt-3 rounded-lg border border-orange-200 bg-orange-50 p-3 text-sm">
+              <form action="/api/rh/folha-pagamento-inter" method="get" className="flex flex-wrap items-end gap-2">
+                <input type="hidden" name="comp" value={comp} />
+                <label className="text-xs text-slate-600">
+                  Data do débito
+                  <input type="date" name="data" defaultValue={hojeBr()} min={hojeBr()} className="mt-0.5 block rounded border border-slate-300 px-2 py-1 text-sm" />
+                </label>
+                <label className="text-xs text-slate-600">
+                  Conta Inter da E.B. (opcional)
+                  <input name="conta" placeholder="00000000-0" className="mt-0.5 block w-36 rounded border border-slate-300 px-2 py-1 text-sm" />
+                </label>
+                <button className="rounded-lg border border-orange-300 bg-white px-3 py-1.5 text-sm font-medium text-orange-800 hover:bg-orange-100">
+                  🟠 Arquivo do Inter (folha de pagamento) — {inter.pagar.length} pessoas, {brl(totalInter)}
+                </button>
+              </form>
+              <p className="mt-1 text-xs text-slate-600">
+                Modelo “Folha de pagamento” do Inter, todas as casas num lote só, como a E.B. já paga. Só entra quem tem conta Inter no próprio CPF.
+              </p>
+              {inter.semConta.length > 0 && (
+                <div className="mt-2 text-xs text-slate-700">
+                  <p className="font-medium text-orange-900">
+                    Sem conta Inter — pagar à parte ({inter.semConta.length}, {brl(inter.semConta.reduce((t, l) => t + l.valor, 0))}):
+                  </p>
+                  <ul className="mt-1 grid gap-x-4 sm:grid-cols-2">
+                    {inter.semConta.map((l) => (
+                      <li key={`${l.casaId}-${l.cpf}-${l.nome}`}>
+                        {l.nome} <span className="text-slate-500">· {nomeFilial.get(l.casaId) ?? ''} · {brl(l.valor)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
           )}
         </div>
 
