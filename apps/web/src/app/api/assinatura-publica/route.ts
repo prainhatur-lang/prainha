@@ -15,6 +15,7 @@ import { distanciaFacial } from '@/lib/rh/ponto-celular';
 import { ehDocHtml, responderDocHtml } from '@/lib/rh/documento-html';
 import { TIPOS_DOC_RESCISAO } from '@/lib/rh/rescisao';
 import { lancarContaRescisao } from '@/lib/rh/rescisao-lancar';
+import { hojeBr } from '@/lib/datas';
 import {
   caminhoRubricaAssinatura,
   caminhoSelfieAssinatura,
@@ -242,7 +243,8 @@ export async function POST(req: Request) {
           dataDesligamento: p.dataDesligamento,
           dados: p.dados,
         },
-        { valor: Math.round(ds.liquido * 100) / 100, vencimento: ds.vencimento, usuarioId: p.enviadoPor },
+        // Assinou → paga na hora (dono 06/11/2026): vence hoje, não no prazo do termo.
+        { valor: Math.round(ds.liquido * 100) / 100, vencimento: hojeBr(), usuarioId: p.enviadoPor },
       );
     } catch (e) {
       if ((e as Error).message !== 'JA_LANCADA') console.error('[assinatura] rescisão não lançou', p.documentoId, e);
