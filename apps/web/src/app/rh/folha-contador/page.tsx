@@ -159,7 +159,7 @@ export default async function FolhaContadorPage(props: { searchParams: Promise<S
         href={`/rh/folha-contador?filialId=${filial.id}&comp=${comp}&ver=contador`}
         className={`rounded-md px-3 py-1 ${ver === 'contador' ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-50'}`}
       >
-        Folha do contador
+        Comparar com o contador
       </a>
     </div>
   );

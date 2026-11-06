@@ -109,7 +109,7 @@ export default async function FaturasEbPage(props: { searchParams: Promise<{ com
       <AppHeader userEmail={user.email} />
       <div className="mx-auto max-w-5xl space-y-5 px-6 py-8">
         <div>
-          <a href="/rh/folha-contador" className="text-xs text-slate-500 hover:underline">← Folha do contador</a>
+          <a href="/rh/folha-contador" className="text-xs text-slate-500 hover:underline">← Folha de pagamento</a>
           <h1 className="mt-1 text-xl font-semibold text-slate-900">Faturas da E.B. Serviços</h1>
           <p className="mt-1 text-sm text-slate-500">
             Uma fatura de mão de obra por casa por mês: custo da folha da E.B. naquela casa (nossa folha, calculada pelo ponto) mais o

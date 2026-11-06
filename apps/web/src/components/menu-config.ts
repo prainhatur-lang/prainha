@@ -829,13 +829,15 @@ export const MENU_AREAS: MenuArea[] = [
         ],
       },
       {
-        label: 'Folha da contabilidade',
+        label: 'Folha de pagamento',
         links: [
           {
-            label: 'Folha da contabilidade',
+            // Dono 06/11/2026: "esquece o contador... suba a nossa folha".
+            // A tela abre na nossa folha; a do contador fica como comparação.
+            label: 'Folha de pagamento',
             href: '/rh/folha-contador',
             perm: 'folha_equipe.read',
-            aka: ['Folha do contador', 'contracheque', 'holerite', 'CLT'],
+            aka: ['Nossa folha', 'Folha da contabilidade', 'Folha do contador', 'contracheque', 'holerite', 'CLT'],
           },
           {
             label: 'Pagamentos da E.B. (extrato)',
