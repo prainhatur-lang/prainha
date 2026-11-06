@@ -39,7 +39,7 @@ export default async function VenderLelisPage() {
   const produtos = await db
     .select({
       p: schema.revendaProduto,
-      saldo: sql<number>`coalesce((SELECT sum(m.quantidade) FROM revenda_movimento m WHERE m.revenda_produto_id = ${schema.revendaProduto.id}), 0)::float`,
+      saldo: sql<number>`coalesce((SELECT sum(m.quantidade) FROM revenda_movimento m WHERE m.revenda_produto_id = revenda_produto.id), 0)::float`,
     })
     .from(schema.revendaProduto)
     .where(eq(schema.revendaProduto.filialId, filialId))
