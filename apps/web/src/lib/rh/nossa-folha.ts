@@ -19,6 +19,10 @@ export interface LinhaNossaFolha {
   fornecedorId: string | null;
   desligamento: string | null;
   liquido: number;
+  /** Do mesmo cálculo — base da fatura da E.B. (dono 05/11/2026: "vou pagar pela nossa folha"). */
+  proventos: number;
+  fgts: number;
+  horas: number;
 }
 
 const ultimoDiaComp = (comp: string) => {
@@ -73,6 +77,9 @@ export async function nossaFolhaDoMes(filialId: string, comp: string): Promise<L
       fornecedorId: f.fornecedorId,
       desligamento: f.dataDesligamento,
       liquido: calc.liquido,
+      proventos: calc.proventos,
+      fgts: calc.fgts,
+      horas: calc.horas,
     };
   });
 }

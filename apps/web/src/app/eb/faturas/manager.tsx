@@ -235,6 +235,15 @@ function CartaoCasa(props: {
         <div><dt className="text-xs text-slate-500">Vencimento</dt><dd>{fmtData(v.vencimento)}</dd></div>
       </dl>
 
+      {l.previsao?.fonte === 'nossa' && (
+        <p className="mt-2 text-[11px] text-slate-500">
+          Pela nossa folha (ponto + cadastro): proventos {brl(l.previsao.proventos)} · FGTS {brl(l.previsao.fgts)} · líquido{' '}
+          {brl(l.previsao.liquidoFolha)}.
+          {l.previsao.contador
+            ? ` Folha do contador dava ${brl(l.previsao.contador.valorBase)} de custo (${l.previsao.contador.empregados} empregados) — só referência.`
+            : ' Sem folha do contador importada nesse mês.'}
+        </p>
+      )}
       {f && <p className="mt-3 rounded-md bg-slate-50 p-2 text-xs text-slate-600">{f.discriminacao}</p>}
       {f?.nfseChave && (
         <p className="mt-2 text-xs text-emerald-700">

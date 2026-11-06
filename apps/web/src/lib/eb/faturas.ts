@@ -1,8 +1,9 @@
 // Faturas de mão de obra da E.B. Serviços pra cada casa (19/10/2026).
 //
-// Valor da nota = custo da folha da E.B. naquela casa (folha do contador,
-// departamento da casa) + percentual de lucro. ISS retido pela casa na
-// alíquota efetiva do Simples da E.B.; a casa paga à E.B. o serviço menos o
+// Valor da nota = custo da folha da E.B. naquela casa + percentual de lucro.
+// Desde 05/11/2026 o custo vem da NOSSA folha (preverFaturas); a do contador
+// (folha_contador_resumo, departamento da casa) fica em preverFaturasContador.
+// ISS retido pela casa na alíquota efetiva do Simples da E.B.; a casa paga à E.B. o serviço menos o
 // ISS e recolhe o ISS na guia da prefeitura do lugar da casa (Bar em São
 // Cristóvão, Tabuará e Mar em Aracaju). Horas e empregados vão de detalhe.
 //
@@ -97,6 +98,10 @@ export interface PrevisaoFatura {
   valorIss: number;
   valorLiquido: number;
   vencimento: string;
+  /** De onde veio o custo: 'nossa' = folha do sistema (padrão desde 05/11/2026). */
+  fonte?: 'nossa' | 'contador';
+  /** O que a folha do contador dava pra mesma casa (só referência). */
+  contador?: { empregados: number; proventos: number; fgts: number; liquido: number; valorBase: number } | null;
 }
 
 /** 'AAAA-MM' → vencimento no mês seguinte, no dia configurado. */
@@ -113,8 +118,8 @@ export function nomeCompetencia(comp: string): string {
   return `${m}/${a}`;
 }
 
-/** Calcula a fatura de cada casa a partir da folha do contador da E.B. */
-export async function preverFaturas(comp: string, tomadores: string[], cfg: ConfigEb): Promise<PrevisaoFatura[]> {
+/** Calcula a fatura de cada casa a partir da folha do contador da E.B. (jeito antigo, fica de referência). */
+export async function preverFaturasContador(comp: string, tomadores: string[], cfg: ConfigEb): Promise<PrevisaoFatura[]> {
   if (tomadores.length === 0) return [];
   const resumos = await db
     .select({
@@ -172,8 +177,60 @@ export async function preverFaturas(comp: string, tomadores: string[], cfg: Conf
       valorIss,
       valorLiquido: r2(valorServico - valorIss),
       vencimento: vencimentoDe(comp, cfg.diaVencimento),
+      fonte: 'contador' as const,
     };
   });
+}
+
+/**
+ * Fatura de cada casa pela NOSSA folha (dono 05/11/2026: "eu vou pagar por nossa
+ * folha, não pela do contador. Porque o contador não tem todas as informações
+ * necessárias, como a gente tem de ponto, de modificação de jornada"). Mesmo
+ * grupo do Repasse E.B. do "Lançar pagamentos da folha": cadastro na casa,
+ * registro na E.B., sem quem saiu no mês e sem diarista. Proventos, FGTS,
+ * líquido e horas vêm do cálculo do sistema; o contador vai junto em `contador`.
+ */
+export async function preverFaturas(comp: string, tomadores: string[], cfg: ConfigEb): Promise<PrevisaoFatura[]> {
+  if (tomadores.length === 0) return [];
+  // import tardio: folha-contador-pagamentos importa EB_CNPJ daqui
+  const { folhaEbDaCasa } = await import('@/lib/rh/folha-contador-pagamentos');
+  const doContador = new Map((await preverFaturasContador(comp, tomadores, cfg)).map((p) => [p.tomadorFilialId, p]));
+  const aliquota = cfg.aliquotaIss ?? 0;
+  const out: PrevisaoFatura[] = [];
+  for (const casaId of tomadores) {
+    const gente = await folhaEbDaCasa(casaId, comp);
+    const c = doContador.get(casaId) ?? null;
+    if (gente.length === 0) continue;
+    const proventos = r2(gente.reduce((t, l) => t + l.proventos, 0));
+    const fgts = r2(gente.reduce((t, l) => t + l.fgts, 0));
+    const liquidoFolha = r2(gente.reduce((t, l) => t + l.liquido, 0));
+    const valorBase = r2(cfg.base === 'proventos' ? proventos : cfg.base === 'liquido' ? liquidoFolha : proventos + fgts);
+    const valorLucro = r2((valorBase * cfg.percentualLucro) / 100);
+    const valorServico = r2(valorBase + valorLucro);
+    const valorIss = r2((valorServico * aliquota) / 100);
+    out.push({
+      tomadorFilialId: casaId,
+      departamento: c?.departamento ?? '',
+      empregados: gente.length,
+      horas: r2(gente.reduce((t, l) => t + l.horas, 0)),
+      proventos,
+      fgts,
+      liquidoFolha,
+      valorBase,
+      percentualLucro: cfg.percentualLucro,
+      valorLucro,
+      valorServico,
+      aliquotaIss: aliquota,
+      valorIss,
+      valorLiquido: r2(valorServico - valorIss),
+      vencimento: vencimentoDe(comp, cfg.diaVencimento),
+      fonte: 'nossa',
+      contador: c
+        ? { empregados: c.empregados, proventos: c.proventos, fgts: c.fgts, liquido: c.liquidoFolha, valorBase: c.valorBase }
+        : null,
+    });
+  }
+  return out;
 }
 
 /** Texto da NFS-e — só o mês (pedido do dono 19/10/2026). Horas, empregados e

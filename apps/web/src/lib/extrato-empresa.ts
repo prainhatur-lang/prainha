@@ -8,6 +8,7 @@
 import { db, schema } from '@concilia/db';
 import { and, asc, eq, gte, lte, sql } from 'drizzle-orm';
 import { buscarExtratoInter, credenciaisInterEmpresa, idTransacaoDeterministico } from '@/lib/inter';
+import { folhaEbDaCasa } from '@/lib/rh/folha-contador-pagamentos';
 
 /** Empresas com extrato próprio. A sigla vira o prefixo da env (`INTER_EB_*`). */
 export const EMPRESAS_EXTRATO = {
@@ -82,7 +83,8 @@ export async function resumoExtratoEmpresa(sigla: SiglaEmpresa) {
 }
 
 // ---------------------------------------------------------------------------
-// Conferência: folha do contador × débitos do extrato
+// Conferência: folha × débitos do extrato. Desde 05/11/2026 a folha é a NOSSA
+// (calculada pelo sistema); a do contador fica em fonte 'contador'.
 // ---------------------------------------------------------------------------
 
 const SEM_PESO = new Set(['DA', 'DE', 'DO', 'DAS', 'DOS', 'E']);
@@ -128,6 +130,8 @@ export interface LinhaConferencia {
   departamento: string | null;
   situacaoFolha: string | null;
   liquido: number;
+  /** Líquido da folha do contador da mesma pessoa (referência; null = não está lá). */
+  liquidoContador?: number | null;
   situacao: SituacaoPagamento;
   /** Débitos com o nome da pessoa (ou, em 'so_valor', o de valor igual sem nome). */
   debitos: DebitoExtrato[];
@@ -164,7 +168,11 @@ export async function conferirFolhaComExtrato(
   sigla: SiglaEmpresa,
   competencia: string,
   filialIds: string[],
+  /** 'nossa' (padrão desde 05/11/2026: "vou pagar pela nossa folha") ou 'contador' (jeito antigo). */
+  fonte: 'nossa' | 'contador' = 'nossa',
 ): Promise<{
+  /** Com fonte 'nossa': quem tem líquido no contador e não entra na nossa folha. */
+  soNoContador: { nome: string; filialId: string; liquido: number }[];
   linhas: LinhaConferencia[];
   debitosSemPessoa: DebitoExtrato[];
   janela: { de: string; ate: string };
@@ -174,23 +182,55 @@ export async function conferirFolhaComExtrato(
   porCasa: EncontroCasa[];
 }> {
   const janela = janelaDaCompetencia(competencia);
-  const folha = (
-    await db
-      .select({
-        id: schema.folhaContador.id,
-        filialId: schema.folhaContador.filialId,
-        funcionarioId: schema.folhaContador.funcionarioId,
-        nome: schema.folhaContador.nome,
-        departamento: schema.folhaContador.departamento,
-        situacao: schema.folhaContador.situacao,
-        liquido: schema.folhaContador.liquido,
-      })
-      .from(schema.folhaContador)
-      .where(
-        and(eq(schema.folhaContador.cnpj, EMPRESAS_EXTRATO[sigla].cnpj), eq(schema.folhaContador.competencia, competencia)),
-      )
-      .orderBy(asc(schema.folhaContador.nome))
-  ).filter((f) => filialIds.includes(f.filialId));
+  const doContador = await db
+    .select({
+      id: schema.folhaContador.id,
+      filialId: schema.folhaContador.filialId,
+      funcionarioId: schema.folhaContador.funcionarioId,
+      cpf: schema.folhaContador.cpf,
+      nome: schema.folhaContador.nome,
+      departamento: schema.folhaContador.departamento,
+      situacao: schema.folhaContador.situacao,
+      liquido: schema.folhaContador.liquido,
+    })
+    .from(schema.folhaContador)
+    .where(
+      and(eq(schema.folhaContador.cnpj, EMPRESAS_EXTRATO[sigla].cnpj), eq(schema.folhaContador.competencia, competencia)),
+    )
+    .orderBy(asc(schema.folhaContador.nome));
+  type ItemFolha = Omit<(typeof doContador)[number], 'cpf'> & { liquidoContador?: number | null };
+  let folha: ItemFolha[];
+  let soNoContador: { nome: string; filialId: string; liquido: number }[] = [];
+  if (fonte === 'contador') {
+    folha = doContador.filter((f) => filialIds.includes(f.filialId));
+  } else {
+    // Nossa folha: o mesmo grupo do Repasse E.B. do "Lançar pagamentos da folha".
+    const dig = (x: string | null | undefined) => (x ?? '').replace(/\D/g, '');
+    const usadosContador = new Set<string>();
+    folha = [];
+    for (const casaId of filialIds) {
+      for (const l of await folhaEbDaCasa(casaId, competencia)) {
+        const c = doContador.find(
+          (r) => (r.funcionarioId && r.funcionarioId === l.funcionarioId) || (dig(l.cpf).length === 11 && dig(r.cpf) === dig(l.cpf)),
+        );
+        if (c) usadosContador.add(c.id);
+        folha.push({
+          id: c?.id ?? `nf:${l.funcionarioId}`,
+          filialId: casaId,
+          funcionarioId: l.funcionarioId,
+          nome: l.nome,
+          departamento: c?.departamento ?? null,
+          situacao: c?.situacao ?? null,
+          liquido: String(l.liquido),
+          liquidoContador: c ? Number(c.liquido) : null,
+        });
+      }
+    }
+    folha.sort((a, b) => a.nome.localeCompare(b.nome));
+    soNoContador = doContador
+      .filter((r) => filialIds.includes(r.filialId) && !usadosContador.has(r.id) && Number(r.liquido) > 0)
+      .map((r) => ({ nome: r.nome, filialId: r.filialId, liquido: Number(r.liquido) }));
+  }
 
   const debitos: DebitoExtrato[] = (
     await db
@@ -240,6 +280,7 @@ export async function conferirFolhaComExtrato(
       departamento: f.departamento,
       situacaoFolha: f.situacao,
       liquido,
+      liquidoContador: f.liquidoContador,
       situacao,
       debitos: doNome,
       pago,
@@ -346,5 +387,5 @@ export async function conferirFolhaComExtrato(
     }
   }
 
-  return { linhas, debitosSemPessoa: debitos.filter((d) => !usados.has(d.id) && !idsLote.has(d.id)), janela, lotes, porCasa };
+  return { soNoContador, linhas, debitosSemPessoa: debitos.filter((d) => !usados.has(d.id) && !idsLote.has(d.id)), janela, lotes, porCasa };
 }

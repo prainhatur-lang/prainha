@@ -112,6 +112,27 @@ export async function diaristasForaDaFolha(casaFilialId: string, comp: string): 
   return { diaristas: [...r.diaristas.values()].sort((a, b) => a.localeCompare(b)), semExtrato: r.semExtrato };
 }
 
+/**
+ * Quem a E.B. paga pela NOSSA folha numa casa e mês — o mesmo grupo do
+ * "Repasse E.B." do Lançar pagamentos: cadastro na casa, registro na E.B.,
+ * líquido > 0, não saiu no mês (vai pela rescisão) e não é diarista.
+ * Base da fatura da E.B. e da conferência do extrato (dono 05/11/2026: "vou
+ * pagar pela nossa folha, não pela do contador").
+ */
+export async function folhaEbDaCasa(casaFilialId: string, comp: string) {
+  const [casa] = await db.select({ cnpj: schema.filial.cnpj }).from(schema.filial).where(eq(schema.filial.id, casaFilialId)).limit(1);
+  const casaCnpj = digitos(casa?.cnpj);
+  const linhas = await nossaFolhaDoMes(casaFilialId, comp);
+  const registro = await registroNoMes(casaFilialId, comp, linhas, casaCnpj);
+  return linhas.filter(
+    (l) =>
+      (digitos(l.cnpjRegistro) || casaCnpj) === EB_CNPJ &&
+      l.liquido > 0 &&
+      !(l.desligamento && l.desligamento.slice(0, 7) === comp) &&
+      !registro.diaristas.has(l.funcionarioId),
+  );
+}
+
 function mmAaaa(comp: string): string {
   const [a, m] = comp.split('-');
   return `${m}/${a}`;
