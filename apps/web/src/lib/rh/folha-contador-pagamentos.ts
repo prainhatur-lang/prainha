@@ -133,6 +133,25 @@ export async function folhaEbDaCasa(casaFilialId: string, comp: string) {
   );
 }
 
+/**
+ * Mesmo filtro da folhaEbDaCasa, mas pra qualquer empresa pela RAIZ do CNPJ
+ * (8 dígitos) — a Prainha Turismo registra com a matriz (…0001-66) gente que
+ * trabalha na Mar. Sem empresa no cadastro = a própria casa registra.
+ */
+export async function folhaDaEmpresaNaCasa(casaFilialId: string, comp: string, raizCnpj: string) {
+  const [casa] = await db.select({ cnpj: schema.filial.cnpj }).from(schema.filial).where(eq(schema.filial.id, casaFilialId)).limit(1);
+  const casaCnpj = digitos(casa?.cnpj);
+  const linhas = await nossaFolhaDoMes(casaFilialId, comp);
+  const registro = await registroNoMes(casaFilialId, comp, linhas, casaCnpj);
+  return linhas.filter(
+    (l) =>
+      (digitos(l.cnpjRegistro) || casaCnpj).slice(0, 8) === raizCnpj &&
+      l.liquido > 0 &&
+      !(l.desligamento && l.desligamento.slice(0, 7) === comp) &&
+      !registro.diaristas.has(l.funcionarioId),
+  );
+}
+
 function mmAaaa(comp: string): string {
   const [a, m] = comp.split('-');
   return `${m}/${a}`;

@@ -16,7 +16,16 @@
 
 import { db, schema } from '@concilia/db';
 import { and, eq, inArray } from 'drizzle-orm';
-import { folhaEbDaCasa } from '@/lib/rh/folha-contador-pagamentos';
+import { folhaDaEmpresaNaCasa, folhaEbDaCasa } from '@/lib/rh/folha-contador-pagamentos';
+
+/** Quem paga a folha pelo Inter. EB = E.B. Serviços; PRAINHA = Prainha Turismo
+ *  (registrados na própria Prainha, dono 06/11/2026: "como faço pra pagar
+ *  Prainha e EB do Prainha"). */
+export const PAGADOR_FOLHA = {
+  EB: { nome: 'E.B. SERVICOS LTDA', curto: 'E.B.', cnpj: '05486249000172' },
+  PRAINHA: { nome: 'PRAINHA TURISMO LTDA', curto: 'Prainha Turismo', cnpj: '33159574000166' },
+} as const;
+export type EmpresaFolha = keyof typeof PAGADOR_FOLHA;
 
 export interface LinhaPagamentoFolha {
   casaId: string;
@@ -64,10 +73,17 @@ function tipoDaConta(bancoNome: string, operacao: string): string {
   return '';
 }
 
-export async function linhasPagamentoFolha(casaIds: string[], comp: string): Promise<LinhaPagamentoFolha[]> {
+export async function linhasPagamentoFolha(
+  casaIds: string[],
+  comp: string,
+  empresa: EmpresaFolha = 'EB',
+): Promise<LinhaPagamentoFolha[]> {
   const out: LinhaPagamentoFolha[] = [];
   for (const casaId of casaIds) {
-    const gente = await folhaEbDaCasa(casaId, comp);
+    const gente =
+      empresa === 'EB'
+        ? await folhaEbDaCasa(casaId, comp)
+        : await folhaDaEmpresaNaCasa(casaId, comp, PAGADOR_FOLHA[empresa].cnpj.slice(0, 8));
     const fids = gente.map((l) => l.fornecedorId).filter((x): x is string => !!x);
     const forn = fids.length ? await db.select().from(schema.fornecedor).where(inArray(schema.fornecedor.id, fids)) : [];
     const porId = new Map(forn.map((f) => [f.id, f]));
@@ -127,9 +143,9 @@ export interface LinhaArquivoInter {
 export async function linhasArquivoInter(
   casaIds: string[],
   comp: string,
-  empresa = 'EB',
+  empresa: EmpresaFolha = 'EB',
 ): Promise<{ pagar: LinhaArquivoInter[]; semConta: LinhaArquivoInter[] }> {
-  const base = await linhasPagamentoFolha(casaIds, comp);
+  const base = await linhasPagamentoFolha(casaIds, comp, empresa);
   const cpfs = [...new Set(base.map((l) => l.cpf).filter((c) => c.length === 11))];
   const contas = cpfs.length
     ? await db

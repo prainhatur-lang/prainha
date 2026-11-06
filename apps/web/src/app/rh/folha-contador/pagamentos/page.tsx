@@ -107,6 +107,10 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
   // Arquivo da folha no Inter: quem entra e quem fica de fora (sem conta Inter).
   const inter = comp ? await linhasArquivoInter(filialIds, comp) : null;
   const totalInter = inter ? inter.pagar.reduce((t, l) => t + l.valor, 0) : 0;
+  // Mesmo arquivo pra quem é registrado na Prainha Turismo (dono 06/11/2026:
+  // "como faço pra pagar Prainha e EB do Prainha"): sai pelo Inter da Prainha.
+  const interPrainha = comp ? await linhasArquivoInter(filialIds, comp, 'PRAINHA') : null;
+  const totalInterPrainha = interPrainha ? interPrainha.pagar.reduce((t, l) => t + l.valor, 0) : 0;
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -179,6 +183,57 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
                   </p>
                   <ul className="mt-1 grid gap-x-4 sm:grid-cols-2">
                     {inter.semConta.map((l) => (
+                      <li key={`${l.casaId}-${l.cpf}-${l.nome}`}>
+                        {l.nome} <span className="text-slate-500">· {nomeFilial.get(l.casaId) ?? ''} · {brl(l.valor)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+          {comp && interPrainha && interPrainha.pagar.length + interPrainha.semConta.length > 0 && (
+            <div className="mt-3 rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm">
+              <p className="mb-2 text-xs font-semibold text-sky-900">Registrados na Prainha Turismo (pagar pelo Inter da Prainha)</p>
+              <form action="/api/rh/folha-pagamento-inter" method="get" className="flex flex-wrap items-end gap-2">
+                <input type="hidden" name="comp" value={comp} />
+                <input type="hidden" name="empresa" value="PRAINHA" />
+                <label className="text-xs text-slate-600">
+                  Data do débito
+                  <input type="date" name="data" defaultValue={hojeBr()} min={hojeBr()} className="mt-0.5 block rounded border border-slate-300 px-2 py-1 text-sm" />
+                </label>
+                <label className="text-xs text-slate-600">
+                  Casa
+                  <select name="casa" defaultValue="" className="mt-0.5 block rounded border border-slate-300 px-2 py-1 text-sm">
+                    <option value="">Todas as casas</option>
+                    {filiais.map((f) => {
+                      const daCasa = interPrainha.pagar.filter((l) => l.casaId === f.id);
+                      return (
+                        <option key={f.id} value={f.id}>
+                          {f.nome} — {daCasa.length} pessoas, {brl(daCasa.reduce((t, l) => t + l.valor, 0))}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </label>
+                <label className="text-xs text-slate-600">
+                  Conta Inter da Prainha (opcional)
+                  <input name="conta" placeholder="00000000-0" className="mt-0.5 block w-36 rounded border border-slate-300 px-2 py-1 text-sm" />
+                </label>
+                <button className="rounded-lg border border-sky-300 bg-white px-3 py-1.5 text-sm font-medium text-sky-800 hover:bg-sky-100">
+                  🔵 Arquivo do Inter da Prainha — todas: {interPrainha.pagar.length} pessoas, {brl(totalInterPrainha)}
+                </button>
+              </form>
+              <p className="mt-1 text-xs text-slate-600">
+                Mesmo modelo do Inter, pagador Prainha Turismo. Sobe no Inter da Prainha, não no da E.B.
+              </p>
+              {interPrainha.semConta.length > 0 && (
+                <div className="mt-2 text-xs text-slate-700">
+                  <p className="font-medium text-sky-900">
+                    Sem conta Inter da Prainha — pagar à parte ({interPrainha.semConta.length}, {brl(interPrainha.semConta.reduce((t, l) => t + l.valor, 0))}):
+                  </p>
+                  <ul className="mt-1 grid gap-x-4 sm:grid-cols-2">
+                    {interPrainha.semConta.map((l) => (
                       <li key={`${l.casaId}-${l.cpf}-${l.nome}`}>
                         {l.nome} <span className="text-slate-500">· {nomeFilial.get(l.casaId) ?? ''} · {brl(l.valor)}</span>
                       </li>
