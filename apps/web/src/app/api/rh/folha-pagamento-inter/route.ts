@@ -40,7 +40,10 @@ export async function GET(req: Request) {
 
   const filiais = await filiaisDoUsuario(auth.user.id);
   const casa = sp.get('casa');
-  const casas = casa ? filiais.filter((f) => f.id === casa) : filiais;
+  // casa=<id> = uma casa; casa=<id>,<id> = só essas (dono 06/11/2026: "enviar
+  // só Prainha Bar e Prainha Mar, da Tabuará não posso mandar agora").
+  const casaIds = (casa ?? '').split(',').filter(Boolean);
+  const casas = casaIds.length ? filiais.filter((f) => casaIds.includes(f.id)) : filiais;
   if (casas.length === 0) return NextResponse.json({ error: 'casa não encontrada' }, { status: 404 });
   const { pagar } = await linhasArquivoInter(
     casas.map((f) => f.id),
@@ -90,7 +93,7 @@ export async function GET(req: Request) {
 
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
   const [ano, mes] = comp.split('-');
-  const sufixo = casa && casas[0] ? `-${casas[0].nome.toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, '-')}` : '';
+  const sufixo = casa && casas.length > 0 ? `-${casas.map((c) => c.nome).join('-').toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, '-')}` : '';
   return new NextResponse(new Uint8Array(buf), {
     headers: {
       'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

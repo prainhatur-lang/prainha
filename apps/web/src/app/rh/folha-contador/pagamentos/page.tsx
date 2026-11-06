@@ -163,6 +163,15 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
                         </option>
                       );
                     })}
+                    {filiais.length > 2 &&
+                      filiais.map((f) => {
+                        const resto = inter.pagar.filter((l) => l.casaId !== f.id);
+                        return (
+                          <option key={`sem-${f.id}`} value={filiais.filter((x) => x.id !== f.id).map((x) => x.id).join(',')}>
+                            Todas menos {f.nome} — {resto.length} pessoas, {brl(resto.reduce((t, l) => t + l.valor, 0))}
+                          </option>
+                        );
+                      })}
                   </select>
                 </label>
                 <label className="text-xs text-slate-600">
@@ -214,6 +223,15 @@ export default async function PagamentosFolhaContadorPage(props: { searchParams:
                         </option>
                       );
                     })}
+                    {filiais.length > 2 &&
+                      filiais.map((f) => {
+                        const resto = interPrainha.pagar.filter((l) => l.casaId !== f.id);
+                        return (
+                          <option key={`sem-${f.id}`} value={filiais.filter((x) => x.id !== f.id).map((x) => x.id).join(',')}>
+                            Todas menos {f.nome} — {resto.length} pessoas, {brl(resto.reduce((t, l) => t + l.valor, 0))}
+                          </option>
+                        );
+                      })}
                   </select>
                 </label>
                 <label className="text-xs text-slate-600">
