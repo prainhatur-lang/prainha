@@ -137,6 +137,12 @@ export interface PessoaisAdmissao extends DadosPessoais {
   complemento: string;
   pixTipo: string;
   pixChave: string;
+  /** Conta corrente do Inter que recebe a FOLHA (06/11/2026). Opcional. */
+  contaInterNumero: string;
+  /** Conta da Caixa que recebe os 10% (06/11/2026). Opcional. */
+  contaCaixaAgencia: string;
+  contaCaixaOperacao: string;
+  contaCaixaNumero: string;
   contatoEmergencia: string;
   valeTransporte: 'quer' | 'nao_quer' | '';
 }
@@ -170,6 +176,10 @@ export const PESSOAIS_ADMISSAO_VAZIO: PessoaisAdmissao = {
   dependentes: '',
   pixTipo: 'cpf',
   pixChave: '',
+  contaInterNumero: '',
+  contaCaixaAgencia: '',
+  contaCaixaOperacao: '',
+  contaCaixaNumero: '',
   contatoEmergencia: '',
   valeTransporte: '',
 };
@@ -187,6 +197,8 @@ export const DOCS_PEDIDOS: { chave: string; rotulo: string; tipoFicha: string; o
   { chave: 'escolaridade', rotulo: 'Comprovante de escolaridade', tipoFicha: 'outro_admissao', obrigatorio: false },
   { chave: 'filhos', rotulo: 'Certidão e vacina dos filhos até 14 anos', tipoFicha: 'outro_admissao', obrigatorio: false, dica: 'pro salário-família; pode subir mais de um' },
   { chave: 'aso', rotulo: 'Exame admissional (ASO)', tipoFicha: 'aso_admissional', obrigatorio: false, dica: 'se já fez' },
+  { chave: 'conta_inter', rotulo: 'Conta do Inter (recebe a folha)', tipoFicha: 'documentos_pessoais', obrigatorio: false, dica: 'print da tela do app do Inter com o número da conta' },
+  { chave: 'conta_caixa', rotulo: 'Conta da Caixa (recebe os 10%)', tipoFicha: 'documentos_pessoais', obrigatorio: false, dica: 'print do app da Caixa ou do cartão, com agência, operação e conta' },
   { chave: 'outro', rotulo: 'Outro documento', tipoFicha: 'outro_admissao', obrigatorio: false },
 ];
 
@@ -195,6 +207,24 @@ export interface DocSubido {
   path: string;
   nome: string;
   em: string;
+}
+
+/** Conta do Inter digitada no link → "12345678-9" (como o Inter escreve); null = não deu. */
+export function contaInterDoLink(p: Partial<PessoaisAdmissao>): string | null {
+  const d = (p.contaInterNumero ?? '').replace(/\D/g, '');
+  if (d.length < 5) return null;
+  return `${d.slice(0, -1)}-${d.slice(-1)}`;
+}
+
+/** Conta da Caixa digitada no link → agência e conta no formato do cadastro
+ *  (a operação vai como "op 013" na conta, que é como o arquivo de pagamento lê). */
+export function contaCaixaDoLink(p: Partial<PessoaisAdmissao>): { agencia: string; conta: string } | null {
+  const ag = (p.contaCaixaAgencia ?? '').replace(/\D/g, '');
+  const op = (p.contaCaixaOperacao ?? '').replace(/\D/g, '');
+  const d = (p.contaCaixaNumero ?? '').replace(/\D/g, '');
+  if (!ag || d.length < 2) return null;
+  const conta = `${d.slice(0, -1)}-${d.slice(-1)}`;
+  return { agencia: ag, conta: op ? `op ${op} ${conta}` : conta };
 }
 
 /** Campos que travam a assinatura enquanto estiverem vazios. */
@@ -364,6 +394,8 @@ ${cls
 ${vt ? `<h2>Declaração de vale-transporte</h2><p>${vt}</p>` : ''}
 <h2>Dados para pagamento</h2>
 <p>Pix (${esc(p.pixTipo || 'chave')}): ${esc(p.pixChave || '—')} — conta de titularidade do(a) empregado(a).</p>
+${contaInterDoLink(p) ? `<p>Conta da folha (Inter): ${esc(contaInterDoLink(p) ?? '')}.</p>` : ''}
+${contaCaixaDoLink(p) ? `<p>Conta dos 10% (Caixa): ag. ${esc(contaCaixaDoLink(p)?.agencia ?? '')}, ${esc(contaCaixaDoLink(p)?.conta ?? '')}.</p>` : ''}
 <p style="margin-top:18px">${esc(tc.cidadeAssinatura)}, ${esc(fmtData(ymd))}.</p>
 <div class="ass">
   <div><b>${esc(emp.razaoSocial)}</b><br>CNPJ ${esc(fmtCnpj(emp.cnpj))}<br>Empregador</div>

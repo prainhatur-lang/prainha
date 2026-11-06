@@ -33,6 +33,8 @@ import {
   DOCS_PEDIDOS,
   EMPREGADORES,
   PESSOAIS_ADMISSAO_VAZIO,
+  contaCaixaDoLink,
+  contaInterDoLink,
   contratoHtml,
   dataComDiaSemana,
   empregadorDoCnpj,
@@ -491,10 +493,20 @@ async function assinar(req: Request, c: Convite, body: Record<string, unknown>) 
   }
 
   // Fornecedor (pra pagar) + cliente na loja; falha aqui não desfaz a assinatura.
+  let fornecedorPrincipal: string | null = null;
   try {
-    await garantirPapeisDaPessoa(funcionarioId, { criadoPor: c.criadoPor ?? undefined, enfileirarNaLoja: true });
+    const papeis = await garantirPapeisDaPessoa(funcionarioId, { criadoPor: c.criadoPor ?? undefined, enfileirarNaLoja: true });
+    fornecedorPrincipal = papeis?.fornecedorId ?? null;
   } catch {
     /* o RH garante de novo ao definir o pagamento */
+  }
+
+  // As contas que ela digitou no link vão pro cadastro (dono 06/11/2026: "a conta
+  // do Inter, para receber a folha, e a conta da Caixa para receber os 10%").
+  try {
+    await gravarContasDoLink(c.cpf, nome, p, termos.empregadorCnpj, fornecedorPrincipal);
+  } catch {
+    /* o RH digita em RH → Funcionários */
   }
 
   // Já trabalha antes do registro: até a véspera recebe por diária na folha
@@ -524,4 +536,59 @@ async function assinar(req: Request, c: Convite, body: Record<string, unknown>) 
   }
 
   return NextResponse.json({ ok: true, assinadoEm: agora.toISOString() });
+}
+
+/**
+ * Contas do link → cadastro de pagamento. Só preenche o que está VAZIO (conta
+ * que o RH já digitou fica como está):
+ *  - Pix e Caixa (10%) no fornecedor da pessoa — o da lotação e os das outras
+ *    casas onde ela já está na folha (mesmo CPF);
+ *  - Inter (folha) em conta_inter_folha pelo CPF, que é de onde o arquivo do
+ *    Inter lê. E.B. sempre (é quem paga hoje); Prainha também se é ela quem registra.
+ */
+async function gravarContasDoLink(
+  cpf: string,
+  nome: string,
+  p: PessoaisAdmissao,
+  empregadorCnpj: string,
+  fornecedorPrincipal: string | null,
+) {
+  const cpfDig = soDig(cpf);
+  if (cpfDig.length !== 11) return;
+  const Fo = schema.fornecedor;
+  const daPessoa = and(
+    sql`${Fo.dataDelete} is null`,
+    sql`regexp_replace(coalesce(${Fo.cnpjOuCpf}, ''), '[^0-9]', '', 'g') = ${cpfDig}`,
+    fornecedorPrincipal
+      ? sql`(${Fo.id} = ${fornecedorPrincipal} or exists (select 1 from fornecedor_folha ff where ff.fornecedor_id = ${Fo.id}))`
+      : sql`exists (select 1 from fornecedor_folha ff where ff.fornecedor_id = ${Fo.id})`,
+  );
+
+  const pix = p.pixChave?.trim();
+  if (pix) {
+    await db
+      .update(Fo)
+      .set({ chavePix: pix.slice(0, 100) })
+      .where(and(daPessoa, sql`nullif(trim(${Fo.chavePix}), '') is null`));
+  }
+
+  const caixa = contaCaixaDoLink(p);
+  if (caixa) {
+    await db
+      .update(Fo)
+      .set({ bancoNome: 'CAIXA', bancoAgencia: caixa.agencia.slice(0, 20), bancoConta: caixa.conta.slice(0, 30) })
+      .where(and(daPessoa, sql`nullif(trim(${Fo.bancoConta}), '') is null`, sql`nullif(trim(${Fo.bancoAgencia}), '') is null`));
+  }
+
+  const inter = contaInterDoLink(p);
+  if (inter) {
+    const empresas: ('EB' | 'PRAINHA')[] = ['EB'];
+    if (soDig(empregadorCnpj).startsWith('33159574')) empresas.push('PRAINHA');
+    for (const empresa of empresas) {
+      await db
+        .insert(schema.contaInterFolha)
+        .values({ empresa, cpf: cpfDig, nome: nome.toUpperCase().slice(0, 120), conta: inter, fonte: 'admissao' })
+        .onConflictDoNothing();
+    }
+  }
 }

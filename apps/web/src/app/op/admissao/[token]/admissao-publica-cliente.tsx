@@ -586,6 +586,19 @@ export function AdmissaoPublicaCliente({ token }: { token: string }) {
             ])}
             {texto('pixChave', 'Chave Pix (no seu nome)')}
           </div>
+          <div className="space-y-2 rounded-md border border-orange-200 bg-orange-50 p-2">
+            <p className="text-xs text-orange-900">
+              O pagamento sai em <b>duas contas no seu nome</b>: a do <b>Inter</b> recebe a folha e a da <b>Caixa</b>{' '}
+              recebe os 10%. Se ainda não tem alguma, deixe em branco — o RH ajuda depois. Pode mandar o print de
+              cada conta lá embaixo, nas fotos.
+            </p>
+            {texto('contaInterNumero', 'Conta do Inter (folha) — nº com dígito', { inputMode: 'numeric', placeholder: '12345678-9' })}
+            <div className="grid grid-cols-[1fr_5.5rem_1.4fr] gap-2">
+              {texto('contaCaixaAgencia', 'Agência Caixa', { inputMode: 'numeric', placeholder: '0000' })}
+              {texto('contaCaixaOperacao', 'Operação', { inputMode: 'numeric', placeholder: '013' })}
+              {texto('contaCaixaNumero', 'Conta Caixa (10%)', { inputMode: 'numeric', placeholder: '00012345-6' })}
+            </div>
+          </div>
           {escolha('valeTransporte', 'Vale-transporte', [
             ['quer', 'Quero vale-transporte'],
             ['nao_quer', 'Não quero vale-transporte'],
