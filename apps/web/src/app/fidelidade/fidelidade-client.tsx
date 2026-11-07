@@ -96,7 +96,7 @@ export function FidelidadeClient(p: Props) {
         <div>
           <h1 className="text-xl font-semibold">Cliente VIP {p.casa}</h1>
           <p className="text-sm text-slate-500">
-            Programa só desta casa (cada casa tem o seu). Desconto só no Pix, com código gerado no celular do dono.{' '}
+            Cada casa configura o seu, mas o cartão vale nas 3 casas e as visitas somam. Desconto só no Pix, com código gerado no celular do dono.{' '}
             {!p.ativo && <b className="text-red-600">Programa DESLIGADO nesta casa.</b>}
           </p>
         </div>
@@ -538,6 +538,20 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
   });
   const [criando, setCriando] = useState(false);
   const [filtro, setFiltro] = useState('');
+  // filtros do convite (ligados por padrão: WhatsApp só chega em celular e
+  // mandar de novo pra quem já recebeu derruba a qualidade do número na Meta)
+  const [soCelular, setSoCelular] = useState(true);
+  const [escConvidado, setEscConvidado] = useState(true);
+  const [escOutraCasa, setEscOutraCasa] = useState(true);
+  const [escFora, setEscFora] = useState(true);
+  const [escCampanha, setEscCampanha] = useState(true);
+  const [campanhaDias, setCampanhaDias] = useState(30);
+  const [ultimaDias, setUltimaDias] = useState(0);
+  const [nivelMin, setNivelMin] = useState('');
+  const [origem, setOrigem] = useState<'todas' | 'pdv' | 'reserva' | 'tagme'>('todas');
+  const [bairro, setBairro] = useState('');
+  const [quantos, setQuantos] = useState(50);
+  const [convitesHoje, setConvitesHoje] = useState<{ hoje: number; dia: number } | null>(null);
   // cadastro avulso
   const [nome, setNome] = useState('');
   const [fone, setFone] = useState('');
@@ -546,7 +560,10 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
   async function carregar() {
     setCarregando(true);
     try {
-      const j = (await p.api({ acao: 'candidatos', minimo, regiao })) as { candidatos: Candidato[] };
+      const j = (await p.api({ acao: 'candidatos', minimo, regiao })) as {
+        candidatos: Candidato[]; convitesHoje?: number; convitesDia?: number;
+      };
+      if (typeof j.convitesDia === 'number') setConvitesHoje({ hoje: j.convitesHoje ?? 0, dia: j.convitesDia });
       setLinhas(j.candidatos.map((c) => ({ ...c, sel: false, nivel: nivelSugerido(cfg, c.visitasJanela).codigo })));
     } catch (e) {
       p.setMsg(`Erro: ${(e as Error).message}`);
@@ -555,16 +572,70 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
     }
   }
 
+  // por que cada linha está escondida (o primeiro motivo que pegar)
+  const motivoEscondido = useMemo(() => {
+    const desdeCampanha = diasAtras(campanhaDias);
+    const desdeUltima = ultimaDias > 0 ? diasAtras(ultimaDias) : '';
+    const idxMin = nivelMin ? cfg.niveis.findIndex((n) => n.codigo === nivelMin) : -1;
+    return (l: Linha): string | null => {
+      if (soCelular && !l.celular) return 'fixo';
+      if (escFora && l.foraDosEnvios) return 'fora';
+      if (escConvidado && l.convidadoEm) return 'convidado';
+      if (escOutraCasa && l.cartaoOutraCasa) return 'outra';
+      if (escCampanha && l.campanhaEm && l.campanhaEm >= desdeCampanha) return 'campanha';
+      if (desdeUltima && (!l.ultima || l.ultima < desdeUltima)) return 'ultima';
+      if (idxMin >= 0 && cfg.niveis.findIndex((n) => n.codigo === l.nivel) < idxMin) return 'nivel';
+      if (origem === 'pdv' && !l.pdvDias) return 'origem';
+      if (origem === 'reserva' && !l.reservas) return 'origem';
+      if (origem === 'tagme' && !l.tagme) return 'origem';
+      if (bairro && (l.bairro || '(sem bairro)') !== bairro) return 'bairro';
+      return null;
+    };
+  }, [soCelular, escFora, escConvidado, escOutraCasa, escCampanha, campanhaDias, ultimaDias, nivelMin, origem, bairro, cfg.niveis]);
+
+  const escondidos = useMemo(() => {
+    const c: Record<string, number> = {};
+    for (const l of linhas ?? []) {
+      const m = motivoEscondido(l);
+      if (m) c[m] = (c[m] ?? 0) + 1;
+    }
+    return c;
+  }, [linhas, motivoEscondido]);
+
+  const bairros = useMemo(() => {
+    const c = new Map<string, number>();
+    for (const l of linhas ?? []) {
+      const b = l.bairro || '(sem bairro)';
+      c.set(b, (c.get(b) ?? 0) + 1);
+    }
+    return [...c.entries()].sort((a, b) => b[1] - a[1]);
+  }, [linhas]);
+
   const visiveis = useMemo(() => {
     if (!linhas) return [];
     const q = filtro.trim().toLowerCase();
-    return q ? linhas.filter((l) => l.nome.toLowerCase().includes(q) || l.telefone.includes(q.replace(/\D/g, '') || '§')) : linhas;
-  }, [linhas, filtro]);
-  const selecionados = linhas?.filter((l) => l.sel) ?? [];
+    const base = linhas.filter((l) => !motivoEscondido(l));
+    return q ? base.filter((l) => l.nome.toLowerCase().includes(q) || l.telefone.includes(q.replace(/\D/g, '') || '§')) : base;
+  }, [linhas, filtro, motivoEscondido]);
+  // só conta (e só cria/convida) quem está aparecendo na lista
+  const chavesVisiveis = useMemo(() => new Set(visiveis.map((l) => l.chave)), [visiveis]);
+  const selecionados = linhas?.filter((l) => l.sel && chavesVisiveis.has(l.chave)) ?? [];
 
   function marcar(pred: (l: Linha) => boolean) {
-    setLinhas((ls) => ls && ls.map((l) => ({ ...l, sel: pred(l) })));
+    setLinhas((ls) => ls && ls.map((l) => ({ ...l, sel: chavesVisiveis.has(l.chave) && pred(l) })));
   }
+
+  function marcarPrimeiros(n: number) {
+    const primeiros = new Set(visiveis.slice(0, Math.max(0, n)).map((l) => l.chave));
+    setLinhas((ls) => ls && ls.map((l) => ({ ...l, sel: primeiros.has(l.chave) })));
+  }
+
+  const saldoHoje = convitesHoje ? Math.max(0, convitesHoje.dia - convitesHoje.hoje) : null;
+  const ROTULO_ESC: Record<string, string> = {
+    fixo: 'fixo (sem WhatsApp)', fora: 'fora dos envios', convidado: 'já receberam convite',
+    outra: 'já têm cartão em outra casa', campanha: `campanha nos últimos ${campanhaDias} dias`,
+    ultima: 'última visita antiga', nivel: 'nível abaixo', origem: 'outra origem', bairro: 'outro bairro',
+  };
 
   async function criar(pessoas: Array<Record<string, unknown>>) {
     setCriando(true);
@@ -613,7 +684,7 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
           do WhatsApp — só depois disso o cartão vale no Pix. Quem tocar em “Não tenho interesse” não recebe de novo.
         </p>
         <p className="mb-3 text-sm text-slate-500">
-          Só desta casa: dias com pedido no nome do cliente no PDV (12 meses), reservas que sentaram (12 meses) e o
+          Contagem desta casa (o cartão vale nas 3 e as visitas somam depois): dias com pedido no nome do cliente no PDV (12 meses), reservas que sentaram (12 meses) e o
           histórico da Tagme — a mesma pessoa é casada pelo telefone. O nível sugerido vem das visitas nos últimos{' '}
           {cfg.janelaDias} dias; ele entra como <b>nível garantido</b> até a data que você escolher (depois disso vale
           o das visitas pelo cartão).
@@ -653,6 +724,115 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
 
       {linhas && (
         <div className="rounded bg-white p-4 shadow-sm">
+          <div className="mb-3 rounded border border-slate-200 bg-slate-50 p-3 text-sm">
+            <div className="mb-2 font-medium text-slate-700">Filtros do convite</div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1">
+              <label className="flex items-center gap-1">
+                <input type="checkbox" checked={soCelular} onChange={(e) => setSoCelular(e.target.checked)} />
+                Só celular
+              </label>
+              <label className="flex items-center gap-1" title="recusou o convite, pediu pra parar, bloqueou promoções ou o número não recebe">
+                <input type="checkbox" checked={escFora} onChange={(e) => setEscFora(e.target.checked)} />
+                Esconder quem está fora dos envios
+              </label>
+              <label className="flex items-center gap-1" title="convite do Cliente VIP já mandado pra esse celular, por qualquer casa">
+                <input type="checkbox" checked={escConvidado} onChange={(e) => setEscConvidado(e.target.checked)} />
+                Esconder quem já recebeu convite
+              </label>
+              <label className="flex items-center gap-1" title="o cartão vale nas 3 casas — não precisa de outro">
+                <input type="checkbox" checked={escOutraCasa} onChange={(e) => setEscOutraCasa(e.target.checked)} />
+                Esconder quem já tem cartão em outra casa
+              </label>
+              <label className="flex items-center gap-1" title="campanha por WhatsApp (ex.: convite de abertura da Mar)">
+                <input type="checkbox" checked={escCampanha} onChange={(e) => setEscCampanha(e.target.checked)} />
+                Esconder quem recebeu campanha nos últimos
+                <input
+                  type="number"
+                  min={1}
+                  value={campanhaDias}
+                  onChange={(e) => setCampanhaDias(Math.max(1, Number(e.target.value) || 1))}
+                  className="w-14 rounded border border-slate-300 px-1 py-0.5"
+                />
+                dias
+              </label>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <label>
+                Última visita{' '}
+                <select value={ultimaDias} onChange={(e) => setUltimaDias(Number(e.target.value))} className="rounded border border-slate-300 px-2 py-1">
+                  <option value={0}>qualquer</option>
+                  <option value={30}>até 30 dias</option>
+                  <option value={60}>até 60 dias</option>
+                  <option value={90}>até 90 dias</option>
+                  <option value={180}>até 180 dias</option>
+                  <option value={365}>até 1 ano</option>
+                </select>
+              </label>
+              <label>
+                Nível mínimo{' '}
+                <select value={nivelMin} onChange={(e) => setNivelMin(e.target.value)} className="rounded border border-slate-300 px-2 py-1">
+                  <option value="">qualquer</option>
+                  {cfg.niveis.map((n) => (
+                    <option key={n.codigo} value={n.codigo}>{n.nome} {n.pct}%</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Veio por{' '}
+                <select value={origem} onChange={(e) => setOrigem(e.target.value as typeof origem)} className="rounded border border-slate-300 px-2 py-1">
+                  <option value="todas">qualquer</option>
+                  <option value="pdv">pedido no PDV</option>
+                  <option value="reserva">reserva</option>
+                  <option value="tagme">Tagme</option>
+                </select>
+              </label>
+              <label>
+                Bairro{' '}
+                <select value={bairro} onChange={(e) => setBairro(e.target.value)} className="max-w-[14rem] rounded border border-slate-300 px-2 py-1">
+                  <option value="">todos</option>
+                  {bairros.map(([b, n]) => (
+                    <option key={b} value={b}>{b} ({n})</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-slate-200 pt-2">
+              <label>
+                Quantos mandar agora{' '}
+                <input
+                  type="number"
+                  min={1}
+                  value={quantos}
+                  onChange={(e) => setQuantos(Math.max(1, Number(e.target.value) || 1))}
+                  className="w-20 rounded border border-slate-300 px-2 py-1"
+                />
+              </label>
+              <button
+                onClick={() => marcarPrimeiros(quantos)}
+                className="rounded bg-slate-800 px-3 py-1 text-white"
+                title="marca os primeiros da lista (quem mais veio primeiro) e desmarca o resto"
+              >
+                Selecionar os primeiros {Math.min(quantos, visiveis.length)}
+              </button>
+              {convitesHoje && (
+                <span className={`text-xs ${saldoHoje === 0 ? 'text-red-600' : 'text-slate-500'}`}>
+                  Convites hoje nesta casa: {convitesHoje.hoje} de {convitesHoje.dia} (sobram {saldoHoje}).
+                </span>
+              )}
+            </div>
+            <p className="mt-2 text-xs text-slate-500">
+              Aparecendo: <b>{visiveis.length}</b> de {linhas.length}.
+              {Object.keys(escondidos).length > 0 && (
+                <>
+                  {' '}Escondidos:{' '}
+                  {Object.entries(escondidos)
+                    .map(([m, n]) => `${n} ${ROTULO_ESC[m] ?? m}`)
+                    .join(' · ')}
+                  .
+                </>
+              )}
+            </p>
+          </div>
           <div className="mb-3 flex flex-wrap items-center gap-2 text-sm">
             <span className="text-slate-600">
               {linhas.length} pessoas sem cartão ({linhas.filter((l) => l.celular).length} com celular).
@@ -696,6 +876,7 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
                   <th className="px-2 py-2"></th>
                   <th className="px-2 py-2">Cliente</th>
                   <th className="px-2 py-2">Bairro / cidade</th>
+                  <th className="px-2 py-2">Já recebeu</th>
                   <th className="px-2 py-2">Última</th>
                   <th className="px-2 py-2 text-right" title="dias distintos com pedido no PDV (12 meses)">PDV</th>
                   <th className="px-2 py-2 text-right" title="reservas que sentaram (12 meses)">Reservas</th>
@@ -725,6 +906,15 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
                     </td>
                     <td className="px-2 py-1 text-xs text-slate-600">
                       {[l.bairro, l.cidade].filter(Boolean).join(' · ')}
+                    </td>
+                    <td className="px-2 py-1 text-xs">
+                      {l.foraDosEnvios && <div className="text-red-600">⛔ {l.foraDosEnvios}</div>}
+                      {l.convidadoEm && <div className="text-amber-700">convite VIP {dataBr(l.convidadoEm)}</div>}
+                      {l.cartaoOutraCasa && <div className="text-emerald-700">cartão no {l.cartaoOutraCasa}</div>}
+                      {l.campanhaEm && <div className="text-slate-500">campanha {dataBr(l.campanhaEm)}</div>}
+                      {!l.foraDosEnvios && !l.convidadoEm && !l.cartaoOutraCasa && !l.campanhaEm && (
+                        <span className="text-slate-400">nada</span>
+                      )}
                     </td>
                     <td className="px-2 py-1 text-xs text-slate-600">{dataBr(l.ultima)}</td>
                     <td className="px-2 py-1 text-right">{l.pdvDias || ''}</td>
@@ -761,6 +951,11 @@ function Convidar(p: Props & { api: Api; setMsg: (s: string) => void; depois: ()
                 <input type="checkbox" checked={enviarJunto} onChange={(e) => setEnviarJunto(e.target.checked)} />
                 já mandar o convite no WhatsApp
               </label>
+            )}
+            {enviarJunto && p.zapTemplate && saldoHoje != null && selecionados.length > saldoHoje && (
+              <span className="text-xs text-red-600">
+                Só cabem mais {saldoHoje} convites hoje — os outros {selecionados.length - saldoHoje} ficam com cartão sem convite.
+              </span>
             )}
             <button
               disabled={!selecionados.length || criando}

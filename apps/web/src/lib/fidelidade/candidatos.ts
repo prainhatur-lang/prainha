@@ -13,6 +13,7 @@
 
 import { db } from '@concilia/db';
 import { sql } from 'drizzle-orm';
+import { celular11, rotuloMotivoFora, telefonesForaDosEnvios } from '@/lib/whatsapp-nao-enviar';
 
 export interface Candidato {
   chave: string;
@@ -32,6 +33,14 @@ export interface Candidato {
   ultima: string | null;
   /** celular (11 dígitos com o 9) — dá pra mandar WhatsApp */
   celular: boolean;
+  /** já tem cartão em outra casa do grupo (nome da casa) — o cartão vale nas 3 */
+  cartaoOutraCasa: string | null;
+  /** último convite do Cliente VIP mandado pra esse telefone (qualquer casa), YYYY-MM-DD */
+  convidadoEm: string | null;
+  /** último disparo de campanha por WhatsApp (convite de abertura etc.), YYYY-MM-DD */
+  campanhaEm: string | null;
+  /** fora dos envios (recusou, pediu pra parar, não entrega…) — rótulo pronto */
+  foraDosEnvios: string | null;
 }
 
 /** aracaju = cidade/CEP de Aracaju; grande = + Socorro, Barra dos Coqueiros e
@@ -126,12 +135,38 @@ export async function candidatosConvite(
         coalesce(max(nj), 0) AS nj,
         max(ultima)::text AS ultima
       FROM k GROUP BY chave
+    ),
+    -- cartão em outra casa do grupo (vale nas 3 — não precisa de outro convite)
+    outra AS (
+      SELECT right(fc.telefone, 8) AS chave, (array_agg(f.nome ORDER BY fc.criado_em))[1] AS nome
+      FROM fidelidade_cartao fc JOIN filial f ON f.id = fc.filial_id
+      WHERE f.organizacao_id = (SELECT f0.organizacao_id FROM filial f0 WHERE f0.id = ${filialId}::uuid)
+        AND fc.filial_id <> ${filialId}::uuid
+      GROUP BY 1
+    ),
+    -- último convite do Cliente VIP pra esse telefone, de qualquer casa
+    conv AS (
+      SELECT right(fc.telefone, 8) AS chave,
+             max((fc.convidado_em AT TIME ZONE 'America/Sao_Paulo')::date)::text AS convidado_em
+      FROM fidelidade_cartao fc WHERE fc.convidado_em IS NOT NULL
+      GROUP BY 1
+    ),
+    -- último disparo de campanha por WhatsApp (abertura da Mar etc.)
+    camp AS (
+      SELECT right(cc.telefone, 8) AS chave,
+             max((cc.enviado_em AT TIME ZONE 'America/Sao_Paulo')::date)::text AS campanha_em
+      FROM campanha_convite cc WHERE cc.enviado_em IS NOT NULL
+      GROUP BY 1
     )
     SELECT a.*, greatest(a.pdv_dias, a.reservas, a.tagme) AS visitas,
       greatest(a.nj, round(a.tagme * ${janelaDias}::numeric / 365))::int AS visitas_janela,
-      e.cidade, e.bairro
+      e.cidade, e.bairro,
+      oc.nome AS outra_casa, cv.convidado_em, cp.campanha_em
     FROM agg a
     LEFT JOIN ende e ON e.chave = a.chave
+    LEFT JOIN outra oc ON oc.chave = a.chave
+    LEFT JOIN conv cv ON cv.chave = a.chave
+    LEFT JOIN camp cp ON cp.chave = a.chave
     WHERE greatest(a.pdv_dias, a.reservas, a.tagme) >= ${minimo}
       AND coalesce(trim(a.nome), '') <> ''
       AND (${regiao}::text = 'todos'
@@ -147,7 +182,9 @@ export async function candidatosConvite(
     chave: string; telefone: string; nome: string; filial_id: string | null;
     pdv_dias: number; reservas: number; tagme: number; visitas: number; visitas_janela: number;
     ultima: string | null; cidade: string | null; bairro: string | null;
+    outra_casa: string | null; convidado_em: string | null; campanha_em: string | null;
   }>;
+  const fora = await telefonesForaDosEnvios(rows.map((r) => r.telefone));
   return rows.map((r) => ({
     chave: r.chave,
     nome: titulo(r.nome),
@@ -162,6 +199,14 @@ export async function candidatosConvite(
     bairro: r.bairro ? titulo(r.bairro) : null,
     ultima: r.ultima,
     celular: ehCelular(r.telefone),
+    cartaoOutraCasa: r.outra_casa,
+    convidadoEm: r.convidado_em,
+    campanhaEm: r.campanha_em,
+    foraDosEnvios: (() => {
+      const c = celular11(r.telefone);
+      const m = c ? fora.get(c) : undefined;
+      return m ? rotuloMotivoFora(m) : null;
+    })(),
   }));
 }
 

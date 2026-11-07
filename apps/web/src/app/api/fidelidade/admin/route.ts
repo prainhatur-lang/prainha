@@ -64,7 +64,18 @@ export async function POST(request: Request) {
     // sem filtro de região o mínimo é 2 (senão vem a base inteira do Tagme)
     const minimo = Math.max(regiao === 'todos' ? 2 : 0, Math.floor(Number(b?.minimo ?? 2) || 0));
     const lista = await candidatosConvite(org.filialId, cfg.janelaDias, minimo, regiao);
-    return NextResponse.json({ ok: true, candidatos: lista });
+    // quantos convites já saíram hoje desta casa (o teto diário é por casa)
+    const [{ n: convitesHoje }] = await db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(schema.fidelidadeCartao)
+      .where(and(
+        eq(schema.fidelidadeCartao.filialId, org.filialId),
+        gte(schema.fidelidadeCartao.convidadoEm, brDateStart(hojeBr())),
+      ));
+    return NextResponse.json({
+      ok: true, candidatos: lista,
+      convitesHoje: Number(convitesHoje) || 0, convitesDia: CONVITES_DIA,
+    });
   }
 
   if (acao === 'enviar_convites') {
