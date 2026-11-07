@@ -1,7 +1,14 @@
 // Regras do cartão fidelidade: nível, desconto, reservar/confirmar uso do código.
 //
-// Cada casa tem o seu programa ("Cliente VIP Prainha Bar"): cartão, visitas e
-// desconto só valem na casa do cartão.
+// Cada casa tem o seu programa ("Cliente VIP Prainha Bar"): o cartão nasce
+// numa casa e mostra a marca dela.
+//
+// As 3 casas somam (pedido do dono 07/11/2026 — "a pessoa pode frequentar as 3
+// casas e, de acordo com o que vai somando, vai conseguindo os descontos"):
+// as visitas de TODOS os cartões da mesma pessoa (mesmo telefone ou CPF) nas
+// casas da organização contam juntas pro nível, e o código de um cartão de
+// qualquer casa é aceito nas outras. Em cada casa valem as regras DELA (% do
+// nível, bônus, só dia útil na Prainha Mar). 1 uso por dia em cada casa.
 //
 // Fluxo:
 //   0. no celular do dono (confirmado pelo WhatsApp), o cliente toca "Vou pagar
@@ -25,7 +32,7 @@ import { and, eq, gte, inArray, isNull, sql } from 'drizzle-orm';
 import { brDateStart, diasAtrasBr, hojeBr } from '@/lib/datas';
 import { ehFeriadoOuProlongado } from '@/lib/reservas/feriados';
 import {
-  carregarPrograma, nivelPorCodigo, nivelPorVisitas,
+  carregarPrograma, nivelPorCodigo, nivelPorVisitas, normalizarConfig,
   type FidelidadeConfig, type NivelFidelidade,
 } from './config';
 import {
@@ -50,20 +57,48 @@ export interface EstadoCartao {
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
-/** Nível efetivo = o maior entre o das visitas na janela e o garantido (convite). */
+/** Cartões da MESMA pessoa nas casas da organização (o próprio + os de outras
+ *  casas com o mesmo telefone, ou com o mesmo CPF quando o cartão tem CPF).
+ *  É o que faz as 3 casas somarem. Sempre inclui o próprio id. */
+export async function cartoesDaPessoa(cartaoId: string): Promise<string[]> {
+  const rows = (await db.execute(sql`
+    SELECT o.id
+      FROM fidelidade_cartao c
+      JOIN fidelidade_cartao o ON o.organizacao_id = c.organizacao_id
+     WHERE c.id = ${cartaoId}::uuid
+       AND (o.id = c.id OR o.telefone = c.telefone
+            OR (length(coalesce(c.cpf, '')) = 11 AND o.cpf = c.cpf))
+  `)) as unknown as Array<{ id: string }>;
+  const ids = rows.map((r) => r.id);
+  return ids.includes(cartaoId) ? ids : [cartaoId, ...ids];
+}
+
+/** Nível efetivo = o maior entre o das visitas na janela e o garantido (convite).
+ *  Visitas = dias diferentes em QUALQUER casa, somando os cartões da pessoa. */
 export async function estadoCartao(cartao: Cartao, cfg: FidelidadeConfig): Promise<EstadoCartao> {
   const desde = diasAtrasBr(cfg.janelaDias - 1);
+  const ids = await cartoesDaPessoa(cartao.id);
   const [{ n }] = await db
-    .select({ n: sql<number>`count(*)::int` })
+    .select({ n: sql<number>`count(DISTINCT ${schema.fidelidadeVisita.data})::int` })
     .from(schema.fidelidadeVisita)
-    .where(and(eq(schema.fidelidadeVisita.cartaoId, cartao.id), gte(schema.fidelidadeVisita.data, desde)));
+    .where(and(inArray(schema.fidelidadeVisita.cartaoId, ids), gte(schema.fidelidadeVisita.data, desde)));
   const visitas = Number(n) || 0;
   let nivel = nivelPorVisitas(cfg, visitas);
   let garantido = false;
-  const min = nivelPorCodigo(cfg, cartao.nivelMinimo);
-  if (min && (!cartao.nivelMinimoAte || cartao.nivelMinimoAte >= hojeBr()) && min.minVisitas > nivel.minVisitas) {
-    nivel = min;
-    garantido = true;
+  // nível garantido (convite): vale o melhor entre os cartões da pessoa
+  const garantias = ids.length > 1
+    ? await db
+        .select({ nivelMinimo: schema.fidelidadeCartao.nivelMinimo, nivelMinimoAte: schema.fidelidadeCartao.nivelMinimoAte })
+        .from(schema.fidelidadeCartao)
+        .where(inArray(schema.fidelidadeCartao.id, ids))
+    : [{ nivelMinimo: cartao.nivelMinimo, nivelMinimoAte: cartao.nivelMinimoAte }];
+  const hoje = hojeBr();
+  for (const g of garantias) {
+    const min = nivelPorCodigo(cfg, g.nivelMinimo);
+    if (min && (!g.nivelMinimoAte || g.nivelMinimoAte >= hoje) && min.minVisitas > nivel.minVisitas) {
+      nivel = min;
+      garantido = true;
+    }
   }
   const indice = cfg.niveis.findIndex((x) => x.codigo === nivel.codigo);
   const proximo = cfg.niveis[indice + 1] ?? null;
@@ -96,6 +131,22 @@ export async function descontoValeHoje(cfg: FidelidadeConfig): Promise<boolean> 
 }
 
 export const MSG_SO_DIA_UTIL = 'Nesta casa o desconto do Cliente VIP vale de segunda a sexta, fora feriado.';
+
+/** Alguma OUTRA casa da organização, com programa ativo, aceita o desconto
+ *  hoje? (o cartão da Prainha Mar pode gerar código no sábado pra usar no Bar —
+ *  a Mar continua recusando na loja dela). */
+export async function outraCasaValeHoje(organizacaoId: string | null, filialId: string): Promise<boolean> {
+  if (!organizacaoId) return false;
+  const progs = await db
+    .select({ filialId: schema.fidelidadePrograma.filialId, config: schema.fidelidadePrograma.config })
+    .from(schema.fidelidadePrograma)
+    .where(and(eq(schema.fidelidadePrograma.organizacaoId, organizacaoId), eq(schema.fidelidadePrograma.ativo, true)));
+  for (const p of progs) {
+    if (p.filialId === filialId) continue;
+    if (await descontoValeHoje(normalizarConfig(p.config as Partial<FidelidadeConfig>))) return true;
+  }
+  return false;
+}
 
 export function calcularDesconto(cfg: FidelidadeConfig, pct: number, consumo: number): number {
   let v = r2((consumo * pct) / 100);
@@ -284,6 +335,9 @@ export async function gerarCodigoUso(
         .where(and(
           eq(schema.fidelidadeCartao.id, cartaoId),
           sql`NOT EXISTS (SELECT 1 FROM fidelidade_cartao o WHERE o.codigo_carteira = ${codigo})`,
+          // nem igual ao código vivo de um cartão de OUTRA casa: o código de
+          // qualquer casa é aceito nas outras (07/11/2026)
+          sql`NOT EXISTS (SELECT 1 FROM fidelidade_cartao o WHERE o.codigo = ${codigo} AND o.codigo_expira_em > now() AND o.id <> ${cartaoId}::uuid)`,
         ))
         .returning({ id: schema.fidelidadeCartao.id });
       if (gravou.length) return { codigo, expiraEm, emUso: false };
@@ -371,7 +425,7 @@ export const MSG_ERRO: Record<ErroUso, string> = {
   consumo_minimo: 'O consumo ainda não atinge o mínimo pro desconto do cartão.',
   sem_desconto: 'Não há consumo pra aplicar o desconto.',
   nao_aderido: 'Cartão ainda não ativado: abra o link do convite e toque em "Quero meu cartão".',
-  outra_casa: 'Esse cartão é de outra casa. O Cliente VIP só vale na casa do cartão.',
+  outra_casa: 'Esse cartão não é das casas do Prainha.',
   funcionario: MSG_FUNCIONARIO,
   so_dia_util: MSG_SO_DIA_UTIL,
 };
@@ -404,7 +458,7 @@ export async function simularUso(
 ): Promise<{ ok: true; sim: Simulacao } | { ok: false; erro: ErroUso }> {
   const codigo = normalizarCodigo(codigoBruto);
   if (!codigo) return { ok: false, erro: 'codigo_invalido' };
-  const { ativo, config: cfg } = await carregarPrograma(filialId);
+  const { ativo, config: cfg, organizacaoId } = await carregarPrograma(filialId);
   if (!ativo) return { ok: false, erro: 'programa_inativo' };
   if (!(await descontoValeHoje(cfg))) return { ok: false, erro: 'so_dia_util' };
 
@@ -425,8 +479,25 @@ export async function simularUso(
         .from(schema.fidelidadeCartao)
         .where(and(eq(schema.fidelidadeCartao.filialId, filialId), eq(schema.fidelidadeCartao.codigoCarteira, codigo)))
         .limit(1))[0];
-  const cartao = cartaoVivo ?? cartaoCarteira;
-  const pelaCarteira = !cartaoVivo && !!cartaoCarteira;
+  // não é cartão desta casa: o de outra casa do grupo também vale (as 3 casas
+  // somam — 07/11/2026). Primeiro o código vivo, depois o da carteira.
+  const daCasa = cartaoVivo ?? cartaoCarteira;
+  const outraVivo = daCasa || !organizacaoId
+    ? undefined
+    : (await db
+        .select()
+        .from(schema.fidelidadeCartao)
+        .where(and(eq(schema.fidelidadeCartao.organizacaoId, organizacaoId), eq(schema.fidelidadeCartao.codigo, codigo), vivo))
+        .limit(1))[0];
+  const outraCart = daCasa || outraVivo || !organizacaoId
+    ? undefined
+    : (await db
+        .select()
+        .from(schema.fidelidadeCartao)
+        .where(and(eq(schema.fidelidadeCartao.organizacaoId, organizacaoId), eq(schema.fidelidadeCartao.codigoCarteira, codigo)))
+        .limit(1))[0];
+  const cartao = daCasa ?? outraVivo ?? outraCart;
+  const pelaCarteira = cartao ? !(cartaoVivo || outraVivo) : false;
   if (!cartao) {
     const [outra] = await db
       .select({ id: schema.fidelidadeCartao.id })
@@ -446,12 +517,14 @@ export async function simularUso(
   if (!cartao.aderidoEm) return { ok: false, erro: 'nao_aderido' };
   if (!cartao.funcionarioLiberado && await funcionarioDoCartao(cartao.filialId, cartao.telefone, cartao.cpf)) return { ok: false, erro: 'funcionario' };
 
-  // um uso por dia
+  // um uso por dia EM CADA CASA (somando os cartões da pessoa)
+  const idsPessoa = await cartoesDaPessoa(cartao.id);
   const [hoje] = await db
     .select({ id: schema.fidelidadeUso.id })
     .from(schema.fidelidadeUso)
     .where(and(
-      eq(schema.fidelidadeUso.cartaoId, cartao.id),
+      inArray(schema.fidelidadeUso.cartaoId, idsPessoa),
+      eq(schema.fidelidadeUso.filialId, filialId),
       eq(schema.fidelidadeUso.status, 'confirmado'),
       gte(schema.fidelidadeUso.confirmadoEm, brDateStart(hojeBr())),
     ))
@@ -613,6 +686,17 @@ export async function confirmarUso(
   }
 
   await avisarWallet(uso.cartaoId);
+
+  // a visita também sobe o nível dos cartões da mesma pessoa nas outras casas
+  try {
+    for (const id of await cartoesDaPessoa(uso.cartaoId)) {
+      if (id === uso.cartaoId) continue;
+      await tocarPass(id);
+      await avisarWallet(id);
+    }
+  } catch (e) {
+    console.error('[fidelidade] aviso aos outros cartões da pessoa', uso.cartaoId, (e as Error)?.message);
+  }
   return { ok: true };
 }
 

@@ -18,7 +18,7 @@ import { eq } from 'drizzle-orm';
 import {
   COOKIE_DIAS, aparelhoConfirmado, ativarPrimeiroAparelho, confirmarAparelho, enviarConfirmacao, nomeCookie,
 } from '@/lib/fidelidade/aparelho';
-import { MSG_FUNCIONARIO, MSG_SO_DIA_UTIL, descontoValeHoje, funcionarioDoCartao, gerarCodigoUso } from '@/lib/fidelidade/nucleo';
+import { MSG_FUNCIONARIO, MSG_SO_DIA_UTIL, descontoValeHoje, funcionarioDoCartao, gerarCodigoUso, outraCasaValeHoje } from '@/lib/fidelidade/nucleo';
 import { linkAtivarPorZap } from '@/lib/fidelidade/zap-ativar';
 import { carregarPrograma } from '@/lib/fidelidade/config';
 
@@ -73,7 +73,12 @@ export async function POST(req: Request) {
       }
       const prog = await carregarPrograma(c.filialId);
       if (!prog.ativo) return NextResponse.json({ erro: `O ${prog.marca} está pausado no momento.` }, { status: 409 });
-      if (!(await descontoValeHoje(prog.config))) return NextResponse.json({ erro: MSG_SO_DIA_UTIL }, { status: 409 });
+      // o código vale nas 3 casas (07/11/2026): se a casa do cartão não aceita
+      // hoje (Prainha Mar no fim de semana), gera mesmo assim quando outra casa
+      // aceita — a loja da Mar continua recusando no caixa.
+      if (!(await descontoValeHoje(prog.config)) && !(await outraCasaValeHoje(prog.organizacaoId, c.filialId))) {
+        return NextResponse.json({ erro: MSG_SO_DIA_UTIL }, { status: 409 });
+      }
       const r = await gerarCodigoUso(c.id, aparelho);
       return NextResponse.json({ ok: true, codigo: r.codigo, expira_em: r.expiraEm.toISOString(), em_uso: r.emUso });
     }

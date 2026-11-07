@@ -157,7 +157,7 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
                 Na hora de pagar, digite na tela do Pix o <b>código de 4 letras</b>. Salvando o cartão na carteira do
                 celular, o código fica na frente dele e troca sozinho depois de cada pagamento. Sem a carteira, toque em
                 &quot;Vou pagar agora&quot;: sai um código que vale 1 minuto, uma vez só. O cartão é pessoal — 1 uso por
-                dia, só no {v.casa}.
+                dia em cada casa do Prainha (Prainha Bar, Tabuará e Prainha Mar).
               </p>
             </div>
           </>
@@ -248,7 +248,7 @@ export default async function CartaoPage(props: { params: Promise<{ token: strin
         </div>
 
         <p className="px-2 text-center text-xs text-slate-500">
-          Vale só no {v.casa}, pagando no Pix (cada casa do grupo tem o seu Cliente VIP). O desconto é sobre o consumo; a taxa de serviço
+          Vale nas 3 casas do Prainha (Prainha Bar, Tabuará e Prainha Mar), pagando no Pix — as visitas nas 3 somam pra subir de categoria. O desconto é sobre o consumo; a taxa de serviço
           continua sobre o valor cheio. Dias úteis = segunda a sexta, fora feriado.
           {v.soDiaUtil ? <> No {v.casa} o desconto só vale em dia útil.</> : null}
         </p>

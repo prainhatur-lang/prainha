@@ -74,7 +74,11 @@ export async function listarCartoes(filialId: string, cfg: FidelidadeConfig): Pr
            c.convidado_em::text AS convidado_em, c.criado_em::text AS criado_em,
            c.aderido_em::text AS aderido_em, c.recusado_em::text AS recusado_em,
            c.convite_erro, c.convite_status, c.cidade,
-           (SELECT count(*)::int FROM fidelidade_visita v WHERE v.cartao_id = c.id AND v.data >= ${desde}::date) AS visitas,
+           (SELECT count(DISTINCT v.data)::int FROM fidelidade_visita v
+              JOIN fidelidade_cartao o ON o.id = v.cartao_id
+             WHERE o.organizacao_id = c.organizacao_id
+               AND (o.id = c.id OR o.telefone = c.telefone OR (length(coalesce(c.cpf, '')) = 11 AND o.cpf = c.cpf))
+               AND v.data >= ${desde}::date) AS visitas, -- as 3 casas somam (07/11/2026)
            (SELECT count(*)::int FROM fidelidade_uso u WHERE u.cartao_id = c.id AND u.status = 'confirmado') AS usos,
            (SELECT max(u.confirmado_em)::text FROM fidelidade_uso u WHERE u.cartao_id = c.id AND u.status = 'confirmado') AS ultimo_uso
     FROM fidelidade_cartao c

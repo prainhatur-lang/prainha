@@ -1,7 +1,9 @@
 // "Esse telefone é Cliente VIP desta casa?" — usado pelos benefícios fora
 // do Pix: prioridade na reserva e desconto no aluguel de espaço (orçamento).
-// Casa pelos últimos 8 dígitos (mesmo critério da base de clientes), só no
-// programa DA FILIAL (cada casa tem o seu Cliente VIP). Só conta cartão ativo e ADERIDO.
+// Casa pelos últimos 8 dígitos (mesmo critério da base de clientes). Desde
+// 07/11/2026 as 3 casas somam: vale o cartão de qualquer casa da organização
+// (o desta casa primeiro), com o nível e o % do programa DESTA casa. Só conta
+// cartão ativo e ADERIDO.
 
 import { db, schema } from '@concilia/db';
 import { and, eq, isNotNull, sql } from 'drizzle-orm';
@@ -24,17 +26,20 @@ export async function membroPorTelefone(filialId: string, telefone: string | nul
   const dig = String(telefone ?? '').replace(/\D/g, '');
   if (dig.length < 8) return null;
   const chave = dig.slice(-8);
-  const { ativo, config: cfg, casa } = await carregarPrograma(filialId);
+  const { ativo, config: cfg, casa, organizacaoId } = await carregarPrograma(filialId);
   if (!ativo) return null;
   const [c] = await db
     .select()
     .from(schema.fidelidadeCartao)
     .where(and(
-      eq(schema.fidelidadeCartao.filialId, filialId),
+      organizacaoId
+        ? eq(schema.fidelidadeCartao.organizacaoId, organizacaoId)
+        : eq(schema.fidelidadeCartao.filialId, filialId),
       eq(schema.fidelidadeCartao.status, 'ativo'),
       isNotNull(schema.fidelidadeCartao.aderidoEm),
       sql`right(${schema.fidelidadeCartao.telefone}, 8) = ${chave}::text`,
     ))
+    .orderBy(sql`(${schema.fidelidadeCartao.filialId} = ${filialId}::uuid) DESC`)
     .limit(1);
   if (!c) return null;
   const { nivel } = await estadoCartao(c, cfg);
@@ -60,7 +65,8 @@ export async function membrosPorTelefones(filialId: string, telefones: Array<str
   const rows = (await db.execute(sql`
     SELECT DISTINCT right(fc.telefone, 8) AS chave
     FROM fidelidade_cartao fc
-    WHERE fc.filial_id = ${filialId}::uuid AND fc.status = 'ativo' AND fc.aderido_em IS NOT NULL
+    WHERE fc.organizacao_id = (SELECT f.organizacao_id FROM filial f WHERE f.id = ${filialId}::uuid)
+      AND fc.status = 'ativo' AND fc.aderido_em IS NOT NULL
       AND right(fc.telefone, 8) IN (${sql.join(chaves.map((c) => sql`${c}::text`), sql`, `)})
   `)) as unknown as Array<{ chave: string }>;
   return new Set(rows.map((r) => r.chave));

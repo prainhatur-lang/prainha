@@ -41,7 +41,11 @@ export async function GET(req: Request) {
         eq(schema.fidelidadeCartao.status, 'ativo'),
         sql`(${schema.fidelidadeCartao.nivelMinimoAte} = ${ontem}::date
           OR EXISTS (SELECT 1 FROM fidelidade_visita v
-                      WHERE v.cartao_id = ${schema.fidelidadeCartao.id} AND v.data = ${saiu}::date))`,
+                       JOIN fidelidade_cartao o ON o.id = v.cartao_id
+                      WHERE o.organizacao_id = fidelidade_cartao.organizacao_id
+                        AND (o.id = fidelidade_cartao.id OR o.telefone = fidelidade_cartao.telefone
+                             OR (length(coalesce(fidelidade_cartao.cpf, '')) = 11 AND o.cpf = fidelidade_cartao.cpf))
+                        AND v.data = ${saiu}::date))`,
       ));
     for (const c of cartoes) ids.add(c.id);
   }
