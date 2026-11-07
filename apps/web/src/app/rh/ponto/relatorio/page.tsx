@@ -13,7 +13,7 @@ import { db, schema } from '@concilia/db';
 import { and, asc, gte, inArray, isNull, lte, eq } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { hojeBr } from '@/lib/datas';
-import { calcularDia, faltaIntervalo, minutosNoturnos } from '@/lib/rh/calcular-ponto';
+import { calcularDia, faltaIntervalo, minutosDoDia, minutosNoturnos } from '@/lib/rh/calcular-ponto';
 import { pontoProprioDesde } from '@/lib/rh/ponto-vigencia';
 import { horaMinutoBr, somarDias } from '@/lib/rh/dia-operacional';
 import { diaDaSemana, fmtHoras, fmtSaldo, jornadaNoDia, minutosPrevistos, type VigenciaJornada } from '@/lib/rh/banco-horas';
@@ -199,6 +199,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
       dataDesligamento: schema.funcionario.dataDesligamento,
       ativo: schema.funcionario.ativo,
       horaEntrada: schema.funcionario.pontoHoraEntrada,
+      intervaloPre: schema.funcionario.intervaloPreAssinalado,
       regimeSalarial: schema.funcionario.regimeSalarial,
       empresaRegistro: schema.funcionario.empresaRegistro,
       cnpjRegistro: schema.funcionario.cnpjRegistro,
@@ -458,8 +459,9 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
       let semIntervalo = false;
       for (const l of porCasa.values()) {
         const c = calcularDia(l);
-        if (faltaIntervalo(dia, c)) semIntervalo = true;
-        trab += c.totalMin;
+        // Intervalo pré-assinalado (07/11/2026): desconta 30 min, sem pendência.
+        if (faltaIntervalo(dia, c, f.intervaloPre)) semIntervalo = true;
+        trab += minutosDoDia(dia, c, f.intervaloPre);
         const n = minutosNoturnos(c.pares);
         notReal += n.reais;
         notFicto += n.fictos;

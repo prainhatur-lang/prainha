@@ -133,6 +133,7 @@
     "complementar:funcionario-extrato": "tsx scripts/complementar-funcionario-extrato.ts",
     "migrate:funcionario-face": "tsx scripts/migrate-funcionario-face.ts",
     "migrate:funcionario-gemeo": "tsx scripts/migrate-funcionario-gemeo.ts",
+    "migrate:funcionario-intervalo-pre": "tsx scripts/migrate-funcionario-intervalo-pre.ts",
     "migrate:funcionario-limite-semana": "tsx scripts/migrate-funcionario-limite-semana.ts",
     "migrate:funcionario-hora-entrada": "tsx scripts/migrate-funcionario-hora-entrada.ts",
     "migrate:funcionario-regime-agenda": "tsx scripts/migrate-funcionario-regime-agenda.ts",

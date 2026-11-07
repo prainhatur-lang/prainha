@@ -296,6 +296,7 @@ export default async function FuncionariosPage(props: { searchParams: Promise<SP
               endereco: f.endereco,
               cargo: f.cargo,
               setor: f.setor,
+              intervaloPreAssinalado: f.intervaloPreAssinalado,
               dataAdmissao: f.dataAdmissao,
               dataDesligamento: f.dataDesligamento,
               ativo: f.ativo,

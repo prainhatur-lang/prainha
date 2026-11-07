@@ -8,7 +8,7 @@
 
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, gte, inArray, isNull, lt, lte } from 'drizzle-orm';
-import { calcularDia, faltaIntervalo, minutosNoturnos, type Batida } from './calcular-ponto';
+import { calcularDia, faltaIntervalo, minutosDoDia, minutosNoturnos, type Batida } from './calcular-ponto';
 import type { DiaHoras } from './folha-mensal';
 
 /** Salário mínimo 2026 (base da quebra de caixa do intermitente). */
@@ -19,10 +19,12 @@ export async function horasDoMesPorCpf(cpfs: string[], ini: string, fim: string)
   if (cpfs.length === 0) return saida;
 
   const funcs = await db
-    .select({ id: schema.funcionario.id, cpf: schema.funcionario.cpf })
+    .select({ id: schema.funcionario.id, cpf: schema.funcionario.cpf, intervaloPre: schema.funcionario.intervaloPreAssinalado })
     .from(schema.funcionario)
     .where(inArray(schema.funcionario.cpf, cpfs));
   const cpfDoFunc = new Map(funcs.map((f) => [f.id, f.cpf as string]));
+  // Intervalo pré-assinalado (07/11/2026): desconta 30 min em vez de pendente.
+  const preIntervalo = new Set(funcs.filter((f) => f.intervaloPre).map((f) => f.id));
 
   // Ponto: pareia por funcionário + casa + dia, depois soma no CPF + dia.
   const ponto = new Map<string, { min: number; noturnoMin: number }>();
@@ -57,10 +59,11 @@ export async function horasDoMesPorCpf(cpfs: string[], ini: string, fim: string)
       if (calc.totalMin <= 0) continue;
       // Intervalo obrigatório (03/11/2026): dia > 6h sem intervalo batido fica
       // pendente — não paga até o gestor lançar o intervalo em /rh/ponto.
-      if (faltaIntervalo(dia, calc)) continue;
+      const pre = preIntervalo.has(funcId);
+      if (faltaIntervalo(dia, calc, pre)) continue;
       const kk = `${cpfDoFunc.get(funcId)}|${dia}`;
       const atual = ponto.get(kk) ?? { min: 0, noturnoMin: 0 };
-      atual.min += calc.totalMin;
+      atual.min += minutosDoDia(dia, calc, pre);
       atual.noturnoMin += minutosNoturnos(calc.pares).reais;
       ponto.set(kk, atual);
     }

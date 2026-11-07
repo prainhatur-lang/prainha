@@ -12,6 +12,7 @@ import { and, eq, gte, lte, sql } from 'drizzle-orm';
 import { calcularDia, minutosParaFolha, type Batida } from './calcular-ponto';
 import { semanaContemDia } from '@/lib/folha/semana';
 import { diaDoPontoProprio } from './ponto-vigencia';
+import { idsIntervaloPreAssinalado } from './intervalo-pre';
 
 export interface ResultadoProjecao {
   diasCalculados: number;
@@ -56,6 +57,8 @@ export async function projetarPontoEmFolhaHoras(
 
   const semVinculo = new Set<string>();
   let linhasFolha = 0;
+  // Intervalo pré-assinalado (07/11/2026): desconta 30 min em vez de pendente.
+  const preIntervalo = await idsIntervaloPreAssinalado([...new Set(batidas.map((b) => b.funcionarioId))]);
 
   for (const [chave, bs] of grupos) {
     const [funcionarioId, dia] = chave.split('|');
@@ -98,7 +101,7 @@ export async function projetarPontoEmFolhaHoras(
     // com 0 (pendente) até o gestor lançar o intervalo; a correção reprojeta.
     await db
       .insert(schema.folhaHoras)
-      .values({ folhaSemanaId: folha.id, fornecedorId, dia, totalMin: minutosParaFolha(dia, calc), origem: 'ponto_proprio' })
+      .values({ folhaSemanaId: folha.id, fornecedorId, dia, totalMin: minutosParaFolha(dia, calc, preIntervalo.has(funcionarioId)), origem: 'ponto_proprio' })
       .onConflictDoUpdate({
         target: [schema.folhaHoras.folhaSemanaId, schema.folhaHoras.fornecedorId, schema.folhaHoras.dia],
         set: { totalMin: sql`excluded.total_min`, origem: sql`excluded.origem` },

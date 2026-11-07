@@ -14,7 +14,8 @@ import { db, schema } from '@concilia/db';
 import { and, asc, eq, gte, inArray, isNull, lt, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { hojeBr } from '@/lib/datas';
-import { calcularDia, faltaIntervalo } from '@/lib/rh/calcular-ponto';
+import { calcularDia, faltaIntervalo, minutosDoDia } from '@/lib/rh/calcular-ponto';
+import { idsIntervaloPreAssinalado } from '@/lib/rh/intervalo-pre';
 import { pontoProprioDesde } from '@/lib/rh/ponto-vigencia';
 import { somarDias } from '@/lib/rh/dia-operacional';
 import { MIN_DIA_ESCALA_MES, jornadaNoDia, minutosPrevistos, type VigenciaJornada } from '@/lib/rh/banco-horas';
@@ -192,14 +193,17 @@ export default async function BancoHorasPage(props: { searchParams: Promise<SP> 
     porCasaDia.set(k, lista);
   }
   const trabalhado = new Map<string, { min: number; incompleto: boolean; semIntervalo?: boolean }>();
+  // Intervalo pré-assinalado (07/11/2026): desconta 30 min em vez de pendente.
+  const preIntervalo = await idsIntervaloPreAssinalado(ids);
   for (const [k, lista] of porCasaDia) {
     const [fid, dia] = k.split('|');
     const calc = calcularDia(lista);
     const chave = `${fid}|${dia}`;
     const at = trabalhado.get(chave) ?? { min: 0, incompleto: false };
     // Intervalo obrigatório (03/11/2026): dia > 6h sem intervalo fica pendente (0).
-    if (faltaIntervalo(dia, calc)) at.semIntervalo = true;
-    else at.min += calc.totalMin;
+    const pre = preIntervalo.has(fid);
+    if (faltaIntervalo(dia, calc, pre)) at.semIntervalo = true;
+    else at.min += minutosDoDia(dia, calc, pre);
     if (calc.status === 'incompleto' || calc.orfas > 0) at.incompleto = true;
     trabalhado.set(chave, at);
   }

@@ -32,6 +32,8 @@ interface Celula {
   status: string;
   /** Intervalo obrigatório (03/11/2026): > 6h sem intervalo = pendente, fora da folha. */
   semIntervalo?: boolean;
+  /** Intervalo pré-assinalado (07/11/2026): minutos descontados (30) no dia sem intervalo batido. */
+  intervaloPreMin?: number;
 }
 interface Props {
   /** Casa aberta na tela: a correção grava nela, não na casa do cadastro. */
@@ -324,6 +326,11 @@ export function PontoManager({ filialId, dias, funcionarios, grade, gemeos = [],
                             </div>
                             {semIntervalo && (
                               <div className="font-semibold text-red-700">⚠ sem intervalo</div>
+                            )}
+                            {!incompleto && !!cel.intervaloPreMin && (
+                              <div className="text-slate-400" title="Intervalo pré-assinalado no cadastro (CCT): desconta 30 min quando não bate o intervalo">
+                                −{cel.intervaloPreMin} min intervalo
+                              </div>
                             )}
                           </div>
                         )}

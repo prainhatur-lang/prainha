@@ -11,7 +11,7 @@ import { and, eq, exists, gte, isNull, lte, or, sql } from 'drizzle-orm';
 import { inArray } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { semanaAtual, semanaContemDia, diasDaSemana, labelSemana, nomeDia, toIsoDate } from '@/lib/folha/semana';
-import { calcularDia, faltaIntervalo } from '@/lib/rh/calcular-ponto';
+import { calcularDia, descontoIntervaloPre, faltaIntervalo } from '@/lib/rh/calcular-ponto';
 import { PontoManager } from './manager';
 import { atestadosNoPeriodo, diasDeAtestado } from '@/lib/rh/atestado';
 import { PontoCelularPainel } from './ponto-celular-painel';
@@ -57,6 +57,7 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
       nome: schema.funcionario.nome,
       temRosto: sql<boolean>`${schema.funcionario.faceDescriptor} IS NOT NULL`,
       gemeoDeId: schema.funcionario.gemeoDeId,
+      intervaloPre: schema.funcionario.intervaloPreAssinalado,
     })
     .from(schema.funcionario)
     .where(
@@ -160,6 +161,7 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
       totalMin: number;
       status: string;
       semIntervalo?: boolean;
+      intervaloPreMin?: number;
     }
   >();
   for (const f of funcionarios) {
@@ -181,9 +183,11 @@ export default async function PontoPage(props: { searchParams: Promise<SP> }) {
             geoLng: b.geoLng != null ? Number(b.geoLng) : null,
             temSelfie: comSelfie.has(b.id),
           })),
-        totalMin: calc.totalMin,
+        // Intervalo pré-assinalado (07/11/2026): desconta 30 min, sem pendência.
+        totalMin: calc.totalMin - descontoIntervaloPre(dia, calc, f.intervaloPre),
         status: calc.status,
-        semIntervalo: faltaIntervalo(dia, calc),
+        semIntervalo: faltaIntervalo(dia, calc, f.intervaloPre),
+        intervaloPreMin: descontoIntervaloPre(dia, calc, f.intervaloPre) || undefined,
       });
     }
   }

@@ -1582,8 +1582,8 @@ const DIAS_PONTO_ABERTO = 7;
  */
 async function pontoEmAbertoDaCasa(filialId: string, dia: string): Promise<PontoAberto[]> {
   const desde = somaDias(dia, -(DIAS_PONTO_ABERTO - 1));
-  const rows = await q<{ funcionario_id: string; nome: string; dia: string; batidas: Array<{ h: string; t: string; q: string }> }>(sql`
-    SELECT b.funcionario_id, f.nome, b.dia_operacional::text AS dia,
+  const rows = await q<{ funcionario_id: string; nome: string; dia: string; pre: boolean; batidas: Array<{ h: string; t: string; q: string }> }>(sql`
+    SELECT b.funcionario_id, f.nome, b.dia_operacional::text AS dia, f.intervalo_pre_assinalado AS pre,
            json_agg(json_build_object(
              'h', to_char(b.quando AT TIME ZONE ${TZ}, 'HH24:MI'),
              't', b.tipo,
@@ -1593,7 +1593,7 @@ async function pontoEmAbertoDaCasa(filialId: string, dia: string): Promise<Ponto
      WHERE b.filial_id = ${filialId}
        AND b.dia_operacional >= ${desde}::date AND b.dia_operacional <= ${dia}::date
        AND b.excluida_em IS NULL
-     GROUP BY b.funcionario_id, f.nome, b.dia_operacional
+     GROUP BY b.funcionario_id, f.nome, b.dia_operacional, f.intervalo_pre_assinalado
   `);
   const out: PontoAberto[] = [];
   for (const r of rows) {
@@ -1613,7 +1613,7 @@ async function pontoEmAbertoDaCasa(filialId: string, dia: string): Promise<Ponto
     // também é pendência — o dia fica fora da folha até lançar o intervalo.
     if (!falta.length) {
       const calc = calcularDia((r.batidas ?? []).map((b) => ({ quando: new Date(b.q), tipo: b.t === 'saida' ? 'saida' : 'entrada' })));
-      if (faltaIntervalo(r.dia, calc)) {
+      if (faltaIntervalo(r.dia, calc, !!r.pre)) {
         falta.push(`${Math.floor(calc.totalMin / 60)}h${String(calc.totalMin % 60).padStart(2, '0')} sem bater o intervalo (fora da folha)`);
       }
     }

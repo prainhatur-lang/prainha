@@ -107,6 +107,11 @@ export const funcionario = pgTable(
      *  homem folga 1 domingo a cada 5 trabalhados; mulher a cada 2 semanas,
      *  CLT 386). Marcado na grade de /rh/escala-mensal (19/10/2026). */
     sexo: varchar('sexo', { length: 1 }),
+    /** Intervalo pré-assinalado (CCT cl.15/17, dono 07/11/2026 — cozinha do
+     *  Prainha Bar): não precisa bater o intervalo; dia > 6h sem intervalo
+     *  batido desconta 30 min em vez de ficar pendente. Marcado no cadastro
+     *  (/rh/funcionarios). */
+    intervaloPreAssinalado: boolean('intervalo_pre_assinalado').notNull().default(false),
 
     /** Valor de FUNCOES_TALENTO (schema/talento.ts). */
     cargo: varchar('cargo', { length: 60 }),

@@ -37,6 +37,8 @@ interface Funcionario {
   endereco: string | null;
   cargo: string | null;
   setor: string | null;
+  /** Intervalo pré-assinalado (CCT, 07/11/2026): não bate o intervalo, desconta 30 min. */
+  intervaloPreAssinalado: boolean;
   dataAdmissao: string | null;
   dataDesligamento: string | null;
   ativo: boolean;
@@ -512,6 +514,7 @@ function FuncionarioForm({
   const [endereco, setEndereco] = useState(funcionario?.endereco ?? '');
   const [cargo, setCargo] = useState(funcionario?.cargo ?? '');
   const [setor, setSetor] = useState(funcionario?.setor ?? '');
+  const [intervaloPre, setIntervaloPre] = useState(funcionario?.intervaloPreAssinalado ?? false);
   const [dataAdmissao, setDataAdmissao] = useState(funcionario?.dataAdmissao ?? '');
   const [regimeSalarial, setRegimeSalarial] = useState(funcionario?.regimeSalarial ?? '');
   const [salarioBase, setSalarioBase] = useState(funcionario?.salarioBase ?? '');
@@ -584,6 +587,7 @@ function FuncionarioForm({
         endereco: endereco.trim() || null,
         cargo: cargo || null,
         setor: setor || null,
+        intervaloPreAssinalado: intervaloPre,
         dataAdmissao: dataAdmissao || null,
         regimeSalarial: regimeSalarial || null,
         salarioBase: regimeSalarial ? salarioBase || null : null,
@@ -781,6 +785,18 @@ function FuncionarioForm({
             onChange={(e) => setDataAdmissao(e.target.value)}
             className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
           />
+        </label>
+        <label className="col-span-2 flex items-start gap-2 text-xs text-slate-600 sm:col-span-3">
+          <input
+            type="checkbox"
+            checked={intervaloPre}
+            onChange={(e) => setIntervaloPre(e.target.checked)}
+            className="mt-0.5"
+          />
+          <span>
+            <b>Não precisa bater o intervalo</b> — intervalo pré-assinalado de 30 min (CCT). No dia com mais de 6h
+            sem intervalo batido, o ponto desconta 30 min em vez de deixar o dia pendente.
+          </span>
         </label>
         <label className="col-span-2 text-xs text-slate-500 sm:col-span-3">
           Endereço

@@ -100,15 +100,55 @@ export function maiorIntervaloMin(pares: { entrada: string; saida: string }[]): 
   return maior;
 }
 
-/** Dia (operacional, YYYY-MM-DD) com mais de 6h trabalhadas e nenhum
- *  intervalo de pelo menos 15 min batido, a partir da vigência da regra. */
-export function faltaIntervalo(dia: string, calc: { totalMin: number; pares: { entrada: string; saida: string }[] }): boolean {
+/** Intervalo pré-assinalado (CCT SINDHOTRE 2026/2028 cl.15/17 — dono
+ *  07/11/2026, cozinha do Prainha Bar): quem tem a marca no cadastro
+ *  (funcionario.intervalo_pre_assinalado) não precisa bater o intervalo; no
+ *  dia > 6h sem intervalo batido desconta 30 min em vez de ficar pendente.
+ *  Se a pessoa bateu o intervalo, vale o batido (sem desconto extra). */
+export const INTERVALO_PRE_ASSINALADO_MIN = 30;
+
+/** Dia sem intervalo batido que exige intervalo (> 6h, a partir da vigência). */
+function semIntervaloBatido(dia: string, calc: { totalMin: number; pares: { entrada: string; saida: string }[] }): boolean {
   if (dia < INTERVALO_OBRIGATORIO_DESDE) return false;
   if (calc.totalMin <= JORNADA_EXIGE_INTERVALO_MIN) return false;
   return maiorIntervaloMin(calc.pares) < INTERVALO_MINIMO_MIN;
 }
 
-/** Minutos que vão pra folha: dia sem intervalo fica pendente (0). */
-export function minutosParaFolha(dia: string, calc: { totalMin: number; pares: { entrada: string; saida: string }[] }): number {
-  return faltaIntervalo(dia, calc) ? 0 : calc.totalMin;
+/** Dia (operacional, YYYY-MM-DD) com mais de 6h trabalhadas e nenhum
+ *  intervalo de pelo menos 15 min batido, a partir da vigência da regra.
+ *  Com intervalo pré-assinalado nunca fica pendente (desconta 30 min). */
+export function faltaIntervalo(
+  dia: string,
+  calc: { totalMin: number; pares: { entrada: string; saida: string }[] },
+  preAssinalado = false,
+): boolean {
+  return !preAssinalado && semIntervaloBatido(dia, calc);
+}
+
+/** Minutos de intervalo pré-assinalado descontados no dia (30 ou 0). */
+export function descontoIntervaloPre(
+  dia: string,
+  calc: { totalMin: number; pares: { entrada: string; saida: string }[] },
+  preAssinalado = false,
+): number {
+  return preAssinalado && semIntervaloBatido(dia, calc) ? INTERVALO_PRE_ASSINALADO_MIN : 0;
+}
+
+/** Minutos trabalhados do dia já com o desconto do intervalo pré-assinalado. */
+export function minutosDoDia(
+  dia: string,
+  calc: { totalMin: number; pares: { entrada: string; saida: string }[] },
+  preAssinalado = false,
+): number {
+  return calc.totalMin - descontoIntervaloPre(dia, calc, preAssinalado);
+}
+
+/** Minutos que vão pra folha: dia sem intervalo fica pendente (0); com
+ *  intervalo pré-assinalado, desconta 30 min. */
+export function minutosParaFolha(
+  dia: string,
+  calc: { totalMin: number; pares: { entrada: string; saida: string }[] },
+  preAssinalado = false,
+): number {
+  return faltaIntervalo(dia, calc, preAssinalado) ? 0 : minutosDoDia(dia, calc, preAssinalado);
 }
