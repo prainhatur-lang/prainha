@@ -739,6 +739,11 @@ async function validarSlotEAlocarMesa(p: {
    *  31/10/2026: a passarela fica do lado esquerdo, onde começa a mesa 01).
    *  Em vez da menor mesa que cabe, pega a de MENOR NÚMERO que cabe. */
   pertoPassarela?: boolean;
+  /** SEGURAR A MESA (dono 08/11/2026, caso Dra. Jéssica): reserva que o
+   *  cliente JÁ TEM pra hoje, só empurrando o horário pra mais tarde, com a
+   *  casa tranquila. Não é reserva nova: dia fechado e corte do dia não
+   *  barram. Área, hora-limite e mesa livre continuam valendo. */
+  seguraHoje?: boolean;
 }): Promise<string | SlotAlocado> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(p.data)) return 'Data inválida (use YYYY-MM-DD).';
   if (!/^\d{2}:\d{2}$/.test(p.hora)) return 'Hora inválida (use HH:MM).';
@@ -758,7 +763,10 @@ async function validarSlotEAlocarMesa(p: {
     // uma mesa com meia hora tranquilamente, e o objetivo do corte dinâmico é
     // justamente ENCHER a casa. Então o mínimo vira 20 min quando há espaço;
     // casa movimentada (>=70%) mantém a hora cheia.
-    if (minutosAte < 60) {
+    // Segurar mesa que já existe não é reserva em cima da hora: só não pode
+    // ser horário que já passou.
+    if (p.seguraHoje && minutosAte < 0) return 'Esse horário já passou. Peça um horário mais tarde.';
+    if (minutosAte < 60 && !p.seguraHoje) {
       const oc = await medirOcupacaoHoje(p.filialId, p.cfg);
       // Antes das 9h a casa abre vazia (23/10/2026, caso Charles às 08:58):
       // pedido pras 9h/9h30 de hoje entra sem antecedência mínima.
@@ -769,7 +777,7 @@ async function validarSlotEAlocarMesa(p: {
     }
   }
 
-  if (p.cfg.excecoes?.some((e) => e.data === p.data && e.fechado)) {
+  if (!p.seguraHoje && p.cfg.excecoes?.some((e) => e.data === p.data && e.fechado)) {
     return `Sem vagas pra ${dataBr(p.data)} (data fechada). Ofereça outro dia.`;
   }
   // Lounge pago pela Nina: o corte do dia (sáb/dom/feriado) não vale — a
@@ -781,7 +789,7 @@ async function validarSlotEAlocarMesa(p: {
   if (areaComTaxa && p.cfg.atendimento?.inicio && p.hora < p.cfg.atendimento.inicio) {
     return `${areaComTaxa.nome}: a casa só recebe a partir das ${p.cfg.atendimento.inicio}. Sugira um horário a partir daí.`;
   }
-  const janela = areaComTaxa ? { bloqueado: false as const, motivo: '' } : await foraDaJanelaAtendimento(p.cfg, p.data, p.hora);
+  const janela = areaComTaxa || p.seguraHoje ? { bloqueado: false as const, motivo: '' } : await foraDaJanelaAtendimento(p.cfg, p.data, p.hora);
   if (janela.bloqueado) {
     // CORTE DINÂMICO (regra do Elison): pedido pra HOJE barrado pelo corte
     // padrão, mas a casa está com espaço agora → libera até o corte
@@ -1240,6 +1248,26 @@ export async function remarcarReservaWhatsApp(p: {
   const cfg = filial?.reservaConfig;
   if (!cfg?.areas?.length) return 'Reservas indisponíveis no momento — transfira pra equipe.';
 
+  // SEGURAR A MESA ATÉ MAIS TARDE (dono 08/11/2026): reserva de HOJE, mesma
+  // área, mesmas pessoas ou menos, só o horário mais tarde (até 2h) e a casa
+  // tranquila (sem fila, abaixo da ocupação média) → segura, mesmo com o dia
+  // fechado pra reserva nova.
+  let seguraHoje = false;
+  if (
+    data === hojeBr() &&
+    String(alvo.data) === data &&
+    area.toLowerCase() === String(alvo.area ?? '').toLowerCase() &&
+    pessoas <= alvo.pessoas &&
+    hora > horaAtual
+  ) {
+    const [hn, mn] = hora.split(':').map(Number);
+    const [ha, ma] = horaAtual.split(':').map(Number);
+    if (hn * 60 + mn - (ha * 60 + ma) <= 120) {
+      const oc = await medirOcupacaoHoje(p.filialId, cfg).catch(() => null);
+      seguraHoje = !!oc?.casaTranquila;
+    }
+  }
+
   const slot = await validarSlotEAlocarMesa({
     filialId: p.filialId,
     cfg,
@@ -1247,6 +1275,7 @@ export async function remarcarReservaWhatsApp(p: {
     hora,
     pessoas,
     area,
+    seguraHoje,
     excluirReservaId: alvo.id,
     telefone: p.telefone,
     pertoPassarela: p.pertoPassarela,
