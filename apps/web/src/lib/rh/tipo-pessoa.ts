@@ -5,7 +5,7 @@
 // Usado no selo ao lado do nome em /rh/ponto (pedido do dono 06/11/2026).
 
 import { db, schema } from '@concilia/db';
-import { and, inArray, isNull } from 'drizzle-orm';
+import { and, inArray, isNotNull, isNull } from 'drizzle-orm';
 import { jornadaNoDia } from '@/lib/rh/banco-horas';
 
 import type { TipoPessoa } from '@/lib/rh/tipo-pessoa-rotulo';
@@ -61,6 +61,31 @@ export async function tiposDasPessoas(ids: string[], dia: string): Promise<Map<s
   }
   const jornadaPorId = new Map(jornadas.map((j) => [j.id, j]));
 
+  // Mudança de regime agendada e já aplicada DEPOIS da última folha do
+  // contador (ex.: Tabuará vira CLT em 01/11, folha de out ainda diz
+  // "Intermitente"): vale o regime novo até a folha seguinte chegar
+  // (dono 08/11/2026).
+  const agendaRows = await db
+    .select({
+      funcionarioId: schema.funcionarioRegimeAgenda.funcionarioId,
+      aPartir: schema.funcionarioRegimeAgenda.aPartir,
+      regime: schema.funcionarioRegimeAgenda.regimeSalarial,
+    })
+    .from(schema.funcionarioRegimeAgenda)
+    .where(
+      and(
+        inArray(schema.funcionarioRegimeAgenda.funcionarioId, ids),
+        isNotNull(schema.funcionarioRegimeAgenda.aplicadoEm),
+        isNull(schema.funcionarioRegimeAgenda.canceladoEm),
+      ),
+    );
+  const agendaPor = new Map<string, { aPartir: string; regime: string }>();
+  for (const r of agendaRows) {
+    if (r.aPartir > dia) continue;
+    const at = agendaPor.get(r.funcionarioId);
+    if (!at || r.aPartir > at.aPartir) agendaPor.set(r.funcionarioId, { aPartir: r.aPartir, regime: r.regime });
+  }
+
   for (const p of funcs) {
     const vig = vigRows
       .filter((v) => v.funcionarioId === p.id)
@@ -75,7 +100,14 @@ export async function tiposDasPessoas(ids: string[], dia: string): Promise<Map<s
       ? '12x36'
       : registrado
         ? folhaC
-          ? /intermit/i.test(folhaC.vinculo ?? '') ? 'intermitente' : 'clt'
+          ? (() => {
+              const ag = agendaPor.get(p.id);
+              // Competência 'AAAA-MM': agenda de mês posterior manda.
+              if (ag && ag.aPartir.slice(0, 7) > folhaC.competencia.slice(0, 7)) {
+                return ag.regime === 'intermitente_hora' ? 'intermitente' : 'clt';
+              }
+              return /intermit/i.test(folhaC.vinculo ?? '') ? 'intermitente' : 'clt';
+            })()
           : jAtual?.tipo === 'intermitente' || (jAtual?.tipo !== 'fixa' && p.regimeSalarial === 'intermitente_hora')
             ? 'intermitente'
             : 'clt'
