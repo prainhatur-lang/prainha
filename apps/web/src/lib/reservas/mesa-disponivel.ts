@@ -11,7 +11,7 @@
 // agente-local (~15min, ciclo padrão) — não é tempo real.
 
 import { db, schema } from '@concilia/db';
-import { and, eq, inArray, isNull, ne } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { hojeBr } from '@/lib/datas';
 import { parseJuntadas } from './mesas-juntadas';
 
@@ -133,4 +133,79 @@ export async function mesasEstaoLivres(params: {
   const { mesas, ...resto } = params;
   const ocupadas = await mesasOcupadas(resto);
   return mesas.every((m) => !ocupadas.has(String(m).trim()));
+}
+
+// ─── Teto que respira com reserva não confirmada ───────────────────────────
+// Regra do dono 08/11/2026: "toda vez que as reservas não forem confirmadas ou
+// que forem canceladas, a gente ir abrindo uma parte pra reservar mais pessoas,
+// pra não travar a casa e a pessoa não aparecer". Histórico do Bar (60 dias,
+// mesa grátis): só 29% das não confirmadas vieram. Então, PRO TETO (percentual
+// de reserva), reserva pendente sem confirmação do cliente pesa pelo
+// comparecimento histórico da casa (entre 30% e 50%; sem histórico, 50%).
+// Cancelada já sai da conta. A mesa física continua presa — só abre vaga no
+// teto, nunca dá a mesma mesa pra dois (alocação segue o `ocupadas` normal).
+
+const PESO_MIN = 0.3;
+const PESO_MAX = 0.5;
+const cachePeso = new Map<string, { peso: number; em: number }>();
+
+/** Fração das reservas grátis não confirmadas que costuma aparecer (60 dias). */
+export async function pesoNaoConfirmada(filialId: string): Promise<number> {
+  const c = cachePeso.get(filialId);
+  if (c && Date.now() - c.em < 30 * 60 * 1000) return c.peso;
+  let peso = PESO_MAX;
+  try {
+    const [r] = (await db.execute(sql`
+      SELECT count(*) FILTER (WHERE status = 'sentada')::int AS vieram,
+             count(*) FILTER (WHERE status IN ('sentada', 'no_show'))::int AS total
+      FROM reserva
+      WHERE filial_id = ${filialId}
+        AND data BETWEEN (${hojeBr()}::date - 60) AND (${hojeBr()}::date - 1)
+        AND coalesce(valor, 0) = 0
+        AND confirmada_cliente_em IS NULL
+    `)) as unknown as Array<{ vieram: number; total: number }>;
+    if (r && r.total >= 30) peso = Math.min(PESO_MAX, Math.max(PESO_MIN, r.vieram / r.total));
+  } catch {
+    /* sem histórico: fica no teto de 50% */
+  }
+  cachePeso.set(filialId, { peso, em: Date.now() });
+  return peso;
+}
+
+/** Quantas mesas contam PRO TETO: `ocupadas.size` menos a parte das reservas
+ *  pendentes (grátis, sem confirmação do cliente) que historicamente não vem. */
+export async function ocupadasParaTeto(params: {
+  filialId: string;
+  data: string;
+  area: string;
+  ocupadas: Set<string>;
+  excluirReservaId?: string;
+}): Promise<number> {
+  const { filialId, data, area, ocupadas, excluirReservaId } = params;
+  try {
+    const rows = await db
+      .select({ mesa: schema.reserva.mesa, mesaJuntada: schema.reserva.mesaJuntada })
+      .from(schema.reserva)
+      .where(
+        and(
+          eq(schema.reserva.filialId, filialId),
+          eq(schema.reserva.data, data),
+          eq(schema.reserva.area, area),
+          eq(schema.reserva.status, 'pendente'),
+          isNull(schema.reserva.confirmadaClienteEm),
+          isNull(schema.reserva.pagamentoStatus),
+          ...(excluirReservaId ? [ne(schema.reserva.id, excluirReservaId)] : []),
+        ),
+      );
+    let mesasPendentes = 0;
+    for (const r of rows) {
+      if (r.mesa && ocupadas.has(String(r.mesa).trim())) mesasPendentes += 1;
+      for (const m of parseJuntadas(r.mesaJuntada)) if (ocupadas.has(m)) mesasPendentes += 1;
+    }
+    if (mesasPendentes === 0) return ocupadas.size;
+    const peso = await pesoNaoConfirmada(filialId);
+    return ocupadas.size - mesasPendentes + Math.ceil(mesasPendentes * peso);
+  } catch {
+    return ocupadas.size;
+  }
 }

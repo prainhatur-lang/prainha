@@ -10,7 +10,7 @@ import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { twilioConfigurado, twilioCheck } from '@/lib/twilio-verify';
 import { enviarConfirmacaoReserva, enviarAvisoTolerancia, enviarLembreteReserva, lembreteReservaConfigurado } from '@/lib/whatsapp-otp';
 import { hojeBr, horaAgoraBr } from '@/lib/datas';
-import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
+import { mesasOcupadas, ocupadasParaTeto } from '@/lib/reservas/mesa-disponivel';
 import { foraDaJanelaAtendimento } from '@/lib/reservas/atendimento';
 import { medirOcupacaoHoje } from '@/lib/atendimento/ocupacao';
 import { createPixPayment } from '@/lib/pagamento-online';
@@ -184,10 +184,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
         : mesasDoEspaco.length;
     // Cartão Prainha com prioridade: passa por cima do teto (percentualReserva)
     // — só não passa da capacidade física (o "sem mesa livre" abaixo).
-    const membro = ocupadas.size >= limiteMesas && ocupadas.size < mesasDoEspaco.length
+    // Pendente sem confirmação pesa pelo comparecimento histórico (dono 08/11).
+    const contaTeto = await ocupadasParaTeto({ filialId: filial.id, data, area: espaco, ocupadas });
+    const membro = contaTeto >= limiteMesas && ocupadas.size < mesasDoEspaco.length
       ? await membroPorTelefone(filial.id, telefone).catch(() => null)
       : null;
-    if (ocupadas.size >= limiteMesas && !membro?.prioridadeReserva) {
+    if (contaTeto >= limiteMesas && !membro?.prioridadeReserva) {
       return NextResponse.json(
         { error: `${espaco} já está lotado para ${data.split('-').reverse().join('/')}. Escolha outro espaço ou dia. 🙏` },
         { status: 409 },

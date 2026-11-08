@@ -16,6 +16,7 @@ import { sql } from 'drizzle-orm';
 import type { ReservaConfig } from '@concilia/db/schema';
 import { hojeBr, horaAgoraBr } from '@/lib/datas';
 import { caixaUrlDaFilial } from '@/lib/caixa-loja';
+import { pesoNaoConfirmada } from '@/lib/reservas/mesa-disponivel';
 
 // Reserva liberada pelo movimento é pra HORÁRIO PRÓXIMO (regra do Elison,
 // 10/10): quanto mais mesa ocupada, menos pra frente dá pra reservar; com
@@ -139,13 +140,17 @@ export async function medirOcupacaoHoje(
   `)) as unknown as Array<{ abertas: number }>;
 
   const [res] = (await db.execute(sql`
-    SELECT count(*)::int AS futuras
+    SELECT count(*)::int AS futuras,
+           count(*) FILTER (
+             WHERE status = 'pendente' AND confirmada_cliente_em IS NULL
+               AND pagamento_status IS NULL
+           )::int AS nao_confirmadas
     FROM reserva
     WHERE filial_id = ${filialId}
       AND data = ${hoje}::date
       AND status IN ('pendente', 'confirmada')
       AND hora >= ${agora}
-  `)) as unknown as Array<{ futuras: number }>;
+  `)) as unknown as Array<{ futuras: number; nao_confirmadas: number }>;
 
   const mapa = new Set(areas.flatMap((a) => (a.mesas ?? []).map((m) => String(m.numero))));
   const aoVivo = await mesasAbertasNaLoja(filialId, mapa);
@@ -165,7 +170,13 @@ export async function medirOcupacaoHoje(
   `)) as unknown as Array<{ n: number }>;
   const esperaRecepcao = esp?.n ?? 0;
   const reservasFuturasHoje = res?.futuras ?? 0;
-  const taxa = Math.min((comandasAbertas + reservasFuturasHoje) / capacidadeMesas, 1);
+  // Reserva a chegar sem confirmação do cliente pesa pelo comparecimento
+  // histórico (~30%): dono 08/11/2026, "menos que 50% das pessoas que não
+  // confirmaram vêm... reabrir pra não travar a casa".
+  const naoConfirmadas = res?.nao_confirmadas ?? 0;
+  const pesoNC = naoConfirmadas > 0 ? await pesoNaoConfirmada(filialId) : 1;
+  const reservasEsperadas = reservasFuturasHoje - naoConfirmadas + naoConfirmadas * pesoNC;
+  const taxa = Math.min((comandasAbertas + reservasEsperadas) / capacidadeMesas, 1);
 
   // Gente esperando mesa na recepção = casa cheia na prática, mesmo que a
   // conta de mesas diga outra coisa: não libera reserva nem convida "tem mesa".
@@ -185,7 +196,7 @@ export async function medirOcupacaoHoje(
   const corteEstendido = corteProporcional && agora < corteProporcional ? corteProporcional : null;
 
   const pct = Math.round(taxa * 100);
-  const medida = `${comandasAbertas} ${fonte === 'loja' ? 'mesas com conta aberta' : 'comandas abertas'} + ${reservasFuturasHoje} reservas a chegar, ~${pct}% de ${capacidadeMesas} mesas`;
+  const medida = `${comandasAbertas} ${fonte === 'loja' ? 'mesas com conta aberta' : 'comandas abertas'} + ${reservasFuturasHoje} reservas a chegar${naoConfirmadas > 0 ? ` (${naoConfirmadas} sem confirmar, contam ${Math.round(pesoNC * 100)}%)` : ""}, ~${pct}% de ${capacidadeMesas} mesas`;
   const resumo = esperaRecepcao > 0
     ? `Tem FILA NA RECEPÇÃO agora: ${esperaRecepcao} grupo(s) esperando mesa (${medida}). Hoje NÃO dá pra reservar e é PROIBIDO dizer que "tem mesa sobrando" ou "pode vir tranquila". A casa segue recebendo por ordem de chegada: seja honesta que tem espera e DIGA quantos grupos estão na fila agora (${esperaRecepcao}); chegando, é só procurar a recepção. Só avise — não ofereça anotar nome em lista nem prometa posição.`
     : corteEstendido

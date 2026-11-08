@@ -8,7 +8,7 @@ import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { foraDaJanelaAtendimento, horaMaximaDoDia } from '@/lib/reservas/atendimento';
-import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
+import { mesasOcupadas, ocupadasParaTeto } from '@/lib/reservas/mesa-disponivel';
 import { medirOcupacaoHoje } from '@/lib/atendimento/ocupacao';
 import { hojeBr, horaAgoraBr } from '@/lib/datas';
 import { membroPorTelefone } from '@/lib/fidelidade/membro';
@@ -75,13 +75,15 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
   const out = await Promise.all(
     areas.map(async (a) => {
       const total = a.mesas!.length;
-      const ocupadas = (await mesasOcupadas({ filialId: filial.id, data, area: a.nome, mesasValidas: a.mesas!.map((m) => String(m.numero)) })).size;
+      const ocupSet = await mesasOcupadas({ filialId: filial.id, data, area: a.nome, mesasValidas: a.mesas!.map((m) => String(m.numero)) });
+      // Pendente sem confirmação pesa pelo comparecimento histórico (dono 08/11).
+      const ocupadas = await ocupadasParaTeto({ filialId: filial.id, data, area: a.nome, ocupadas: ocupSet });
       const limite = typeof a.percentualReserva === 'number' && !prioridade ? Math.floor((total * a.percentualReserva) / 100) : total;
       // Lounge vazio hoje depois das 15h: o site mostra o valor de última hora.
       const ultimaHora = a.taxaReserva
         ? (await loungesVaziosAgora(filial.id, a.nome, data).catch(() => new Set<string>())).size > 0
         : false;
-      return { nome: a.nome, total, livres: Math.max(0, limite - ocupadas), ultimaHora };
+      return { nome: a.nome, total, livres: Math.min(total - ocupSet.size, Math.max(0, limite - ocupadas)), ultimaHora };
     }),
   );
 

@@ -29,7 +29,7 @@ import { cobrarTaxaReserva, loungesVaziosAgora } from '@/lib/reservas/cobrar-tax
 import { valorTaxaLounge, HORA_ULTIMA_HORA_LOUNGE } from '@/lib/reservas/taxa-lounge';
 import { ehFeriadoOuProlongado } from '@/lib/reservas/feriados';
 import { queryPayment } from '@/lib/pagamento-online';
-import { mesasOcupadas } from '@/lib/reservas/mesa-disponivel';
+import { mesasOcupadas, ocupadasParaTeto } from '@/lib/reservas/mesa-disponivel';
 import { textoMesas } from '@/lib/reservas/mesas-juntadas';
 import { plantaDoEspaco, saoVizinhas } from '@/lib/reservas/vizinhas';
 import { foraDaJanelaAtendimento, horaMaximaDoDia } from '@/lib/reservas/atendimento';
@@ -204,7 +204,9 @@ export async function consultarDisponibilidade(filialId: string, data: string, t
         typeof area.percentualReserva === 'number' && !prioridade
           ? Math.floor((mesas.length * area.percentualReserva) / 100)
           : mesas.length;
-      const disponiveis = Math.max(0, limite - ocupadas.size);
+      // Pendente sem confirmação pesa pelo comparecimento histórico (dono 08/11).
+      const contaTeto = await ocupadasParaTeto({ filialId, data, area: area.nome, ocupadas });
+      const disponiveis = Math.min(mesas.length - ocupadas.size, Math.max(0, limite - contaTeto));
       const maiorMesa = Math.max(...mesas.map((m) => m.lugares));
       const lug = mesas.map((m) => m.lugares).sort((a, b) => a - b);
       const duasMaiores = lug.slice(-2).reduce((s, x) => s + x, 0);
@@ -843,12 +845,17 @@ async function validarSlotEAlocarMesa(p: {
     typeof areaCfg.percentualReserva === 'number'
       ? Math.floor((mesas.length * areaCfg.percentualReserva) / 100)
       : mesas.length;
-  if (ocupadas.size >= limite - 1 && limite < mesas.length && p.telefone) {
+  // Pendente sem confirmação pesa pelo comparecimento histórico (dono 08/11):
+  // abre vaga no teto, a mesa física continua presa.
+  const contaTeto = await ocupadasParaTeto({
+    filialId: p.filialId, data: p.data, area: areaCfg.nome, ocupadas, excluirReservaId: p.excluirReservaId,
+  });
+  if (contaTeto >= limite - 1 && limite < mesas.length && p.telefone) {
     // perto/no teto: membro do Cliente VIP com prioridade usa a área inteira
     const m = await membroPorTelefone(p.filialId, p.telefone).catch(() => null);
     if (m?.prioridadeReserva) limite = mesas.length;
   }
-  if (ocupadas.size >= limite) {
+  if (contaTeto >= limite || ocupadas.size >= mesas.length) {
     return `${areaCfg.nome} lotada pra ${dataBr(p.data)}. Ofereça outra área ou outro dia.`;
   }
   const ordenadas = mesas.slice().sort((a, b) => a.lugares - b.lugares);
