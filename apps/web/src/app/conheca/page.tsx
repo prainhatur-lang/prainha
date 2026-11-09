@@ -17,6 +17,8 @@ export const metadata: Metadata = {
   title: 'Concilia — ERP completo para restaurantes',
   description:
     'ERP completo para restaurantes: maquininha, cozinha, nota fiscal, estoque, compras, financeiro, RH (ponto, escala e folha), clientes e a infraestrutura da loja num lugar só. Comece grátis pela maquininha e conte com consultoria de quem opera restaurante.',
+  // Ícone próprio do Concilia (o resto do app segue com a sereia do Prainha).
+  icons: { icon: '/concilia/icone.svg', apple: '/concilia/icone-180.png' },
   openGraph: {
     title: 'Concilia — ERP completo para restaurantes',
     description: 'Comece grátis pela maquininha. Planos a partir de R$ 199/mês.',
