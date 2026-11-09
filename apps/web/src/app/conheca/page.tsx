@@ -25,7 +25,10 @@ export const metadata: Metadata = {
     type: 'website',
     locale: 'pt_BR',
     siteName: 'Concilia',
+    // Imagem da prévia do link (WhatsApp etc.). Sem ela o WhatsApp pegava a sereia do Prainha.
+    images: [{ url: 'https://conciliabr.app/concilia/og.png', width: 1200, height: 630, alt: 'Concilia — ERP completo para restaurantes' }],
   },
+  twitter: { card: 'summary_large_image', images: ['https://conciliabr.app/concilia/og.png'] },
 };
 
 const MODULOS: { titulo: string; preco: string; itens: string[]; base?: boolean }[] = [
