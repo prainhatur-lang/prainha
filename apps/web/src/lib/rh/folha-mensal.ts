@@ -113,25 +113,30 @@ const somaDias = (ymd: string, k: number) => {
  *  completa até 30). Atestados colados (o seguinte começa até o dia depois do fim) viram um
  *  afastamento só. `casa` = até o 15º dia; `inss` = do 16º em diante. */
 export function diasDeAfastamento(
-  periodos: { inicio: string; fim: string }[],
+  periodos: { inicio: string; fim: string; inss?: boolean }[],
   ini: string,
   fim: string,
   n: number,
 ): { casa: number; inss: number; casaLongo: number } {
   const ord = [...periodos].filter((p) => p.inicio <= p.fim).sort((a, b) => a.inicio.localeCompare(b.inicio));
-  const juntos: { inicio: string; fim: string }[] = [];
+  // `inssMarcado` = início do 1º período marcado como INSS (benefício informado pelo dono):
+  // dali em diante é INSS, mesmo antes do 16º dia (dono 09/11/2026: Máxima, casa pagou
+  // 13–26/10 e o INSS assumiu em 27/10).
+  const juntos: { inicio: string; fim: string; inssMarcado?: string }[] = [];
   for (const p of ord) {
     const u = juntos[juntos.length - 1];
     if (u && p.inicio <= somaDias(u.fim, 1)) {
       if (p.fim > u.fim) u.fim = p.fim;
-    } else juntos.push({ ...p });
+      if (p.inss && (!u.inssMarcado || p.inicio < u.inssMarcado)) u.inssMarcado = p.inicio;
+    } else juntos.push(p.inss ? { inicio: p.inicio, fim: p.fim, inssMarcado: p.inicio } : { inicio: p.inicio, fim: p.fim });
   }
   const fimMes = `${ini.slice(0, 7)}-${String(n).padStart(2, '0')}`;
   let casa = 0;
   let inss = 0;
   let casaLongo = 0;
   for (const p of juntos) {
-    const inssDesde = somaDias(p.inicio, 15);
+    const inss16 = somaDias(p.inicio, 15);
+    const inssDesde = p.inssMarcado && p.inssMarcado < inss16 ? p.inssMarcado : inss16;
     // Afastamento que passa do 15º dia: os dias pagos pela casa saem em rubrica
     // própria e não entram na base do INSS (dono 06/11/2026: "só tributa sob 12 dias
     // trabalhados, devido o afastamento superior a 15 dias").
@@ -167,7 +172,7 @@ export function calcularFolhaMensal(input: {
   ajudaCusto?: { codigo: string; descricao: string; valor: number }[] | null;
   /** Atestados (afastamento) da pessoa, YYYY-MM-DD. CLT: até o 15º dia seguido a casa
    *  paga; do 16º em diante é o INSS e sai do salário (05/11/2026, caso Máxima). */
-  afastamentos?: { inicio: string; fim: string }[] | null;
+  afastamentos?: { inicio: string; fim: string; inss?: boolean }[] | null;
   /** Quebra de caixa (copiada da última folha do contador, ex. 221 CLT 6% / 8907
    *  intermitente). Entra no INSS e no FGTS (06/11/2026, faltou na da Arleide).
    *  CLT: referência % sobre os dias pagos; intermitente: valor fixo do contador. */

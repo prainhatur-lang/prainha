@@ -341,13 +341,13 @@ export async function afastamentosPorCpf(
   cpfs: string[],
   ini: string,
   fim: string,
-): Promise<Map<string, { inicio: string; fim: string }[]>> {
-  const saida = new Map<string, { inicio: string; fim: string }[]>();
+): Promise<Map<string, { inicio: string; fim: string; inss?: boolean }[]>> {
+  const saida = new Map<string, { inicio: string; fim: string; inss?: boolean }[]>();
   if (cpfs.length === 0) return saida;
   const [a, m, d] = ini.split('-').map(Number);
   const desde = new Date(Date.UTC(a!, m! - 1, d! - 60)).toISOString().slice(0, 10);
   const linhas = await db
-    .select({ cpf: schema.funcionario.cpf, inicio: schema.funcionarioAtestado.dataInicio, fim: schema.funcionarioAtestado.dataFim })
+    .select({ cpf: schema.funcionario.cpf, inicio: schema.funcionarioAtestado.dataInicio, fim: schema.funcionarioAtestado.dataFim, origem: schema.funcionarioAtestado.origem })
     .from(schema.funcionarioAtestado)
     .innerJoin(schema.funcionario, eq(schema.funcionario.id, schema.funcionarioAtestado.funcionarioId))
     .where(
@@ -361,7 +361,8 @@ export async function afastamentosPorCpf(
   for (const l of linhas) {
     if (!l.cpf) continue;
     const lista = saida.get(l.cpf) ?? [];
-    lista.push({ inicio: l.inicio, fim: l.fim });
+    // origem 'inss' = benefício do INSS informado pelo dono: conta como INSS desde o 1º dia.
+    lista.push(l.origem === 'inss' ? { inicio: l.inicio, fim: l.fim, inss: true } : { inicio: l.inicio, fim: l.fim });
     saida.set(l.cpf, lista);
   }
   return saida;

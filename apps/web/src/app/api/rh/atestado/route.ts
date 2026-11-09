@@ -26,6 +26,9 @@ import {
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
+/** Benefício do INSS pode passar dos 60 dias do atestado comum. */
+const INSS_MAX_DIAS = 366;
+
 const Dia = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
 const Body = z.discriminatedUnion('acao', [
@@ -44,6 +47,8 @@ const Body = z.discriminatedUnion('acao', [
     arquivoPath: z.string().max(500).optional(),
     arquivoNome: z.string().max(200).optional(),
     abona: z.boolean().optional(),
+    /** Afastamento pelo INSS (benefício): a folha tira o salário desde o 1º dia do período. */
+    inss: z.boolean().optional(),
   }),
   z.object({
     acao: z.literal('cancelar'),
@@ -116,8 +121,9 @@ export async function POST(req: Request) {
 
   // criar
   if (d.dataFim < d.dataInicio) return NextResponse.json({ error: 'o último dia é antes do primeiro' }, { status: 400 });
-  if (d.dataFim > somarDias(d.dataInicio, ATESTADO_MAX_DIAS - 1)) {
-    return NextResponse.json({ error: `no máximo ${ATESTADO_MAX_DIAS} dias por atestado` }, { status: 400 });
+  const maxDias = d.inss ? INSS_MAX_DIAS : ATESTADO_MAX_DIAS;
+  if (d.dataFim > somarDias(d.dataInicio, maxDias - 1)) {
+    return NextResponse.json({ error: `no máximo ${maxDias} dias por ${d.inss ? 'lançamento de INSS' : 'atestado'}` }, { status: 400 });
   }
   if (d.dataInicio > somarDias(hojeBr(), 30)) {
     return NextResponse.json({ error: 'atestado começa mais de 30 dias no futuro' }, { status: 400 });
@@ -137,6 +143,7 @@ export async function POST(req: Request) {
       arquivoNome: d.arquivoNome || null,
       usuarioId: user.id,
       abona: d.abona ?? true,
+      ...(d.inss ? { origem: 'inss' } : {}),
     })
     .returning({ id: schema.funcionarioAtestado.id });
   return NextResponse.json({ ok: true, id: criado?.id });

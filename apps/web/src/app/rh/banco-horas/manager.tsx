@@ -489,6 +489,9 @@ export function BancoHorasManager({ filialId, hoje, podeLancar, podeAtestado: po
                   {a.abona === false && (
                     <span className="ml-2 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">sem abono</span>
                   )}
+                  {a.origem === 'inss' && (
+                    <span className="ml-2 rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-800" title="Afastamento pelo INSS: sai do salário desde o 1º dia">INSS</span>
+                  )}
                   {a.origem === 'celular' && (
                     <span className="ml-1 text-[10px] text-slate-400" title="Enviado pelo celular">📱</span>
                   )}
@@ -882,6 +885,7 @@ function ModalAtestado({
   const [descricao, setDescricao] = useState('');
   const [arquivo, setArquivo] = useState<File | null>(null);
   const [abona, setAbona] = useState(true);
+  const [inss, setInss] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [salvando, setSalvando] = useState<string | null>(null);
   const ordenadas = [...pessoas].sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
@@ -914,6 +918,7 @@ function ModalAtestado({
         arquivoPath,
         arquivoNome: arquivo?.name,
         abona,
+        ...(inss ? { inss: true } : {}),
       });
       setSalvando(null);
       onFeito();
@@ -983,6 +988,15 @@ function ModalAtestado({
         {abona
           ? 'No banco de horas, o dia de atestado conta como cumprido (abona o que faltou pra escala do dia).'
           : 'Fica guardado com a foto e aparece no ponto/escala, mas o banco de horas conta o dia normal (sem abonar).'}
+      </p>
+      <label className="mt-3 flex items-center gap-2 text-xs font-medium text-slate-700">
+        <input type="checkbox" checked={inss} onChange={(e) => setInss(e.target.checked)} />
+        Afastamento pelo INSS (benefício)
+      </label>
+      <p className="mt-1 text-[11px] text-slate-400">
+        {inss
+          ? 'Esses dias saem do salário na folha desde o 1º dia — quem paga é o INSS. Pode passar de 60 dias. A casa paga só o atestado de antes (lance separado).'
+          : 'Atestado comum: a casa paga até o 15º dia seguido; do 16º em diante a folha já trata como INSS sozinha.'}
       </p>
       {erro && <p className="mt-2 text-xs text-rose-700">{erro}</p>}
       <div className="mt-4 flex justify-end gap-2">
