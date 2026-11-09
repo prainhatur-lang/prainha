@@ -168,6 +168,36 @@ export async function ajudaCustoPorCpf(
 }
 
 /**
+ * Plano de saúde por CPF (desconto "PLANO DE SAUDE", ex. 8111) da última folha
+ * do contador antes da competência. Valor fixo do mês (dono 09/11/2026: Yago e
+ * Márcia saíam sem o desconto na nossa folha).
+ */
+export async function planoSaudePorCpf(
+  cpfs: string[],
+  comp: string,
+): Promise<Map<string, { codigo: string; descricao: string; valor: number }[]>> {
+  const saida = new Map<string, { codigo: string; descricao: string; valor: number }[]>();
+  if (cpfs.length === 0) return saida;
+  const linhas = await db
+    .select({ cpf: schema.folhaContador.cpf, rubricas: schema.folhaContador.rubricas })
+    .from(schema.folhaContador)
+    .where(and(lt(schema.folhaContador.competencia, comp), inArray(schema.folhaContador.cpf, cpfs)))
+    .orderBy(desc(schema.folhaContador.competencia));
+  const vistos = new Set<string>();
+  const alvo = new Set(cpfs);
+  for (const l of linhas) {
+    const cpf = String(l.cpf ?? '').replace(/\D/g, '');
+    if (!alvo.has(cpf) || vistos.has(cpf)) continue;
+    vistos.add(cpf);
+    const rs = ((l.rubricas as { codigo: string; descricao: string; tipo: string; valor: number }[] | null) ?? []).filter(
+      (x) => x.tipo === 'D' && x.valor > 0 && /PLANO\s+(DE\s+)?SA[UÚ]DE/i.test(x.descricao ?? ''),
+    );
+    if (rs.length) saida.set(cpf, rs.map((x) => ({ codigo: x.codigo, descricao: x.descricao, valor: x.valor })));
+  }
+  return saida;
+}
+
+/**
  * Quebra de caixa por CPF (rubrica "QUEBRA DE CAIXA", ex. 221 CLT e 8907
  * intermitente) da última folha do contador antes da competência. Referência
  * é o % (6); no intermitente o contador paga valor fixo (6% do mínimo).

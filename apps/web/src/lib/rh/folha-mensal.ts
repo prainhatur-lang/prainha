@@ -11,9 +11,9 @@
 //   13º 1/12. O INSS do mês sai sem o 13º; o 13º tem INSS próprio.
 // - INSS progressivo 2026, cada faixa truncada no centavo. FGTS 8% truncado,
 //   com o 13º separado.
-// Salário-família e ajuda de custo vêm da última folha do contador.
-// O que o sistema não sabe (plano de saúde,
-// afastamento, rescisão, IRRF) fica de fora e aparece como diferença.
+// Salário-família, ajuda de custo e plano de saúde (09/11/2026) vêm da
+// última folha do contador. O que o sistema não sabe (afastamento,
+// rescisão, IRRF) fica de fora e aparece como diferença.
 
 /**
  * Decisão do dono 05/11/2026 ("só retira o add noturno, pode deixar o ponto
@@ -172,6 +172,8 @@ export function calcularFolhaMensal(input: {
    *  intermitente). Entra no INSS e no FGTS (06/11/2026, faltou na da Arleide).
    *  CLT: referência % sobre os dias pagos; intermitente: valor fixo do contador. */
   quebraCaixa?: { codigo: string; descricao: string; referencia: number; valor: number } | null;
+  /** Plano de saúde (desconto fixo copiado da última folha do contador, ex. 8111). */
+  planoSaude?: { codigo: string; descricao: string; valor: number }[] | null;
 }): FolhaCalc {
   const { regime, salario, comp } = input;
   const n = ultimoDia(comp);
@@ -262,6 +264,9 @@ export function calcularFolhaMensal(input: {
   }
   if (ini <= fim && input.ajudaCusto) {
     for (const a of input.ajudaCusto) P(a.codigo, a.descricao, a.valor, a.valor);
+  }
+  if (ini <= fim && input.planoSaude) {
+    for (const p of input.planoSaude) D(p.codigo, p.descricao, 0, p.valor);
   }
   if (input.desligamento && input.desligamento >= inicioMes && input.desligamento <= fimMes) {
     avisos.push(`Desligado em ${input.desligamento.split('-').reverse().join('/')}: o contador paga o mês pela rescisão.`);
