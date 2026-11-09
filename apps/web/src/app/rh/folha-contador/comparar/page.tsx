@@ -12,7 +12,7 @@ import { brl } from '@/lib/format';
 import { hojeBr } from '@/lib/datas';
 import { AppHeader } from '@/components/app-header';
 import { LancarPagamentosFolha } from '../lancar-pagamentos';
-import { comRegimeDoMes } from '@/lib/rh/regime-no-mes';
+import { comRegimeDoMes, type TrocaNoMes } from '@/lib/rh/regime-no-mes';
 import { calcularFolhaMensal, type FolhaCalc, type RegimeFolha } from '@/lib/rh/folha-mensal';
 import { afastamentosPorCpf, ajudaCustoPorCpf, horasDoMesPorCpf, planoSaudePorCpf, quebraCaixaPorCpf, salarioFamiliaPorCpf } from '@/lib/rh/folha-mensal-dados';
 import { proximosFeriados } from '@/lib/reservas/feriados';
@@ -157,6 +157,7 @@ export default async function CompararFolhaPage(props: { searchParams: Promise<S
             quebraCaixa: cpf ? quebraCaixa.get(cpf) : null,
             planoSaude: cpf ? planoSaude.get(cpf) : null,
             afastamentos: cpf ? afast.get(cpf) : null,
+            troca: (f as { trocaNoMes?: TrocaNoMes }).trocaNoMes ?? null,
           })
         : null;
     return {

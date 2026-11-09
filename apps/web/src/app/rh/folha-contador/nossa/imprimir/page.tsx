@@ -117,6 +117,7 @@ export default async function ImprimirNossaFolhaPage(props: { searchParams: Prom
         quebraCaixa: f.cpf ? quebraCaixa.get(f.cpf) : null,
         planoSaude: f.cpf ? planoSaude.get(f.cpf) : null,
         afastamentos: f.cpf ? afast.get(f.cpf) : null,
+        troca: f.trocaNoMes ?? null,
       }),
     }))
     .filter((l) => l.calc.proventos > 0 || l.calc.avisos.length > 0);

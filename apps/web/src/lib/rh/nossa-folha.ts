@@ -75,6 +75,7 @@ export async function nossaFolhaDoMes(filialId: string, comp: string): Promise<L
       quebraCaixa: f.cpf ? quebraCaixa.get(f.cpf) : null,
       planoSaude: f.cpf ? planoSaude.get(f.cpf) : null,
       afastamentos: f.cpf ? afast.get(f.cpf) : null,
+      troca: f.trocaNoMes ?? null,
     });
     return {
       funcionarioId: f.id,

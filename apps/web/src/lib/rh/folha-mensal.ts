@@ -174,7 +174,14 @@ export function calcularFolhaMensal(input: {
   quebraCaixa?: { codigo: string; descricao: string; referencia: number; valor: number } | null;
   /** Plano de saúde (desconto fixo copiado da última folha do contador, ex. 8111). */
   planoSaude?: { codigo: string; descricao: string; valor: number }[] | null;
+  /** Troca de regime no meio do mês (agenda "proporcional"): até a véspera no
+   *  regime de `regime`/`salario`, de `aPartir` em diante no novo. */
+  troca?: { aPartir: string; regime: RegimeFolha; salario: number } | null;
 }): FolhaCalc {
+  if (input.troca) {
+    const dividido = calcularComTroca(input, input.troca);
+    if (dividido) return dividido;
+  }
   const { regime, salario, comp } = input;
   const n = ultimoDia(comp);
   const inicioMes = `${comp}-01`;
@@ -288,6 +295,74 @@ export function calcularFolhaMensal(input: {
     liquido: r2(proventos - descontos),
     baseInss,
     fgts,
+    avisos,
+  };
+}
+
+const diaAntes = (ymd: string) => {
+  const d = new Date(`${ymd}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+};
+
+// Mês da troca dividido em duas partes (dono 09/11/2026: José e Manuel da Mar
+// viraram 12x36 no meio de out, "retroativo a partir do ponto de 12h"). Cada
+// parte sai pela conta do seu regime; o INSS é um só, sobre o total do mês.
+function calcularComTroca(
+  input: Parameters<typeof calcularFolhaMensal>[0],
+  troca: { aPartir: string; regime: RegimeFolha; salario: number },
+): FolhaCalc | null {
+  const inicioMes = `${input.comp}-01`;
+  const fimMes = `${input.comp}-${String(ultimoDia(input.comp)).padStart(2, '0')}`;
+  if (troca.aPartir <= inicioMes || troca.aPartir > fimMes) return null;
+  if (input.admissao && input.admissao >= troca.aPartir) return null;
+  if (input.desligamento && input.desligamento < troca.aPartir) return null;
+  const vespera = diaAntes(troca.aPartir);
+  const antes = calcularFolhaMensal({
+    ...input,
+    troca: null,
+    desligamento: vespera,
+    salarioFamilia: null,
+    ajudaCusto: null,
+    planoSaude: null,
+    quebraCaixa: null,
+  });
+  const depois = calcularFolhaMensal({
+    ...input,
+    troca: null,
+    regime: troca.regime,
+    salario: troca.salario,
+    admissao: troca.aPartir,
+  });
+  const INSS = new Set(['998', '825']);
+  const rub = [...antes.rubricas, ...depois.rubricas].filter((x) => !INSS.has(x.codigo));
+  const dec = r2(rub.filter((x) => x.codigo === '9441').reduce((s, x) => s + x.valor, 0));
+  const baseInss = r2(antes.baseInss + depois.baseInss);
+  const inss = calcularInss(r2(baseInss - dec));
+  const inssDec = dec > 0 ? calcularInss(dec) : 0;
+  if (inss > 0) rub.push({ codigo: '998', descricao: 'I.N.S.S.', referencia: 0, valor: r2(inss), tipo: 'D' });
+  if (inssDec > 0) rub.push({ codigo: '825', descricao: 'INSS 13o SALARIO', referencia: 0, valor: r2(inssDec), tipo: 'D' });
+  const br = (d: string) => d.split('-').reverse().slice(0, 2).join('/');
+  const nomeReg = (r: RegimeFolha) => (r === 'clt_mensal' ? 'salário mensal' : 'por hora');
+  const avisos = [
+    `Regime trocado em ${br(troca.aPartir)}: até ${br(vespera)} ${nomeReg(input.regime)}, de ${br(troca.aPartir)} em diante ${nomeReg(troca.regime)} proporcional.`,
+    ...antes.avisos.filter((a) => !a.startsWith('Desligado em')),
+    ...depois.avisos,
+  ];
+  const proventos = r2(rub.filter((x) => x.tipo === 'P').reduce((s, x) => s + x.valor, 0));
+  const descontos = r2(rub.filter((x) => x.tipo === 'D').reduce((s, x) => s + x.valor, 0));
+  return {
+    regime: troca.regime,
+    horas: r2(antes.horas + depois.horas),
+    horasNoturnas: r2(antes.horasNoturnas + depois.horasNoturnas),
+    diasNoMes: depois.diasNoMes,
+    diasComPonto: antes.diasComPonto + depois.diasComPonto,
+    rubricas: rub,
+    proventos,
+    descontos,
+    liquido: r2(proventos - descontos),
+    baseInss,
+    fgts: r2(antes.fgts + depois.fgts),
     avisos,
   };
 }

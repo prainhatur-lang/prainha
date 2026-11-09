@@ -9,9 +9,16 @@ import { and, gt, inArray, isNull } from 'drizzle-orm';
  * Devolve os funcionários com regime/salário do começo do mês; quem não tem
  * agenda passa igual.
  */
+/** Troca de regime no meio do mês paga proporcional (ver calcularFolhaMensal). */
+export interface TrocaNoMes {
+  aPartir: string;
+  regime: 'clt_mensal' | 'intermitente_hora';
+  salario: number;
+}
+
 export async function comRegimeDoMes<
   F extends { id: string; regimeSalarial: string | null; salarioBase: string | null },
->(funcs: F[], iniMes: string): Promise<F[]> {
+>(funcs: F[], iniMes: string): Promise<(F & { trocaNoMes?: TrocaNoMes })[]> {
   if (!funcs.length) return funcs;
   const agendas = await db
     .select({
@@ -19,6 +26,9 @@ export async function comRegimeDoMes<
       aPartir: schema.funcionarioRegimeAgenda.aPartir,
       regimeAnterior: schema.funcionarioRegimeAgenda.regimeAnterior,
       salarioAnterior: schema.funcionarioRegimeAgenda.salarioAnterior,
+      regimeNovo: schema.funcionarioRegimeAgenda.regimeSalarial,
+      salarioNovo: schema.funcionarioRegimeAgenda.salarioBase,
+      motivo: schema.funcionarioRegimeAgenda.motivo,
     })
     .from(schema.funcionarioRegimeAgenda)
     .where(
@@ -37,9 +47,27 @@ export async function comRegimeDoMes<
     const at = primeira.get(a.funcionarioId);
     if (!at || a.aPartir < at.aPartir) primeira.set(a.funcionarioId, a);
   }
+  // Mês da troca dividido (dono 09/11/2026, José e Manuel da Mar viraram 12x36
+  // no meio de out: "retroativo a partir do ponto de 12h"): só quando o motivo
+  // da agenda diz "proporcional". As outras trocas no meio do mês (ex.: Antonio
+  // 31/10) seguem com o mês inteiro no regime anterior, como antes.
+  const [a0, m0] = iniMes.split('-').map(Number);
+  const fimMes = `${iniMes.slice(0, 7)}-${String(new Date(Date.UTC(a0!, m0!, 0)).getUTCDate()).padStart(2, '0')}`;
   return funcs.map((f) => {
     const a = primeira.get(f.id);
     if (!a || !a.regimeAnterior) return f;
-    return { ...f, regimeSalarial: a.regimeAnterior, salarioBase: a.salarioAnterior ?? f.salarioBase };
+    const troca: TrocaNoMes | undefined =
+      a.aPartir <= fimMes &&
+      /proporcional/i.test(a.motivo ?? '') &&
+      (a.regimeNovo === 'clt_mensal' || a.regimeNovo === 'intermitente_hora') &&
+      Number(a.salarioNovo) > 0
+        ? { aPartir: a.aPartir, regime: a.regimeNovo, salario: Number(a.salarioNovo) }
+        : undefined;
+    return {
+      ...f,
+      regimeSalarial: a.regimeAnterior,
+      salarioBase: a.salarioAnterior ?? f.salarioBase,
+      ...(troca ? { trocaNoMes: troca } : {}),
+    };
   });
 }
