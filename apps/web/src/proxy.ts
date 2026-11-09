@@ -135,6 +135,22 @@ export async function proxy(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   const path = request.nextUrl.pathname;
+
+  // Usuário SÓ LEITURA (dono 09/11/2026: contador vê o RH todo e não altera
+  // nada). A marca fica em app_metadata.somente_leitura, que só o service role
+  // grava (user_metadata o próprio usuário edita). Barra toda gravação: API,
+  // server action e POST de página. Fica liberado o seletor de casa (cookie).
+  // A troca de senha vai direto pro Supabase e não passa por aqui.
+  if (
+    user?.app_metadata?.somente_leitura === true &&
+    !['GET', 'HEAD', 'OPTIONS'].includes(request.method) &&
+    path !== '/api/filial-ativa'
+  ) {
+    return NextResponse.json(
+      { error: 'Usuário só de consulta: não pode alterar informações.' },
+      { status: 403 },
+    );
+  }
   const isAuthRoute = path.startsWith('/login') || path.startsWith('/auth') || path.startsWith('/signup');
   // APIs tem auth propria (Bearer token, etc) - middleware nao deve interceptar
   const isApiRoute = path.startsWith('/api/');
