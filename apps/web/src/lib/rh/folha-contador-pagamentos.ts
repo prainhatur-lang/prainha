@@ -20,7 +20,7 @@
 // "parece já lançada" e fica fora por padrão.
 
 import { db, schema } from '@concilia/db';
-import { and, eq, ilike, inArray, isNull, lte, sql } from 'drizzle-orm';
+import { and, eq, ilike, inArray, isNull, sql } from 'drizzle-orm';
 import { EB_CNPJ } from '@/lib/eb/faturas';
 import { LELIS_CNPJ, filialDoCnpj, fornecedorPagadorNaCasa } from '@/lib/impostos/guia';
 import { fornecedorFuncionarioNaEb, type Tx } from '@/lib/rh/rescisao-empregador';
@@ -51,17 +51,18 @@ const digitos = (s: string | null | undefined) => (s ?? '').replace(/\D/g, '');
 
 // Diarista não entra na folha (regra do dono 05/11/2026: "enquanto ele está
 // diarista, ele não pode entrar na folha. Ele vai receber só por diária. A partir
-// do momento que ele for registrado, aí ele entra na folha"). Registrado = já
-// apareceu no extrato do contador em algum mês até este (o cadastro pode ter
-// admissão e empresa antes do registro de verdade — José e Anthony, Mar,
-// out/2026). "Algum mês" e não "este mês": intermitente registrado que o
-// contador não pôs no mês (Gilmar, Tabuará, out/2026) continua registrado.
-// Quem nunca apareceu só sai quando o extrato daquela empresa (e casa, na E.B.)
-// do mês já foi importado; sem extrato não tira ninguém e avisa.
+// do momento que ele for registrado, aí ele entra na folha").
+// Quem decide é o NOSSO sistema, não o contador (dono 09/11/2026: "esquece o
+// contador"): diarista = papel 'diarista' na folha semanal (fornecedor_folha),
+// ou papel funcionário com "diária até" (diarista_ate) cobrindo o mês inteiro.
+// Registrado no meio do mês (diária até antes do fim) entra na folha — a
+// admissão do cadastro já proporcionaliza. Antes a regra olhava a folha do
+// contador e tirou José e Anthony (Mar, out/2026), registrados na E.B. pelo
+// nosso cadastro desde 05/10.
 export interface RegistroNoMes {
-  /** funcionarioId → nome de quem fica fora por nunca ter estado na folha do contador. */
+  /** funcionarioId → nome de quem fica fora por ser diarista no nosso sistema. */
   diaristas: Map<string, string>;
-  /** Empresas sem extrato importado no mês (ninguém delas foi tirado). */
+  /** Mantido pela tela/rota; com a regra pelo nosso sistema fica sempre vazio. */
   semExtrato: string[];
 }
 
@@ -74,39 +75,36 @@ export async function registroNoMes(
     cpf: string | null;
     cnpjRegistro: string | null;
     empresaRegistro: string | null;
+    fornecedorId?: string | null;
     desligamento: string | null;
     liquido: number;
   }[],
-  casaCnpj: string,
+  _casaCnpj: string,
 ): Promise<RegistroNoMes> {
-  const rows = await db
-    .select({
-      competencia: schema.folhaContador.competencia,
-      filialId: schema.folhaContador.filialId,
-      cnpj: schema.folhaContador.cnpj,
-      funcionarioId: schema.folhaContador.funcionarioId,
-      cpf: schema.folhaContador.cpf,
-    })
-    .from(schema.folhaContador)
-    .where(lte(schema.folhaContador.competencia, comp));
-  const ids = new Set(rows.map((r) => r.funcionarioId).filter((x): x is string => !!x));
-  const cpfs = new Set(rows.map((r) => digitos(r.cpf)).filter((x) => x.length === 11));
-  const temExtrato = (cnpj: string) =>
-    rows.some((r) => r.competencia === comp && r.cnpj === cnpj && (cnpj !== EB_CNPJ || r.filialId === casaFilialId));
+  void casaFilialId;
+  const [a, m] = comp.split('-').map(Number);
+  const fimMes = `${comp}-${String(new Date(Date.UTC(a!, m!, 0)).getUTCDate()).padStart(2, '0')}`;
+  const fids = [...new Set(linhas.map((l) => l.fornecedorId).filter((x): x is string => !!x))];
+  const papeis = fids.length
+    ? await db
+        .select({
+          fornecedorId: schema.fornecedorFolha.fornecedorId,
+          papel: schema.fornecedorFolha.papel,
+          diaristaAte: schema.fornecedorFolha.diaristaAte,
+        })
+        .from(schema.fornecedorFolha)
+        .where(inArray(schema.fornecedorFolha.fornecedorId, fids))
+    : [];
+  const porFornecedor = new Map(papeis.map((p) => [p.fornecedorId, p]));
   const diaristas = new Map<string, string>();
-  const semExtrato = new Set<string>();
   for (const l of linhas) {
     // só quem a folha pagaria (líquido > 0 e não saiu no mês)
     if (!(l.liquido > 0) || (l.desligamento && l.desligamento.slice(0, 7) === comp)) continue;
-    if (ids.has(l.funcionarioId) || cpfs.has(digitos(l.cpf))) continue;
-    const cnpj = digitos(l.cnpjRegistro) || casaCnpj;
-    if (!temExtrato(cnpj)) {
-      semExtrato.add(l.empresaRegistro || cnpj);
-      continue;
-    }
-    diaristas.set(l.funcionarioId, l.nome);
+    const p = l.fornecedorId ? porFornecedor.get(l.fornecedorId) : undefined;
+    if (!p) continue;
+    if (p.papel === 'diarista' || (p.diaristaAte && p.diaristaAte >= fimMes)) diaristas.set(l.funcionarioId, l.nome);
   }
-  return { diaristas, semExtrato: [...semExtrato] };
+  return { diaristas, semExtrato: [] };
 }
 
 /** Quem fica fora da folha do mês por não ser registrado (pra tela). */
