@@ -9,6 +9,8 @@
 // salário pago direto pela casa. No salário direto, sem chave no cadastro, a
 // chave é o CPF do funcionário (o mesmo do código da conta). No repasse nunca
 // cai no CPF de ninguém: quem recebe é a E.B. ou a Lelis.
+// 09/11/2026: o salário que a E.B. paga direto ao funcionário ("fe:…") e o
+// complemento ("fec:…") também entram — antes não apareciam na tela.
 
 import { db } from '@concilia/db';
 import { sql } from 'drizzle-orm';
@@ -34,13 +36,17 @@ export async function folhaMensalDasContas(contaIds: string[]): Promise<Map<stri
      WHERE id IN (${lista})
        AND origem = 'FOLHA'
        AND folha_semana_id IS NULL
-       AND codigo_referencia LIKE 'fc:%'
-       AND observacao LIKE 'Folha do sistema%'
+       AND (
+             (codigo_referencia LIKE 'fc:%' AND observacao LIKE 'Folha do sistema%')
+          OR ((codigo_referencia LIKE 'fe:%' OR codigo_referencia LIKE 'fec:%')
+              AND (observacao LIKE 'Folha do sistema%' OR observacao LIKE 'Complemento da folha do sistema%'))
+       )
   `)) as unknown as Array<{ id: string; ref: string }>;
   for (const r of rows) {
     // fc:<AAAA-MM>:<CNPJ empregador>[:<CPF>] — com CPF e sem ser a Lelis = salário direto
-    const [, , cnpj, cpf] = r.ref.split(':');
-    const direto = !!cpf && cnpj !== LELIS_CNPJ && /^\d{11}$/.test(cpf);
+    // fe:/fec:<AAAA-MM>:<casa 8>:<CPF> — salário (ou complemento) pago pela E.B. ao funcionário
+    const [tipo, , cnpj, cpf] = r.ref.split(':');
+    const direto = !!cpf && /^\d{11}$/.test(cpf) && (tipo !== 'fc' || cnpj !== LELIS_CNPJ);
     out.set(r.id, { contaId: r.id, cpf: direto ? cpf! : null });
   }
   return out;
@@ -48,4 +54,8 @@ export async function folhaMensalDasContas(contaIds: string[]): Promise<Map<stri
 
 /** Condição SQL: a conta é da folha mensal do sistema. */
 export const sqlEhFolhaMensal = (c: { origem: unknown; folhaSemanaId: unknown; codigoReferencia: unknown; observacao: unknown }) =>
-  sql`(${c.origem} = 'FOLHA' and ${c.folhaSemanaId} is null and ${c.codigoReferencia} like 'fc:%' and ${c.observacao} like 'Folha do sistema%')`;
+  sql`(${c.origem} = 'FOLHA' and ${c.folhaSemanaId} is null and (
+    (${c.codigoReferencia} like 'fc:%' and ${c.observacao} like 'Folha do sistema%')
+    or ((${c.codigoReferencia} like 'fe:%' or ${c.codigoReferencia} like 'fec:%')
+        and (${c.observacao} like 'Folha do sistema%' or ${c.observacao} like 'Complemento da folha do sistema%'))
+  ))`;
