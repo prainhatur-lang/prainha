@@ -4213,7 +4213,7 @@ async function cupomConta(numero, ped) {
    Sem isso, sangria era uma linha no banco que ninguém assinava. */
 function cupomGaveta(d, via) {
   const TIT = { sangria: 'SANGRIA - SAÍDA DE DINHEIRO', despesa: 'DESPESA PAGA DA GAVETA',
-    suprimento: 'SUPRIMENTO - ENTRADA DE DINHEIRO' }[d.tipo] || 'MOVIMENTO DE CAIXA';
+    suprimento: 'SUPRIMENTO - ENTRADA DE DINHEIRO', devolucao: 'DEVOLUÇÃO AO CLIENTE (DINHEIRO)' }[d.tipo] || 'MOVIMENTO DE CAIXA';
   const b = [IMP.init, IMP.centro, IMP.neg, IMP.grande, impLn(LOJA_NOME.toUpperCase()), IMP.norm,
     impLn(TIT), IMP.negFim, impLn('não é documento fiscal'),
     via ? impLn('-- ' + via + ' --') : impLn(''), IMP.esquerda, impTraco(),
@@ -9338,6 +9338,82 @@ async function apiCaixaEstornarPagamento(body, quem) {
   const pago = await fbPagoDoPedido(ped);
   console.log(`[caixa] ${quem.login} cancelou lançamento ${pag} (${g.forma} R$ ${g.valor.toFixed(2)}${g.nsu ? ' NSU ' + g.nsu : ''}) da conta ${numero}/${ped}: ${motivo}`);
   return { ok: true, pago: +pago.toFixed(2), falta: +Math.max(0, total - pago).toFixed(2) };
+}
+/** PAGAMENTO ERA DE OUTRA CONTA (09/11/2026, Prainha Bar: a garçonete ia
+ *  passar a mesa 19 — R$ 294,80 — e passou a 8 — R$ 458,70 — no débito do
+ *  cliente da 19). Antes o caixa só tinha estornar (some o dinheiro que
+ *  ENTROU de verdade) ou transferir itens (bloqueado: total abaixo do pago).
+ *  Aqui o lançamento inteiro (NSU, forma, hora, caixa) muda de conta, a conta
+ *  errada volta a dever o que deve, e se o cliente pagou A MAIS do que a conta
+ *  certa devia, a diferença sai da gaveta como DEVOLUÇÃO em dinheiro, com
+ *  comprovante em 2 vias. Tudo fica gravado em pagamento_movido (quem, quando,
+ *  quem errou, motivo). A conta errada tem que estar ABERTA (fechada →
+ *  "Reabrir" antes); a certa também. Só no banco próprio. */
+async function apiCaixaContaErrada(body, quem) {
+  if (!(quem && (quem.admin || (quem.reabrir && quem.excluir_recebimento))))
+    return { ok: false, erro: 'sem permissão (Reabrir Pedido + Excluir recebimentos)' };
+  if (!nativo()) return { ok: false, erro: 'só no banco próprio — no Consumer, estorne e lance de novo' };
+  const numero = Number(body.numero), pag = Number(body.pagamento), numCerto = Number(body.numero_certo);
+  if (!(numero > 0 && pag > 0 && numCerto > 0)) return { ok: false, erro: 'dados inválidos' };
+  if (numCerto === numero) return { ok: false, erro: 'a conta certa tem que ser OUTRA' };
+  const motivo = String(body.motivo || '').trim().slice(0, 160);
+  if (!motivo) return { ok: false, erro: 'diga o que aconteceu (ex.: passou a 8 no lugar da 19)' };
+  const quemErrou = String(body.quem_errou || '').trim().slice(0, 80) || null;
+  const ped = await pedidoAlvo(numero, body.ped);
+  if (!ped) return { ok: false, erro: 'a conta errada precisa estar aberta — se já fechou, use "Reabrir" primeiro' };
+  const pedCerto = await fbAcharPedido(numCerto);
+  if (!pedCerto) return { ok: false, erro: `a conta ${numCerto} não está aberta` };
+  if (Number(pedCerto) === Number(ped)) return { ok: false, erro: 'as duas são a mesma conta' };
+  const g = (await pagamentosDoPedido(ped)).find((x) => x.codigo === pag);
+  if (!g) return { ok: false, erro: 'esse lançamento não está (mais) nesta conta' };
+  const totCerto = Number((await pedTotais(pedCerto))?.total) || 0;
+  const pagoCerto = await pgPagoDoPedido(pedCerto);
+  const faltaCerto = +Math.max(0, totCerto - pagoCerto).toFixed(2);
+  const excesso = +Math.max(0, g.valor - faltaCerto).toFixed(2);
+  // passou a mais: a diferença volta pro cliente EM DINHEIRO, da gaveta de quem está no caixa
+  let cx = null;
+  if (excesso > 0.009) {
+    if (body.confirma_devolucao !== true) {
+      return { ok: false, precisa_devolucao: true, devolver: excesso, valor: g.valor, falta_certa: faltaCerto,
+        erro: `a conta ${numCerto} devia R$ ${faltaCerto.toFixed(2)} e o lançamento é de R$ ${g.valor.toFixed(2)} — DEVOLVER R$ ${excesso.toFixed(2)} em dinheiro ao cliente` };
+    }
+    cx = await fbCaixaDoOperador(quem.login);
+    if (!cx) return { ok: false, erro: 'abra o SEU caixa: a devolução sai da sua gaveta' };
+    const r = await fbResumoCaixa(cx.codigo);
+    const gaveta = +(cx.fundo + r.dinheiro + r.entradas - r.saidas).toFixed(2);
+    if (excesso > gaveta + 0.009) return { ok: false, erro: `a gaveta não tem R$ ${excesso.toFixed(2)} (esperado: R$ ${gaveta.toFixed(2)})` };
+  }
+  await sql`CREATE TABLE IF NOT EXISTS pagamento_movido (id bigserial PRIMARY KEY, quando timestamptz DEFAULT now(), login text,
+    numero_de integer, pedido_de bigint, numero_para integer, pedido_para bigint, pagamento bigint, forma text,
+    valor numeric, nsu text, devolvido numeric DEFAULT 0, caixa_devolucao bigint, quem_errou text, motivo text)`;
+  const marca = ` · veio da conta ${numero}`;
+  await sql.begin(async (tx) => {
+    await tx`UPDATE pagamento_local SET pedido=${Number(pedCerto)}, sync_nuvem_em=NULL,
+        observacao=left(COALESCE(observacao,'') || ${marca}, 200)
+      WHERE codigo=${pag} AND pedido=${Number(ped)} AND cancelado_em IS NULL`;
+    await tx`UPDATE venda_pagamento SET numero=${numCerto}, pedido_fb=${Number(pedCerto)} WHERE pagamento_fb=${pag} AND pedido_fb=${Number(ped)}`;
+    if (cx) {
+      const obs = `devolução ao cliente da conta ${numCerto}: lançamento ${g.forma} R$ ${g.valor.toFixed(2)} veio da conta ${numero} · ${motivo} · ${quem.nome || quem.login}`;
+      await tx`INSERT INTO caixa_operacao_local (caixa_codigo, tipo, valor, forma_codigo, obs, login, quando)
+        VALUES (${Number(cx.codigo)}, 'devolucao', ${excesso}, ${FORMA.DINHEIRO}, ${obs}, ${quem.login || null}, now())`;
+    }
+    await tx`INSERT INTO pagamento_movido (login, numero_de, pedido_de, numero_para, pedido_para, pagamento, forma, valor, nsu,
+        devolvido, caixa_devolucao, quem_errou, motivo)
+      VALUES (${quem.login}, ${numero}, ${Number(ped)}, ${numCerto}, ${Number(pedCerto)}, ${pag}, ${g.forma}, ${g.valor}, ${g.nsu},
+        ${cx ? excesso : 0}, ${cx ? Number(cx.codigo) : null}, ${quemErrou}, ${motivo})`;
+  });
+  await pgAtualizarPago(ped);
+  await pgAtualizarPago(pedCerto);
+  let cp = { comprovante: null, impresso: false };
+  if (cx) cp = await comprovanteGaveta(cx, quem, { tipo: 'devolucao', fornecedor_nome: `cliente da conta ${numCerto}` }, excesso,
+    `${g.forma} R$ ${g.valor.toFixed(2)} passado na conta ${numero}, era da ${numCerto}` + (quemErrou ? ` (${quemErrou})` : '') + ` · ${motivo}`, '');
+  const totErrada = Number((await pedTotais(ped))?.total) || 0;
+  const pagoErrada = await pgPagoDoPedido(ped);
+  console.log(`[caixa] ${quem.login} moveu o lançamento ${pag} (${g.forma} R$ ${g.valor.toFixed(2)}) da conta ${numero}/${ped} pra ${numCerto}/${pedCerto}` +
+    (cx ? ` · devolveu R$ ${excesso.toFixed(2)} da gaveta ${cx.codigo}` : '') + `: ${motivo}`);
+  return { ok: true, valor: g.valor, devolvido: cx ? excesso : 0, numero_certo: numCerto,
+    falta_errada: +Math.max(0, totErrada - pagoErrada).toFixed(2),
+    falta_certa: +Math.max(0, faltaCerto - g.valor).toFixed(2), ...cp };
 }
 /** FECHADAS HOJE. Conta que sai da grade não pode simplesmente SUMIR: aqui
  *  ela fica listada com hora, valor e QUEM recebeu, com o ↩ Reabrir do lado.
@@ -28839,6 +28915,30 @@ async function estornarCx(cod){
   if(!r.ok){alert(r.erro||'não deu');return}
   carregar(MESA,PEDALVO);
 }
+/* PAGAMENTO ERA DE OUTRA CONTA (09/11/2026, Bar: passou a 8 no lugar da 19):
+   o lançamento vai inteiro pra conta certa; o que o cliente pagou A MAIS sai
+   da gaveta como devolução em dinheiro, com comprovante. */
+async function contaErradaCx(cod,valor){
+  var n=prompt('Este lançamento de '+brl(valor)+' era de qual conta?\\n\\nDigite o NÚMERO da conta certa (mesa/comanda):','');
+  if(n===null)return; n=Number(String(n).replace(/\\D/g,''));
+  if(!(n>0)){alert('Número inválido');return}
+  var m=prompt('O que aconteceu? (ex.: passou a '+MESA+' no lugar da '+n+')','passou a '+MESA+' no lugar da '+n);
+  if(m===null)return; m=String(m).trim(); if(!m){alert('Diga o que aconteceu');return}
+  var qe=prompt('Quem errou? (nome — pode deixar vazio)','');
+  if(qe===null)return;
+  var b=alvo({numero:MESA,pagamento:cod,numero_certo:n,motivo:m,quem_errou:String(qe).trim()});
+  var r=await jpost('/api/caixa/conta-errada',b);
+  if(!r.ok&&r.precisa_devolucao){
+    if(!confirm('A conta '+n+' devia '+brl(r.falta_certa)+' e o lançamento é de '+brl(r.valor)+'.\\n\\nDEVOLVER '+brl(r.devolver)+' EM DINHEIRO ao cliente (sai da sua gaveta, com comprovante)?'))return;
+    b.confirma_devolucao=true;
+    r=await jpost('/api/caixa/conta-errada',b);
+  }
+  if(!r.ok){alert(r.erro||'não deu');return}
+  alert('Lançamento de '+brl(r.valor)+' foi pra conta '+r.numero_certo+'.'+
+    (r.devolvido>0?'\\n\\nDEVOLVA '+brl(r.devolvido)+' em dinheiro ao cliente'+(r.impresso?' (comprovante impresso, 2 vias — o cliente assina a 1ª).':'.'):'')+
+    '\\n\\nEsta conta ('+MESA+') agora deve '+brl(r.falta_errada)+'.'+(r.falta_certa>0?' A conta '+r.numero_certo+' ainda deve '+brl(r.falta_certa)+'.':' A conta '+r.numero_certo+' está quitada — pode fechar.'));
+  carregar(MESA,PEDALVO);
+}
 async function deliveryNotaCx(id){
   var doc=prompt('Nota fiscal do pedido pré-pago.\\n\\nCPF/CNPJ na nota (só números — vazio = sem CPF):','');
   if(doc===null)return;
@@ -29060,7 +29160,7 @@ function pinta(el){
     h+='<div style="margin:0 0 6px 8px;font-size:13px">'+c.pagamentos.map(function(g){
       var hh=g.quando?new Date(g.quando).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}):'';
       return '<div style="display:flex;justify-content:space-between;gap:8px;padding:3px 0"><span class="mut">'+esc(g.forma)+(hh?' · '+hh:'')+(g.nsu?' · NSU '+esc(g.nsu):'')+(g.origem?' · '+esc(g.origem):'')+'</span>'+
-        '<span><b>'+brl(g.valor)+'</b>'+((PODE.estorno||PODE.admin)?' <a class="sair" style="color:var(--red)" onclick="estornarCx('+g.codigo+')">✕ cancelar</a>':'')+'</span></div>';
+        '<span><b>'+brl(g.valor)+'</b>'+((PODE.estorno||PODE.admin)?' <a class="sair" style="color:var(--red)" onclick="estornarCx('+g.codigo+')">✕ cancelar</a>':'')+((PODE.admin||(PODE.estorno&&PODE.reabrir))?' <a class="sair" style="color:#b45309" onclick="contaErradaCx('+g.codigo+','+Number(g.valor)+')">↪ era de outra conta</a>':'')+'</span></div>';
     }).join('')+'</div>';
   }
   h+='<div class="tot g"><span>'+(c.pago>0?'Falta':'Total')+'</span><b class="'+(c.falta>0?'saldo':'quit')+'">'+brl(c.falta)+'</b></div>';
@@ -33577,6 +33677,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/caixa/atualizar-agora') return res.end(JSON.stringify(await apiCaixaAtualizarAgora(quem)));
       if (req.method === 'POST' && p === '/api/caixa/reabrir') return res.end(JSON.stringify(await apiCaixaReabrir(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/estornar') return res.end(JSON.stringify(await apiCaixaEstornarPagamento(await readBody(req), quem)));
+      if (req.method === 'POST' && p === '/api/caixa/conta-errada') return res.end(JSON.stringify(await apiCaixaContaErrada(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/pix-baixar') return res.end(JSON.stringify(await apiCaixaPixBaixar(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/retido') return res.end(JSON.stringify(await apiCaixaRetido(await readBody(req), quem)));
       // nota fiscal do pedido de entrega PRÉ-PAGO (pago na entrega = sai na maquininha)
