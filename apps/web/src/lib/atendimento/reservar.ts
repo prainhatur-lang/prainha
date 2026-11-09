@@ -470,38 +470,124 @@ async function avisoReservaOutraCasa(
   return null;
 }
 
-/** Localiza reserva ativa por OUTRO telefone ou por CPF (a reserva foi feita
- *  por outra pessoa/número). Devolve dados suficientes pra Nina CONFIRMAR com
- *  o cliente antes de mexer — sem expor telefone/CPF completo. */
+/** Busca por NOME quando o telefone/CPF não acha (caso Maria Rafaela,
+ *  09/11/2026): a reserva foi feita pelo SITE com outro telefone, a cliente só
+ *  sabia o nome de quem reservou ("João Paula Guimarães Souza" × "Joao Paulo
+ *  Guimaraes Souza" no cadastro) e a Nina desistiu e transferiu. Compara sem
+ *  acento e aceita variação pequena (Paula/Paulo pelo prefixo); exige 2+
+ *  partes do nome batendo (ou 1, se o cliente só deu uma) pra não entregar
+ *  reserva de outra pessoa. */
+function partesDoNome(nome: string): string[] {
+  const semAcento = nome
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase();
+  return semAcento.split(/[^a-z]+/).filter((t) => t.length >= 3 && t !== 'dos' && t !== 'das');
+}
+
+function parteBate(a: string, b: string): boolean {
+  if (a === b) return true;
+  // Variação de grafia/terminação: Paula≈Paulo, Guimaraes≈Guimarais.
+  return a.length >= 4 && b.length >= 4 && a.slice(0, 4) === b.slice(0, 4) && Math.abs(a.length - b.length) <= 2;
+}
+
+async function reservasPorNome(filialId: string, nome: string): Promise<ReservasAtivas | null> {
+  const procuradas = partesDoNome(nome);
+  if (procuradas.length === 0) return null;
+  const candidatas = await db
+    .select({
+      id: schema.reserva.id,
+      data: schema.reserva.data,
+      hora: schema.reserva.hora,
+      area: schema.reserva.area,
+      mesa: schema.reserva.mesa,
+      mesaJuntada: schema.reserva.mesaJuntada,
+      pessoas: schema.reserva.pessoas,
+      status: schema.reserva.status,
+      nome: schema.reserva.clienteNome,
+      telefone: schema.reserva.clienteTelefone,
+      cancelToken: schema.reserva.cancelToken,
+      pagamentoStatus: schema.reserva.pagamentoStatus,
+      pagamentoId: schema.reserva.pagamentoId,
+      pagamentoValor: schema.reserva.pagamentoValor,
+      filialId: schema.reserva.filialId,
+    })
+    .from(schema.reserva)
+    .where(
+      and(
+        eq(schema.reserva.filialId, filialId),
+        sql`${schema.reserva.status} IN ('pendente', 'confirmada')`,
+        sql`${schema.reserva.data} >= current_date`,
+      ),
+    )
+    .orderBy(schema.reserva.data, schema.reserva.hora)
+    .limit(300);
+  const minimo = Math.min(2, procuradas.length);
+  const pontuadas = candidatas
+    .map((r) => {
+      const partes = partesDoNome(r.nome ?? '');
+      const acertos = procuradas.filter((p) => partes.some((t) => parteBate(p, t))).length;
+      return { r, acertos };
+    })
+    .filter((x) => x.acertos >= minimo)
+    .sort((a, b) => b.acertos - a.acertos);
+  if (pontuadas.length === 0) return null;
+  const melhor = pontuadas[0].acertos;
+  return pontuadas.filter((x) => x.acertos === melhor).slice(0, 5).map((x) => x.r);
+}
+
+/** Localiza reserva ativa por OUTRO telefone, por CPF ou pelo NOME de quem
+ *  reservou (a reserva foi feita por outra pessoa/número). Devolve dados
+ *  suficientes pra Nina CONFIRMAR com o cliente antes de mexer — sem expor
+ *  telefone/CPF completo. */
 export async function localizarReservaWhatsApp(p: {
   filialId: string;
   telefoneConversa: string;
   telefone?: string | null;
   cpf?: string | null;
+  nome?: string | null;
 }): Promise<string> {
   const ident: IdentReserva = p.cpf || p.telefone ? { telefone: p.telefone, cpf: p.cpf } : { telefone: p.telefoneConversa };
   const identValido = !!identNormalizado(ident);
   let ativas = identValido ? await reservasAtivas(p.filialId, ident) : null;
+  let daConversa: ReservasAtivas | null = null;
   if ((p.cpf || p.telefone) && (!ativas || ativas.length === 0)) {
     const b = await reservasPlanoB(p.filialId, { telefoneConversa: p.telefoneConversa, telefoneReserva: p.telefone, cpfReserva: p.cpf });
     if (b.trocadas) ativas = b.trocadas;
-    else if (b.daConversa) {
-      return avisoReservaDaConversa(b.daConversa, 'siga com ela: pra alterar ou cancelar chame remarcar_reserva / cancelar_reserva');
+    else daConversa = b.daConversa;
+  }
+  // Nada pelo telefone/CPF e o cliente deu um NOME → procura pelo nome.
+  let achadaPorNome = false;
+  if ((!ativas || ativas.length === 0) && (p.nome ?? '').trim()) {
+    const porNome = await reservasPorNome(p.filialId, p.nome!.trim());
+    if (porNome && porNome.length > 0) {
+      ativas = porNome;
+      achadaPorNome = true;
     }
   }
-  if (!identValido && !ativas) return 'Identificador inválido: preciso de um telefone com DDD ou um CPF de 11 dígitos. Peça de novo ao cliente.';
+  if ((!ativas || ativas.length === 0) && daConversa) {
+    return avisoReservaDaConversa(daConversa, 'siga com ela: pra alterar ou cancelar chame remarcar_reserva / cancelar_reserva');
+  }
+  if (!identValido && !ativas) return 'Identificador inválido: preciso de um telefone com DDD, um CPF de 11 dígitos ou o nome de quem reservou. Peça de novo ao cliente.';
   if (!ativas || ativas.length === 0) {
     const outra = await avisoReservaOutraCasa(p.filialId, { telefoneConversa: p.telefoneConversa, telefoneReserva: p.telefone, cpfReserva: p.cpf });
     if (outra) return outra;
-    return 'Nenhuma reserva ativa (de hoje em diante) nesse telefone/CPF. Confira o número com o cliente (DDD + 9 dígitos) ou peça o CPF de quem fez a reserva. Se ele garantir que existe e nada aparecer, transfira pra equipe.';
+    return `Nenhuma reserva ativa (de hoje em diante) nesse telefone/CPF${(p.nome ?? '').trim() ? '/nome' : ''}. Confira o número com o cliente (DDD + 9 dígitos) ou peça o CPF ou o NOME COMPLETO de quem fez a reserva. Se ele garantir que existe e nada aparecer, transfira pra equipe.`;
   }
   const linhas = ativas.map((r) => {
     const mesas = r.mesaJuntada ? `mesas ${textoMesas(r.mesa, r.mesaJuntada, ' + ')}` : r.mesa ? `mesa ${r.mesa}` : 'mesa a definir';
     const primeiro = (r.nome ?? 'cliente').split(' ')[0];
     return `- ${dataBr(String(r.data))} às ${String(r.hora).slice(0, 5)}, ${r.area} (${mesas}), ${r.pessoas} pessoa(s), em nome de ${primeiro}${rotuloPago(r)}`;
   });
-  const comoUsar = p.cpf ? `cpf_reserva=${p.cpf}` : `telefone_reserva=${p.telefone ?? p.telefoneConversa}`;
-  return `ENCONTREI ${ativas.length} reserva(s):\n${linhas.join('\n')}\nCONFIRME com o cliente em UMA frase (primeiro nome + dia + hora) antes de qualquer mudança. Depois, pra alterar ou cancelar, chame remarcar_reserva / cancelar_reserva passando ${comoUsar} (e a data se houver mais de uma).`;
+  const comoUsar = achadaPorNome
+    ? `telefone_reserva=${ativas[0].telefone}`
+    : p.cpf
+      ? `cpf_reserva=${p.cpf}`
+      : `telefone_reserva=${p.telefone ?? p.telefoneConversa}`;
+  const aviso = achadaPorNome
+    ? ' Achei pelo NOME, então confirme com cuidado que é a pessoa certa — e NUNCA repita o telefone da reserva pro cliente.'
+    : '';
+  return `ENCONTREI ${ativas.length} reserva(s):\n${linhas.join('\n')}\nCONFIRME com o cliente em UMA frase (primeiro nome + dia + hora) antes de qualquer mudança.${aviso} Depois, pra alterar ou cancelar, chame remarcar_reserva / cancelar_reserva passando ${comoUsar} (e a data se houver mais de uma).`;
 }
 
 /** Cancela reserva ativa (pendente/confirmada, de hoje em diante) do MESMO

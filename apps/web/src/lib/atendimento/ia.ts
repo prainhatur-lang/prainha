@@ -123,6 +123,8 @@ export interface DadosRemarcarReserva {
 export interface DadosLocalizarReserva {
   telefone: string | null;
   cpf: string | null;
+  /** Nome de quem reservou — quando o cliente não sabe o telefone/CPF. */
+  nome?: string | null;
 }
 
 export interface ExecutoresFerramentas {
@@ -225,6 +227,12 @@ export interface RespostaNina {
   /** true se criar_reserva (ou a remarcação) gravou a reserva nesta resposta.
    *  O motor usa pra pegar "registrei sua reserva" dito sem reserva nenhuma. */
   reservaCriada?: boolean;
+  /** true se localizar_reserva ACHOU uma reserva existente nesta resposta
+   *  (outro telefone/CPF/nome, ou em outra casa). O motor usa pra NÃO tratar
+   *  "sua reserva está confirmada" como reserva de boca — a checagem dele é
+   *  só pelo telefone da conversa e não enxerga essas (caso Maria Rafaela,
+   *  09/11/2026: reserva do site em outro número). */
+  reservaLocalizada?: boolean;
 }
 
 /** O modelo devolve isto quando a mensagem é resposta automática de outro
@@ -541,7 +549,7 @@ ${duasCasas
 - CORREÇÃO LOGO DEPOIS DE VOCÊ AGIR: se o cliente mandar um dado novo LOGO APÓS você criar/alterar algo ("pra esse sábado", "são 8 pessoas", "no deck"), entenda que ele está CORRIGINDO o que você acabou de fazer — não é assunto novo. Reconheça na hora ("entendi, você quis SÁBADO — criei pra hoje por engano"), conserte com remarcar_reserva (ou cancele se o novo dia/hora não permitir) e feche dizendo o estado FINAL em uma frase ("valendo: sábado 05/09 às 11h30, mesa 42; a de hoje foi desfeita"). É PROIBIDO responder a correção com regra genérica deixando DUAS versões no ar — o cliente precisa sair sabendo exatamente o que existe no sistema.
 - LOUNGE PAGO — regra de estorno (VOCÊ SABE essa regra; responda na hora quando perguntarem sobre reembolso/devolução, sem "confirmar com a equipe"): cancelamento com 48h+ de antecedência = Pix volta integral; entre 24h e 48h = volta 50%; menos de 24h = taxa retida. O banco leva alguns dias pra creditar. Cancelar lounge PAGO é com a equipe: avise a regra, diga que vai passar pra um colega concluir e transfira (transferir_para_humano) com o resumo — o estorno sai quando a equipe cancela.
 - CANCELAR reserva: só quando o cliente quer mesmo DESISTIR. Use cancelar_reserva — ela acha as reservas ativas DESTE telefone; se houver mais de uma, a ferramenta lista e você pergunta qual. Confirme com o cliente antes ("posso cancelar a de sábado 12h?"). Reserva que já virou no_show/cancelada: diga que a mesa já foi liberada. LOUNGE PAGO você NÃO cancela (a ferramenta recusa): explique a regra de estorno e transfira pra equipe concluir.
-- RESERVA EM OUTRO TELEFONE / NOME / CPF ("foi pelo contato 79 9xxxx-xxxx", "meu marido que reservou", "foi no CPF dela"): NÃO transfira e NÃO diga que não achou antes de procurar — chame localizar_reserva com o telefone ou CPF que o cliente deu. Achou: confirme em UMA frase com o cliente (primeiro nome + dia + hora: "achei uma reserva do Italo pra hoje às 10h no Lounge, 6 pessoas — é essa?") e SÓ DEPOIS do sim remarque/cancele passando o MESMO telefone_reserva/cpf_reserva. Não repita telefone nem CPF completo de volta.
+- RESERVA EM OUTRO TELEFONE / NOME / CPF ("foi pelo contato 79 9xxxx-xxxx", "meu marido que reservou", "foi no CPF dela"): NÃO transfira e NÃO diga que não achou antes de procurar — chame localizar_reserva com o telefone ou CPF que o cliente deu. Cliente SÓ TEM O NOME de quem reservou ("a reserva está no nome do João Paulo") → chame localizar_reserva passando nome: reserva feita pelo SITE costuma estar em outro telefone e a busca por nome acha (caso Maria Rafaela, 09/11: a Nina disse "não encontrei neste telefone", a cliente deu o nome completo e ela transferiu em vez de procurar). Achou: confirme em UMA frase com o cliente (primeiro nome + dia + hora: "achei uma reserva do Italo pra hoje às 10h no Lounge, 6 pessoas — é essa?") e SÓ DEPOIS do sim remarque/cancele passando o MESMO telefone_reserva/cpf_reserva. Não repita telefone nem CPF completo de volta.
 - CLIENTE MANDOU SÓ UM NÚMERO (11 dígitos, CPF ou telefone) logo depois de você pedir: chame localizar_reserva com ele ANTES de responder — nunca peça de novo o telefone/CPF que ele acabou de mandar. A ferramenta procura também nas OUTRAS casas do grupo; se ela disser que achou em outra casa, fale da reserva de lá. Caso 15/10/2026: cliente mandou o CPF e a Nina repetiu "não encontrei, me passe o telefone ou o CPF".
 - TELEFONE ERRADO NA RESERVA ("o número que mandaram a confirmação não é o meu", "digitei o celular errado", "não chegou a confirmação"): VOCÊ conserta, não transfira — isso NÃO é o "passar pra outro telefone" que vai pra equipe. Peça o CPF de quem reservou (ou o telefone que ficou errado), chame localizar_reserva, confirme em uma frase que é aquela reserva e, com o sim, chame corrigir_telefone_reserva: ela põe o número DESTA conversa na reserva e manda a confirmação de novo aqui. Só vai pra equipe se o cliente quiser pôr a reserva num número que NÃO é o desta conversa. Caso Tainah (11/10): achou a reserva pelo CPF, disse "prontinho" sem trocar nada e depois transferiu.
 - LOUNGE PAGO NÃO TEM TOLERÂNCIA DE HORÁRIO: quem pagou o lounge é dono da mesa o dia inteiro. Cliente avisa que vai chegar mais tarde ("compramos pra 10h mas só chegamos 13h"): tranquilize na hora ("pode vir com calma, a mesa é de vocês o dia todo") e, se ele quiser, ajuste o horário com remarcar_reserva (passando o telefone/CPF se a reserva for de outra pessoa). NUNCA diga que a reserva pode ser cancelada por atraso quando é lounge pago.
@@ -833,12 +841,13 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'localizar_reserva',
       description:
-        'Acha a reserva ativa quando ela NÃO está no telefone desta conversa: o cliente diz que foi feita por outro número ("foi pelo contato 79 9xxxx-xxxx", "meu marido reservou") ou informa o CPF de quem reservou. Devolve dia, hora, área, pessoas e primeiro nome pra você CONFIRMAR com o cliente antes de mexer. Chame em vez de transferir.',
+        'Acha a reserva ativa quando ela NÃO está no telefone desta conversa: o cliente diz que foi feita por outro número ("foi pelo contato 79 9xxxx-xxxx", "meu marido reservou"), informa o CPF de quem reservou ou SÓ SABE O NOME de quem reservou (reserva feita pelo site com outro telefone). Devolve dia, hora, área, pessoas e primeiro nome pra você CONFIRMAR com o cliente antes de mexer. Chame em vez de transferir.',
       parameters: {
         type: 'object',
         properties: {
           telefone: { type: 'string', description: 'telefone com DDD em que a reserva foi feita' },
           cpf: { type: 'string', description: 'CPF (11 dígitos) de quem fez a reserva' },
+          nome: { type: 'string', description: 'nome de quem fez a reserva (o mais completo que o cliente souber) — use quando ele não tem o telefone/CPF; a busca tolera acento e pequena variação de grafia' },
         },
       },
     },
@@ -1540,6 +1549,7 @@ Como usar, SEM EXCEÇÃO:
   let usouFerramenta = false;
   let usouFerramentaComEfeito = false;
   let reservaCriada = false;
+  let reservaLocalizada = false;
 
   const ferramentasBase = modo === 'fornecedor' ? [...FERRAMENTAS, ...FERRAMENTAS_FORNECEDOR.filter((f) => f.type === 'function' && f.function.name === 'consultar_cotacoes_fornecedor')] : FERRAMENTAS;
   // Passagem só com outra casa ligada e executor presente (e nunca no modo fornecedor).
@@ -1576,7 +1586,7 @@ Como usar, SEM EXCEÇÃO:
 
     const toolCalls = msg.tool_calls ?? [];
     if (toolCalls.length === 0) {
-      return { texto: msg.content?.trim() || null, transferiu, leadRegistrado, usouFerramenta, usouFerramentaComEfeito, reservaCriada };
+      return { texto: msg.content?.trim() || null, transferiu, leadRegistrado, usouFerramenta, usouFerramentaComEfeito, reservaCriada, reservaLocalizada };
     }
     usouFerramenta = true;
     if (toolCalls.some((tc) => tc.type !== 'function' || !FERRAMENTAS_SO_CONSULTA.has(tc.function.name))) {
@@ -1747,7 +1757,9 @@ Como usar, SEM EXCEÇÃO:
           resultado = await params.executores.localizarReserva({
             telefone: String(args.telefone ?? '') || null,
             cpf: String(args.cpf ?? '') || null,
+            nome: String(args.nome ?? '') || null,
           });
+          if (/\bENCONTREI \d+ reserva|ACHEI em OUTRA casa/.test(resultado)) reservaLocalizada = true;
         } else if (tc.function.name === 'corrigir_telefone_reserva') {
           resultado = params.executores.corrigirTelefoneReserva
             ? await params.executores.corrigirTelefoneReserva({
@@ -1885,9 +1897,9 @@ Como usar, SEM EXCEÇÃO:
             max_tokens: 400,
           })
         ).choices[0]?.message;
-    return { texto: fim?.content?.toString().trim() || null, transferiu, leadRegistrado, usouFerramenta, usouFerramentaComEfeito, reservaCriada };
+    return { texto: fim?.content?.toString().trim() || null, transferiu, leadRegistrado, usouFerramenta, usouFerramentaComEfeito, reservaCriada, reservaLocalizada };
   } catch (e) {
     console.error('[nina] fechamento forçado falhou:', e instanceof Error ? e.message : e);
-    return { texto: null, transferiu, leadRegistrado, usouFerramenta, usouFerramentaComEfeito, reservaCriada };
+    return { texto: null, transferiu, leadRegistrado, usouFerramenta, usouFerramentaComEfeito, reservaCriada, reservaLocalizada };
   }
 }

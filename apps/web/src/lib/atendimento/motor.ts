@@ -933,6 +933,7 @@ export async function processarEntrada(params: {
     let usouFerramenta = false;
     let usouFerramentaComEfeito = false;
     let reservaCriada = false;
+    let reservaLocalizada = false;
     try {
       let resposta;
       try {
@@ -1027,6 +1028,7 @@ export async function processarEntrada(params: {
       usouFerramenta = resposta.usouFerramenta === true;
       usouFerramentaComEfeito = resposta.usouFerramentaComEfeito === true;
       reservaCriada = resposta.reservaCriada === true;
+      reservaLocalizada = resposta.reservaLocalizada === true;
       // RESPOSTA AUTOMÁTICA DE OUTRO NEGÓCIO (09/10/2026): convite nosso caiu
       // em número com saudação automática ("O Gprado Contabilidade agradece o
       // seu contato") e a Nina se apresentou e ofereceu reserva pro robô — 5
@@ -1175,6 +1177,11 @@ export async function processarEntrada(params: {
     if (
       texto &&
       !reservaCriada &&
+      // localizar_reserva ACHOU uma reserva existente nesta resposta (outro
+      // telefone/CPF/nome ou outra casa): falar dela não é reserva de boca —
+      // a checagem abaixo só enxerga o telefone da conversa (Maria Rafaela,
+      // 09/11/2026: reserva do site em outro número).
+      !reservaLocalizada &&
       modo === 'cliente' &&
       /\b(j[aá] )?(registrei|reservei|garanti|anotei|confirmei|agendei|marquei)\b[^.!?\n]{0,40}\breserva\b|\breserva\b[^.!?\n]{0,40}\b(est[aá]|foi|ficou|j[aá] est[aá])\s+(confirmada|registrada|garantida|feita|criada|agendada|anotada)\b/i.test(
         texto,
