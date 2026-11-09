@@ -14,7 +14,7 @@
 import { db } from '@concilia/db';
 import { sql } from 'drizzle-orm';
 import type { ReservaConfig } from '@concilia/db/schema';
-import { hojeBr, horaAgoraBr } from '@/lib/datas';
+import { hojeBr, horaAgoraBr, diasAtrasBr } from '@/lib/datas';
 import { caixaUrlDaFilial } from '@/lib/caixa-loja';
 import { pesoNaoConfirmada } from '@/lib/reservas/mesa-disponivel';
 
@@ -61,11 +61,63 @@ const CORTE_CASA_FRACA = '17:00'; // taxa < 40%
 const CORTE_CASA_MEDIA = '15:00'; // taxa 40-69%
 const TAXA_FRACA = 0.4;
 const TAXA_MEDIA = 0.7;
-// Horário de funcionamento (mesmo do prompt da Nina). Fora dele, NUNCA
-// convidar a vir "agora" — às 21:57 a Nina chamou cliente pra casa FECHADA
-// porque as comandas ainda abertas no PDV davam "casa tranquila" (23/08).
+// Horário de funcionamento DO PRAINHA BAR (mesmo do prompt da Nina). Fora
+// dele, NUNCA convidar a vir "agora" — às 21:57 a Nina chamou cliente pra
+// casa FECHADA porque as comandas ainda abertas no PDV davam "casa
+// tranquila" (23/08). Vale só pras filiais FORA do mapa FUNCIONAMENTO abaixo.
 const ABRE = '09:00';
 const FECHA = '19:00';
+
+// ─── Funcionamento POR CASA (dono 09/11/2026, caso Valéria no Tabuará) ───
+// Domingo às 20:24 o Tabuará estava ABERTO (12h–22h) e o resumo daqui, com o
+// 09:00–19:00 do Bar valendo pra toda filial, dizia "A casa está FECHADA" —
+// o Otávio respondeu "estamos fechados" e o cliente se perdeu. Cada casa tem
+// suas janelas por dia da semana (índice 0 = domingo), com intervalo no meio
+// do dia quando houver; fecha '23:59' = "até o último cliente". O Prainha
+// Bar (e qualquer filial fora deste mapa) segue nas constantes acima, com o
+// comportamento idêntico ao de antes.
+interface JanelaDia { abre: string; fecha: string }
+const J = (abre: string, fecha: string): JanelaDia => ({ abre, fecha });
+// Tabuará (bloco "Sobre o Tabuará" da base da Nina): seg–qui 12h–15h e
+// 18h–23h; sexta e sábado das 12h até o último cliente; domingo 12h–22h.
+const TABUARA_SEMANA = [J('12:00', '15:00'), J('18:00', '23:00')];
+const FUNCIONAMENTO: Record<string, JanelaDia[][]> = {
+  // Tabuará
+  'fde37b95-7c7e-4b41-a618-2aba1fbc0de7': [
+    [J('12:00', '22:00')], // dom
+    TABUARA_SEMANA, // seg
+    TABUARA_SEMANA, // ter
+    TABUARA_SEMANA, // qua
+    TABUARA_SEMANA, // qui
+    [J('12:00', '23:59')], // sex
+    [J('12:00', '23:59')], // sáb
+  ],
+  // Prainha Mar: abre todos os dias às 12h (bloco da base; o fechamento exato
+  // está PENDENTE lá). Fechamento pelo movimento real dos pedidos (15 dias,
+  // lido em 09/11/2026): domingo ~21h, seg–qui ~22h, sexta/sábado ~23h.
+  'e899dae2-38bf-4f3f-9149-7effd059fab8': [
+    [J('12:00', '21:00')], // dom
+    [J('12:00', '22:00')], // seg
+    [J('12:00', '22:00')], // ter
+    [J('12:00', '22:00')], // qua
+    [J('12:00', '22:00')], // qui
+    [J('12:00', '23:00')], // sex
+    [J('12:00', '23:00')], // sáb
+  ],
+};
+
+function janelasDe(filialId: string, ymd: string): JanelaDia[] | null {
+  const f = FUNCIONAMENTO[filialId];
+  if (!f) return null;
+  const [a, m, d] = ymd.split('-').map(Number);
+  return f[new Date(Date.UTC(a, m - 1, d)).getUTCDay()] ?? null;
+}
+
+function textoJanelas(janelas: JanelaDia[]): string {
+  return janelas
+    .map((j) => (j.fecha === '23:59' ? `das ${j.abre} até o último cliente` : `das ${j.abre} às ${j.fecha}`))
+    .join(' e ');
+}
 
 export interface OcupacaoHoje {
   comandasAbertas: number;
@@ -99,11 +151,43 @@ export async function medirOcupacaoHoje(
   const hoje = hojeBr();
   const agora = horaAgoraBr();
 
+  // Casa com funcionamento próprio (Tabuará, Mar): abre/fecha por dia da
+  // semana, com intervalo no meio do dia. Fora dessas, segue o fluxo do Bar
+  // logo abaixo, intocado.
+  const janelasHoje = janelasDe(filialId, hoje);
+  if (janelasHoje) {
+    const abertaAgora = janelasHoje.some((j) => agora >= j.abre && agora < j.fecha);
+    if (!abertaAgora) {
+      const zero = {
+        comandasAbertas: 0,
+        reservasFuturasHoje: 0,
+        capacidadeMesas,
+        taxa: 0,
+        corteEstendido: null,
+        casaTranquila: false,
+      };
+      const proxima = janelasHoje.find((j) => agora < j.abre);
+      if (proxima) {
+        // Antes de abrir, ou no intervalo entre o almoço e o jantar.
+        return {
+          ...zero,
+          antesDeAbrir: true,
+          resumo: `A casa está FECHADA NESTE INSTANTE mas ABRE HOJE às ${proxima.abre} — o funcionamento de hoje é ${textoJanelas(janelasHoje)}. HOJE É DIA ABERTO: é PROIBIDO dizer que hoje está fechado ou empurrar o cliente pra amanhã. Pedido de reserva pra HOJE vale normalmente dentro desse horário: chame consultar_disponibilidade_reserva / criar_reserva com a data de hoje e deixe a ferramenta decidir horário e área. Só não diga que dá pra vir "agora" — o convite é a partir das ${proxima.abre}.`,
+        };
+      }
+      const janelasAmanha = janelasDe(filialId, diasAtrasBr(-1)) ?? [];
+      return {
+        ...zero,
+        resumo: `A casa está FECHADA neste momento — o funcionamento de hoje era ${textoJanelas(janelasHoje)} e já encerrou. É PROIBIDO convidar a vir agora ou dizer que "a casa está tranquila" — ela não está recebendo ninguém. Convide pra AMANHÃ${janelasAmanha.length > 0 ? ` (amanhã o funcionamento é ${textoJanelas(janelasAmanha)})` : ''} e ofereça reserva pra essa próxima visita.`,
+      };
+    }
+  }
+
   // AINDA NÃO ABRIU (antes das 9h): a casa abre HOJE. Até 23/10/2026 isso caía
   // no "fechada → convide pra AMANHÃ" abaixo, e às 08:57 de uma sexta a Nina
   // disse ao Charles (5 pessoas, beira do rio, hoje) que "hoje a casa está
   // fechada"; depois se desmentiu e o cliente pediu um humano.
-  if (agora < ABRE) {
+  if (!janelasHoje && agora < ABRE) {
     return {
       comandasAbertas: 0,
       reservasFuturasHoje: 0,
@@ -118,7 +202,7 @@ export async function medirOcupacaoHoje(
 
   // Casa FECHADA agora (depois das 19h): comanda aberta esquecida no PDV não
   // significa casa aberta. Nada de "pode vir agora" — o convite é pra amanhã.
-  if (agora >= FECHA) {
+  if (!janelasHoje && agora >= FECHA) {
     return {
       comandasAbertas: 0,
       reservasFuturasHoje: 0,
@@ -205,6 +289,27 @@ export async function medirOcupacaoHoje(
       ? `Casa TRANQUILA agora (${medida}), mas a janela de reserva de hoje já fechou. Não dá pra reservar — e ainda assim é boa notícia: tem mesa sobrando. Convide com segurança ("pode vir tranquila, a casa está calma e tem mesa"), nunca com cara de recusa.`
       : `Casa movimentada (${medida}) — hoje vale a regra padrão (tarde por ordem de chegada).`;
 
+  // Casa com funcionamento próprio ABERTA agora (Tabuará, Mar): a régua do
+  // corte estendido (15h/17h) e os textos acima são do Bar — lá a janela de
+  // reserva fecha cedo e o movimento é que REABRE a tarde. Nessas casas a
+  // reserva vai até a noite todo dia, então não existe corte estendido (e
+  // dizer "casa tranquila, mas a janela de hoje já fechou" às 14h seria
+  // mentira). O resumo aqui informa o que importa: ABERTA agora, com ou sem
+  // espaço, e o horário certo da casa.
+  let corteFinal = corteEstendido;
+  let resumoFinal = resumo;
+  if (janelasHoje) {
+    corteFinal = null;
+    const aberturaTxt = `A casa está ABERTA NESTE MOMENTO (funcionamento de hoje: ${textoJanelas(janelasHoje)}) — é PROIBIDO dizer que está fechada agora.`;
+    if (esperaRecepcao > 0) {
+      resumoFinal = `${aberturaTxt} ${resumo}`; // o texto da fila já serve
+    } else if (casaTranquila) {
+      resumoFinal = `${aberturaTxt} Casa com espaço agora (${medida}): pode convidar a vir AGORA com segurança ("pode vir tranquilo, tem mesa"). Reserva pra hoje vale normalmente dentro do horário: chame consultar_disponibilidade_reserva / criar_reserva e responda só com o que elas disserem.`;
+    } else {
+      resumoFinal = `${aberturaTxt} Casa movimentada agora (${medida}) — pode ter espera na chegada; seja honesta sobre isso. Reserva pra hoje: consulte consultar_disponibilidade_reserva / criar_reserva e responda só com o que elas disserem.`;
+    }
+  }
+
   // Dia FECHADO pra reserva pela casa (exceção do calendário): o resumo acima
   // não sabia disso e mandava "reserva liberada até 11h30"; a Nina oferecia, o
   // cliente dizia "pode" e a ferramenta recusava (11/10/2026, caso Valciria —
@@ -222,5 +327,5 @@ export async function medirOcupacaoHoje(
     };
   }
 
-  return { comandasAbertas, reservasFuturasHoje, capacidadeMesas, taxa, corteEstendido, casaTranquila, esperaRecepcao, fonte, resumo };
+  return { comandasAbertas, reservasFuturasHoje, capacidadeMesas, taxa, corteEstendido: corteFinal, casaTranquila, esperaRecepcao, fonte, resumo: resumoFinal };
 }
