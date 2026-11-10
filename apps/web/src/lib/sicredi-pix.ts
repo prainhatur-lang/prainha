@@ -84,16 +84,16 @@ function host(): { hostname: string; port?: number } {
 
 function req(
   c: SicrediCredenciais,
-  o: { method: 'GET' | 'POST'; path: string; form?: string; token?: string; basic?: boolean },
+  o: { method: 'GET' | 'POST' | 'PUT'; path: string; form?: string; json?: unknown; token?: string; basic?: boolean },
 ): Promise<{ status: number; data: any; raw?: string }> {
   return new Promise((ok) => {
     const headers: Record<string, string | number> = { accept: 'application/json' };
     if (o.token) headers.authorization = `Bearer ${o.token}`;
     if (o.basic) headers.authorization = `Basic ${Buffer.from(`${c.clientId}:${c.clientSecret}`).toString('base64')}`;
-    if (o.form != null) {
-      headers['content-type'] = 'application/x-www-form-urlencoded';
-      headers['content-length'] = Buffer.byteLength(o.form);
-    }
+    const corpo = o.form != null ? o.form : o.json !== undefined ? JSON.stringify(o.json) : null;
+    if (o.form != null) headers['content-type'] = 'application/x-www-form-urlencoded';
+    else if (corpo != null) headers['content-type'] = 'application/json';
+    if (corpo != null) headers['content-length'] = Buffer.byteLength(corpo);
     const agent = new https.Agent({
       cert: c.cert,
       key: c.key,
@@ -116,17 +116,18 @@ function req(
       ok({ status: 0, data: null, raw: 'timeout' });
     });
     r.on('error', (e) => ok({ status: 0, data: null, raw: e.message }));
-    if (o.form != null) r.write(o.form);
+    if (corpo != null) r.write(corpo);
     r.end();
   });
 }
 
 const tokens = new Map<string, { valor: string; expira: number }>();
 
-async function token(c: SicrediCredenciais): Promise<string> {
-  const t = tokens.get(c.clientId);
+async function token(c: SicrediCredenciais, escopo?: string): Promise<string> {
+  const scope = escopo || process.env.SICREDI_SCOPE_LEITURA || 'pix.read';
+  const chave = `${c.clientId}|${scope}`;
+  const t = tokens.get(chave);
   if (t && t.expira > Date.now()) return t.valor;
-  const scope = process.env.SICREDI_SCOPE_LEITURA || 'pix.read';
   const q = new URLSearchParams({ grant_type: 'client_credentials', scope }).toString();
   // grant/scope na URL e no corpo, igual ao vendas-local.
   const r = await req(c, { method: 'POST', path: `/oauth/token?${q}`, form: q, basic: true });
@@ -135,7 +136,7 @@ async function token(c: SicrediCredenciais): Promise<string> {
       `Sicredi recusou o token (${c.nome}): ${r.data?.error_description || r.data?.detail || r.data?.error || r.raw || `HTTP ${r.status}`}`,
     );
   }
-  tokens.set(c.clientId, {
+  tokens.set(chave, {
     valor: r.data.access_token,
     expira: Date.now() + (Number(r.data.expires_in || 300) - 30) * 1000,
   });
@@ -255,4 +256,26 @@ export async function processarPixSicrediApi(c: SicrediCredenciais, inicio: Date
     creditos: dados.filter((d) => d.tipo === 'C').length,
     devolucoes: dados.filter((d) => d.tipo === 'D').length,
   };
+}
+
+/** Credencial da Sicredi desta filial (null = não configurada). */
+export function credencialSicrediDaFilial(filialId: string): SicrediCredenciais | null {
+  return contasSicrediConfiguradas().find((c) => c.filialId === filialId) ?? null;
+}
+
+/** Chave Pix da conta Sicredi da casa vinda da env (o configurador tem precedência). */
+export function chaveSicrediEnv(c: SicrediCredenciais): string | null {
+  return process.env[`SICREDI_${c.sigla}_CHAVE`]?.trim() || null;
+}
+
+/** Chamada autenticada à API Pix da Sicredi (cobrança/devolução). */
+export async function chamarSicredi(
+  c: SicrediCredenciais,
+  method: 'GET' | 'PUT',
+  path: string,
+  escopo: string,
+  json?: unknown,
+): Promise<{ status: number; data: any; raw?: string }> {
+  const tk = await token(c, escopo);
+  return req(c, { method, path, token: tk, json });
 }

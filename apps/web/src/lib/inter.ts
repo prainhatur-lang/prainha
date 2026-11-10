@@ -136,7 +136,7 @@ function certAgente(cred: InterCredenciais): https.Agent {
 }
 
 function requestJson<T>(opts: {
-  method: 'GET' | 'POST';
+  method: 'GET' | 'POST' | 'PUT';
   path: string;
   body?: string;
   contentType?: string;
@@ -623,3 +623,24 @@ export function idTransacaoDeterministico(transacoes: InterTransacao[]): string[
 }
 
 export type { InterTransacao };
+
+/** Chamada autenticada à API Pix do Inter (cobrança/devolução), pro
+ *  configurador de Pix por casa (10/11/2026). Exige integração com os escopos
+ *  cob.write/cob.read/pix.write no Internet Banking. */
+export async function chamarPixInter(
+  cred: InterCredenciais,
+  method: 'GET' | 'PUT',
+  path: string,
+  escopo: string,
+  json?: unknown,
+): Promise<{ status: number; data: any }> {
+  const tk = await getAccessToken(cred, escopo);
+  return requestJson<any>({
+    method,
+    path,
+    cred,
+    authorization: `Bearer ${tk}`,
+    body: json !== undefined ? JSON.stringify(json) : undefined,
+    timeoutMs: 20_000,
+  });
+}

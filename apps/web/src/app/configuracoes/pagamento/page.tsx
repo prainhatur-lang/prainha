@@ -13,6 +13,7 @@ import { db, schema } from '@concilia/db';
 import { inArray } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { segredoConfigurado } from '@/lib/segredo';
+import { faltaPraPixBanco } from '@/lib/pix-cob';
 import { PagamentoClient, type FilialCred } from './pagamento-client';
 
 export const dynamic = 'force-dynamic';
@@ -39,7 +40,13 @@ export default async function PagamentoPage() {
   // "Cobrança online por" de cada filial (Cielo × Rede).
   const escolhas = filiais.length
     ? await db
-        .select({ id: schema.filial.id, adq: schema.filial.adquirenteOnline })
+        .select({
+          id: schema.filial.id,
+          adq: schema.filial.adquirenteOnline,
+          maq: schema.filial.adquirenteMaquininha,
+          pixProvedor: schema.filial.pixProvedor,
+          pixChave: schema.filial.pixChave,
+        })
         .from(schema.filial)
         .where(inArray(schema.filial.id, filiais.map((f) => f.id)))
     : [];
@@ -54,6 +61,17 @@ export default async function PagamentoPage() {
     alvo.set(l.filialId, m);
   }
 
+  const escolhaPor = new Map(escolhas.map((e) => [e.id, e]));
+  // O que falta pra cada casa poder receber Pix pelo banco (null = pronta).
+  const faltaBanco = new Map(
+    await Promise.all(
+      filiais.map(
+        async (f) =>
+          [f.id, { sicredi: await faltaPraPixBanco('sicredi', f.id), inter: await faltaPraPixBanco('inter', f.id) }] as const,
+      ),
+    ),
+  );
+
   const dados: FilialCred[] = filiais.map((f) => ({
     id: f.id,
     nome: f.nome,
@@ -62,6 +80,10 @@ export default async function PagamentoPage() {
     propriaRede: porFilialRede.has(f.id),
     pistasRede: porFilialRede.get(f.id) ?? {},
     adquirenteOnline: adqPorFilial.get(f.id) ?? 'cielo',
+    adquirenteMaquininha: escolhaPor.get(f.id)?.maq === 'rede' ? 'rede' : 'cielo',
+    pixProvedor: (escolhaPor.get(f.id)?.pixProvedor as FilialCred['pixProvedor']) ?? null,
+    pixChave: escolhaPor.get(f.id)?.pixChave ?? '',
+    faltaPix: faltaBanco.get(f.id) ?? { sicredi: null, inter: null },
   }));
 
   return (

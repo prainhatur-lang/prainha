@@ -36,12 +36,16 @@ export async function GET(request: Request) {
   if (!confere([f, String(e)], s)) return NextResponse.json({ ok: false, erro: 'assinatura' }, { status: 403 });
 
   const [row] = await db
-    .select({ adq: schema.filial.adquirenteMaquininha, semCadastro: schema.filial.comandaSemCadastro, soCpf: schema.filial.comandaSoCpf })
+    .select({ adq: schema.filial.adquirenteMaquininha, semCadastro: schema.filial.comandaSemCadastro, soCpf: schema.filial.comandaSoCpf, pix: schema.filial.pixProvedor })
     .from(schema.filial)
     .where(eq(schema.filial.id, f))
     .limit(1);
   const adquirente = row?.adq === 'rede' ? 'rede' : 'cielo';
   // Comanda sem cadastro (Configurações → "Cadastro na comanda"): vai na mesma
   // consulta pra loja não ganhar mais um ciclo.
-  return NextResponse.json({ ok: true, adquirente, comanda_sem_cadastro: row?.semCadastro === true, comanda_so_cpf: row?.soCpf === true });
+  // Pix por (configurador 10/11/2026): NULL = Pix pelo mesmo adquirente do
+  // cartão, como sempre foi. sicredi/inter = Pix SÓ pelo banco (a loja gera a
+  // cobrança por /api/loja/pix e não aceita Pix no checkout da adquirente).
+  const pix_provedor = row?.pix ?? adquirente;
+  return NextResponse.json({ ok: true, adquirente, pix_provedor, comanda_sem_cadastro: row?.semCadastro === true, comanda_so_cpf: row?.soCpf === true });
 }

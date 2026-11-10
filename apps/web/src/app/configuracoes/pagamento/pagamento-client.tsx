@@ -14,6 +14,13 @@ export interface FilialCred {
   pistasRede: Record<string, string | null>;
   /** Por qual adquirente esta casa cobra ONLINE hoje. */
   adquirenteOnline: 'cielo' | 'rede';
+  /** Cartão na maquininha (LIO) por qual adquirente. */
+  adquirenteMaquininha: 'cielo' | 'rede';
+  /** Pix por: NULL = igual ao adquirente online (como sempre foi). */
+  pixProvedor: 'cielo' | 'rede' | 'sicredi' | 'inter' | null;
+  pixChave: string;
+  /** O que falta pra ligar o Pix no banco (null = pronto). */
+  faltaPix: { sicredi: string | null; inter: string | null };
 }
 
 type Campo = { chave: string; rotulo: string; ajuda: string; segredo?: boolean };
@@ -59,6 +66,7 @@ export function PagamentoClient({
       )}
       {filiais.map((f) => (
         <div key={f.id} className="space-y-3">
+          <Configurador filial={f} podeEditar={podeEditar} />
           <SeletorOnline filial={f} podeEditar={podeEditar} />
           <CardCredencial
             filial={f}
@@ -81,6 +89,123 @@ export function PagamentoClient({
           />
         </div>
       ))}
+    </div>
+  );
+}
+
+type ProvPix = 'cielo' | 'rede' | 'sicredi' | 'inter' | '';
+
+const NOME_PIX: Record<Exclude<ProvPix, ''>, string> = {
+  cielo: 'Cielo',
+  rede: 'Rede',
+  sicredi: 'Sicredi (direto na conta)',
+  inter: 'Inter (direto na conta)',
+};
+
+/** Configurador de recebimento (pedido do dono 10/11/2026): cartão por quem e
+ *  Pix por quem — vale pra maquininha, QR da mesa, delivery, reserva e tudo
+ *  que for Pix. Escolher Sicredi/Inter = Pix SÓ pelo banco. */
+function Configurador({ filial, podeEditar }: { filial: FilialCred; podeEditar: boolean }) {
+  const [maq, setMaq] = useState<'cielo' | 'rede'>(filial.adquirenteMaquininha);
+  const [pix, setPix] = useState<ProvPix>(filial.pixProvedor ?? '');
+  const [chave, setChave] = useState(filial.pixChave);
+  const [msg, setMsg] = useState<{ ok: boolean; t: string } | null>(null);
+  const [salvando, setSalvando] = useState(false);
+
+  async function enviar(url: string, body: unknown): Promise<string | null> {
+    const r = await fetch(url, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (r.ok) return null;
+    const d = await r.json().catch(() => ({}));
+    return d.error ?? `Erro ${r.status}`;
+  }
+
+  async function trocarMaq(v: 'cielo' | 'rede') {
+    const anterior = maq;
+    setMaq(v);
+    setMsg(null);
+    const e = await enviar(`/api/filial/${filial.id}/taxas`, { adquirenteMaquininha: v });
+    if (e) {
+      setMaq(anterior);
+      setMsg({ ok: false, t: e });
+    } else setMsg({ ok: true, t: `Cartão na maquininha pela ${v === 'rede' ? 'Rede' : 'Cielo'} ✓` });
+  }
+
+  async function salvarPix() {
+    setSalvando(true);
+    setMsg(null);
+    const e = await enviar(`/api/filial/${filial.id}/pix`, { pixChave: chave.trim() || null, pixProvedor: pix || null });
+    setSalvando(false);
+    if (e) setMsg({ ok: false, t: e });
+    else
+      setMsg({
+        ok: true,
+        t: pix ? `Pix só por ${NOME_PIX[pix]} em todos os canais ✓` : `Pix igual à cobrança online (${filial.adquirenteOnline === 'rede' ? 'Rede' : 'Cielo'}) ✓`,
+      });
+  }
+
+  const falta = pix === 'sicredi' || pix === 'inter' ? filial.faltaPix[pix] : null;
+  const precisaChave = pix === 'sicredi' || pix === 'inter';
+
+  return (
+    <div className="rounded-xl border border-sky-200 bg-sky-50/40 p-4 shadow-sm">
+      <h2 className="text-sm font-semibold text-slate-900">{filial.nome} — como esta casa recebe</h2>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <label className="text-xs text-slate-600">
+          Cartão na maquininha por
+          <select
+            value={maq}
+            disabled={!podeEditar}
+            onChange={(e) => trocarMaq(e.target.value === 'rede' ? 'rede' : 'cielo')}
+            className={inp}
+          >
+            <option value="cielo">Cielo</option>
+            <option value="rede">Rede</option>
+          </select>
+        </label>
+        <label className="text-xs text-slate-600">
+          Pix por (maquininha, QR da mesa, delivery, reserva, tudo)
+          <select value={pix} disabled={!podeEditar} onChange={(e) => setPix(e.target.value as ProvPix)} className={inp}>
+            <option value="">Igual à cobrança online ({filial.adquirenteOnline === 'rede' ? 'Rede' : 'Cielo'})</option>
+            <option value="cielo">Cielo</option>
+            <option value="rede">Rede</option>
+            <option value="sicredi">
+              Sicredi (direto na conta){filial.faltaPix.sicredi ? ' — não configurado' : ''}
+            </option>
+            <option value="inter">Inter (direto na conta){filial.faltaPix.inter ? ' — não configurado' : ''}</option>
+          </select>
+        </label>
+      </div>
+      {precisaChave && (
+        <label className="mt-3 block text-xs text-slate-600">
+          Chave Pix da conta {pix === 'sicredi' ? 'Sicredi' : 'Inter'} desta casa (CNPJ, e-mail, telefone ou aleatória)
+          <input
+            value={chave}
+            disabled={!podeEditar}
+            onChange={(e) => setChave(e.target.value)}
+            placeholder="ex.: 33159574000328"
+            className={inp}
+          />
+        </label>
+      )}
+      {falta && (
+        <p className="mt-2 text-xs text-amber-800">
+          ⚠️ Ainda não dá pra ligar: {falta}. Enquanto isso o Pix continua como está hoje.
+        </p>
+      )}
+      {podeEditar && (
+        <button
+          onClick={salvarPix}
+          disabled={salvando}
+          className="mt-3 rounded-md bg-sky-600 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+        >
+          {salvando ? 'Salvando…' : 'Salvar Pix'}
+        </button>
+      )}
+      {msg && <p className={`mt-2 text-xs ${msg.ok ? 'text-emerald-700' : 'text-red-700'}`}>{msg.t}</p>}
     </div>
   );
 }

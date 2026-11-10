@@ -22,6 +22,7 @@
     "migrate:comanda-sem-cadastro": "tsx scripts/migrate-comanda-sem-cadastro.ts",
     "migrate:comanda-so-cpf": "tsx scripts/migrate-comanda-so-cpf.ts",
     "migrate:adquirente-online": "tsx scripts/migrate-adquirente-online.ts",
+    "migrate:pix-provedor": "tsx scripts/migrate-pix-provedor.ts",
     "migrate:organizacao-codigo": "tsx scripts/migrate-organizacao-codigo.ts",
     "migrate:avaliacoes": "tsx scripts/migrate-avaliacoes.ts",
     "migrate:reservas": "tsx scripts/migrate-reservas.ts",

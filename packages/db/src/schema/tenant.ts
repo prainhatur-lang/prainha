@@ -457,6 +457,13 @@ export const filial = pgTable(
      *  orçamentos, delivery, pagar-mesa): 'cielo' (e-commerce Cielo) ou 'rede'
      *  (e.Rede). Separado da maquininha: a loja pode migrar um canal por vez. */
     adquirenteOnline: text('adquirente_online').default('cielo'),
+    /** Por onde esta casa recebe PIX em todos os canais (maquininha, mesa/QR,
+     *  delivery, reserva, orçamento…): 'cielo' | 'rede' | 'sicredi' | 'inter'.
+     *  NULL = como sempre foi (o Pix segue o adquirente de cada canal).
+     *  Configurações → Pagamento (migrate:pix-provedor, 10/11/2026). */
+    pixProvedor: text('pix_provedor'),
+    /** Chave Pix da conta que recebe (Sicredi/Inter); a cobrança é gerada nela. */
+    pixChave: text('pix_chave'),
     /** Nota minima (1-5) que direciona o cliente a publicar no Google. Abaixo
      *  disso a avaliacao fica interna pra equipe resolver. Default 4. */
     notaCorteGoogle: integer('nota_corte_google').notNull().default(4),
