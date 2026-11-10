@@ -84,8 +84,10 @@ export async function POST(req: Request) {
   // Folha mensal do sistema (05/11/2026): entra como a rescisão — CPF do funcionário no salário direto, repasse sem CPF.
   for (const [id, fm] of await folhaMensalDasContas(contaIds)) if (!rescisoes.has(id)) rescisoes.set(id, fm);
   const cpfRescisao = contaIds.map((id) => rescisoes.get(id)?.cpf).find(Boolean) ?? null;
-  const chave = forn.chave?.trim() || cpfRescisao;
-  if (!chave) return NextResponse.json({ error: 'Fornecedor sem chave Pix cadastrada.' }, { status: 400 });
+  // Dono 10/11/2026 (permanente): Pix SÓ na chave autorizada no cadastro. O CPF do
+  // funcionário NÃO vira chave sozinho (pode cair numa conta que a pessoa não usa).
+  const chave = forn.chave?.trim() || null;
+  if (!chave) return NextResponse.json({ error: 'Sem chave Pix autorizada no cadastro. Cadastre a chave que a pessoa informou; o sistema não usa o CPF como chave por conta própria.' }, { status: 400 });
   // Documento pra conferir a chave: o do cadastro; na rescisão sem documento, o CPF do funcionário.
   const docConferir = forn.doc?.trim() || cpfRescisao;
   // Anti-fraude (pedido do dono 22/10/2026): chave CPF/CNPJ de OUTRA pessoa ou

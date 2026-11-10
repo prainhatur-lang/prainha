@@ -292,7 +292,8 @@ export function GrupoPix({
     [grupo.contas, marcadas],
   );
   const chaveCadastrada = grupo.chavePix?.trim() || null;
-  const chave = chaveCadastrada || grupo.chaveCpfRescisao?.trim() || null;
+  // Dono 10/11/2026: Pix SÓ na chave autorizada no cadastro. Nunca o CPF como chave por conta própria.
+  const chave = chaveCadastrada;
   const chaveEhCpfRescisao = !chaveCadastrada && !!chave;
   // Anti-fraude (22/10/2026): chave × CPF/CNPJ do fornecedor.
   const conferencia = conferirChavePix({ chave, docFornecedor: grupo.documento, favorecido: grupo.pixFavorecido });
@@ -423,7 +424,7 @@ export function GrupoPix({
               )}
             </div>
           ) : (
-            <div className="mt-2 text-xs font-medium text-amber-700">Sem chave Pix cadastrada</div>
+            <div className="mt-2 text-xs font-medium text-amber-700">Sem chave Pix autorizada no cadastro — cadastre a chave que a pessoa informou</div>
           )}
           {grupo.pixFavorecido && (
             <div className="mt-1 text-xs text-slate-600">Recebe em nome de {grupo.pixFavorecido}</div>
