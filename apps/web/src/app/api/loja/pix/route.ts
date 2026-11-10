@@ -4,13 +4,17 @@
 //
 //   GET ?f&e&acao=criar&valor=<centavos>&ref=<texto>&s   → { ok, txid, copiaECola, qrBase64, status }
 //   GET ?f&e&acao=status&txid=<txid>&s                   → { ok, status, e2e, valorCentavos }
+//   GET ?f&e&acao=criar&valor&ref&banco=sicredi&s        → igual, mas NESTE banco (totem, 10/11/2026)
 //
-// Assinatura HMAC PAGAR_MESA_SECRET sobre [f, e, acao, valor|txid, ref?].
-// Só funciona pra casa com Pix por Sicredi/Inter.
+// Assinatura HMAC PAGAR_MESA_SECRET sobre [f, e, acao, valor|txid, ref?, banco?].
+// Sem `banco`: só funciona pra casa com Pix por Sicredi/Inter. Com `banco`: a
+// loja escolhe o banco daquela cobrança (o totem paga na Sicredi mesmo com o
+// resto da casa na Cielo); casa sem credencial/chave desse banco → 409
+// nao_configurado, e a loja segue no Pix de sempre.
 import { NextResponse } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { provedorPixDaFilial } from '@/lib/pagamento-online';
-import { bancoDoTxid, createBancoPixPayment, queryBancoPixPayment } from '@/lib/pix-cob';
+import { bancoDoTxid, createBancoPixPayment, faltaPraPixBanco, queryBancoPixPayment, type BancoPix } from '@/lib/pix-cob';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -40,15 +44,31 @@ export async function GET(request: Request) {
     if (acao === 'criar') {
       const valor = Number(sp.get('valor') || 0);
       const ref = (sp.get('ref') || '').slice(0, 60);
-      if (!confere([f, String(e), acao, String(sp.get('valor') || ''), ref], s)) {
+      const pedido = sp.get('banco');
+      const partes = [f, String(e), acao, String(sp.get('valor') || ''), ref];
+      if (pedido != null) partes.push(pedido);
+      if (!confere(partes, s)) {
         return NextResponse.json({ ok: false, erro: 'assinatura' }, { status: 403 });
       }
       if (!Number.isInteger(valor) || valor < 1 || valor > 10_000_000) {
         return NextResponse.json({ ok: false, erro: 'valor' }, { status: 400 });
       }
-      const prov = await provedorPixDaFilial(f);
-      if (prov !== 'sicredi' && prov !== 'inter') {
-        return NextResponse.json({ ok: false, erro: `Pix desta casa é pela ${prov}` }, { status: 409 });
+      let prov: BancoPix;
+      if (pedido != null) {
+        if (pedido !== 'sicredi' && pedido !== 'inter') {
+          return NextResponse.json({ ok: false, erro: 'banco' }, { status: 400 });
+        }
+        const falta = await faltaPraPixBanco(pedido, f);
+        if (falta) {
+          return NextResponse.json({ ok: false, erro: falta, nao_configurado: true }, { status: 409 });
+        }
+        prov = pedido;
+      } else {
+        const daCasa = await provedorPixDaFilial(f);
+        if (daCasa !== 'sicredi' && daCasa !== 'inter') {
+          return NextResponse.json({ ok: false, erro: `Pix desta casa é pela ${daCasa}` }, { status: 409 });
+        }
+        prov = daCasa;
       }
       const r = await createBancoPixPayment(prov, {
         orderId: ref || 'mesa',

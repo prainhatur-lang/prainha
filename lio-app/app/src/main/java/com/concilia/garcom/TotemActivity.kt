@@ -207,6 +207,9 @@ class TotemActivity : AppCompatActivity() {
                 runOnUiThread { cobrando = false; mostrar("Falha na maquininha", "$m\n\nPeça pro cliente refazer no totem.") }
             },
             destino = destino,
+            // o cliente escolheu no totem: crédito à vista ou débito, já no valor
+            // (sem menu de Pix/parcelado). Servidor antigo sem o campo = menu de sempre.
+            cartao = ped.optString("cartao", "").takeIf { it == "credito" || it == "debito" },
         )
     }
 

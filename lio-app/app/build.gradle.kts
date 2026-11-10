@@ -179,8 +179,11 @@ android {
         // 1.10.45 (10/11/2026): "Pix por" do Concilia — casa com Pix pelo banco
         // (Sicredi/Inter) ganha o botão "Pix Sicredi" (QR do banco pela loja) e o
         // cartão vai direto em Crédito/Débito na Cielo. Casa sem isso: igual.
-        versionCode = 69
-        versionName = "1.10.45"
+        // 1.10.46 (10/11/2026): totem — o cliente escolhe Crédito ou Débito na
+        // tela e a maquininha já abre nele, à vista, com o valor (sem Pix nem
+        // parcelado). Pedido sem a escolha (servidor antigo): menu de sempre.
+        versionCode = 70
+        versionName = "1.10.46"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CONCILIA_BASE", "\"$conciliaBase\"")
     }

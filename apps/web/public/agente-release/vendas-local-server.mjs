@@ -775,6 +775,7 @@ async function initSchema() {
   // totem no CARTÃO: qual LIO pegou o pedido da fila e quando os tickets saíram na recepção
   await addCol('ticket_venda', 'lio_login text');
   await addCol('ticket_venda', 'lio_pegou_em timestamptz');
+  await addCol('ticket_venda', 'cartao_tipo text'); // totem: 'credito'|'debito' — a LIO já abre nele, à vista
   await addCol('ticket_venda', 'impresso_em timestamptz');
   // ESTOQUE DA RECEPÇÃO (dono, 01/11/2026): saldo próprio do totem, separado do
   // estoque da casa. Item sem linha aqui = não controlado (vende como antes).
@@ -2312,7 +2313,14 @@ let COMANDA_SEM_CADASTRO = false;
 // Desligado (padrao) = tudo como sempre. Com "sem cadastro" ligado junto, a
 // comanda abre sem ninguem e so o campo de WhatsApp some.
 let COMANDA_SO_CPF = false;
+// ---- PIX POR (configurador "Pix por" do Concilia, 10/11/2026) ----
+// 'sicredi'/'inter' = a casa recebe Pix SÓ pelo banco: a loja pede a cobrança
+// pra nuvem (/api/loja/pix — o certificado da API Pix fica lá) e o QR da mesa,
+// o caixa e a maquininha usam esse Pix. Qualquer outro valor (cielo, rede ou
+// nuvem antiga sem o campo) = tudo como sempre, pelo PIX_PROVEDOR do start.bat.
+let PIX_NUVEM = null;
 async function puxarAdquirente() {
+  try { const v = await cfgGet('pix_nuvem', ''); PIX_NUVEM = v || null; } catch {}
   try { ADQUIRENTE_LOJA = (await cfgGet('adquirente', 'cielo')) === 'rede' ? 'rede' : 'cielo'; } catch {}
   try { COMANDA_SEM_CADASTRO = (await cfgGet('comanda_sem_cadastro', '0')) === '1'; } catch {}
   try { COMANDA_SO_CPF = (await cfgGet('comanda_so_cpf', '0')) === '1'; } catch {}
@@ -2339,6 +2347,11 @@ async function puxarAdquirente() {
     console.log(`[comanda] identificação: ${c.comanda_so_cpf ? 'só CPF' : 'CPF ou WhatsApp'} (Concilia)`);
     COMANDA_SO_CPF = c.comanda_so_cpf;
     try { await cfgSet('comanda_so_cpf', COMANDA_SO_CPF ? '1' : '0'); } catch {}
+  }
+  if (c && c.ok && typeof c.pix_provedor === 'string' && (c.pix_provedor || null) !== PIX_NUVEM) {
+    console.log(`[pix] Pix desta casa: ${PIX_NUVEM || 'como no start.bat'} -> ${c.pix_provedor} (Concilia)`);
+    PIX_NUVEM = c.pix_provedor || null;
+    try { await cfgSet('pix_nuvem', PIX_NUVEM || ''); } catch {}
   }
 }
 async function puxarConfigIfood() {
@@ -6903,6 +6916,9 @@ async function apiTotemCardapio() {
 /** POST /api/totem/pedido {itens:[{codigo_pdv, qtd, respostas?}]} → ticket + QR do Pix. */
 async function apiTotemPedido(body) {
   const noCartao = body?.forma === 'cartao';
+  // crédito à vista ou débito (10/11/2026): a maquininha já abre no tipo, sem
+  // menu de Pix nem parcelado. Tela antiga (sem o campo) = menu completo, como era.
+  const cartaoTipo = body?.cartao === 'credito' || body?.cartao === 'debito' ? body.cartao : null;
   if (noCartao && !totemCartaoOn()) return { ok: false, erro: 'A maquininha do totem está desligada agora. Pague no Pix ou peça no balcão.' };
   if (!noCartao && !pixStatus().disponivel) return { ok: false, erro: 'Pagamento indisponível agora. Peça no balcão.' };
   const cfg = await totemConfig();
@@ -6916,9 +6932,9 @@ async function apiTotemPedido(body) {
   // Dois pedidos ao mesmo tempo não levam a mesma última unidade: a conferência
   // e a gravação do pedido andam numa fila só.
   const solta = await totemTravaPegar();
-  try { return await apiTotemPedidoTravado(lista, noCartao, solta); } finally { solta(); }
+  try { return await apiTotemPedidoTravado(lista, noCartao, solta, cartaoTipo); } finally { solta(); }
 }
-async function apiTotemPedidoTravado(lista, noCartao, solta) {
+async function apiTotemPedidoTravado(lista, noCartao, solta, cartaoTipo = null) {
   { // estoque da recepção (10/11/2026): só vende o que tem contado, menos o que já
     // está reservado em pedido esperando pagamento. Item sem contagem = não vende.
     const quer = new Map();
@@ -6944,11 +6960,12 @@ async function apiTotemPedidoTravado(lista, noCartao, solta) {
   const id = Number(t.id);
   if (noCartao) {
     // a LIO do lado puxa pela /api/lio/totem/fila e cobra (apiLioTotemFila)
-    await sql`UPDATE ticket_venda SET status='aguardando_lio' WHERE id=${id}`;
-    console.log(`[totem] pedido ${id} · ${c.itens.length} linha(s) · R$ ${total.toFixed(2)} · CARTÃO na maquininha`);
-    return { ok: true, pedido: id, total, forma: 'cartao', itens: c.itens.map((i) => ({ nome: i.nome, qtd: i.qtd, valor: i.valor, opcoes: i.opcoes })) };
+    await sql`UPDATE ticket_venda SET status='aguardando_lio', cartao_tipo=${cartaoTipo} WHERE id=${id}`;
+    console.log(`[totem] pedido ${id} · ${c.itens.length} linha(s) · R$ ${total.toFixed(2)} · CARTÃO${cartaoTipo ? ' ' + cartaoTipo.toUpperCase() : ''} na maquininha`);
+    return { ok: true, pedido: id, total, forma: 'cartao', cartao: cartaoTipo, itens: c.itens.map((i) => ({ nome: i.nome, qtd: i.qtd, valor: i.valor, opcoes: i.opcoes })) };
   }
-  const r = await pixCriarCobranca({ valor: total, rotulo: 'Pedido ' + id + ' (totem)', origem: 'totem' });
+  const r = (await totemPixSicredi(total, 'Pedido ' + id + ' (totem)'))
+    || await pixCriarCobranca({ valor: total, rotulo: 'Pedido ' + id + ' (totem)', origem: 'totem' });
   if (!r.ok) {
     await sql`UPDATE ticket_venda SET status='desistido', erro=${String(r.erro || 'Pix falhou').slice(0, 300)} WHERE id=${id}`;
     return { ok: false, erro: 'Não consegui gerar o Pix agora. Tente de novo ou peça no balcão.' };
@@ -6957,6 +6974,29 @@ async function apiTotemPedidoTravado(lista, noCartao, solta) {
   console.log(`[totem] pedido ${id} · ${c.itens.length} linha(s) · R$ ${total.toFixed(2)} · Pix ${r.txid}`);
   return { ok: true, pedido: id, total, itens: c.itens.map((i) => ({ nome: i.nome, qtd: i.qtd, valor: i.valor, opcoes: i.opcoes })),
     txid: r.txid, copia_cola: r.copia, imagem: pixQrImagem(r.copia) };
+}
+/** Pix do totem na conta da Sicredi (pedido do dono 10/11/2026), gerado pela
+ *  nuvem — o resto da casa segue no Pix de sempre. Casa sem Sicredi pronta
+ *  (credencial/chave) ou nuvem fora do ar → null, e o totem usa o Pix de
+ *  sempre: o cliente nunca fica sem pagar. "Não configurado" fica 10 min em
+ *  memória pra não perguntar à nuvem a cada pedido. A conferência e a baixa
+ *  são as do Pix pela nuvem (provedor 'nuvem', forma 21, E2E). */
+let totemSicrediFora = 0;
+async function totemPixSicredi(valor, rotulo) {
+  if (pixPelaNuvem()) return null; // a casa inteira já paga Pix no banco
+  if (!FILIAL_ID || !PAGAR_MESA_SECRET || PAGAR_MESA_SECRET.length < 16) return null;
+  if (Date.now() < totemSicrediFora) return null;
+  const centavos = Math.round(Number(valor) * 100);
+  const ref = (String(rotulo).slice(0, 30) + ' - ' + String(LOJA_NOME || '')).slice(0, 60);
+  const d = await pixNuvem({ acao: 'criar', valor: String(centavos), ref, banco: 'sicredi' }, ['criar', String(centavos), ref, 'sicredi']);
+  if (!d.ok || !d.txid || !d.copiaECola) {
+    if (/nao_configurado|falta|assinatura|banco|HTTP 40/i.test(String(d.erro || '')) || d.nao_configurado) totemSicrediFora = Date.now() + 10 * 60 * 1000;
+    console.log('[totem] Pix Sicredi indisponível (' + String(d.erro || 'sem código').slice(0, 120) + ') — vai no Pix de sempre');
+    return null;
+  }
+  await sql`INSERT INTO pix_cobranca (txid, mesa, valor, copia_cola, provedor, origem)
+    VALUES (${String(d.txid)}, ${null}, ${valor}, ${String(d.copiaECola)}, 'nuvem', 'totem') ON CONFLICT (txid) DO NOTHING`;
+  return { ok: true, txid: String(d.txid), copia: String(d.copiaECola) };
 }
 /** GET /api/totem/status?txid= — a tela pergunta de 4 em 4 s se o Pix caiu. */
 async function apiTotemStatus(txid, ticket) {
@@ -7091,11 +7131,11 @@ async function apiLioTotemFila(g) {
   const [t] = await sql`UPDATE ticket_venda SET lio_login=${g.login}, lio_pegou_em=now()
     WHERE id = (SELECT id FROM ticket_venda WHERE origem='totem' AND status='aguardando_lio'
       AND (lio_login IS NULL OR lio_login=${g.login}) ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
-    RETURNING id, itens, total, criado_em`;
+    RETURNING id, itens, total, criado_em, cartao_tipo`;
   const impressora = !!(await cfgGet('totem_impressora_ip', '')).trim();
   if (!t) return { ok: true, pedido: null, impressora };
   const itens = typeof t.itens === 'string' ? JSON.parse(t.itens) : (t.itens || []);
-  return { ok: true, impressora, pedido: { ticket_id: Number(t.id), total: Number(t.total), itens, criado_em: t.criado_em } };
+  return { ok: true, impressora, pedido: { ticket_id: Number(t.id), total: Number(t.total), itens, criado_em: t.criado_em, cartao: t.cartao_tipo || null } };
 }
 /** POST /api/lio/totem/liberar {ticket_id, desistiu?} — cliente cancelou na
  *  maquininha (desistiu) ou a LIO devolve o pedido pra fila. */
@@ -7473,6 +7513,10 @@ function apiConfig() {
     comanda_sem_cadastro: COMANDA_SEM_CADASTRO,
     // identificação só pelo CPF (sem pedir WhatsApp) — idem
     comanda_so_cpf: COMANDA_SO_CPF,
+    // Pix por (Concilia → Configurações → Pagamento): 'sicredi'/'inter' = Pix SÓ
+    // pelo banco — a maquininha cobra cartão na adquirente e o Pix pelo QR
+    // do banco (/api/pix/cobrar). null = Pix como sempre, na adquirente.
+    pix_provedor: pixPelaNuvem() ? PIX_NUVEM : null,
     // nome do cartão de fidelidade e se a casa usa passe de saída — o app usa
     fidelidade_nome: FIDELIDADE_NOME,
     passe_saida: PASSE_SAIDA,
@@ -21365,6 +21409,37 @@ function cieloCred() {
   const id = process.env.CIELO_MERCHANT_ID, key = process.env.CIELO_MERCHANT_KEY;
   return (id && key) ? { id, key } : null;
 }
+/** A casa escolheu Pix por Sicredi/Inter no Concilia e a loja fala com a nuvem. */
+function pixPelaNuvem() {
+  return (PIX_NUVEM === 'sicredi' || PIX_NUVEM === 'inter') && !!FILIAL_ID && !!PAGAR_MESA_SECRET && PAGAR_MESA_SECRET.length >= 16;
+}
+/** Chamada assinada ao /api/loja/pix da nuvem. partes = o que entra na assinatura depois de [f, e]. */
+async function pixNuvem(params, partes) {
+  const e = Math.floor(Date.now() / 1000) + 120;
+  const s = createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, String(e), ...partes].join('|')).digest('hex');
+  const q = new URLSearchParams({ f: FILIAL_ID, e: String(e), ...params, s });
+  let r;
+  try { r = await fetch(`${PAGAR_MESA_URL}/api/loja/pix?${q}`, { signal: AbortSignal.timeout(20000) }); }
+  catch (err) { return { ok: false, erro: 'nuvem não respondeu: ' + err.message }; }
+  const d = await r.json().catch(() => null);
+  if (!d) return { ok: false, erro: 'nuvem: HTTP ' + r.status };
+  if (!d.ok) return { ok: false, erro: 'Pix ' + (PIX_NUVEM || '') + ': ' + (d.erro || 'HTTP ' + r.status) };
+  return d;
+}
+async function pixNuvemCriar(mesa, valor, rotulo) {
+  const centavos = Math.round(Number(valor) * 100);
+  const ref = (String(rotulo || ('Mesa ' + mesa)).slice(0, 30) + ' - ' + String(LOJA_NOME || '')).slice(0, 60);
+  const d = await pixNuvem({ acao: 'criar', valor: String(centavos), ref }, ['criar', String(centavos), ref]);
+  if (!d.ok) return d;
+  if (!d.txid || !d.copiaECola) return { ok: false, erro: 'nuvem não devolveu o código Pix' };
+  return { ok: true, txid: String(d.txid), copia: String(d.copiaECola) };
+}
+async function pixNuvemStatus(txid) {
+  const d = await pixNuvem({ acao: 'status', txid }, ['status', txid]);
+  if (!d.ok) return d;
+  return { ok: true, pago: d.status === 'pago', status: d.detalhe || d.status, e2e: d.e2e || null,
+    recebido: Number(d.valorCentavos || 0) / 100, estornado: d.status === 'reembolsado' };
+}
 function pixStatus() {
   // Diagnostico junto: "disponivel" so diz que a env EXISTE. Se ela vier com
   // aspas sobrando do .bat ou truncada, a Cielo responde "MerchantId is
@@ -21374,6 +21449,8 @@ function pixStatus() {
   const diag = PIX_PROVEDOR === 'cielo'
     ? { merchant_id: fmt(c?.id), merchant_key: fmt(c?.key) }
     : { chave: interCred()?.chave ? 'ok' : 'ausente' };
+  // Pix pelo banco via nuvem (configurador "Pix por"): vale por cima do start.bat
+  if (pixPelaNuvem()) return { disponivel: true, provedor: 'nuvem', banco: PIX_NUVEM, diag: { origem: 'Concilia (Pix por ' + PIX_NUVEM + ')' } };
   if (PIX_PROVEDOR === 'sicredi') return { disponivel: !!sicrediCred(), provedor: 'sicredi', diag: sicrediDiag() };
   if (PIX_PROVEDOR === 'cielo') return { disponivel: !!c, provedor: 'cielo', diag };
   return { disponivel: PIX_PROVEDOR === 'inter' && !!interCred(), provedor: PIX_PROVEDOR, diag };
@@ -21632,6 +21709,13 @@ async function pixCriarCobranca({ valor, mesa = null, rotulo = null, origem = nu
   // pedido_fb: a CONTA que o cliente estava vendo quando gerou o QR. É nela
   // que o Pix pousa — nunca "na mesa", que pode ter trocado de dono até cair.
   const nPed = Number(pedido) > 0 ? Number(pedido) : null;
+  if (pixPelaNuvem()) {
+    const r = await pixNuvemCriar(nMesa, valor, rotulo);
+    if (!r.ok) return r;
+    await sql`INSERT INTO pix_cobranca (txid, mesa, valor, copia_cola, provedor, origem, pedido_fb)
+      VALUES (${r.txid}, ${nMesa}, ${valor}, ${r.copia}, 'nuvem', ${origem}, ${nPed}) ON CONFLICT (txid) DO NOTHING`;
+    return { ok: true, txid: r.txid, copia: r.copia };
+  }
   if (PIX_PROVEDOR === 'cielo') {
     const r = await cieloPixCriar(nMesa, valor, rotulo);
     if (!r.ok) return r;
@@ -23162,6 +23246,18 @@ async function apiPixConferir(txid) {
     if (!s.ok) return s;
     if (!s.pago) return { ok: true, pago: false, status: s.status };
     pago = true; e2e = s.e2e; autorizacao = s.nsu;
+  } else if (cob.provedor === 'nuvem') {
+    // Pix do banco gerado pela nuvem (configurador "Pix por"): mesma régua do
+    // Sicredi local — sem NSU, vai o E2E; só baixa com o valor inteiro.
+    // O txid diz o banco (PRAINHAS/PRAINHAI), então vale mesmo se a casa
+    // trocar o "Pix por" com cobrança ainda aberta.
+    const s = await pixNuvemStatus(String(txid));
+    if (!s.ok) return s;
+    if (!s.pago) return { ok: true, pago: false, status: s.status };
+    if (s.recebido > 0 && s.recebido + 0.01 < Number(cob.valor)) {
+      return { ok: false, erro: 'o banco diz que entrou R$ ' + s.recebido.toFixed(2) + ' e a cobrança é de R$ ' + Number(cob.valor).toFixed(2) + ' — confira no extrato antes de baixar' };
+    }
+    pago = true; e2e = s.e2e; autorizacao = e2e;
   } else if (cob.provedor === 'sicredi') {
     // Sicredi: não tem NSU — vai o E2E, igual ao Inter. Só baixa se entrou o
     // valor inteiro da cobrança (centavo de folga pra arredondamento).
@@ -30908,11 +31004,13 @@ header b{font-size:3.2vmin;flex:1}header button{font-size:2.4vmin;padding:1.4vmi
 <div class="abas" id="abas"></div><div class="grade" id="grade"></div>
 <div class="rod"><div class="r" id="resumo">Toque num item para adicionar</div><button class="bt2" id="btVer" onclick="verCarrinho()" disabled>🛒 Ver pedido</button><button class="bt1" id="btCar" onclick="pagar('cartao')" disabled style="display:none">💳 Cartão</button><button class="bt1" id="btPag" onclick="pagar()" disabled>Pagar no Pix</button></div></div>
 <div id="pix" class="tela"><h1>Pague com Pix</h1><div class="v" id="pixV"></div><img id="pixImg" alt="QR do Pix"><p>Abra o app do seu banco, escolha <b>Pix → Ler QR code</b> e aponte para a tela.</p><p><span class="esp"></span>Esperando o pagamento…</p><div class="acoes" style="width:min(80vmin,90vw)"><button class="bt2" onclick="reiniciar()">Cancelar pedido</button></div></div>
-<div id="cartao" class="tela"><h1>Pague na maquininha ao lado</h1><div class="v" id="carV"></div><p style="font-size:3.4vmin">💳 Pedido <b id="carN"></b> — passe ou aproxime o cartão na maquininha</p><p id="carMsg"><span class="esp"></span>Esperando a maquininha…</p><div class="acoes" style="width:min(80vmin,90vw)"><button class="bt2" onclick="cancelarCartao()">Cancelar pedido</button></div></div>
+<div id="cartao" class="tela"><h1>Pague na maquininha ao lado</h1><div class="v" id="carV"></div><p style="font-size:3.4vmin">💳 Pedido <b id="carN"></b> — <b id="carTipo"></b>passe ou aproxime o cartão na maquininha</p><p id="carMsg"><span class="esp"></span>Esperando a maquininha…</p><div class="acoes" style="width:min(80vmin,90vw)"><button class="bt2" onclick="cancelarCartao()">Cancelar pedido</button></div></div>
 <div id="ok" class="tela"><p>Pagamento aprovado! Seu pedido é o</p><div class="num" id="okN"></div><p><b>Retire no balcão do bar</b> — fale esse número</p><p id="okImp" style="display:none">🎟️ Seus tickets estão saindo na impressora</p><div class="itens" id="okI"></div><div id="okNf" style="display:none;background:#fff;color:#123;border-radius:2vmin;padding:2vmin 3vmin;align-items:center;gap:2.4vmin;text-align:left"><img id="okNfImg" alt="QR da nota fiscal" style="width:22vmin;height:22vmin"><div style="font-size:2.4vmin"><b style="font-size:2.8vmin">🧾 Nota fiscal <span id="okNfN"></span></b><br>Aponte a câmera do celular pra consultar a sua nota</div></div><p id="okVolta" style="font-size:2.2vmin;opacity:.85"></p><button class="bt2" style="margin-top:3vmin" onclick="reiniciar()">Fazer outro pedido</button></div>
 <div class="modal" id="mItem"><div class="cx"><h2 id="miN"></h2><div id="miD" style="color:var(--mut);font-size:2.2vmin"></div><div id="miE"></div>
 <div class="qtd"><button onclick="mQ(-1)">−</button><span id="miQ">1</span><button onclick="mQ(1)">+</button></div><div class="erro" id="miErr"></div>
 <div class="acoes"><button class="bt2" onclick="fechar('mItem')">Voltar</button><button class="bt1" id="miOk" onclick="addItem()">Adicionar</button></div></div></div>
+<div class="modal" id="mTipo"><div class="cx"><h2>Crédito ou débito?</h2><p style="font-size:3vmin;color:#64748b;margin:0 0 2vmin">Pagamento à vista, numa vez só</p>
+<div class="acoes" style="flex-direction:column"><button class="bt1" style="font-size:4.4vmin;padding:3.4vmin" onclick="fechar('mTipo');pagarCartao('credito')">💳 Crédito</button><button class="bt1" style="font-size:4.4vmin;padding:3.4vmin" onclick="fechar('mTipo');pagarCartao('debito')">💳 Débito</button><button class="bt2" onclick="fechar('mTipo')">Voltar</button></div></div></div>
 <div class="modal" id="mCar"><div class="cx"><h2>Seu pedido</h2><div id="carL"></div><div class="tot"><span>Total</span><span id="carT"></span></div><div class="erro" id="carErr"></div>
 <div class="acoes"><button class="bt2" onclick="fechar('mCar')">Continuar pedindo</button><button class="bt1" id="mCarCartao" style="display:none" onclick="fechar('mCar');pagar('cartao')">💳 Cartão</button><button class="bt1" id="mCarPix" onclick="fechar('mCar');pagar()">Pagar no Pix</button></div></div></div>
 <script>
@@ -30932,7 +31030,7 @@ function carregar(){return fetch('/api/totem/cardapio').then(function(r){return 
  document.getElementById('btCar').style.display=d.cartao?'':'none';document.getElementById('mCarCartao').style.display=d.cartao?'':'none'}}).catch(function(){})}
 function comecar(){if(!D||!(D.pix||D.cartao)||!D.grupos.length){carregar();return}aba=0;car=[];desenhar();tela('menu');mexeu()}
 function reiniciar(){if(pedCartao){var pc=pedCartao;fetch('/api/totem/cancelar',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({pedido:pc})}).catch(function(){})}
- pedCartao=null;clearInterval(poll);poll=null;txid=null;car=[];clearInterval(volta);volta=null;clearInterval(nfPoll);nfPoll=null;['mItem','mCar'].forEach(fechar);tela('ini');carregar()}
+ pedCartao=null;clearInterval(poll);poll=null;txid=null;car=[];clearInterval(volta);volta=null;clearInterval(nfPoll);nfPoll=null;['mItem','mCar','mTipo'].forEach(fechar);tela('ini');carregar()}
 function mostraNf(nf){if(!nf||!nf.imagem)return;document.getElementById('okNfImg').src=nf.imagem;document.getElementById('okNfN').textContent=nf.numero?('nº '+nf.numero):'';document.getElementById('okNf').style.display='flex'}
 function pago(q,d){clearInterval(poll);poll=null;car=[];document.getElementById('okNf').style.display='none';tela('ok');clearTimeout(ocioso);
  var s=10,el=document.getElementById('okVolta');clearInterval(volta);el.textContent='Voltando ao início em '+s+' s';
@@ -30963,7 +31061,7 @@ function verCarrinho(){if(!car.length){fechar('mCar');rodape();return}document.g
  document.getElementById('carT').textContent=R(car.reduce(function(s,c){return s+c.unit*c.qtd},0));document.getElementById('mCar').classList.add('on')}
 function tira(i){car[i].qtd--;if(car[i].qtd<1)car.splice(i,1);verCarrinho();rodape()}
 var pagando=false;
-function pagar(forma){if(pagando||!car.length)return;if(forma==='cartao')return pagarCartao();pagando=true;var b=document.getElementById('btPag');b.disabled=true;b.textContent='Gerando Pix…';
+function pagar(forma){if(pagando||!car.length)return;if(forma==='cartao'){document.getElementById('mTipo').classList.add('on');mexeu();return}pagando=true;var b=document.getElementById('btPag');b.disabled=true;b.textContent='Gerando Pix…';
  fetch('/api/totem/pedido',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({itens:car.map(function(c){return {codigo_pdv:c.codigo_pdv,qtd:c.qtd,respostas:c.respostas}})})})
  .then(function(r){return r.json()}).then(function(d){if(!d.ok){alert(d.erro||'Não deu certo. Tente de novo.');carregar().then(function(){if(D)desenhar()});return}
   document.getElementById('okImp').style.display=D&&D.impressora?'':'none';
@@ -30973,10 +31071,11 @@ function pagar(forma){if(pagando||!car.length)return;if(forma==='cartao')return 
  .catch(function(){alert('Sem conexão. Tente de novo.')}).then(function(){pagando=false;b.textContent='Pagar no Pix';rodape()})}
 function conferir(){if(!txid)return;var t=txid;fetch('/api/totem/status?txid='+encodeURIComponent(t)).then(function(r){return r.json()}).then(function(d){
  if(t!==txid||!d.pago)return;txid=null;pago('txid='+encodeURIComponent(t),d)}).catch(function(){})}
-function pagarCartao(){pagando=true;var b=document.getElementById('btCar');b.disabled=true;b.textContent='Enviando…';
- fetch('/api/totem/pedido',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({forma:'cartao',itens:car.map(function(c){return {codigo_pdv:c.codigo_pdv,qtd:c.qtd,respostas:c.respostas}})})})
+function pagarCartao(tipo){if(pagando||!car.length)return;pagando=true;var b=document.getElementById('btCar');b.disabled=true;b.textContent='Enviando…';
+ fetch('/api/totem/pedido',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({forma:'cartao',cartao:tipo,itens:car.map(function(c){return {codigo_pdv:c.codigo_pdv,qtd:c.qtd,respostas:c.respostas}})})})
  .then(function(r){return r.json()}).then(function(d){if(!d.ok){alert(d.erro||'Não deu certo. Tente de novo.');carregar().then(function(){if(D)desenhar()});return}
   pedCartao=d.pedido;document.getElementById('carV').textContent=R(d.total);document.getElementById('carN').textContent=d.pedido;
+  document.getElementById('carTipo').textContent=d.cartao==='credito'?'crédito à vista: ':d.cartao==='debito'?'débito: ':'';
   document.getElementById('carMsg').innerHTML='<span class="esp"></span>Esperando a maquininha…';
   document.getElementById('okN').textContent=d.pedido;document.getElementById('okI').textContent=d.itens.map(function(i){return i.qtd+'× '+i.nome}).join(' · ');
   document.getElementById('okImp').style.display=D&&D.impressora?'':'none';
