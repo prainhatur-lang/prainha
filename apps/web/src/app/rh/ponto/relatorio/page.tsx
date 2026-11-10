@@ -387,7 +387,11 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
     const jAtual = jornadaNoDia(vigencias, fim < hoje ? fim : hoje);
     const esc = escala.get(f.id);
     const folhaC = vinculoPor.get(f.id);
-    const registrado = !!folhaC || !!(f.empresaRegistro || f.cnpjRegistro || f.matriculaFolha);
+    // Saiu do registro e voltou como diarista (dono 10/11/2026, caso Felipe Feitosa):
+    // depois do desligamento ele é diarista, não mensalista com falta a descontar.
+    const virouDiarista =
+      !!f.dataDesligamento && f.dataDesligamento < hoje && !!f.fornecedorId && papelPor.get(f.fornecedorId) === 'diarista';
+    const registrado = !virouDiarista && (!!folhaC || !!(f.empresaRegistro || f.cnpjRegistro || f.matriculaFolha));
     const tipo: TipoPessoa = /12\s*x\s*36/i.test(jAtual?.nome ?? '')
       ? '12x36'
       : registrado
@@ -443,7 +447,12 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
     for (const dia of diasMes) {
       const lista = batPorDia.get(`${f.id}|${dia}`) ?? [];
       const foraDoPeriodo =
-        dia > hoje || dia < inicio || (!!f.dataDesligamento && dia > f.dataDesligamento);
+        dia > hoje ||
+        dia < inicio ||
+        (!!f.dataDesligamento &&
+          (dia > f.dataDesligamento ||
+            // Dia da saída sem batida não é falta: a rescisão fecha esse dia.
+            (dia === f.dataDesligamento && lista.length === 0)));
 
       // Horas por casa (um par entrada/saída não cruza casas), depois soma.
       const porCasa = new Map<string, { quando: Date; tipo: 'entrada' | 'saida' }[]>();
