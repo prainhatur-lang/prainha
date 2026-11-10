@@ -792,6 +792,12 @@ export const MENU_AREAS: MenuArea[] = [
             perm: 'folha_equipe.read',
             aka: ['regime'],
           },
+          {
+            label: 'Estudo de equipe',
+            href: '/rh/estudo-equipe',
+            perm: 'folha_equipe.read',
+            aka: ['estudo', 'equipe', 'escala x venda', '12x36', 'diarista'],
+          },
         ],
       },
       {

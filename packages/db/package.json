@@ -272,6 +272,7 @@
     "migrate:lelis-entrada": "tsx scripts/migrate-lelis-entrada.ts",
     "migrate:lelis-pedido": "tsx scripts/migrate-lelis-pedido.ts",
     "migrate:lelis-pedido-estoque": "tsx scripts/migrate-lelis-pedido-estoque.ts",
+    "migrate:estudo-equipe": "tsx scripts/migrate-estudo-equipe.ts",
     "migrate:lelis-pedido-conferencia": "tsx scripts/migrate-lelis-pedido-conferencia.ts",
     "migrate:estoque-local": "tsx scripts/migrate-estoque-local.ts",
     "migrate:ifood-entrega-endereco": "tsx scripts/migrate-ifood-entrega-endereco.ts",
