@@ -29,6 +29,7 @@ import { somarDias } from '@/lib/rh/dia-operacional';
 import { comRegimeDoMes } from '@/lib/rh/regime-no-mes';
 import { proximosFeriados } from '@/lib/reservas/feriados';
 import { FATOR_CLT, FATOR_INTERMITENTE } from '@/lib/rh/horas-regime';
+import { custoRealDaCasa, custoCasa, PAGO_ZERO, type Pago, type PagoSemPonto } from '@/lib/rh/custo-real-equipe';
 
 async function q<T>(query: SQL): Promise<T[]> {
   return (await db.execute(query)) as unknown as T[];
@@ -173,6 +174,31 @@ export interface PessoaEstudo {
   sinais: Sinal[];
   /** Entrada e saída mais comuns nesta casa (mediana), ex.: "10:00–18:30". */
   horarioTipico: string | null;
+  /** Registrado no mês (empresa de registro no cadastro e não é diarista). */
+  registrado?: boolean;
+  /** O que a casa lançou pra pessoa no período (folha do mês, diária, bonificação, transporte, 10%). */
+  pago?: Pago | null;
+}
+
+export interface GrupoCustoReal {
+  pessoas: number;
+  horas: number;
+  pago: Pago;
+}
+
+/** Custo pelo que foi lançado de verdade, separado por registrado × não registrado. */
+export interface CustoRealResumo {
+  registrados: GrupoCustoReal;
+  naoRegistrados: GrupoCustoReal;
+  /** Recebeu da casa no período e não bateu ponto nela. */
+  semPonto: PagoSemPonto[];
+  /** Bateu ponto na casa e não tem nenhum lançamento no período. */
+  pontoSemPagamento: { nome: string; horas: number; registrado: boolean }[];
+  /** Sai do bolso da casa (salário + encargos + diária + bonificação + transporte), com quem não bateu ponto. */
+  custo: number;
+  custoPctVenda: number;
+  /** 10% repassado à equipe (pago pelo cliente — fora do custo). */
+  dezPct: number;
 }
 
 export interface ResumoMes {
@@ -222,6 +248,7 @@ export interface EstudoEquipe {
   pessoas: PessoaEstudo[];
   achados: string[];
   avisos: string[];
+  custoReal?: CustoRealResumo;
 }
 
 function pct(arr: number[], p: number): number {
@@ -955,8 +982,35 @@ export async function montarEstudoEquipe(filialId: string, mes: string, hoje: st
     dias: calc.dias,
     pessoas,
   };
-  return { ...parcialEstudo, ...achadosDe(parcialEstudo) };
+  const custoReal = await montarCustoReal(filialId, mes, resumo, pessoas).catch((err) => {
+    console.error('[estudo-equipe] custo real', err);
+    return undefined;
+  });
+  return { ...parcialEstudo, ...achadosDe(parcialEstudo), custoReal };
 }
+
+async function montarCustoReal(filialId: string, mes: string, resumo: ResumoMes, pessoas: PessoaEstudo[]): Promise<CustoRealResumo> {
+  const c = await custoRealDaCasa(filialId, mes, resumo.ini, resumo.fim, pessoas.map((p) => ({ id: p.id, hCasa: p.hCasa, hTotal: p.hTotal })));
+  const grupo = (): GrupoCustoReal => ({ pessoas: 0, horas: 0, pago: { ...PAGO_ZERO } });
+  const registrados = grupo(), naoRegistrados = grupo();
+  const pontoSemPagamento: CustoRealResumo['pontoSemPagamento'] = [];
+  const tipos = Object.keys(PAGO_ZERO) as (keyof Pago)[];
+  for (const p of pessoas) {
+    p.registrado = c.registrado.get(p.id) ?? false;
+    p.pago = c.porPessoa.get(p.id) ?? null;
+    const g = p.registrado ? registrados : naoRegistrados;
+    g.pessoas++;
+    g.horas += p.hCasa;
+    if (p.pago) for (const t of tipos) g.pago[t] += p.pago[t];
+    else if (p.hCasa >= 4) pontoSemPagamento.push({ nome: p.nome, horas: Math.round(p.hCasa), registrado: p.registrado });
+  }
+  const custo = custoCasa(registrados.pago) + custoCasa(naoRegistrados.pago) + c.semPonto.reduce((x, s) => x + custoCasa(s.pago), 0);
+  const dezPct = registrados.pago.dezPct + naoRegistrados.pago.dezPct + c.semPonto.reduce((x, s) => x + s.pago.dezPct, 0);
+  pontoSemPagamento.sort((a, b) => b.horas - a.horas);
+  return { registrados, naoRegistrados, semPonto: c.semPonto, pontoSemPagamento, custo, custoPctVenda: resumo.venda > 0 ? custo / resumo.venda : 0, dezPct };
+}
+
+const arred = (p: Pago) => Object.fromEntries(Object.entries(p).map(([k, v]) => [k, Math.round(v as number)]));
 
 /** Versão enxuta pra mandar à IA (sem hora a hora de cada dia). */
 export function resumoParaIa(e: EstudoEquipe) {
@@ -979,6 +1033,20 @@ export function resumoParaIa(e: EstudoEquipe) {
       pratosPorHoraCozinha: n(e.resumo.itensPorHCoz),
       custoEquipeEstimado: Math.round(e.resumo.custo),
       custoPctVenda: Math.round(e.resumo.custoPctVenda * 1000) / 10,
+      ...(e.custoReal
+        ? {
+            custoRealLancado: {
+              obs: 'O que a casa lançou de verdade no período. Os 10% são pagos pelo cliente e ficam fora do custo. Encargos = estimativa sobre o salário.',
+              custoCasa: Math.round(e.custoReal.custo),
+              custoPctVenda: Math.round(e.custoReal.custoPctVenda * 1000) / 10,
+              dezPorCentoRepassado: Math.round(e.custoReal.dezPct),
+              registrados: { pessoas: e.custoReal.registrados.pessoas, horas: Math.round(e.custoReal.registrados.horas), ...arred(e.custoReal.registrados.pago) },
+              naoRegistrados: { pessoas: e.custoReal.naoRegistrados.pessoas, horas: Math.round(e.custoReal.naoRegistrados.horas), ...arred(e.custoReal.naoRegistrados.pago) },
+              pagosSemPontoNaCasa: e.custoReal.semPonto.slice(0, 25).map((s) => ({ nome: s.nome, registrado: s.registrado, ...arred(s.pago) })),
+              pontoSemPagamento: e.custoReal.pontoSemPagamento.slice(0, 25),
+            },
+          }
+        : {}),
       pessoasDistintas: e.resumo.pessoas,
       ordensDeProducaoRegistradas: e.resumo.ordensProducao,
     },
@@ -1029,6 +1097,8 @@ export function resumoParaIa(e: EstudoEquipe) {
       horasMes30: p.horasMes30,
       empateComFixoH: p.empateH,
       custo: p.custo,
+      registrado: p.registrado,
+      pagoDeVerdade: p.pago ? arred(p.pago) : null,
       diasPorDiaDaSemana: Object.fromEntries(DOW.map((d, i) => [d, p.porDow[i]])),
       horarioTipico: p.horarioTipico,
       sinais: p.sinais.map((s) => s.texto),

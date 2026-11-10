@@ -26,6 +26,7 @@ import {
 } from '@/lib/rh/estudo-equipe';
 import { PainelIa } from './painel-ia';
 import { SecaoEscala } from './secao-escala';
+import { SecaoCustoReal } from './secao-custo-real';
 
 export const dynamic = 'force-dynamic';
 
@@ -259,6 +260,9 @@ export default async function EstudoEquipePage(props: { searchParams: Promise<SP
             <p className="px-3 py-1.5 text-xs text-slate-400">* mês parcial (só os dias com ponto próprio ou até ontem)</p>
           </div>
         )}
+
+        {/* Custo pelo que foi lançado de verdade (registrado × não registrado) */}
+        {e.custoReal && <SecaoCustoReal c={e.custoReal} venda={r.venda} custoEstimado={r.custo} />}
 
         {/* Achados */}
         <div className="mb-6 grid gap-4 lg:grid-cols-3">
@@ -502,6 +506,7 @@ export default async function EstudoEquipePage(props: { searchParams: Promise<SP
                 <th className="px-3 py-2 text-right">≥10h</th>
                 <th className="px-3 py-2 text-right">H/mês (todas)</th>
                 <th className="px-3 py-2 text-right">Custo aqui</th>
+                <th className="px-3 py-2 text-right">Lançado de verdade</th>
                 <th className="px-3 py-2 text-left">Sinais</th>
               </tr>
             </thead>
@@ -512,6 +517,7 @@ export default async function EstudoEquipePage(props: { searchParams: Promise<SP
                     <div className="font-medium text-slate-800">{p.nome}</div>
                     {p.cargo && <div className="text-xs text-slate-500">{p.cargo}</div>}
                     {!p.daCasa && <div className="text-xs text-violet-600">de outra casa</div>}
+                    {e.custoReal && !p.registrado && <div className="text-xs text-amber-700">não registrado</div>}
                   </td>
                   <td className="px-3 py-1.5">{NOME_GRUPO[p.grupo]}</td>
                   <td className="px-3 py-1.5">
@@ -530,6 +536,26 @@ export default async function EstudoEquipePage(props: { searchParams: Promise<SP
                   <td className="px-3 py-1.5 text-right">
                     {brl(p.custo)}
                     {p.custoEstimado ? <span className="text-slate-400"> *</span> : null}
+                  </td>
+                  <td className="px-3 py-1.5 text-right">
+                    {p.pago ? (
+                      <>
+                        {brl(p.pago.salario + p.pago.encargos + p.pago.diaria + p.pago.bonificacao + p.pago.transporte)}
+                        <div className="whitespace-nowrap text-xs text-slate-500">
+                          {[
+                            p.pago.salario >= 1 && `salário ${brl(p.pago.salario)}`,
+                            p.pago.diaria >= 1 && `diária ${brl(p.pago.diaria)}`,
+                            p.pago.bonificacao >= 1 && `bonif. ${brl(p.pago.bonificacao)}`,
+                            p.pago.transporte >= 1 && `transp. ${brl(p.pago.transporte)}`,
+                          ]
+                            .filter(Boolean)
+                            .join(' · ')}
+                        </div>
+                        {p.pago.dezPct >= 1 && <div className="whitespace-nowrap text-xs text-slate-400">+ 10% {brl(p.pago.dezPct)}</div>}
+                      </>
+                    ) : e.custoReal ? (
+                      <span className="text-xs text-amber-700">sem lançamento</span>
+                    ) : null}
                   </td>
                   <td className="px-3 py-1.5">
                     <div className="flex max-w-md flex-col gap-1">
