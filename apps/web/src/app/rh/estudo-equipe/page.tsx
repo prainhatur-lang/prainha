@@ -551,6 +551,7 @@ export default async function EstudoEquipePage(props: { searchParams: Promise<SP
         </p>
 
         <PainelIa
+          key={`${filial.id}-${mes}`}
           filialId={filial.id}
           mes={mes}
           meta={meta}

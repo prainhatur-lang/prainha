@@ -30,11 +30,11 @@ export function Texto({ md }: { md: string }) {
             </thead>
             <tbody>
               {linhas.map((l, r) => (
-                <tr key={r} className={/^vaga/i.test(l[0] ?? '') ? 'bg-amber-50' : undefined}>
+                <tr key={r} className={/^\**vaga/i.test(l[0] ?? '') ? 'bg-amber-50' : undefined}>
                   {l.map((c, i) => (
                     <td
                       key={i}
-                      className={`whitespace-nowrap border border-slate-200 px-2 py-1 ${/^folga$/i.test(c) ? 'text-slate-400' : ''}`}
+                      className={`whitespace-nowrap border border-slate-200 px-2 py-1 ${/^\**folga\**$/i.test(c) ? 'text-slate-400' : ''}`}
                     >
                       {negrito(c)}
                     </td>

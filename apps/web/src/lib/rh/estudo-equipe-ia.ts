@@ -60,6 +60,7 @@ async function chamar(key: string, modelo: string, blocos: Bloco[], system = SIS
     .join('\n')
     .trim();
   if (!t) throw new Error('a IA não devolveu texto');
+  if (data.stop_reason === 'max_tokens') return `${t}\n\n⚠ Resposta cortada pelo limite de tamanho — gere de novo.`;
   return t;
 }
 

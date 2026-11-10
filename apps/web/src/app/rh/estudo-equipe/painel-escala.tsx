@@ -59,7 +59,7 @@ export function PainelEscala(props: {
           disabled={carregando}
           className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
         >
-          {carregando ? 'Montando a escala… (até 2 min)' : escala ? 'Gerar de novo' : 'Gerar escala sugerida (IA)'}
+          {carregando ? 'Montando a escala… (até 4 min)' : escala ? 'Gerar de novo' : 'Gerar escala sugerida (IA)'}
         </button>
       </div>
       {erro && <p className="mb-2 rounded bg-red-50 px-3 py-2 text-sm text-red-700">{erro}</p>}

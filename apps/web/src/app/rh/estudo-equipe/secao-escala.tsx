@@ -57,10 +57,10 @@ export function SecaoEscala(props: {
           </div>
         </div>
         <div className="rounded-md border border-slate-200 bg-white p-3">
-          <div className="text-xs text-slate-500">Atendimento: falta coberta</div>
+          <div className="text-xs text-slate-500">Falta de gente coberta</div>
           <div className="text-lg font-semibold text-slate-800">{n0(m.faltaCoberta)} h</div>
           <div className="text-xs text-slate-500">
-            horas com menos gente que o necessário{m.faltaRestante > 0.5 ? ` · fica ${n0(m.faltaRestante)} h pro próximo passo` : ''}
+            horas com menos gente que o necessário (atendimento + cozinha no serviço){m.faltaRestante > 0.5 ? ` · fica ${n0(m.faltaRestante)} h pro próximo passo` : ''}
           </div>
         </div>
         <div className="rounded-md border border-slate-200 bg-white p-3">
@@ -139,6 +139,7 @@ export function SecaoEscala(props: {
       )}
 
       <PainelEscala
+        key={`${props.filialId}-${props.mes}`}
         filialId={props.filialId}
         mes={props.mes}
         meta={props.meta}

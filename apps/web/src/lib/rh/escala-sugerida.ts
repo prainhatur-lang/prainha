@@ -87,29 +87,87 @@ function alvoGradual(nec: number[], hoje: number[]): number[] {
   });
 }
 
-/** Cobre a necessidade com turnos gulosos: cada turno nasce na primeira hora descoberta. */
+/**
+ * Cobre a necessidade escolhendo, a cada passo, o turno que mais tapa buraco por
+ * hora paga (empate: o mais longo, depois o que começa mais cedo). No turno acima
+ * de 6h a hora do intervalo NÃO conta como cobertura: cai na hora com mais folga
+ * do miolo do turno; se abrir buraco, outro turno cobre.
+ */
 function cobrir(setor: SetorEscala, nec: number[]): TurnoSugerido[] {
+  type Vaga = { ini: number; trab: number; span: number; pausa: number };
   const cob = new Array(24).fill(0);
+  const turnos: Vaga[] = [];
+  const falta = (i: number) => nec[i] - cob[i];
+  const por = (t: Vaga, sinal: 1 | -1) => {
+    for (let i = t.ini; i < t.ini + t.span; i++) if (i !== t.pausa) cob[i] += sinal;
+  };
+  for (let guarda = 0; guarda < 300; guarda++) {
+    if (!cob.some((_, i) => falta(i) > 0)) break;
+    let melhor: { ini: number; trab: number; span: number; pausa: number; util: number } | null = null;
+    for (let trab = TURNO_MAX; trab >= TURNO_MIN; trab--) {
+      const span = trab > 6 ? trab + 1 : trab;
+      for (let ini = 0; ini + span <= 24; ini++) {
+        // intervalo: fora das 2 primeiras e 2 últimas horas, onde menos falta gente
+        let pausa = -1;
+        if (span > trab) {
+          for (let i = ini + 2; i <= ini + span - 3; i++) if (pausa < 0 || falta(i) < falta(pausa)) pausa = i;
+        }
+        let util = 0;
+        for (let i = ini; i < ini + span; i++) if (i !== pausa && falta(i) > 0) util++;
+        if (!util) continue;
+        if (!melhor || util * melhor.trab > melhor.util * trab || (util * melhor.trab === melhor.util * trab && util > melhor.util)) {
+          melhor = { ini, trab, span, pausa, util };
+        }
+      }
+    }
+    if (!melhor) break;
+    const m = melhor;
+    por(m, 1);
+    turnos.push(m);
+  }
+
+  // Enxuga: tira ou encurta cada turno enquanto a necessidade continuar coberta.
+  for (let passe = 0; passe < 6; passe++) {
+    let mudou = false;
+    for (let k = turnos.length - 1; k >= 0; k--) {
+      const t = turnos[k];
+      por(t, -1);
+      if (!cob.some((_, i) => falta(i) > 0)) {
+        turnos.splice(k, 1);
+        mudou = true;
+        continue;
+      }
+      let troca: Vaga | null = null;
+      for (let trab = TURNO_MIN; trab < t.trab && !troca; trab++) {
+        const span = trab > 6 ? trab + 1 : trab;
+        for (let ini = Math.max(0, t.ini - 2); ini + span <= Math.min(24, t.ini + t.span + 2) && !troca; ini++) {
+          const pausas = span > trab ? Array.from({ length: span - 4 }, (_, x) => ini + 2 + x) : [-1];
+          for (const pausa of pausas) {
+            const c: Vaga = { ini, trab, span, pausa };
+            por(c, 1);
+            const ok = !cob.some((_, i) => falta(i) > 0);
+            por(c, -1);
+            if (ok) {
+              troca = c;
+              break;
+            }
+          }
+        }
+      }
+      if (troca) {
+        turnos[k] = troca;
+        por(troca, 1);
+        mudou = true;
+      } else por(t, 1);
+    }
+    if (!mudou) break;
+  }
+
   const lista: TurnoSugerido[] = [];
-  for (let guarda = 0; guarda < 200; guarda++) {
-    const s = cob.findIndex((c, i) => c < nec[i]);
-    if (s < 0) break;
-    let len = 0;
-    while (s + len < 24 && cob[s + len] < nec[s + len]) len++;
-    // turno de trabalho de 4h a 8h; acima de 6h soma 1h de intervalo no meio
-    const trab = Math.min(Math.max(len, TURNO_MIN), TURNO_MAX);
-    const span = trab > 6 ? trab + 1 : trab;
-    let ini = s;
-    if (ini + span > 24) ini = Math.max(0, 24 - span);
-    // se o buraco é curto mas o turno mínimo passa do fim da necessidade, puxa pra trás
-    const fimNec = nec.reduce((m, v, i) => (v > 0 ? i + 1 : m), 0);
-    if (ini + span > fimNec && span <= fimNec) ini = Math.min(ini, Math.max(0, fimNec - span));
-    if (ini > s) ini = s; // nunca começa depois do buraco
-    for (let i = ini; i < Math.min(24, ini + span); i++) cob[i]++;
-    const intervalo = span > trab;
-    const igual = lista.find((t) => t.ini === ini && t.fim === ini + span);
+  for (const m of turnos) {
+    const igual = lista.find((t) => t.ini === m.ini && t.fim === m.ini + m.span);
     if (igual) igual.qtd++;
-    else lista.push({ setor, ini, fim: ini + span, horas: trab, qtd: 1, intervalo });
+    else lista.push({ setor, ini: m.ini, fim: m.ini + m.span, horas: m.trab, qtd: 1, intervalo: m.span > m.trab });
   }
   return lista.sort((a, b) => a.ini - b.ini || a.fim - b.fim);
 }
@@ -199,7 +257,7 @@ export function sugerirTurnos(e: EstudoEquipe): EscalaSugerida {
 
   const observacoes = [
     `Mudança gradual: em cada hora a sugestão anda no máximo ${Math.round(PASSO_MAX * 100)}% a mais ou a menos do que a casa tem hoje. A sobra calculada é teto, não meta de corte; o que faltar fica pro próximo mês, depois de ver o resultado.`,
-    'Turno acima de 6h tem 1h de intervalo (CCT); a sugestão conta a presença de 7h a 9h e paga só as horas de trabalho — escalone os intervalos na hora de menor venda.',
+    'Turno acima de 6h tem 1h de intervalo (CCT); o horário mostrado já inclui essa hora, que não conta como gente atendendo — tire os intervalos na hora de menor venda, um de cada vez.',
     'Na cozinha, as horas fora do serviço continuam iguais às de hoje: é produção (pré-preparo), não sobra.',
     'Necessidade de atendimento = venda da hora ÷ meta de R$/hora-pessoa, com o mínimo de gente da casa aberta; arredonda pra cima só quando passa de 0,3 pessoa.',
     'Economia estimada pelo custo médio da hora de cada setor neste mês; o custo real depende de quem sai e quem fica (CLT tem salário fixo).',
