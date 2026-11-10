@@ -12,6 +12,7 @@ import { enviarConfirmacaoReserva, enviarAvisoTolerancia, enviarLembreteReserva,
 import { hojeBr, horaAgoraBr } from '@/lib/datas';
 import { mesasOcupadas, ocupadasParaTeto } from '@/lib/reservas/mesa-disponivel';
 import { foraDaJanelaAtendimento } from '@/lib/reservas/atendimento';
+import { horaForaDoFuncionamento } from '@/lib/reservas/funcionamento';
 import { medirOcupacaoHoje } from '@/lib/atendimento/ocupacao';
 import { createPixPayment } from '@/lib/pagamento-online';
 import { randomBytes } from 'node:crypto';
@@ -129,6 +130,17 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
   if (areaCfg.horaLimite && hora > areaCfg.horaLimite) {
     return NextResponse.json(
       { error: `${espaco} aceita reserva só até ${areaCfg.horaLimite}` },
+      { status: 400 },
+    );
+  }
+
+  // Funcionamento por casa (caso Dudu, 10/11/2026): no Tabuará/Mar a hora
+  // pedida precisa cair numa janela do dia (seg–qui o Tabuará fecha das 15h
+  // às 18h). Bar e filiais fora do mapa: devolve null, nada muda.
+  const foraFuncionamento = horaForaDoFuncionamento(filial.id, data, hora);
+  if (foraFuncionamento) {
+    return NextResponse.json(
+      { error: `${foraFuncionamento} Escolha um horário dentro do funcionamento.` },
       { status: 400 },
     );
   }

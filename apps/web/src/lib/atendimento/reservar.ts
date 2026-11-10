@@ -33,6 +33,7 @@ import { mesasOcupadas, ocupadasParaTeto } from '@/lib/reservas/mesa-disponivel'
 import { textoMesas } from '@/lib/reservas/mesas-juntadas';
 import { plantaDoEspaco, saoVizinhas } from '@/lib/reservas/vizinhas';
 import { foraDaJanelaAtendimento, horaMaximaDoDia } from '@/lib/reservas/atendimento';
+import { horaForaDoFuncionamento } from '@/lib/reservas/funcionamento';
 import { ligacaoDaReserva } from '@/lib/cliente-unico';
 import { membroPorTelefone } from '@/lib/fidelidade/membro';
 import {
@@ -912,6 +913,14 @@ async function validarSlotEAlocarMesa(p: {
   // "o lounge pode ser até a hora que ele quiser". As outras áreas seguem.
   if (areaCfg.horaLimite && p.hora > areaCfg.horaLimite && !areaComTaxa) {
     return `${areaCfg.nome} aceita reserva só até ${areaCfg.horaLimite}. Sugira um horário até essa hora.`;
+  }
+  // Funcionamento por casa (caso Dudu, 10/11/2026): no Tabuará/Mar a hora
+  // pedida tem que cair numa janela do dia — seg–qui o Tabuará fecha das 15h
+  // às 18h, e só o horaLimite não barra uma reserva às 16h. Bar e filiais
+  // fora do mapa: nada muda (horaForaDoFuncionamento devolve null).
+  const foraFuncionamento = horaForaDoFuncionamento(p.filialId, p.data, p.hora);
+  if (foraFuncionamento) {
+    return `${foraFuncionamento} Ofereça um horário dentro do funcionamento.`;
   }
 
   // Alocação de mesa — menor mesa livre que cabe o grupo (regra do site).

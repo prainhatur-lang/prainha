@@ -17,6 +17,7 @@ import type { ReservaConfig } from '@concilia/db/schema';
 import { hojeBr, horaAgoraBr, diasAtrasBr } from '@/lib/datas';
 import { caixaUrlDaFilial } from '@/lib/caixa-loja';
 import { pesoNaoConfirmada } from '@/lib/reservas/mesa-disponivel';
+import { janelasFuncionamento, textoJanelas } from '@/lib/reservas/funcionamento';
 
 // Reserva liberada pelo movimento é pra HORÁRIO PRÓXIMO (regra do Elison,
 // 10/10): quanto mais mesa ocupada, menos pra frente dá pra reservar; com
@@ -64,60 +65,19 @@ const TAXA_MEDIA = 0.7;
 // Horário de funcionamento DO PRAINHA BAR (mesmo do prompt da Nina). Fora
 // dele, NUNCA convidar a vir "agora" — às 21:57 a Nina chamou cliente pra
 // casa FECHADA porque as comandas ainda abertas no PDV davam "casa
-// tranquila" (23/08). Vale só pras filiais FORA do mapa FUNCIONAMENTO abaixo.
+// tranquila" (23/08). Vale só pras filiais FORA do mapa de funcionamento
+// por casa (lib/reservas/funcionamento).
 const ABRE = '09:00';
 const FECHA = '19:00';
 
 // ─── Funcionamento POR CASA (dono 09/11/2026, caso Valéria no Tabuará) ───
 // Domingo às 20:24 o Tabuará estava ABERTO (12h–22h) e o resumo daqui, com o
 // 09:00–19:00 do Bar valendo pra toda filial, dizia "A casa está FECHADA" —
-// o Otávio respondeu "estamos fechados" e o cliente se perdeu. Cada casa tem
-// suas janelas por dia da semana (índice 0 = domingo), com intervalo no meio
-// do dia quando houver; fecha '23:59' = "até o último cliente". O Prainha
-// Bar (e qualquer filial fora deste mapa) segue nas constantes acima, com o
-// comportamento idêntico ao de antes.
-interface JanelaDia { abre: string; fecha: string }
-const J = (abre: string, fecha: string): JanelaDia => ({ abre, fecha });
-// Tabuará (bloco "Sobre o Tabuará" da base da Nina): seg–qui 12h–15h e
-// 18h–23h; sexta e sábado das 12h até o último cliente; domingo 12h–22h.
-const TABUARA_SEMANA = [J('12:00', '15:00'), J('18:00', '23:00')];
-const FUNCIONAMENTO: Record<string, JanelaDia[][]> = {
-  // Tabuará
-  'fde37b95-7c7e-4b41-a618-2aba1fbc0de7': [
-    [J('12:00', '22:00')], // dom
-    TABUARA_SEMANA, // seg
-    TABUARA_SEMANA, // ter
-    TABUARA_SEMANA, // qua
-    TABUARA_SEMANA, // qui
-    [J('12:00', '23:59')], // sex
-    [J('12:00', '23:59')], // sáb
-  ],
-  // Prainha Mar: abre todos os dias às 12h (bloco da base; o fechamento exato
-  // está PENDENTE lá). Fechamento pelo movimento real dos pedidos (15 dias,
-  // lido em 09/11/2026): domingo ~21h, seg–qui ~22h, sexta/sábado ~23h.
-  'e899dae2-38bf-4f3f-9149-7effd059fab8': [
-    [J('12:00', '21:00')], // dom
-    [J('12:00', '22:00')], // seg
-    [J('12:00', '22:00')], // ter
-    [J('12:00', '22:00')], // qua
-    [J('12:00', '22:00')], // qui
-    [J('12:00', '23:00')], // sex
-    [J('12:00', '23:00')], // sáb
-  ],
-};
-
-function janelasDe(filialId: string, ymd: string): JanelaDia[] | null {
-  const f = FUNCIONAMENTO[filialId];
-  if (!f) return null;
-  const [a, m, d] = ymd.split('-').map(Number);
-  return f[new Date(Date.UTC(a, m - 1, d)).getUTCDay()] ?? null;
-}
-
-function textoJanelas(janelas: JanelaDia[]): string {
-  return janelas
-    .map((j) => (j.fecha === '23:59' ? `das ${j.abre} até o último cliente` : `das ${j.abre} às ${j.fecha}`))
-    .join(' e ');
-}
+// o Otávio respondeu "estamos fechados" e o cliente se perdeu. O mapa das
+// janelas por casa mora em lib/reservas/funcionamento (compartilhado com a
+// validação da hora da reserva, caso Dudu 10/11). O Prainha Bar (e qualquer
+// filial fora do mapa) segue nas constantes acima, comportamento intocado.
+const janelasDe = janelasFuncionamento;
 
 export interface OcupacaoHoje {
   comandasAbertas: number;
