@@ -122,6 +122,7 @@ function req(
 }
 
 const tokens = new Map<string, { valor: string; expira: number }>();
+let formatoTokenOk: string | null = null;
 
 async function token(c: SicrediCredenciais, escopo?: string): Promise<string> {
   const scope = escopo || process.env.SICREDI_SCOPE_LEITURA || 'pix.read';
@@ -129,12 +130,31 @@ async function token(c: SicrediCredenciais, escopo?: string): Promise<string> {
   const t = tokens.get(chave);
   if (t && t.expira > Date.now()) return t.valor;
   const q = new URLSearchParams({ grant_type: 'client_credentials', scope }).toString();
-  // grant/scope na URL e no corpo, igual ao vendas-local.
-  const r = await req(c, { method: 'POST', path: `/oauth/token?${q}`, form: q, basic: true });
-  if (r.status !== 200 || !r.data?.access_token) {
-    throw new Error(
-      `Sicredi recusou o token (${c.nome}): ${r.data?.error_description || r.data?.detail || r.data?.error || r.raw || `HTTP ${r.status}`}`,
-    );
+  const q20 = q.replace(/\+/g, '%20');
+  // Formatos do pedido de token, na ordem: o do manual da Sicredi (grant/scope só
+  // na URL, sem corpo) primeiro; o antigo (URL + corpo) fica como última tentativa.
+  // A Sicredi respondeu "não respeita o schema" ao antigo (10/11/2026). O que
+  // funcionar fica lembrado pra não repetir as tentativas a cada token.
+  const formatos: Array<{ nome: string; o: Parameters<typeof req>[1] }> = [
+    { nome: 'url', o: { method: 'POST', path: `/oauth/token?${q}`, basic: true } },
+    { nome: 'url%20', o: { method: 'POST', path: `/oauth/token?${q20}`, basic: true } },
+    { nome: 'corpo', o: { method: 'POST', path: '/oauth/token', form: q, basic: true } },
+    { nome: 'url+corpo', o: { method: 'POST', path: `/oauth/token?${q}`, form: q, basic: true } },
+  ];
+  const ordem = formatoTokenOk ? [...formatos.filter((f) => f.nome === formatoTokenOk), ...formatos.filter((f) => f.nome !== formatoTokenOk)] : formatos;
+  const erros: string[] = [];
+  let r: Awaited<ReturnType<typeof req>> | null = null;
+  for (const f of ordem) {
+    const x = await req(c, f.o);
+    if (x.status === 200 && x.data?.access_token) {
+      formatoTokenOk = f.nome;
+      r = x;
+      break;
+    }
+    erros.push(`${f.nome} ${x.status}: ${x.data?.error_description || x.data?.detail || x.data?.error || x.raw || ''}`.slice(0, 120));
+  }
+  if (!r) {
+    throw new Error(`Sicredi recusou o token (${c.nome}): ${erros.join(' | ')}`);
   }
   tokens.set(chave, {
     valor: r.data.access_token,
