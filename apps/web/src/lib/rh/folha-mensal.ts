@@ -22,6 +22,9 @@
  * hora noturna). Mesma linha da folha semanal (PAGAR_NOTURNO_NA_FOLHA_SEMANAL,
  * 27/10). Voltar = true.
  */
+
+/** Teto de remuneração mensal pro salário-família (2026, informado pelo contador em 10/11/2026). */
+export const TETO_SALARIO_FAMILIA = 1980.38;
 export const PAGAR_NOTURNO_NA_FOLHA_MENSAL = false;
 /**
  * Dono 06/11/2026: "a partir do próximo mês ... gerar o adicional noturno para
@@ -272,7 +275,17 @@ export function calcularFolhaMensal(input: {
 
   if (ini <= fim && input.salarioFamilia && input.salarioFamilia.cotas > 0) {
     const sf = input.salarioFamilia;
-    P('995', 'SALARIO FAMILIA', sf.cotas, sf.cotas * sf.valorCota);
+    // Teto do salário-família (contador 10/11/2026, caso Maria Daniele): só tem
+    // direito quem ganha no mês até o teto. A remuneração é a soma dos proventos
+    // do mês, sem o 13º do intermitente.
+    const remuneracao = r2(rub.filter((x) => x.tipo === 'P' && x.codigo !== '9441').reduce((s, x) => s + x.valor, 0));
+    if (remuneracao <= TETO_SALARIO_FAMILIA) {
+      P('995', 'SALARIO FAMILIA', sf.cotas, sf.cotas * sf.valorCota);
+    } else {
+      avisos.push(
+        `Sem salário-família: remuneração de R$ ${remuneracao.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} passa do teto de R$ ${TETO_SALARIO_FAMILIA.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}.`,
+      );
+    }
   }
   if (ini <= fim && input.ajudaCusto) {
     for (const a of input.ajudaCusto) P(a.codigo, a.descricao, a.valor, a.valor);
