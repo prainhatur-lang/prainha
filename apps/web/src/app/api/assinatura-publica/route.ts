@@ -141,6 +141,7 @@ export async function GET(req: Request) {
     assinadoEm: p.assinadoEm?.toISOString() ?? null,
     pedeCpf: !!p.cpf,
     texto: textoDoPedido(p),
+    ehOcorrencia: p.momento === 'ocorrencia' && ehOcorrencia(p.tipo),
   });
 }
 

@@ -22,6 +22,8 @@ interface Estado {
   assinadoEm: string | null;
   pedeCpf: boolean;
   texto: string;
+  /** Advertência/suspensão (10/11/2026): documento curto, aceite de ciência. */
+  ehOcorrencia?: boolean;
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -269,6 +271,15 @@ export function AssinarCliente({ token }: { token: string }) {
           </p>
         </header>
 
+        {fase !== 'feito' ? (
+          // O documento ocupa a tela e, no celular, rolar em cima dele só rola ele:
+          // a pessoa achava que acabava ali e não via CPF, selfie e declaração (10/11/2026).
+          <p className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+            Leia o documento e <b>desça a tela até o fim</b> para assinar: CPF, selfie (foto do rosto), rubrica com o dedo e a
+            declaração.
+          </p>
+        ) : null}
+
         <section className="rounded-lg border border-slate-200 bg-white p-3">
           <p className="mb-2 text-sm font-medium text-slate-800">1. Leia o documento</p>
           {estado.ehHtml ? (
@@ -276,7 +287,7 @@ export function AssinarCliente({ token }: { token: string }) {
               src={urlArquivo}
               sandbox=""
               title="Documento"
-              className="mb-2 h-[70vh] w-full rounded border border-slate-200 bg-white"
+              className={`mb-2 w-full rounded border border-slate-200 bg-white ${estado.ehOcorrencia ? 'h-[50vh]' : 'h-[70vh]'}`}
             />
           ) : estado.ehPdf ? null : (
             // eslint-disable-next-line @next/next/no-img-element
@@ -292,6 +303,15 @@ export function AssinarCliente({ token }: { token: string }) {
             📄 Abrir o documento {estado.ehPdf ? '(PDF)' : 'inteiro'}
           </a>
           {abriuDoc ? <p className="mt-1 text-xs text-slate-500">Depois de ler, volte para esta tela.</p> : null}
+          {fase !== 'feito' ? (
+            <button
+              type="button"
+              onClick={() => document.getElementById('passo-assinar')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+              className="mt-2 block w-full rounded-md bg-emerald-600 px-4 py-3 text-center text-sm font-semibold text-white"
+            >
+              ✍️ Já li — ir para a assinatura ⬇️
+            </button>
+          ) : null}
         </section>
 
         {fase === 'feito' ? (
@@ -302,7 +322,7 @@ export function AssinarCliente({ token }: { token: string }) {
           </section>
         ) : (
           <>
-            <section className="rounded-lg border border-slate-200 bg-white p-3">
+            <section id="passo-assinar" className="scroll-mt-4 rounded-lg border border-slate-200 bg-white p-3">
               <label className="mb-1 block text-sm font-medium text-slate-800" htmlFor="cpf">
                 2. Seu CPF
               </label>
@@ -406,7 +426,7 @@ export function AssinarCliente({ token }: { token: string }) {
             </button>
             {!pode && fase === 'form' ? (
               <p className="text-center text-xs text-slate-500">
-                Falta: {[!cpfDigitado && 'CPF', !selfie && 'selfie', faltaRubrica && 'rubrica', !leu && 'marcar que leu e concorda'].filter(Boolean).join(', ')}
+                Falta: {[!cpfDigitado && 'CPF', !selfie && 'selfie', faltaRubrica && 'rubrica', !leu && (estado.ehOcorrencia ? 'marcar a declaração de ciência' : 'marcar que leu e concorda')].filter(Boolean).join(', ')}
               </p>
             ) : null}
           </>
