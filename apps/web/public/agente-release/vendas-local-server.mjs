@@ -6880,7 +6880,7 @@ async function apiTotemCardapio() {
   const ops = pc.length ? await sql`SELECT o.codigo, o.pergunta, COALESCE(NULLIF(o.nome,''), pl.nome) AS nome, o.preco
     FROM wizard_opcao o LEFT JOIN LATERAL (SELECT nome FROM produto_local WHERE codigo_pdv = o.produto_pdv LIMIT 1) pl ON true
     WHERE o.pergunta = ANY(${pc}) ORDER BY o.codigo` : [];
-  const saldos = await totemSaldos(cods);
+  const saldos = await totemDisponivel(cods);
   const porCod = new Map();
   for (const t of prods) {
     const c = Number(t.codigo_pdv);
@@ -6892,8 +6892,8 @@ async function apiTotemCardapio() {
     })).filter((x) => x.opcoes.length);
     porCod.set(c, { codigo_pdv: c, produto_codigo: t.produto_codigo == null ? null : Number(t.produto_codigo),
       nome: t.nome, tamanho: t.tamanho || null, preco: Number(t.preco), descricao: t.descricao || null,
-      tem_foto: !!t.tem_foto, esgotado: t.sem_estoque === true || (saldos.has(c) && !(saldos.get(c) > 0)),
-      saldo: saldos.has(c) ? saldos.get(c) : null, escolhas });
+      tem_foto: !!t.tem_foto, esgotado: t.sem_estoque === true || !(saldos.get(c) > 0),
+      saldo: saldos.get(c) ?? 0, escolhas });
   }
   const grupos = cfg.grupos.map((g) => ({ ...g, itens: cfg.itens.filter((i) => i.grupo === g.id)
     .sort((a, b) => a.ordem - b.ordem).map((i) => porCod.get(Number(i.codigo))).filter(Boolean) }))
@@ -6913,13 +6913,19 @@ async function apiTotemPedido(body) {
   if (lista.reduce((s, p) => s + Math.max(1, Math.floor(Number(p.qtd) || 1)), 0) > 30) return { ok: false, erro: 'Máximo de 30 itens por pedido.' };
   const esg = await sql`SELECT nome FROM produto_local WHERE codigo_pdv = ANY(${lista.map((p) => Number(p.codigo_pdv))}) AND sem_estoque IS TRUE LIMIT 1`;
   if (esg.length) return { ok: false, erro: esg[0].nome + ' acabou. Tire do carrinho.' };
-  { // estoque da recepção: não vende mais do que tem
+  // Dois pedidos ao mesmo tempo não levam a mesma última unidade: a conferência
+  // e a gravação do pedido andam numa fila só.
+  const solta = await totemTravaPegar();
+  try { return await apiTotemPedidoTravado(lista, noCartao, solta); } finally { solta(); }
+}
+async function apiTotemPedidoTravado(lista, noCartao, solta) {
+  { // estoque da recepção (10/11/2026): só vende o que tem contado, menos o que já
+    // está reservado em pedido esperando pagamento. Item sem contagem = não vende.
     const quer = new Map();
     for (const p of lista) quer.set(Number(p.codigo_pdv), (quer.get(Number(p.codigo_pdv)) || 0) + Math.max(1, Math.floor(Number(p.qtd) || 1)));
-    const saldos = await totemSaldos([...quer.keys()]);
+    const saldos = await totemDisponivel([...quer.keys()]);
     for (const [c, q] of quer) {
-      if (!saldos.has(c)) continue;
-      const tem = Math.max(0, Math.floor(saldos.get(c)));
+      const tem = Math.max(0, Math.floor(saldos.get(c) ?? 0));
       if (q > tem) {
         const [pr] = await sql`SELECT nome FROM produto_local WHERE codigo_pdv=${c} LIMIT 1`;
         const nome = pr?.nome || 'Um item';
@@ -6934,6 +6940,7 @@ async function apiTotemPedido(body) {
   if (!(total > 0)) return { ok: false, erro: 'Pedido sem valor.' };
   const [t] = await sql`INSERT INTO ticket_venda (login, nome_usuario, itens, servico, valor_itens, valor_servico, total, origem)
     VALUES (${TOTEM_LOGIN}, ${'Totem da recepção'}, ${JSON.stringify(c.itens)}, false, ${c.valor_itens}, 0, ${total}, 'totem') RETURNING id`;
+  solta(); // pedido gravado = estoque reservado; o próximo já pode conferir
   const id = Number(t.id);
   if (noCartao) {
     // a LIO do lado puxa pela /api/lio/totem/fila e cobra (apiLioTotemFila)
@@ -7185,6 +7192,40 @@ async function totemSaldos(cods) {
   const rows = cods?.length ? await sql`SELECT codigo_pdv, saldo FROM totem_estoque WHERE codigo_pdv = ANY(${cods})`
     : await sql`SELECT codigo_pdv, saldo FROM totem_estoque`;
   return new Map(rows.map((r) => [Number(r.codigo_pdv), Number(r.saldo)]));
+}
+/** Quanto de cada item está preso em pedido do totem que ainda não baixou o
+ *  estoque: esperando Pix/cartão (até 15 min) ou pago sem baixa (até 1 h). */
+async function totemReservado(cods) {
+  const rows = await sql`SELECT itens FROM ticket_venda WHERE origem='totem' AND estoque_baixado_em IS NULL
+    AND ((status NOT IN ('pago','desistido') AND criado_em > now() - interval '15 minutes')
+      OR (status='pago' AND criado_em > now() - interval '1 hour'))`;
+  const quer = new Set((cods || []).map(Number));
+  const m = new Map();
+  for (const r of rows) {
+    const itens = typeof r.itens === 'string' ? JSON.parse(r.itens) : (r.itens || []);
+    for (const o of itens) {
+      const c = Number(o.codigo_pdv);
+      if (c > 0 && (!quer.size || quer.has(c))) m.set(c, (m.get(c) || 0) + Math.max(1, Math.floor(Number(o.qtd) || 1)));
+    }
+  }
+  return m;
+}
+/** O que o totem pode vender agora: saldo contado − reservado. Item sem contagem
+ *  (sem linha em totem_estoque) = 0 — o totem nunca vende sem estoque (dono, 10/11/2026). */
+async function totemDisponivel(cods) {
+  const [saldos, res] = await Promise.all([totemSaldos(cods), totemReservado(cods)]);
+  const m = new Map();
+  for (const c of cods) m.set(Number(c), saldos.has(Number(c)) ? saldos.get(Number(c)) - (res.get(Number(c)) || 0) : 0);
+  return m;
+}
+let totemFila = Promise.resolve();
+/** Fila de um só pro pedido do totem: devolve a função que libera a vez. */
+function totemTravaPegar() {
+  let solta;
+  const minha = new Promise((ok) => { solta = ok; });
+  const antes = totemFila;
+  totemFila = antes.then(() => minha);
+  return antes.then(() => solta);
 }
 /** Pedido do totem PAGO → tira do estoque da recepção. UMA vez por ticket
  *  (marca estoque_baixado_em antes). Item não controlado passa direto. */

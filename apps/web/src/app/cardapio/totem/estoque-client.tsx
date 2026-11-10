@@ -40,7 +40,7 @@ export function EstoqueRecepcao(props: { filialId: string }) {
     const n = Number(String(qtd[it.codigo_pdv] ?? '').replace(',', '.'));
     if (tipo !== 'parar' && !(Number.isFinite(n) && n >= 0)) return setMsg('Digite a quantidade.');
     if ((tipo === 'entrada' || tipo === 'saida') && !(n > 0)) return setMsg('Quantidade tem que ser maior que zero.');
-    if (tipo === 'parar' && !confirm(`Parar de controlar ${it.nome}? Ele volta a vender sem limite no totem.`)) return;
+    if (tipo === 'parar' && !confirm(`Parar de controlar ${it.nome}? Ele aparece esgotado e para de vender no totem até a próxima contagem.`)) return;
     setOcupado(it.codigo_pdv);
     setMsg(null);
     try {
@@ -70,9 +70,10 @@ export function EstoqueRecepcao(props: { filialId: string }) {
         </button>
       </div>
       <p className="mt-1 text-xs text-slate-500">
-        Saldo só do totem, separado do estoque da casa. Baixa sozinho quando o pedido é pago (Pix ou cartão). Zerou = aparece
-        “esgotado” na tela e o totem não vende mais do que tem. Item <b>sem controle</b> vende sem limite — pra controlar, faça a
-        primeira <b>contagem</b>.
+        Saldo só do totem, separado do estoque da casa. Baixa sozinho quando o pedido é pago (Pix ou cartão), e o pedido
+        esperando pagamento já segura a quantidade. Zerou = aparece “esgotado” na tela e o totem não vende mais do que tem.
+        O totem <b>nunca vende sem estoque</b>: item <b>sem controle</b> aparece esgotado — pra liberar, faça a
+        <b>contagem</b> (ou dê <b>entrada</b>).
       </p>
       {erro && <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">{erro}</p>}
       {!itens && !erro && <p className="mt-3 text-sm text-slate-400">Lendo da loja…</p>}
@@ -90,7 +91,7 @@ export function EstoqueRecepcao(props: { filialId: string }) {
                       {(it.saldo ?? 0) > 0 ? fmt(it.saldo ?? 0) + ' un' : 'esgotado (' + fmt(it.saldo ?? 0) + ')'}
                     </b>
                   ) : (
-                    <span className="text-xs text-slate-400">sem controle</span>
+                    <span className="text-xs text-red-600">sem controle — não vende no totem</span>
                   )}
                 </span>
               </span>
