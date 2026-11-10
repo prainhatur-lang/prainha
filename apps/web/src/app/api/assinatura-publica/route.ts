@@ -6,6 +6,7 @@
 // POST { token, cpf, aceite: true, selfie, descriptor? } → assina
 // Regra em lib/rh/assinatura.ts.
 
+import { ehOcorrencia, textoCienciaOcorrencia } from '@/lib/rh/advertencia';
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, eq, isNull } from 'drizzle-orm';
@@ -86,6 +87,10 @@ const exigeRubrica = (p: Pedido) => dadosSistema(p).origem === 'sistema';
 
 const nomeDoc = (p: Pedido) => rotuloTipo(p.tipo) + (p.descricao ? ` — ${p.descricao}` : '');
 
+/** Advertência/suspensão (10/11/2026): assinar = ciência, não concordância. Demais documentos: texto de sempre. */
+const textoDoPedido = (p: Pedido) =>
+  p.momento === 'ocorrencia' && ehOcorrencia(p.tipo) ? textoCienciaOcorrencia(p.nome, nomeDoc(p)) : textoAceite(p.nome, nomeDoc(p));
+
 function situacao(p: Pedido): { ok: true } | { ok: false; erro: string } {
   if (p.status === 'cancelado' || p.docCancelado) return { ok: false, erro: 'Este pedido de assinatura foi cancelado pela empresa.' };
   if (p.status === 'pendente' && p.expiraEm.getTime() < Date.now()) {
@@ -135,7 +140,7 @@ export async function GET(req: Request) {
     status: p.status,
     assinadoEm: p.assinadoEm?.toISOString() ?? null,
     pedeCpf: !!p.cpf,
-    texto: textoAceite(p.nome, nomeDoc(p)),
+    texto: textoDoPedido(p),
   });
 }
 
@@ -210,7 +215,7 @@ export async function POST(req: Request) {
       hashNoAceite: hash,
       selfiePath: path,
       faceDistancia: fd != null && Number.isFinite(fd) ? fd.toFixed(3) : null,
-      textoAceite: textoAceite(p.nome, nomeDoc(p)),
+      textoAceite: textoDoPedido(p),
       abertoEm: p.abertoEm ?? agora,
     })
     .where(and(eq(A.id, p.id), eq(A.status, 'pendente')))

@@ -36,6 +36,7 @@ import {
 } from '@/lib/rh/banco-horas';
 import { temCarteira } from '@/lib/rh/documento-vinculo';
 import { DocumentosVinculo } from './documentos-vinculo';
+import { Advertencias } from './advertencias';
 
 export const dynamic = 'force-dynamic';
 
@@ -716,6 +717,20 @@ export default async function FichaFuncionarioPage(props: { params: Promise<{ id
               🧮 Fazer o TRCT pelo sistema
             </a>
           )}
+        </Bloco>
+
+        <Bloco
+          titulo="⚠️ Advertências"
+          sub="Diga o motivo; o documento vai pelo WhatsApp e a pessoa assina no celular (CPF, rubrica e selfie)."
+        >
+          <Advertencias
+            funcionarioId={f.id}
+            pode={podeAdmissaoDoc}
+            temTelefone={!!f.telefone}
+            docs={docsVinculo
+              .filter((d) => d.momento === 'ocorrencia')
+              .map((d) => ({ ...d, criadoEm: d.criadoEm.toISOString(), assinatura: assinaturaPorDoc.get(d.id) ?? null }))}
+          />
         </Bloco>
 
         {veFolha && (

@@ -66,8 +66,14 @@ export function tipoValido(m: MomentoDoc, tipo: string): boolean {
   return tiposDoMomento(m).some((t) => t.tipo === tipo);
 }
 
+/** Ocorrências disciplinares (advertência/suspensão — lib/rh/advertencia.ts), momento 'ocorrencia'. */
+export const DOCS_OCORRENCIA: TipoDoc[] = [
+  { tipo: 'advertencia', rotulo: 'Advertência disciplinar', clt: false, semCarteira: false },
+  { tipo: 'suspensao', rotulo: 'Suspensão disciplinar', clt: false, semCarteira: false },
+];
+
 export function rotuloTipo(tipo: string): string {
-  return [...DOCS_ADMISSAO, ...DOCS_DESLIGAMENTO].find((t) => t.tipo === tipo)?.rotulo ?? tipo;
+  return [...DOCS_ADMISSAO, ...DOCS_DESLIGAMENTO, ...DOCS_OCORRENCIA].find((t) => t.tipo === tipo)?.rotulo ?? tipo;
 }
 
 /** Quem tem carteira: empresa de registro preenchida ou regime CLT. */

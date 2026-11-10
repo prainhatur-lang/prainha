@@ -76,7 +76,9 @@ async function casaDaPessoa(userId: string, funcionarioId: string): Promise<stri
   return func.filialId;
 }
 
-const permDo = (m: 'admissao' | 'desligamento') => (m === 'admissao' ? 'funcionario.update' : 'funcionario.desligar');
+// 'ocorrencia' (advertência/suspensão, 10/11/2026) segue funcionario.update, como a entrada.
+const permDo = (m: 'admissao' | 'desligamento' | 'ocorrencia') =>
+  m === 'admissao' || m === 'ocorrencia' ? 'funcionario.update' : 'funcionario.desligar';
 
 export async function POST(req: Request) {
   const auth = await exigirPermApi('funcionario.read');
@@ -97,7 +99,7 @@ export async function POST(req: Request) {
       .where(and(eq(t.id, d.id), isNull(t.canceladoEm)))
       .limit(1);
     if (!a) return NextResponse.json({ error: 'documento não encontrado' }, { status: 404 });
-    const semPerm = await negarSemPerm(user.id, permDo(a.momento as 'admissao' | 'desligamento'));
+    const semPerm = await negarSemPerm(user.id, permDo(a.momento as 'admissao' | 'desligamento' | 'ocorrencia'));
     if (semPerm) return semPerm;
     const casa = await casaDaPessoa(user.id, a.funcionarioId);
     if (casa instanceof NextResponse) return casa;

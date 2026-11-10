@@ -372,7 +372,7 @@ function LinhaTipo(props: {
 // Assinatura eletrônica do funcionário (29/10/2026, lib/rh/assinatura.ts):
 // "✍️ Pedir assinatura" gera o link /op/assinar/<token>; a pessoa abre no
 // celular, confere o CPF, tira a selfie e aceita. Assinado → comprovante.
-function AssinaturaDoc(props: { documentoId: string; assinatura: DocVinculo['assinatura'] | null; pode: boolean }) {
+export function AssinaturaDoc(props: { documentoId: string; assinatura: DocVinculo['assinatura'] | null; pode: boolean }) {
   const router = useRouter();
   const [link, setLink] = useState<{ id: string; link: string; whatsapp: string; semCpf: boolean } | null>(null);
   const [ocupado, setOcupado] = useState(false);
