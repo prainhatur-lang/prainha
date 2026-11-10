@@ -197,11 +197,38 @@ export async function rodarConciliacaoOperadora(opts: {
     // Pagamento sem forma cuja autorizacao e um EndToEndId Pix: so entra no pool
     // se o NSU dele aparece nas vendas Cielo do periodo (Pix via maquininha).
     const nsusVendas = new Set(vendasRaw.map((v) => v.nsu).filter(Boolean));
+    // Pix recebido na Sicredi (API Pix, conta 748): não passa pela Cielo, então
+    // não é cobrado aqui. Achado pelo E2E exato no lançamento da Sicredi; quem
+    // confere esse Pix é o painel "Dinheiro que não entrou" (lib/pix-sicredi-conferencia).
+    const e2esPix = [
+      ...new Set(
+        pagamentosPreFiltro
+          .map((p) => p.numeroAutorizacao)
+          .filter((a): a is string => isAuthPixE2E(a)),
+      ),
+    ];
+    const e2eSicredi = new Set<string>();
+    for (let i = 0; i < e2esPix.length; i += 1000) {
+      const achados = await db
+        .select({ e2e: schema.lancamentoBanco.idTransacao })
+        .from(schema.lancamentoBanco)
+        .innerJoin(schema.contaBancaria, eq(schema.contaBancaria.id, schema.lancamentoBanco.contaBancariaId))
+        .where(
+          and(
+            eq(schema.lancamentoBanco.filialId, filialId),
+            eq(schema.contaBancaria.codigoBanco, '748'),
+            eq(schema.lancamentoBanco.tipo, 'C'),
+            inArray(schema.lancamentoBanco.idTransacao, e2esPix.slice(i, i + 1000)),
+          ),
+        );
+      for (const a of achados) if (a.e2e) e2eSicredi.add(a.e2e);
+    }
     const pagamentos = pagamentosPreFiltro.filter(
       (p) =>
-        p.formaPagamento !== null ||
-        !isAuthPixE2E(p.numeroAutorizacao) ||
-        (p.nsu != null && nsusVendas.has(p.nsu)),
+        !(p.numeroAutorizacao && e2eSicredi.has(p.numeroAutorizacao)) &&
+        (p.formaPagamento !== null ||
+          !isAuthPixE2E(p.numeroAutorizacao) ||
+          (p.nsu != null && nsusVendas.has(p.nsu))),
     );
 
     // Apaga matches AUTO auto-revogaveis no scope — vao ser regerados pelo engine.

@@ -11,6 +11,7 @@ import {
   type DinheiroNaoEntrou,
   type GrupoNaoEntrou,
 } from '@/lib/dinheiro-nao-entrou';
+import { conferirPixSicredi, type PixSicrediConferencia } from '@/lib/pix-sicredi-conferencia';
 
 const dataBr = (iso: string) => iso.split('-').reverse().join('/');
 const MESES = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
@@ -24,7 +25,67 @@ export async function DinheiroNaoEntrouPainel({ filialId }: { filialId: string }
     console.error('[dinheiro-nao-entrou]', e);
     return null;
   }
-  return <DinheiroNaoEntrouView d={d} filialId={filialId} />;
+  return (
+    <>
+      <DinheiroNaoEntrouView d={d} filialId={filialId} />
+      <PixSicrediBloco filialId={filialId} />
+    </>
+  );
+}
+
+/** Pix lançados no caixa pela Sicredi × Pix recebidos na API Pix da Sicredi
+ * (mesmo E2E). Só aparece quando a casa já tem Pix da Sicredi lido. */
+async function PixSicrediBloco({ filialId }: { filialId: string }) {
+  let c: PixSicrediConferencia | null;
+  try {
+    c = await conferirPixSicredi(filialId);
+  } catch (e) {
+    console.error('[pix-sicredi-conferencia]', e);
+    return null;
+  }
+  if (!c) return null;
+  const hora = (iso: string) =>
+    new Date(iso).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  const faltas = c.faltas.filter((f) => !f.outraConta);
+  const outra = c.faltas.filter((f) => f.outraConta);
+  if (c.faltas.length === 0) {
+    return (
+      <div className="mt-3 rounded-xl border border-emerald-300 bg-emerald-50 px-5 py-3 text-sm text-emerald-900">
+        ✅ Pix Sicredi: os {int(c.conferidos.qtd)} Pix lançados no caixa desde {dataBr(c.desde)} (
+        {brl(c.conferidos.valor)}) entraram na conta da Sicredi.
+      </div>
+    );
+  }
+  return (
+    <div className={`mt-3 rounded-xl p-5 ${faltas.length ? 'border-4 border-red-600 bg-red-50 shadow-lg' : 'border border-amber-300 bg-amber-50'}`}>
+      {faltas.length > 0 && (
+        <>
+          <p className="text-sm font-black uppercase tracking-wide text-red-700">🚨 Pix Sicredi que não entrou na conta</p>
+          <p className="mt-1 text-4xl font-black text-red-700">{brl(c.valorFalta)}</p>
+          <p className="mt-1 text-sm text-red-900">
+            {int(faltas.length)} Pix lançados no caixa sem o mesmo código (E2E) entre os Pix que a Sicredi recebeu,
+            desde {dataBr(c.desde)}. Conferidos: {int(c.conferidos.qtd)} ({brl(c.conferidos.valor)}).
+          </p>
+        </>
+      )}
+      {outra.length > 0 && (
+        <p className="mt-2 text-sm text-amber-900">
+          ⚠️ {int(outra.length)} Pix ({brl(outra.reduce((s, f) => s + f.valor, 0))}) caíram em outra conta da casa, não na Sicredi.
+        </p>
+      )}
+      <ul className="mt-3 max-h-72 space-y-1 overflow-y-auto text-xs">
+        {c.faltas.slice(0, 200).map((f) => (
+          <li key={f.pagamentoId} className="flex flex-wrap gap-x-3 font-mono">
+            <span>{hora(f.quando)}</span>
+            <b>{brl(f.valor)}</b>
+            {f.pedido != null && <span>pedido {f.pedido}</span>}
+            <span className="text-gray-500">{f.e2e}</span>
+            {f.outraConta && <span className="text-amber-700">outra conta</span>}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 export function DinheiroNaoEntrouView({ d, filialId }: { d: DinheiroNaoEntrou; filialId: string }) {

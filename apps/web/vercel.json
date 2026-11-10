@@ -33,6 +33,10 @@
       "schedule": "50 14,0 * * *"
     },
     {
+      "path": "/api/cron/pix-sicredi",
+      "schedule": "*/30 * * * *"
+    },
+    {
       "path": "/api/cron/extrato-fechamento-inter",
       "schedule": "0 9 1,2,5 * *"
     },
