@@ -23,6 +23,8 @@ const ArrowRight = (p: IconProps) => <S {...p}><path d="M5 12h14M13 6l6 6-6 6" /
 const WHATSAPP_URL =
   'https://wa.me/5579999812578?text=' + encodeURIComponent('Olá! Quero reservar uma mesa na Prainha Mar e Grill.');
 const TELEFONE = '(79) 99600-7289';
+// Delivery próprio da casa (sem iFood): cardápio, entrega ou retirada, Pix/cartão.
+const DELIVERY_URL = 'https://app.prainhabar.com/delivery/prainhamar';
 const TELEFONE_URL = 'tel:+5579996007289';
 const ENDERECO = 'Shopping Praia Sul, loja 198 · Rod. dos Náufragos, 4880 · Aruana, Aracaju - SE';
 const MAPS_BUSCA = encodeURIComponent('Shopping Praia Sul, Aracaju - SE');
@@ -110,6 +112,7 @@ export default async function PrainhaMarPage() {
           <nav className="flex items-center gap-5 text-[15px]">
             <a href="#cardapio" className="hidden text-[#1E3A5F] hover:text-[#DD6A10] sm:inline">Cardápio</a>
             <a href="#visite" className="hidden text-[#1E3A5F] hover:text-[#DD6A10] sm:inline">Como chegar</a>
+            <a href={DELIVERY_URL} className="text-[#1E3A5F] hover:text-[#DD6A10]">Delivery</a>
             <a
               href={reservaUrl}
               className="rounded-full bg-[#DD6A10] px-4 py-2 font-medium text-white transition hover:bg-[#c55d0c]"
@@ -146,6 +149,12 @@ export default async function PrainhaMarPage() {
                 className="inline-flex items-center gap-2 rounded-full border border-[#1E3A5F]/30 px-6 py-3 text-lg font-medium text-[#1E3A5F] transition hover:border-[#DD6A10] hover:text-[#DD6A10]"
               >
                 Ver o cardápio <ArrowRight className="h-5 w-5" />
+              </a>
+              <a
+                href={DELIVERY_URL}
+                className="inline-flex items-center gap-2 rounded-full bg-[#DD6A10] px-6 py-3 text-lg font-medium text-white transition hover:bg-[#c55d0c]"
+              >
+                Pedir delivery <ArrowRight className="h-5 w-5" />
               </a>
             </div>
           </div>
@@ -235,6 +244,13 @@ export default async function PrainhaMarPage() {
               <Chat className="h-5 w-5" /> WhatsApp
             </a>
           </div>
+          <p className="text-[#F5EFE3]/85">
+            Prefere comer em casa?{' '}
+            <a href={DELIVERY_URL} className="font-medium text-[#F0A35E] underline underline-offset-4 hover:text-white">
+              Peça pelo nosso delivery
+            </a>{' '}
+            — entrega ou retirada no balcão.
+          </p>
         </div>
       </section>
 
