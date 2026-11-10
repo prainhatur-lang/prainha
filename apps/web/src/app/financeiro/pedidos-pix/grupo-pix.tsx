@@ -377,11 +377,30 @@ export function GrupoPix({
       if (!segue) return;
     }
     const ok = window.confirm(
-      `Dar baixa em ${contas.length} conta(s) de ${grupo.nome}, total ${brl(totalMarcado)}, pagas em ${dataBr(dataPgto)}?\n\nSó confirme depois que o Pix saiu no Inter.`,
+      `Dar baixa em ${contas.length} conta(s) de ${grupo.nome}, total ${brl(totalMarcado)}, pagas em ${dataBr(dataPgto)}?\n\nA baixa só sai se o Pix de ${brl(totalMarcado)} aparecer no extrato do Inter.`,
     );
     if (!ok) return;
     setPending(true);
     setMsg(null);
+    // 10/11/2026 (pedido do dono): só baixa se o Pix aparece no extrato do
+    // Inter — nada de baixa direta por descuido (rescisão do Waldenisson).
+    const total = Math.round(contas.reduce((s, c) => s + c.saldo, 0) * 100) / 100;
+    const ra = await fetch('/api/financeiro/pedidos-pix/achar-no-extrato', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ filialId, data: dataPgto, valor: total }),
+    }).catch(() => null);
+    const achado = ra
+      ? ((await ra.json().catch(() => ({}))) as { achou?: boolean; marca?: string; dataDebito?: string; mensagem?: string; error?: string })
+      : {};
+    if (!ra || !ra.ok || !achado.achou || !achado.marca) {
+      setPending(false);
+      setMsg({
+        tipo: 'erro',
+        texto: `Baixa não feita: ${achado.mensagem ?? achado.error ?? 'não deu pra conferir o extrato do Inter'} Se ainda não pagou, use 💸 Pagar. Se pagou num Pix só com outro valor ou em outra data, ajuste a data/marcação e tente de novo.`,
+      });
+      return;
+    }
     const erros: string[] = [];
     for (const c of contas) {
       const r = await fetch(`/api/financeiro/contas/${c.id}/baixas`, {
@@ -390,7 +409,7 @@ export function GrupoPix({
         body: JSON.stringify({
           data: dataPgto,
           valor: Math.round(c.saldo * 100) / 100,
-          observacao: 'Pix pago no Inter (tela Pedidos a pagar por Pix)',
+          observacao: `Pix pago no Inter (tela Pedidos a pagar por Pix) — conferido no extrato ${dataBr(achado.dataDebito!)} ${achado.marca}`,
         }),
       }).catch(() => null);
       if (!r || !r.ok) {
