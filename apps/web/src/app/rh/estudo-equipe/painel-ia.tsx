@@ -2,57 +2,8 @@
 
 // Painel da IA + decisão do mês (estudo de equipe, 10/11/2026).
 
-import { useState, type ReactNode } from 'react';
-
-function negrito(t: string): ReactNode[] {
-  return t.split(/(\*\*[^*]+\*\*)/g).map((p, i) =>
-    p.startsWith('**') && p.endsWith('**') ? <strong key={i}>{p.slice(2, -2)}</strong> : <span key={i}>{p}</span>,
-  );
-}
-
-/** Markdown mínimo: ##/### títulos, listas "-"/"1.", **negrito**, parágrafos. */
-function Texto({ md }: { md: string }) {
-  const out: ReactNode[] = [];
-  let lista: string[] = [];
-  const fechar = () => {
-    if (lista.length)
-      out.push(
-        <ul key={`l${out.length}`} className="mb-3 list-disc space-y-1 pl-5">
-          {lista.map((x, i) => (
-            <li key={i}>{negrito(x)}</li>
-          ))}
-        </ul>,
-      );
-    lista = [];
-  };
-  for (const linha of md.split('\n')) {
-    const l = linha.trim();
-    if (!l) {
-      fechar();
-      continue;
-    }
-    const h = /^#{1,4}\s+(.*)$/.exec(l);
-    const li = /^(?:[-*•]|\d+[.)])\s+(.*)$/.exec(l);
-    if (h) {
-      fechar();
-      out.push(
-        <h3 key={`h${out.length}`} className="mb-2 mt-4 text-sm font-semibold text-slate-800">
-          {negrito(h[1])}
-        </h3>,
-      );
-    } else if (li) lista.push(li[1]);
-    else {
-      fechar();
-      out.push(
-        <p key={`p${out.length}`} className="mb-2">
-          {negrito(l)}
-        </p>,
-      );
-    }
-  }
-  fechar();
-  return <div className="text-sm leading-relaxed text-slate-700">{out}</div>;
-}
+import { useState } from 'react';
+import { Texto } from './texto-md';
 
 export function PainelIa(props: {
   filialId: string;

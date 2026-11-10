@@ -25,6 +25,7 @@ import {
   type ResumoMes,
 } from '@/lib/rh/estudo-equipe';
 import { PainelIa } from './painel-ia';
+import { SecaoEscala } from './secao-escala';
 
 export const dynamic = 'force-dynamic';
 
@@ -364,6 +365,19 @@ export default async function EstudoEquipePage(props: { searchParams: Promise<SP
           Necessário = venda da hora ÷ régua, nunca abaixo do mínimo com a casa aberta. Feriado e dia de venda fora da curva (evento) não entram na média.
           Cozinha fora do horário de venda conta como produção, não como sobra.
         </p>
+
+        {/* Escala sugerida (botão da IA) */}
+        <SecaoEscala
+          e={e}
+          filialId={filial.id}
+          mes={mes}
+          meta={meta}
+          metaCoz={metaCoz}
+          min={min}
+          escala={atual?.escalaSugerida ?? null}
+          escalaEm={atual?.escalaEm ? atual.escalaEm.toISOString() : null}
+          escalaPor={atual?.escalaPor ?? null}
+        />
 
         {/* Hora a hora */}
         <div className="mb-8 space-y-2">

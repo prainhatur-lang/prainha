@@ -171,6 +171,8 @@ export interface PessoaEstudo {
   custoEstimado: boolean;
   empateH: number | null; // horas/mês em que o intermitente custa igual ao fixo
   sinais: Sinal[];
+  /** Entrada e saída mais comuns nesta casa (mediana), ex.: "10:00–18:30". */
+  horarioTipico: string | null;
 }
 
 export interface ResumoMes {
@@ -290,6 +292,8 @@ interface Base {
   /** funcionario → dia → { casa: minutos nesta casa, total: em todas } */
   minPessoa: Map<string, Map<string, { casa: number; total: number }>>;
   pessoasDia: Map<string, Set<string>>;
+  /** funcionario → [entrada, saída] do dia nesta casa, em minutos desde 05:00. */
+  turnoPessoa: Map<string, [number, number][]>;
   cadastro: Map<string, CadRow>;
   ordensProducao: number;
 }
@@ -371,6 +375,7 @@ async function carregarBase(filialId: string, ini: string, fim: string, parcial:
   const horasSlot = new Map<string, Record<Grupo, number[]>>();
   const minPessoa = new Map<string, Map<string, { casa: number; total: number }>>();
   const pessoasDia = new Map<string, Set<string>>();
+  const turnoPessoa = new Map<string, [number, number][]>();
   for (const [k, l] of grupos) {
     const [fid, dia, casa] = k.split('|');
     const calc = calcularDia(l);
@@ -389,6 +394,13 @@ async function carregarBase(filialId: string, ini: string, fim: string, parcial:
     const g = grupoDe(cad?.setor ?? null, cad?.cargo ?? null);
     const hs = horasSlot.get(dia) ?? { salao: z24(), bar: z24(), caixa: z24(), cozinha: z24(), limpeza: z24(), outros: z24() };
     const base = Date.parse(`${dia}T05:00:00-03:00`);
+    const e0 = Math.min(...calc.pares.map((p) => Date.parse(p.entrada)).filter(Number.isFinite));
+    const s0 = Math.max(...calc.pares.map((p) => Date.parse(p.saida)).filter(Number.isFinite));
+    if (Number.isFinite(e0) && Number.isFinite(s0) && s0 > e0) {
+      const tl = turnoPessoa.get(fid) ?? [];
+      tl.push([(e0 - base) / 60000, (s0 - base) / 60000]);
+      turnoPessoa.set(fid, tl);
+    }
     for (const p of calc.pares) {
       let t = Date.parse(p.entrada);
       const t1 = Date.parse(p.saida);
@@ -431,6 +443,7 @@ async function carregarBase(filialId: string, ini: string, fim: string, parcial:
     pedidosDia: new Map(pedidos.map((p) => [p.dia, num(p.n)])),
     minPessoa,
     pessoasDia,
+    turnoPessoa,
     cadastro,
     ordensProducao: num(ops[0]?.n),
   };
@@ -681,10 +694,21 @@ async function calcularPessoas(b: Base, filialId: string): Promise<PessoaEstudo[
       custoEstimado: estimado,
       empateH: empateH ? Math.round(empateH) : null,
       sinais,
+      horarioTipico: horarioTipico(b.turnoPessoa.get(c.id) ?? []),
     });
   }
   out.sort((a, b2) => GRUPOS.indexOf(a.grupo) - GRUPOS.indexOf(b2.grupo) || b2.hCasa - a.hCasa);
   return out;
+}
+
+const hhmm = (minDesde5: number) => {
+  const t = Math.round((minDesde5 + 300) / 15) * 15;
+  const h = Math.floor(t / 60) % 24;
+  return `${String(h).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+};
+function horarioTipico(l: [number, number][]): string | null {
+  if (!l.length) return null;
+  return `${hhmm(mediana(l.map((x) => x[0])))}–${hhmm(mediana(l.map((x) => x[1])))}`;
 }
 
 function resumir(mes: string, b: Base, dias: DiaEstudo[], pessoas: PessoaEstudo[] | null): ResumoMes {
@@ -1006,6 +1030,7 @@ export function resumoParaIa(e: EstudoEquipe) {
       empateComFixoH: p.empateH,
       custo: p.custo,
       diasPorDiaDaSemana: Object.fromEntries(DOW.map((d, i) => [d, p.porDow[i]])),
+      horarioTipico: p.horarioTipico,
       sinais: p.sinais.map((s) => s.texto),
     })),
     achadosDoCalculo: e.achados,
