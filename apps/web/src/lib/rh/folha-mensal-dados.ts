@@ -392,3 +392,35 @@ export async function afastamentosPorCpf(
   }
   return saida;
 }
+
+// Trava do pagamento em dobro (dono 10/11/2026): quem foi registrado com "diária
+// até" (fornecedor_folha.diarista_ate, papel funcionário) recebe DIÁRIA na folha
+// semanal pelos dias até essa data. A folha mensal começava na admissão do
+// cadastro e pagava os mesmos dias de novo (out/2026 na Mar: José Santos Alves
+// 474,69, Manuel Luiz 437,87, Nicollas 127,82). Aqui sai, por CPF, o primeiro
+// dia que a folha mensal pode pagar: o dia seguinte à maior "diária até" entre
+// os cadastros de folha semanal daquele CPF (todas as casas).
+export async function inicioAposDiariaPorCpf(cpfs: string[]): Promise<Map<string, string>> {
+  const saida = new Map<string, string>();
+  if (cpfs.length === 0) return saida;
+  const linhas = await db
+    .select({ cpf: schema.fornecedor.cnpjOuCpf, ate: schema.fornecedorFolha.diaristaAte })
+    .from(schema.fornecedorFolha)
+    .innerJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.fornecedorFolha.fornecedorId))
+    .where(and(inArray(schema.fornecedor.cnpjOuCpf, cpfs), eq(schema.fornecedorFolha.papel, 'funcionario')));
+  for (const l of linhas) {
+    if (!l.cpf || !l.ate) continue;
+    const d = new Date(`${l.ate}T12:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + 1);
+    const seguinte = d.toISOString().slice(0, 10);
+    const atual = saida.get(l.cpf);
+    if (!atual || seguinte > atual) saida.set(l.cpf, seguinte);
+  }
+  return saida;
+}
+
+/** Admissão que vale pra folha mensal: a do cadastro ou o dia seguinte à "diária até", o que for mais tarde. */
+export function admissaoNaFolha(admissao: string | null, aposDiaria: string | null | undefined): string | null {
+  if (!aposDiaria) return admissao;
+  return !admissao || aposDiaria > admissao ? aposDiaria : admissao;
+}

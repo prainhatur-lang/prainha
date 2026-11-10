@@ -7,7 +7,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq, isNotNull } from 'drizzle-orm';
 import { comRegimeDoMes } from '@/lib/rh/regime-no-mes';
 import { calcularFolhaMensal, type RegimeFolha } from '@/lib/rh/folha-mensal';
-import { afastamentosPorCpf, ajudaCustoPorCpf, horasDoMesPorCpf, diferencaSalarialPorCpf, planoSaudePorCpf, quebraCaixaPorCpf, salarioFamiliaPorCpf } from '@/lib/rh/folha-mensal-dados';
+import { admissaoNaFolha, inicioAposDiariaPorCpf, afastamentosPorCpf, ajudaCustoPorCpf, horasDoMesPorCpf, diferencaSalarialPorCpf, planoSaudePorCpf, quebraCaixaPorCpf, salarioFamiliaPorCpf } from '@/lib/rh/folha-mensal-dados';
 import { proximosFeriados } from '@/lib/reservas/feriados';
 
 export interface LinhaNossaFolha {
@@ -52,7 +52,8 @@ export async function nossaFolhaDoMes(filialId: string, comp: string): Promise<L
       Number(f.salarioBase) > 0,
   );
   const cpfs = [...new Set(doMes.map((f) => f.cpf).filter((c): c is string => !!c))];
-  const [horas, feriados, salFamilia, ajudaCusto, afast, quebraCaixa, planoSaude, difSalarial] = await Promise.all([
+  const [aposDiaria, horas, feriados, salFamilia, ajudaCusto, afast, quebraCaixa, planoSaude, difSalarial] = await Promise.all([
+    inicioAposDiariaPorCpf(cpfs),
     horasDoMesPorCpf(cpfs, ini, fim),
     proximosFeriados(ini, 31).then((l) => l.map((f) => f.data)),
     salarioFamiliaPorCpf(cpfs, comp),
@@ -67,7 +68,7 @@ export async function nossaFolhaDoMes(filialId: string, comp: string): Promise<L
       regime: f.regimeSalarial as RegimeFolha,
       salario: Number(f.salarioBase),
       comp,
-      admissao: f.dataAdmissao,
+      admissao: admissaoNaFolha(f.dataAdmissao, f.cpf ? aposDiaria.get(f.cpf) : null),
       desligamento: f.dataDesligamento,
       dias: f.cpf ? horas.get(f.cpf) ?? [] : [],
       feriados,
