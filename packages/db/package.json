@@ -281,7 +281,8 @@
     "migrate:conta-inter-folha": "tsx scripts/migrate-conta-inter-folha.ts",
     "migrate:inter-token": "tsx scripts/migrate-inter-token.ts",
     "instancia:clientes-schema": "tsx scripts/instancia-clientes-schema.ts",
-    "migrate:marketing-metrica": "tsx scripts/migrate-marketing-metrica.ts"
+    "migrate:marketing-metrica": "tsx scripts/migrate-marketing-metrica.ts",
+    "migrate:fornecedor-grupo-pix": "tsx scripts/migrate-fornecedor-grupo-pix.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",

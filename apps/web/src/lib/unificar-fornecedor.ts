@@ -110,6 +110,15 @@ export async function unificarFornecedor(p: {
       FROM fornecedor r
       WHERE m.id = ${manterId} AND r.id = ${removerId}
     `);
+    // os dois tinham grupos diferentes (cadastro em outras casas): junta os grupos
+    await tx.execute(sql`
+      UPDATE fornecedor x SET grupo_economico_id = m.grupo_economico_id
+      FROM fornecedor m, fornecedor r
+      WHERE m.id = ${manterId} AND r.id = ${removerId}
+        AND m.grupo_economico_id IS NOT NULL AND r.grupo_economico_id IS NOT NULL
+        AND m.grupo_economico_id <> r.grupo_economico_id
+        AND x.grupo_economico_id = r.grupo_economico_id
+    `);
     await tx.execute(sql`
       UPDATE fornecedor SET data_delete = now(), ativo_compras = false
       WHERE id = ${removerId}

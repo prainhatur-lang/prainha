@@ -1,5 +1,5 @@
 // Fornecedores repetidos na mesma casa (04/11/2026): mesmo nome (sem acento/caixa)
-// ou mesmo CPF/CNPJ. Escolhe o que fica e unifica — histórico vai junto.
+// ou mesmo CPF/CNPJ (10/11: ou mesma chave Pix). Escolhe o que fica e unifica — histórico vai junto.
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { sql } from 'drizzle-orm';
@@ -28,24 +28,27 @@ export default async function RepetidosPage(props: { searchParams: Promise<{ fil
     WITH f AS (
       SELECT id, nome, cnpj_ou_cpf, codigo_externo,
         lower(unaccent(regexp_replace(trim(coalesce(nome, '')), '\s+', ' ', 'g'))) AS k_nome,
-        nullif(regexp_replace(coalesce(cnpj_ou_cpf, ''), '\D', '', 'g'), '') AS k_doc
+        nullif(regexp_replace(coalesce(cnpj_ou_cpf, ''), '\D', '', 'g'), '') AS k_doc,
+        fornecedor_pix_norm(chave_pix) AS k_pix
       FROM fornecedor WHERE filial_id = ${filial.id} AND data_delete IS NULL
     ),
     rep AS (
       SELECT id FROM f WHERE k_nome <> '' AND k_nome IN (SELECT k_nome FROM f GROUP BY 1 HAVING count(*) > 1)
       UNION
       SELECT id FROM f WHERE k_doc IN (SELECT k_doc FROM f WHERE k_doc IS NOT NULL GROUP BY 1 HAVING count(*) > 1)
+      UNION
+      SELECT id FROM f WHERE k_pix IN (SELECT k_pix FROM f WHERE k_pix IS NOT NULL GROUP BY 1 HAVING count(*) > 1)
     )
-    SELECT f.id, f.nome, f.cnpj_ou_cpf AS doc, f.codigo_externo AS codigo, f.k_nome, f.k_doc,
+    SELECT f.id, f.nome, f.cnpj_ou_cpf AS doc, f.codigo_externo AS codigo, f.k_nome, f.k_doc, f.k_pix,
       (SELECT count(*)::int FROM conta_pagar c WHERE c.fornecedor_id = f.id AND c.data_delete IS NULL) AS contas,
       (SELECT count(*)::int FROM nota_compra n WHERE n.fornecedor_id = f.id) AS notas,
       (SELECT max(c.data_vencimento)::text FROM conta_pagar c WHERE c.fornecedor_id = f.id AND c.data_delete IS NULL) AS ultima,
       EXISTS (SELECT 1 FROM fornecedor_folha x WHERE x.fornecedor_id = f.id) OR
       EXISTS (SELECT 1 FROM funcionario x WHERE x.fornecedor_id = f.id) AS rh
     FROM f WHERE f.id IN (SELECT id FROM rep)
-  `)) as unknown as (Linha & { k_nome: string; k_doc: string | null })[];
+  `)) as unknown as (Linha & { k_nome: string; k_doc: string | null; k_pix: string | null })[];
 
-  // junta em grupos: mesmo nome OU mesmo documento (união dos dois)
+  // junta em grupos: mesmo nome OU mesmo documento OU mesma chave Pix (união)
   const pai = new Map<string, string>();
   const achar = (x: string): string => {
     const p = pai.get(x) ?? x;
@@ -58,7 +61,7 @@ export default async function RepetidosPage(props: { searchParams: Promise<{ fil
   const porChave = new Map<string, string>();
   for (const r of rows) {
     pai.set(r.id, r.id);
-    for (const k of [r.k_nome ? `n:${r.k_nome}` : null, r.k_doc ? `d:${r.k_doc}` : null]) {
+    for (const k of [r.k_nome ? `n:${r.k_nome}` : null, r.k_doc ? `d:${r.k_doc}` : null, r.k_pix ? `p:${r.k_pix}` : null]) {
       if (!k) continue;
       const outro = porChave.get(k);
       if (outro) unir(r.id, outro);
@@ -85,7 +88,7 @@ export default async function RepetidosPage(props: { searchParams: Promise<{ fil
         </Link>
         <h1 className="mt-1 text-2xl font-bold text-slate-900">Fornecedores repetidos — {filial.nome}</h1>
         <p className="mt-1 text-sm text-slate-600">
-          Mesmo nome (sem contar acento e maiúscula) ou mesmo CPF/CNPJ na mesma casa. Marque o que
+          Mesmo nome (sem contar acento e maiúscula) mesmo CPF/CNPJ ou mesma chave Pix na mesma casa. Marque o que
           fica e clique em <b>Unificar</b>: contas, notas, pedidos, folha, Pix e cotações passam pro que
           fica, e ele completa o que faltar (CPF, Pix, banco, telefone). O outro some das listas, mas
           não é apagado.
