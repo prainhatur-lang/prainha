@@ -7115,6 +7115,20 @@ async function apiTotemCancelar(body) {
   const r = await sql`UPDATE ticket_venda SET status='desistido', erro='cancelado no totem'
     WHERE id=${id} AND origem='totem' AND status='aguardando_lio' AND lio_login IS NULL RETURNING id`;
   if (r.length) return { ok: true };
+  // Pix (10/11/2026): cliente voltou pro carrinho pra mudar o pedido — o QR
+  // antigo solta a reserva do estoque. Se ainda assim pagarem esse QR, a fila
+  // do totem baixa e serve normalmente (totemBaixar não olha o desistido).
+  if (body?.pix) {
+    const p = await sql`UPDATE ticket_venda t SET status='desistido', erro='voltou pro carrinho no totem'
+      WHERE t.id=${id} AND t.origem='totem' AND t.status='aberto' AND t.pix_txid IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM pix_cobranca c WHERE c.txid=t.pix_txid AND c.pago_em IS NOT NULL)
+      RETURNING id`;
+    if (p.length) return { ok: true };
+    const [x] = await sql`SELECT t.status, c.pago_em FROM ticket_venda t LEFT JOIN pix_cobranca c ON c.txid=t.pix_txid
+      WHERE t.id=${id} AND t.origem='totem'`;
+    if (x && (x.status === 'pago' || x.pago_em)) return { ok: false, pago: true, erro: 'Esse pedido já foi pago.' };
+    return { ok: true };
+  }
   const s = await totemStatusTicket(id);
   if (s.pago) return { ok: false, pago: true, erro: 'Esse pedido já foi pago.' };
   if (s.na_maquininha) return { ok: false, na_maquininha: true, erro: 'O pedido já está na maquininha — cancele por lá.' };
@@ -30970,10 +30984,19 @@ header b{font-size:3.2vmin;flex:1}header button{font-size:2.4vmin;padding:1.4vmi
 .aba{flex:1;min-width:22vmin;font-size:3vmin;font-weight:700;padding:2.2vmin 1vmin;border-radius:2vmin;border:0;background:#ffffff1a;color:#fff}
 .aba.on{background:linear-gradient(135deg,var(--sun),var(--sun2));color:#3a1d00}
 .grade{flex:1;overflow-y:auto;padding:3vmin;display:grid;grid-template-columns:repeat(auto-fill,minmax(30vmin,1fr));gap:2.4vmin;align-content:start;background:#eef4f6}
-.prod{background:var(--card);border-radius:2.4vmin;overflow:hidden;box-shadow:0 .6vmin 2vmin #0001;display:flex;flex-direction:column;border:0;padding:0;text-align:left;font:inherit;color:inherit}
+.prod{background:var(--card);border-radius:2.4vmin;overflow:hidden;box-shadow:0 .6vmin 2vmin #0001;display:flex;flex-direction:column;border:0;padding:0;text-align:left;font:inherit;color:inherit;height:100%}
 .prod:active{transform:scale(.97)}.prod .f{aspect-ratio:1/1;background:#dfeef2 center/cover no-repeat;display:flex;align-items:center;justify-content:center;font-size:12vmin}
 .prod .t{padding:1.6vmin 2vmin 2vmin}.prod .n{font-size:2.6vmin;font-weight:700;line-height:1.15}.prod .d{font-size:1.8vmin;color:var(--mut);margin-top:.6vmin}
-.prod .p{font-size:3vmin;font-weight:800;color:#0b7a8c;margin-top:1vmin}.prod.esg{opacity:.45}.prod.esg .p{color:var(--red);font-size:2.4vmin}
+.prod .p{font-size:3vmin;font-weight:800;color:#0b7a8c;margin-top:1vmin}
+.prod .f.ft{background-color:#fff;background-size:contain;background-origin:content-box;padding:1.6vmin;border-bottom:1px solid #edf2f4}
+.prod .t{flex:1;display:flex;flex-direction:column}.prod .n{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:2.3em}
+.prod .n small{font-weight:600;color:var(--mut)}.prod .d{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.prod .p{margin-top:auto;padding-top:1vmin}
+#ini .abre{display:contents}#ini .fch{display:none;flex-direction:column;align-items:center;gap:2.4vmin}#ini.fechado .fch{display:flex}#ini.fechado .abre{display:none}
+#ini.fechado{background:radial-gradient(circle at 50% 30%,#4a3a3a 0,#1f1717 75%);cursor:default}
+#ini .proib{width:30vmin;height:30vmin;border-radius:50%;border:2.6vmin solid #ef4444;position:relative;background:#ffffff10;display:flex;align-items:center;justify-content:center;font-size:12vmin}
+#ini .proib:after{content:'';position:absolute;left:50%;top:50%;width:2.6vmin;height:34vmin;background:#ef4444;transform:translate(-50%,-50%) rotate(45deg);border-radius:1vmin}
+#ini.fechado h1{color:#fecaca}#ini .fch .bal{background:#fff;color:#7f1d1d;font-size:3.6vmin;font-weight:800;padding:2vmin 5vmin;border-radius:99px}
+#ini.treme .proib{animation:treme .45s}@keyframes treme{20%,60%{transform:translateX(-2vmin)}40%,80%{transform:translateX(2vmin)}}.prod.esg{opacity:.45}.prod.esg .p{color:var(--red);font-size:2.4vmin}
 .prod .q{position:absolute}
 .rod{background:#fff;padding:2vmin 3vmin;display:flex;align-items:center;gap:2vmin;box-shadow:0 -1vmin 3vmin #0002}
 .rod .r{flex:1;font-size:2.6vmin}.rod .r b{font-size:3.6vmin;display:block}
@@ -30999,12 +31022,13 @@ header b{font-size:3.2vmin;flex:1}header button{font-size:2.4vmin;padding:1.4vmi
 #ok p{font-size:3.2vmin;margin:0;opacity:.95}#ok .itens{font-size:2.6vmin;opacity:.9;max-width:80vmin}
 .erro{color:var(--red);font-size:2.4vmin;margin-top:1.6vmin;min-height:3vmin}
 </style><script>if('serviceWorker' in navigator&&window.isSecureContext)navigator.serviceWorker.register('/sw.js').catch(function(){});</script></head><body>
-<div id="ini" class="tela on" onclick="comecar()"><div class="ico">🍹</div><h1>Bateu a sede?</h1><p>Enquanto espera sua mesa, peça aqui e retire no balcão</p><div class="bt">Toque para pedir</div><p id="semPix" style="display:none;color:#ffd0d0">Pedidos pelo totem indisponíveis agora — peça no balcão</p></div>
+<div id="ini" class="tela on" onclick="comecar()"><div class="abre"><div class="ico">🍹</div><h1>Bateu a sede?</h1><p>Enquanto espera sua mesa, peça aqui e retire no balcão</p><div class="bt">Toque para pedir</div></div><p id="semPix" style="display:none;color:#ffd0d0">Pedidos pelo totem indisponíveis agora — peça no balcão</p>
+<div class="fch"><div class="proib">🍹</div><h1>Totem fechado agora</h1><p>Não dá pra pedir por aqui no momento</p><div class="bal">👉 Peça direto no balcão do bar</div></div></div>
 <div id="menu" class="tela"><header><b id="loja"></b><button onclick="reiniciar()">✕ Cancelar</button></header>
 <div class="abas" id="abas"></div><div class="grade" id="grade"></div>
 <div class="rod"><div class="r" id="resumo">Toque num item para adicionar</div><button class="bt2" id="btVer" onclick="verCarrinho()" disabled>🛒 Ver pedido</button><button class="bt1" id="btCar" onclick="pagar('cartao')" disabled style="display:none">💳 Cartão</button><button class="bt1" id="btPag" onclick="pagar()" disabled>Pagar no Pix</button></div></div>
-<div id="pix" class="tela"><h1>Pague com Pix</h1><div class="v" id="pixV"></div><img id="pixImg" alt="QR do Pix"><p>Abra o app do seu banco, escolha <b>Pix → Ler QR code</b> e aponte para a tela.</p><p><span class="esp"></span>Esperando o pagamento…</p><div class="acoes" style="width:min(80vmin,90vw)"><button class="bt2" onclick="reiniciar()">Cancelar pedido</button></div></div>
-<div id="cartao" class="tela"><h1>Pague na maquininha ao lado</h1><div class="v" id="carV"></div><p style="font-size:3.4vmin">💳 Pedido <b id="carN"></b> — <b id="carTipo"></b>passe ou aproxime o cartão na maquininha</p><p id="carMsg"><span class="esp"></span>Esperando a maquininha…</p><div class="acoes" style="width:min(80vmin,90vw)"><button class="bt2" onclick="cancelarCartao()">Cancelar pedido</button></div></div>
+<div id="pix" class="tela"><h1>Pague com Pix</h1><div class="v" id="pixV"></div><img id="pixImg" alt="QR do Pix"><p>Abra o app do seu banco, escolha <b>Pix → Ler QR code</b> e aponte para a tela.</p><p><span class="esp"></span>Esperando o pagamento…</p><div class="acoes" style="width:min(80vmin,90vw)"><button class="bt2" onclick="voltarCarrinho()">← Voltar e mudar o pedido</button><button class="bt2" onclick="reiniciar()">Cancelar pedido</button></div></div>
+<div id="cartao" class="tela"><h1>Pague na maquininha ao lado</h1><div class="v" id="carV"></div><p style="font-size:3.4vmin">💳 Pedido <b id="carN"></b> — <b id="carTipo"></b>passe ou aproxime o cartão na maquininha</p><p id="carMsg"><span class="esp"></span>Esperando a maquininha…</p><div class="acoes" style="width:min(80vmin,90vw)"><button class="bt2" onclick="voltarCarrinho()">← Voltar e mudar o pedido</button><button class="bt2" onclick="cancelarCartao()">Cancelar pedido</button></div></div>
 <div id="ok" class="tela"><p>Pagamento aprovado! Seu pedido é o</p><div class="num" id="okN"></div><p><b>Retire no balcão do bar</b> — fale esse número</p><p id="okImp" style="display:none">🎟️ Seus tickets estão saindo na impressora</p><div class="itens" id="okI"></div><div id="okNf" style="display:none;background:#fff;color:#123;border-radius:2vmin;padding:2vmin 3vmin;align-items:center;gap:2.4vmin;text-align:left"><img id="okNfImg" alt="QR da nota fiscal" style="width:22vmin;height:22vmin"><div style="font-size:2.4vmin"><b style="font-size:2.8vmin">🧾 Nota fiscal <span id="okNfN"></span></b><br>Aponte a câmera do celular pra consultar a sua nota</div></div><p id="okVolta" style="font-size:2.2vmin;opacity:.85"></p><button class="bt2" style="margin-top:3vmin" onclick="reiniciar()">Fazer outro pedido</button></div>
 <div class="modal" id="mItem"><div class="cx"><h2 id="miN"></h2><div id="miD" style="color:var(--mut);font-size:2.2vmin"></div><div id="miE"></div>
 <div class="qtd"><button onclick="mQ(-1)">−</button><span id="miQ">1</span><button onclick="mQ(1)">+</button></div><div class="erro" id="miErr"></div>
@@ -31014,7 +31038,22 @@ header b{font-size:3.2vmin;flex:1}header button{font-size:2.4vmin;padding:1.4vmi
 <div class="modal" id="mCar"><div class="cx"><h2>Seu pedido</h2><div id="carL"></div><div class="tot"><span>Total</span><span id="carT"></span></div><div class="erro" id="carErr"></div>
 <div class="acoes"><button class="bt2" onclick="fechar('mCar')">Continuar pedindo</button><button class="bt1" id="mCarCartao" style="display:none" onclick="fechar('mCar');pagar('cartao')">💳 Cartão</button><button class="bt1" id="mCarPix" onclick="fechar('mCar');pagar()">Pagar no Pix</button></div></div></div>
 <script>
-var D=null,aba=0,car=[],atual=null,qtd=1,esc={},txid=null,poll=null,ocioso=null,pedCartao=null,volta=null,nfPoll=null;
+var D=null,aba=0,car=[],atual=null,qtd=1,esc={},txid=null,poll=null,ocioso=null,pedCartao=null,volta=null,nfPoll=null,pedPix=null;
+// Nome do jeito do português (10/11/2026): "Agua Cristal COM gas 500 ML" → "Água Cristal com Gás 500 ml".
+// Só na tela: o cadastro continua como está.
+var MIN={de:1,da:1,'do':1,das:1,dos:1,e:1,com:1,sem:1,ao:1,aos:1,'à':1,'às':1,a:1,o:1,as:1,os:1,em:1,na:1,no:1,nas:1,nos:1,para:1,por:1,ou:1,'c/':1,'s/':1};
+var SIG={ipa:'IPA',apa:'APA',ks:'KS',xo:'XO',vsop:'VSOP',ml:'ml',cl:'cl',l:'L',g:'g',kg:'kg',lt:'L'};
+var ACE={agua:'água',aguas:'águas',gas:'gás',limao:'limão',acucar:'açúcar',tonica:'tônica',maracuja:'maracujá',cafe:'café',gluten:'glúten',pessego:'pêssego',guarana:'guaraná',cha:'chá',acai:'açaí',melao:'melão',mamao:'mamão',hortela:'hortelã',cachaca:'cachaça',tonico:'tônico',limoes:'limões',acerola:'acerola',caipirinha:'caipirinha',salgadinho:'salgadinho',gelo:'gelo',agricola:'agrícola',unico:'único',pao:'pão'};
+function cap(w){return w.replace(/[a-zà-ÿ]/,function(c){return c.toUpperCase()})}
+function nomeBr(s){s=String(s==null?'':s).replace(/\\s+/g,' ').trim();if(!s)return s;
+ return s.split(' ').map(function(w,i){var l=w.toLowerCase(),nu=l.replace(/[^a-zà-ÿ0-9\\/]/g,'');
+  if(/^\\d/.test(l))return l.replace(/(\\d)(l|lt)$/,'$1L');
+  if(SIG[nu])return l.replace(nu,SIG[nu]);
+  if(ACE[nu])l=l.replace(nu,ACE[nu]),nu=ACE[nu];
+  if(i>0&&MIN[nu])return l;
+  return l.split('-').map(cap).join('-')}).join(' ')}
+// o que dá pra vender agora: item esgotado some (em vez de "Acabou") e grupo vazio também
+function visiveis(){return (D&&D.grupos||[]).map(function(g){return {id:g.id,nome:g.nome,emoji:g.emoji,itens:(g.itens||[]).filter(function(p){return !p.esgotado})}}).filter(function(g){return g.itens.length})}
 function R(v){return 'R$ '+Number(v||0).toFixed(2).replace('.',',')}
 function E(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 function tela(id){document.querySelectorAll('.tela').forEach(function(t){t.classList.toggle('on',t.id===id)})}
@@ -31024,37 +31063,39 @@ document.addEventListener('pointerdown',mexeu,true);
 // Tela cheia (10/11/2026): o navegador só deixa entrar no toque; a cada toque, se saiu, volta.
 function telaCheia(){try{var el=document.documentElement;if(document.fullscreenElement||document.webkitFullscreenElement)return;var f=el.requestFullscreen||el.webkitRequestFullscreen;if(f){var r=f.call(el,{navigationUI:'hide'});if(r&&r.catch)r.catch(function(){})}}catch(e){}}
 document.addEventListener('click',telaCheia,true);
-function carregar(){return fetch('/api/totem/cardapio').then(function(r){return r.json()}).then(function(d){if(d&&d.ok){D=d;document.getElementById('loja').textContent=d.loja;
- document.getElementById('semPix').style.display=((!d.pix&&!d.cartao)||!d.grupos.length)?'block':'none';
+function carregar(){return fetch('/api/totem/cardapio').then(function(r){return r.json()}).then(function(d){if(d&&d.ok){D=d;D.g=visiveis();document.getElementById('loja').textContent=d.loja;
+ var fch=(!d.pix&&!d.cartao)||!D.g.length;document.getElementById('ini').classList.toggle('fechado',fch);
+ document.getElementById('semPix').style.display='none';
  document.getElementById('btPag').style.display=d.pix?'':'none';document.getElementById('mCarPix').style.display=d.pix?'':'none';
  document.getElementById('btCar').style.display=d.cartao?'':'none';document.getElementById('mCarCartao').style.display=d.cartao?'':'none'}}).catch(function(){})}
-function comecar(){if(!D||!(D.pix||D.cartao)||!D.grupos.length){carregar();return}aba=0;car=[];desenhar();tela('menu');mexeu()}
+function comecar(){if(!D||!(D.pix||D.cartao)||!D.g||!D.g.length){var i=document.getElementById('ini');i.classList.remove('treme');void i.offsetWidth;i.classList.add('treme');carregar();return}aba=0;car=[];desenhar();tela('menu');mexeu()}
 function reiniciar(){if(pedCartao){var pc=pedCartao;fetch('/api/totem/cancelar',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({pedido:pc})}).catch(function(){})}
- pedCartao=null;clearInterval(poll);poll=null;txid=null;car=[];clearInterval(volta);volta=null;clearInterval(nfPoll);nfPoll=null;['mItem','mCar','mTipo'].forEach(fechar);tela('ini');carregar()}
+ if(pedPix&&txid){var pp=pedPix;fetch('/api/totem/cancelar',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({pedido:pp,pix:true})}).catch(function(){})}
+ pedCartao=null;pedPix=null;clearInterval(poll);poll=null;txid=null;car=[];clearInterval(volta);volta=null;clearInterval(nfPoll);nfPoll=null;['mItem','mCar','mTipo'].forEach(fechar);tela('ini');carregar()}
 function mostraNf(nf){if(!nf||!nf.imagem)return;document.getElementById('okNfImg').src=nf.imagem;document.getElementById('okNfN').textContent=nf.numero?('nº '+nf.numero):'';document.getElementById('okNf').style.display='flex'}
-function pago(q,d){clearInterval(poll);poll=null;car=[];document.getElementById('okNf').style.display='none';tela('ok');clearTimeout(ocioso);
+function pago(q,d){clearInterval(poll);poll=null;car=[];pedPix=null;document.getElementById('okNf').style.display='none';tela('ok');clearTimeout(ocioso);
  var s=10,el=document.getElementById('okVolta');clearInterval(volta);el.textContent='Voltando ao início em '+s+' s';
  volta=setInterval(function(){s--;if(s<=0){reiniciar();return}el.textContent='Voltando ao início em '+s+' s'},1000);
  clearInterval(nfPoll);nfPoll=null;if(d&&d.nfce){mostraNf(d.nfce);return}var n=0;
  nfPoll=setInterval(function(){if(++n>6||!document.getElementById('ok').classList.contains('on')){clearInterval(nfPoll);nfPoll=null;return}
   fetch('/api/totem/status?'+q).then(function(r){return r.json()}).then(function(x){if(x&&x.nfce){clearInterval(nfPoll);nfPoll=null;mostraNf(x.nfce)}}).catch(function(){})},1500)}
-function desenhar(){var g=D.grupos;document.getElementById('abas').innerHTML=g.map(function(x,i){return '<button class="aba'+(i===aba?' on':'')+'" onclick="aba='+i+';desenhar()">'+E(x.emoji+' '+x.nome)+'</button>'}).join('');
+function desenhar(){var g=D.g||[];if(aba>=g.length)aba=0;document.getElementById('abas').innerHTML=g.map(function(x,i){return '<button class="aba'+(i===aba?' on':'')+'" onclick="aba='+i+';desenhar()">'+E(x.emoji+' '+x.nome)+'</button>'}).join('');
  var it=(g[aba]||{itens:[]}).itens;document.getElementById('grade').innerHTML=it.map(function(p,i){var foto=p.tem_foto&&p.produto_codigo!=null?'style="background-image:url(/produto-foto/'+p.produto_codigo+')"':'';
- return '<button class="prod'+(p.esgotado?' esg':'')+'" onclick="abrir('+i+')"><div class="f" '+foto+'>'+(foto?'':E((g[aba].emoji)||'🥤'))+'</div><div class="t"><div class="n">'+E(p.nome)+(p.tamanho?' <small>'+E(p.tamanho)+'</small>':'')+'</div>'+(p.descricao?'<div class="d">'+E(p.descricao)+'</div>':'')+'<div class="p">'+(p.esgotado?'Acabou':R(p.preco))+'</div></div></button>'}).join('');
+ return '<button class="prod'+(p.esgotado?' esg':'')+'" onclick="abrir('+i+')"><div class="f'+(foto?' ft':'')+'" '+foto+'>'+(foto?'':E((g[aba].emoji)||'🥤'))+'</div><div class="t"><div class="n">'+E(nomeBr(p.nome))+(p.tamanho?' <small>'+E(nomeBr(p.tamanho))+'</small>':'')+'</div>'+(p.descricao?'<div class="d">'+E(p.descricao)+'</div>':'')+'<div class="p">'+(p.esgotado?'Acabou':R(p.preco))+'</div></div></button>'}).join('');
  rodape()}
 function rodape(){var n=car.reduce(function(s,c){return s+c.qtd},0),t=car.reduce(function(s,c){return s+c.unit*c.qtd},0);
  document.getElementById('resumo').innerHTML=n?(n+' ite'+(n>1?'ns':'m')+'<b>'+R(t)+'</b>'):'Toque num item para adicionar';
  document.getElementById('btVer').disabled=!n;document.getElementById('btPag').disabled=!n;document.getElementById('btCar').disabled=!n}
-function abrir(i){var p=D.grupos[aba].itens[i];if(p.esgotado)return;atual=p;qtd=1;esc={};
- document.getElementById('miN').textContent=p.nome+(p.tamanho?' '+p.tamanho:'');document.getElementById('miD').textContent=p.descricao||'';document.getElementById('miErr').textContent='';
- document.getElementById('miE').innerHTML=p.escolhas.map(function(e,k){return '<h3>'+E(e.pergunta)+'</h3><div class="ops">'+e.opcoes.map(function(o){return '<button class="op" data-k="'+k+'" data-c="'+o.codigo+'" onclick="escolher('+k+','+o.codigo+')">'+E(o.nome)+(o.preco>0?' +'+R(o.preco):'')+'</button>'}).join('')+'</div>'}).join('');
+function abrir(i){var p=D.g[aba].itens[i];if(!p||p.esgotado)return;atual=p;qtd=1;esc={};
+ document.getElementById('miN').textContent=nomeBr(p.nome)+(p.tamanho?' '+nomeBr(p.tamanho):'');document.getElementById('miD').textContent=p.descricao||'';document.getElementById('miErr').textContent='';
+ document.getElementById('miE').innerHTML=p.escolhas.map(function(e,k){return '<h3>'+E(e.pergunta)+'</h3><div class="ops">'+e.opcoes.map(function(o){return '<button class="op" data-k="'+k+'" data-c="'+o.codigo+'" onclick="escolher('+k+','+o.codigo+')">'+E(nomeBr(o.nome))+(o.preco>0?' +'+R(o.preco):'')+'</button>'}).join('')+'</div>'}).join('');
  document.getElementById('miQ').textContent=1;document.getElementById('mItem').classList.add('on')}
 function escolher(k,c){esc[k]=c;document.querySelectorAll('.op[data-k="'+k+'"]').forEach(function(b){b.classList.toggle('on',Number(b.dataset.c)===c)})}
 function mQ(d){qtd=Math.max(1,Math.min(10,qtd+d));document.getElementById('miQ').textContent=qtd}
 function addItem(){var p=atual;for(var k=0;k<p.escolhas.length;k++)if(!esc[k]){document.getElementById('miErr').textContent='Escolha: '+p.escolhas[k].pergunta;return}
- var resp=p.escolhas.map(function(e,k){return esc[k]}),extra=0,nomes=[];p.escolhas.forEach(function(e,k){var o=e.opcoes.find(function(x){return x.codigo===esc[k]});if(o){extra+=o.preco;nomes.push(o.nome)}});
+ var resp=p.escolhas.map(function(e,k){return esc[k]}),extra=0,nomes=[];p.escolhas.forEach(function(e,k){var o=e.opcoes.find(function(x){return x.codigo===esc[k]});if(o){extra+=o.preco;nomes.push(nomeBr(o.nome))}});
  var chave=p.codigo_pdv+':'+resp.join(','),j=car.find(function(c){return c.chave===chave});
- if(j)j.qtd=Math.min(10,j.qtd+qtd);else car.push({chave:chave,codigo_pdv:p.codigo_pdv,nome:p.nome+(p.tamanho?' '+p.tamanho:''),opc:nomes.join(', '),respostas:resp,qtd:qtd,unit:p.preco+extra});
+ if(j)j.qtd=Math.min(10,j.qtd+qtd);else car.push({chave:chave,codigo_pdv:p.codigo_pdv,nome:nomeBr(p.nome)+(p.tamanho?' '+nomeBr(p.tamanho):''),opc:nomes.join(', '),respostas:resp,qtd:qtd,unit:p.preco+extra});
  fechar('mItem');rodape()}
 function verCarrinho(){if(!car.length){fechar('mCar');rodape();return}document.getElementById('carErr').textContent='';
  document.getElementById('carL').innerHTML=car.map(function(c,i){return '<div class="lin"><div class="nm">'+c.qtd+'× '+E(c.nome)+(c.opc?'<small>'+E(c.opc)+'</small>':'')+'</div><b>'+R(c.unit*c.qtd)+'</b><button onclick="tira('+i+')">−</button></div>'}).join('');
@@ -31065,9 +31106,9 @@ function pagar(forma){if(pagando||!car.length)return;if(forma==='cartao'){docume
  fetch('/api/totem/pedido',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({itens:car.map(function(c){return {codigo_pdv:c.codigo_pdv,qtd:c.qtd,respostas:c.respostas}})})})
  .then(function(r){return r.json()}).then(function(d){if(!d.ok){alert(d.erro||'Não deu certo. Tente de novo.');carregar().then(function(){if(D)desenhar()});return}
   document.getElementById('okImp').style.display=D&&D.impressora?'':'none';
-  txid=d.txid;document.getElementById('pixV').textContent=R(d.total);document.getElementById('pixImg').src=d.imagem;
-  document.getElementById('okN').textContent=d.pedido;document.getElementById('okI').textContent=d.itens.map(function(i){return i.qtd+'× '+i.nome}).join(' · ');
-  tela('pix');mexeu();clearInterval(poll);poll=setInterval(conferir,4000)})
+  txid=d.txid;pedPix=d.pedido;document.getElementById('pixV').textContent=R(d.total);document.getElementById('pixImg').src=d.imagem;
+  document.getElementById('okN').textContent=d.pedido;document.getElementById('okI').textContent=d.itens.map(function(i){return i.qtd+'× '+nomeBr(i.nome)}).join(' · ');
+  tela('pix');marcaVolta();mexeu();clearInterval(poll);poll=setInterval(conferir,4000)})
  .catch(function(){alert('Sem conexão. Tente de novo.')}).then(function(){pagando=false;b.textContent='Pagar no Pix';rodape()})}
 function conferir(){if(!txid)return;var t=txid;fetch('/api/totem/status?txid='+encodeURIComponent(t)).then(function(r){return r.json()}).then(function(d){
  if(t!==txid||!d.pago)return;txid=null;pago('txid='+encodeURIComponent(t),d)}).catch(function(){})}
@@ -31077,9 +31118,9 @@ function pagarCartao(tipo){if(pagando||!car.length)return;pagando=true;var b=doc
   pedCartao=d.pedido;document.getElementById('carV').textContent=R(d.total);document.getElementById('carN').textContent=d.pedido;
   document.getElementById('carTipo').textContent=d.cartao==='credito'?'crédito à vista: ':d.cartao==='debito'?'débito: ':'';
   document.getElementById('carMsg').innerHTML='<span class="esp"></span>Esperando a maquininha…';
-  document.getElementById('okN').textContent=d.pedido;document.getElementById('okI').textContent=d.itens.map(function(i){return i.qtd+'× '+i.nome}).join(' · ');
+  document.getElementById('okN').textContent=d.pedido;document.getElementById('okI').textContent=d.itens.map(function(i){return i.qtd+'× '+nomeBr(i.nome)}).join(' · ');
   document.getElementById('okImp').style.display=D&&D.impressora?'':'none';
-  tela('cartao');mexeu();clearInterval(poll);poll=setInterval(conferirCartao,3000)})
+  tela('cartao');marcaVolta();mexeu();clearInterval(poll);poll=setInterval(conferirCartao,3000)})
  .catch(function(){alert('Sem conexão. Tente de novo.')}).then(function(){pagando=false;b.textContent='💳 Cartão';rodape()})}
 function conferirCartao(){if(!pedCartao)return;var pc=pedCartao;fetch('/api/totem/status?ticket='+pc).then(function(r){return r.json()}).then(function(d){
  if(pc!==pedCartao||!d.ok)return;
@@ -31089,6 +31130,21 @@ function conferirCartao(){if(!pedCartao)return;var pc=pedCartao;fetch('/api/tote
 function cancelarCartao(){if(!pedCartao){tela('menu');return}var pc=pedCartao;fetch('/api/totem/cancelar',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({pedido:pc})}).then(function(r){return r.json()}).then(function(d){
  if(d.pago){conferirCartao();return}if(d.na_maquininha){alert(d.erro);return}
  clearInterval(poll);poll=null;pedCartao=null;tela('menu');rodape();mexeu()}).catch(function(){alert('Sem conexão. Tente de novo.')})}
+// Voltar do pagamento (10/11/2026): volta pro carrinho com tudo que a pessoa escolheu.
+// O pedido em pagamento é desfeito (solta o estoque); o próximo Pagar cria outro.
+var voltando=false;
+function voltarCarrinho(){if(voltando)return;
+ if(pedCartao){voltando=true;var pc=pedCartao;fetch('/api/totem/cancelar',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({pedido:pc})}).then(function(r){return r.json()}).then(function(d){
+   if(d.pago){conferirCartao();return}if(d.na_maquininha){alert(d.erro);return}
+   clearInterval(poll);poll=null;pedCartao=null;noCarrinho()}).catch(function(){alert('Sem conexão. Tente de novo.')}).then(function(){voltando=false});return}
+ if(txid){voltando=true;var t=txid,pp=pedPix;fetch('/api/totem/cancelar',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({pedido:pp,pix:true})}).then(function(r){return r.json()}).then(function(d){
+   if(d.pago){conferir();return}
+   if(t===txid){clearInterval(poll);poll=null;txid=null;pedPix=null;noCarrinho()}}).catch(function(){alert('Sem conexão. Tente de novo.')}).then(function(){voltando=false});return}
+ noCarrinho()}
+function noCarrinho(){tela('menu');if(D)desenhar();rodape();if(car.length)verCarrinho();mexeu()}
+// botão "voltar" do aparelho na tela de pagamento = o mesmo "Voltar e mudar o pedido"
+function marcaVolta(){try{history.pushState({totem:'pagando'},'')}catch(e){}}
+window.addEventListener('popstate',function(){if(txid||pedCartao)voltarCarrinho()});
 carregar();setInterval(function(){if(document.getElementById('ini').classList.contains('on'))carregar()},120000);
 </script></body></html>`;
 
