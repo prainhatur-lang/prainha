@@ -30816,7 +30816,7 @@ inicio();
 // ---- TELA DO ESPAÇO KIDS (tablet da monitora) ----
 // Totem de autoatendimento da recepção (32" de toque, em pé). Tela cheia,
 // botões grandes, sem login. Volta pro início sozinha depois de 90 s parada.
-const TOTEM_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><meta name="mobile-web-app-capable" content="yes">
+const TOTEM_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><meta name="mobile-web-app-capable" content="yes"><link rel="manifest" href="/app.webmanifest?t=totem"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><link rel="apple-touch-icon" href="/app-icon.png">
 <title>${LOJA_NOME} — Peça aqui</title><style>
 :root{--bg:#0e2a3a;--bg2:#123a50;--card:#fff;--ink:#14212b;--mut:#5f6f7a;--sun:#ffb21e;--sun2:#ff8a00;--sea:#16b3c9;--green:#16a34a;--red:#dc2626}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none}
@@ -30861,7 +30861,7 @@ header b{font-size:3.2vmin;flex:1}header button{font-size:2.4vmin;padding:1.4vmi
 #ok{background:linear-gradient(160deg,#16a34a,#0e7a37);color:#fff}#ok .num{font-size:22vmin;font-weight:900;line-height:1;letter-spacing:-.04em}
 #ok p{font-size:3.2vmin;margin:0;opacity:.95}#ok .itens{font-size:2.6vmin;opacity:.9;max-width:80vmin}
 .erro{color:var(--red);font-size:2.4vmin;margin-top:1.6vmin;min-height:3vmin}
-</style></head><body>
+</style><script>if('serviceWorker' in navigator&&window.isSecureContext)navigator.serviceWorker.register('/sw.js').catch(function(){});</script></head><body>
 <div id="ini" class="tela on" onclick="comecar()"><div class="ico">🍹</div><h1>Bateu a sede?</h1><p>Enquanto espera sua mesa, peça aqui e retire no balcão</p><div class="bt">Toque para pedir</div><p id="semPix" style="display:none;color:#ffd0d0">Pedidos pelo totem indisponíveis agora — peça no balcão</p></div>
 <div id="menu" class="tela"><header><b id="loja"></b><button onclick="reiniciar()">✕ Cancelar</button></header>
 <div class="abas" id="abas"></div><div class="grade" id="grade"></div>
@@ -30882,6 +30882,9 @@ function tela(id){document.querySelectorAll('.tela').forEach(function(t){t.class
 function fechar(id){document.getElementById(id).classList.remove('on')}
 function mexeu(){clearTimeout(ocioso);ocioso=setTimeout(function(){if(!document.getElementById('ini').classList.contains('on'))reiniciar()},(txid||pedCartao)?300000:90000)}
 document.addEventListener('pointerdown',mexeu,true);
+// Tela cheia (10/11/2026): o navegador só deixa entrar no toque; a cada toque, se saiu, volta.
+function telaCheia(){try{var el=document.documentElement;if(document.fullscreenElement||document.webkitFullscreenElement)return;var f=el.requestFullscreen||el.webkitRequestFullscreen;if(f){var r=f.call(el,{navigationUI:'hide'});if(r&&r.catch)r.catch(function(){})}}catch(e){}}
+document.addEventListener('click',telaCheia,true);
 function carregar(){return fetch('/api/totem/cardapio').then(function(r){return r.json()}).then(function(d){if(d&&d.ok){D=d;document.getElementById('loja').textContent=d.loja;
  document.getElementById('semPix').style.display=((!d.pix&&!d.cartao)||!d.grupos.length)?'block':'none';
  document.getElementById('btPag').style.display=d.pix?'':'none';document.getElementById('mCarPix').style.display=d.pix?'':'none';
@@ -33202,13 +33205,14 @@ const server = http.createServer(async (req, res) => {
         entrega: { nome: LOJA_NOME + ' Entrega', start: '/entrega' },
         ponto: { nome: LOJA_NOME + ' Ponto', start: '/ponto' },
         tv: { nome: LOJA_NOME + ' TV', start: '/tv' },
-        kds: { nome: LOJA_NOME + ' Produção', start: '/' } };
+        kds: { nome: LOJA_NOME + ' Produção', start: '/' },
+        totem: { nome: LOJA_NOME + ' Totem', start: '/totem', orient: 'any', bg: '#0e2a3a' } };
       const cfg = TELAS[t] || TELAS.kds;
       res.writeHead(200, { 'content-type': 'application/manifest+json; charset=utf-8' });
       return res.end(JSON.stringify({
         name: cfg.nome, short_name: cfg.nome.split(' ').pop(), start_url: cfg.start, scope: '/',
         display: 'fullscreen', display_override: ['fullscreen', 'standalone'],
-        orientation: 'landscape', background_color: '#f2f2f5', theme_color: '#1b1b20',
+        orientation: cfg.orient || 'landscape', background_color: cfg.bg || '#f2f2f5', theme_color: cfg.bg || '#1b1b20',
         icons: [{ src: '/app-icon.png', sizes: '192x192', type: 'image/png', purpose: 'any maskable' },
                 { src: '/app-icon.png?g=512', sizes: '512x512', type: 'image/png', purpose: 'any maskable' }],
       }));
