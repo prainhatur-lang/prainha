@@ -13,7 +13,7 @@ import { brl } from '@/lib/format';
 import { hojeBr } from '@/lib/datas';
 import { comRegimeDoMes } from '@/lib/rh/regime-no-mes';
 import { calcularFolhaMensal, type RegimeFolha } from '@/lib/rh/folha-mensal';
-import { afastamentosPorCpf, ajudaCustoPorCpf, horasDoMesPorCpf, planoSaudePorCpf, quebraCaixaPorCpf, salarioFamiliaPorCpf } from '@/lib/rh/folha-mensal-dados';
+import { afastamentosPorCpf, ajudaCustoPorCpf, horasDoMesPorCpf, diferencaSalarialPorCpf, planoSaudePorCpf, quebraCaixaPorCpf, salarioFamiliaPorCpf } from '@/lib/rh/folha-mensal-dados';
 import { proximosFeriados } from '@/lib/reservas/feriados';
 import { db, schema } from '@concilia/db';
 import { and, eq, inArray, isNotNull, or } from 'drizzle-orm';
@@ -89,7 +89,7 @@ export default async function ImprimirNossaFolhaPage(props: { searchParams: Prom
     )
     .sort((a, b) => a.nome.localeCompare(b.nome));
   const cpfs = [...new Set(doMes.map((f) => f.cpf).filter((c): c is string => !!c))];
-  const [horas, feriados, salFamilia, ajudaCusto, afast, quebraCaixa, planoSaude] = await Promise.all([
+  const [horas, feriados, salFamilia, ajudaCusto, afast, quebraCaixa, planoSaude, difSalarial] = await Promise.all([
     horasDoMesPorCpf(cpfs, ini, fim),
     proximosFeriados(ini, 31).then((l) => l.map((f) => f.data)),
     salarioFamiliaPorCpf(cpfs, comp),
@@ -97,6 +97,7 @@ export default async function ImprimirNossaFolhaPage(props: { searchParams: Prom
     afastamentosPorCpf(cpfs, ini, fim),
     quebraCaixaPorCpf(cpfs, comp),
     planoSaudePorCpf(cpfs, comp),
+    diferencaSalarialPorCpf(cpfs, comp),
   ]);
 
   const semSalario = doMes.filter((f) => !Number(f.salarioBase));
@@ -116,6 +117,7 @@ export default async function ImprimirNossaFolhaPage(props: { searchParams: Prom
         ajudaCusto: f.cpf ? ajudaCusto.get(f.cpf) : null,
         quebraCaixa: f.cpf ? quebraCaixa.get(f.cpf) : null,
         planoSaude: f.cpf ? planoSaude.get(f.cpf) : null,
+        diferencaSalarial: f.cpf ? difSalarial.get(f.cpf) : null,
         afastamentos: f.cpf ? afast.get(f.cpf) : null,
         troca: f.trocaNoMes ?? null,
       }),

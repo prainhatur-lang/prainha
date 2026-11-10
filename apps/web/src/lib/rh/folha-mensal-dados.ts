@@ -202,6 +202,31 @@ export async function planoSaudePorCpf(
  * intermitente) da última folha do contador antes da competência. Referência
  * é o % (6); no intermitente o contador paga valor fixo (6% do mínimo).
  */
+// Parcela da diferença de salários da CCT (rubrica 8294 "PARCELA DIFERENCA DE
+// SALARIOS"): o contador paga em parcelas mês a mês. Lê só da folha do contador
+// do MESMO mês — assim não repete no mês seguinte (10/11/2026, caso Cláudio na
+// Lelis: a parcela de out/2026 ficou fora da nossa folha).
+export async function diferencaSalarialPorCpf(
+  cpfs: string[],
+  comp: string,
+): Promise<Map<string, { codigo: string; descricao: string; valor: number }[]>> {
+  const saida = new Map<string, { codigo: string; descricao: string; valor: number }[]>();
+  if (cpfs.length === 0) return saida;
+  const linhas = await db
+    .select({ cpf: schema.folhaContador.cpf, rubricas: schema.folhaContador.rubricas })
+    .from(schema.folhaContador)
+    .where(and(eq(schema.folhaContador.competencia, comp), inArray(schema.folhaContador.cpf, cpfs)));
+  for (const l of linhas) {
+    const cpf = String(l.cpf ?? '').replace(/\D/g, '');
+    if (!cpf || saida.has(cpf)) continue;
+    const rs = ((l.rubricas as { codigo: string; descricao: string; tipo: string; valor: number }[] | null) ?? [])
+      .filter((x) => x.tipo === 'P' && Number(x.valor) > 0 && /PARCELA\s+DIFEREN/i.test(x.descricao ?? ''))
+      .map((x) => ({ codigo: x.codigo, descricao: x.descricao, valor: Number(x.valor) }));
+    if (rs.length > 0) saida.set(cpf, rs);
+  }
+  return saida;
+}
+
 export async function quebraCaixaPorCpf(
   cpfs: string[],
   comp: string,

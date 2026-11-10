@@ -14,7 +14,7 @@ import { AppHeader } from '@/components/app-header';
 import { LancarPagamentosFolha } from '../lancar-pagamentos';
 import { comRegimeDoMes, type TrocaNoMes } from '@/lib/rh/regime-no-mes';
 import { calcularFolhaMensal, type FolhaCalc, type RegimeFolha } from '@/lib/rh/folha-mensal';
-import { afastamentosPorCpf, ajudaCustoPorCpf, horasDoMesPorCpf, planoSaudePorCpf, quebraCaixaPorCpf, salarioFamiliaPorCpf } from '@/lib/rh/folha-mensal-dados';
+import { afastamentosPorCpf, ajudaCustoPorCpf, horasDoMesPorCpf, diferencaSalarialPorCpf, planoSaudePorCpf, quebraCaixaPorCpf, salarioFamiliaPorCpf } from '@/lib/rh/folha-mensal-dados';
 import { proximosFeriados } from '@/lib/reservas/feriados';
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm';
@@ -114,7 +114,7 @@ export default async function CompararFolhaPage(props: { searchParams: Promise<S
   for (const f of [...deFora, ...nossosNoMes]) if (f.cpf) cadastroPorCpf.set(f.cpf, f);
 
   const cpfs = [...new Set([...nossosNoMes.map((f) => f.cpf).filter((c): c is string => !!c), ...cpfsContador])];
-  const [horas, feriados, salFamilia, ajudaCusto, afast, quebraCaixa, planoSaude] = await Promise.all([
+  const [horas, feriados, salFamilia, ajudaCusto, afast, quebraCaixa, planoSaude, difSalarial] = await Promise.all([
     horasDoMesPorCpf(cpfs, ini, fim),
     proximosFeriados(ini, 31).then((l) => l.map((f) => f.data)),
     salarioFamiliaPorCpf(cpfs, comp),
@@ -122,6 +122,7 @@ export default async function CompararFolhaPage(props: { searchParams: Promise<S
     afastamentosPorCpf(cpfs, ini, fim),
     quebraCaixaPorCpf(cpfs, comp),
     planoSaudePorCpf(cpfs, comp),
+    diferencaSalarialPorCpf(cpfs, comp),
   ]);
 
   interface Linha {
@@ -156,6 +157,7 @@ export default async function CompararFolhaPage(props: { searchParams: Promise<S
             ajudaCusto: cpf ? ajudaCusto.get(cpf) : null,
             quebraCaixa: cpf ? quebraCaixa.get(cpf) : null,
             planoSaude: cpf ? planoSaude.get(cpf) : null,
+            diferencaSalarial: cpf ? difSalarial.get(cpf) : null,
             afastamentos: cpf ? afast.get(cpf) : null,
             troca: (f as { trocaNoMes?: TrocaNoMes }).trocaNoMes ?? null,
           })

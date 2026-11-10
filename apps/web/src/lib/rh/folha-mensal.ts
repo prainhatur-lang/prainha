@@ -182,6 +182,9 @@ export function calcularFolhaMensal(input: {
   quebraCaixa?: { codigo: string; descricao: string; referencia: number; valor: number } | null;
   /** Plano de saúde (desconto fixo copiado da última folha do contador, ex. 8111). */
   planoSaude?: { codigo: string; descricao: string; valor: number }[] | null;
+  /** Parcela da diferença de salários da CCT (ex. 8294), lida da folha do contador
+   *  do MESMO mês. Entra no INSS e no FGTS (10/11/2026, faltou na do Cláudio em out). */
+  diferencaSalarial?: { codigo: string; descricao: string; valor: number }[] | null;
   /** Troca de regime no meio do mês (agenda "proporcional"): até a véspera no
    *  regime de `regime`/`salario`, de `aPartir` em diante no novo. */
   troca?: { aPartir: string; regime: RegimeFolha; salario: number } | null;
@@ -244,6 +247,7 @@ export function calcularFolhaMensal(input: {
       P('250', 'REFLEXO EXTRAS DSR', 0, vFicta * fator);
       P('854', 'REFLEXO ADIC. NOTURNO DSR', 0, adic * fator);
     }
+    for (const x of input.diferencaSalarial ?? []) P(x.codigo, x.descricao, x.valor, x.valor);
     baseInss = r2(rub.filter((x) => x.tipo === 'P').reduce((s, x) => s + x.valor, 0));
     D('998', 'I.N.S.S.', 0, calcularInss(baseInss));
     // Até o 15º dia de afastamento longo: paga a casa, sem INSS, com FGTS.
@@ -264,7 +268,12 @@ export function calcularFolhaMensal(input: {
     P('9441', '13 SALARIO TRAB INTERMITENTE', 0, dec);
     const quebra = input.quebraCaixa && h > 0 ? r2(input.quebraCaixa.valor) : 0;
     if (input.quebraCaixa) P(input.quebraCaixa.codigo, input.quebraCaixa.descricao, input.quebraCaixa.referencia, quebra);
-    const semDec = r2(h + dsr + ferias + terco + quebra);
+    let dif = 0;
+    for (const x of input.diferencaSalarial ?? []) {
+      P(x.codigo, x.descricao, x.valor, x.valor);
+      dif += x.valor > 0 ? r2(x.valor) : 0;
+    }
+    const semDec = r2(h + dsr + ferias + terco + quebra + dif);
     baseInss = r2(semDec + dec);
     D('998', 'I.N.S.S.', 0, calcularInss(semDec));
     D('825', 'INSS 13o SALARIO', 0, calcularInss(dec));
@@ -344,6 +353,7 @@ function calcularComTroca(
     ajudaCusto: null,
     planoSaude: null,
     quebraCaixa: null,
+    diferencaSalarial: null,
   });
   const depois = calcularFolhaMensal({
     ...input,
