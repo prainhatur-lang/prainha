@@ -6876,6 +6876,27 @@ async function totemConfig() {
     return { grupos: Array.isArray(c.grupos) ? c.grupos : [], itens: Array.isArray(c.itens) ? c.itens : [] };
   } catch { return { grupos: [], itens: [] }; }
 }
+// Grupos do totem = grupos do cardápio QR do cliente (10/11/2026): a categoria do
+// produto, na ordem do cardápio, com a mesma figura (cópia do ICONES da mesa).
+const TOTEM_ICONES = [['nao alcool','🥤'],['refri','🥤'],['agua','💧'],['suco','🧃'],['energ','⚡'],
+  ['cafe','☕'],['cha','🍵'],['cerveja','🍺'],['chop','🍺'],['espumante','🍾'],['champ','🍾'],
+  ['vinho','🍷'],['drink','🍹'],['coquetel','🍹'],['caipi','🍹'],['gin','🍸'],['vodka','🍸'],
+  ['martini','🍸'],['cachaca','🥃'],['whisk','🥃'],['conhaque','🥃'],['rum','🥃'],['tequila','🥃'],
+  ['dose','🥃'],['licor','🥃'],['sobremesa','🍨'],['doce','🍰'],['sorvete','🍦'],['acai','🍧'],
+  ['camar','🦐'],['frutos do mar','🦐'],['marisc','🦪'],['ostra','🦪'],['peixe','🐟'],['moqueca','🍲'],
+  ['caldo','🍲'],['sopa','🍲'],['carne','🥩'],['picanha','🥩'],['churras','🥩'],['parrilha','🔥'],['brasa','🔥'],['complement','➕'],['adicion','➕'],['servico','🛎️'],['terraco','🌅'],['grelh','🥩'],
+  ['frango','🍗'],['pizza','🍕'],['hamb','🍔'],['burger','🍔'],['sanduich','🥪'],['lanche','🥪'],
+  ['pastel','🥟'],['salada','🥗'],['massa','🍝'],['risot','🍚'],['acompanh','🍚'],['guarni','🍚'],
+  ['infantil','🧒'],['kids','🧒'],['crianca','🧒'],['petisc','🍟'],['porc','🍟'],['tira','🍟'],
+  ['entrada','🥖'],['fruta','🍉'],['tabac','💨'],['narg','💨'],['combo','🎉'],['promo','🎉']];
+function totemIconeGrupo(nome) {
+  const n = String(nome || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  for (const [k, em] of TOTEM_ICONES) {
+    if (k.length <= 3 ? (' ' + n + ' ').includes(' ' + k + ' ') : n.includes(k)) return em;
+  }
+  return '🍽️';
+}
+const totemNomeGrupo = (c) => String(c || '').trim().replace(/\.+$/, '').replace(/alcoolica/gi, 'alcoólica');
 /** GET /api/totem/cardapio — grupos com os produtos (foto, preço, escolhas). */
 async function apiTotemCardapio() {
   const cfg = await totemConfig();
@@ -6885,7 +6906,9 @@ async function apiTotemCardapio() {
   const impressora = !!(await cfgGet('totem_impressora_ip', '')).trim();
   if (!cods.length) return { ok: true, loja: LOJA_NOME, pix, cartao, impressora, grupos: [] };
   const prods = await sql`SELECT codigo_pdv, produto_codigo, nome, tamanho, preco, descricao, sem_estoque,
-      EXISTS(SELECT 1 FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS tem_foto
+      categoria, categoria_ordem,
+      EXISTS(SELECT 1 FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS tem_foto,
+      (SELECT extract(epoch FROM f.atualizado)::bigint FROM produto_foto f WHERE f.produto_codigo=produto_local.produto_codigo) AS foto_v
     FROM produto_local WHERE codigo_pdv = ANY(${cods})`;
   const perg = await sql`SELECT wp.codigo_pdv, p.codigo, p.texto, wp.ordem FROM wizard_produto wp
     JOIN wizard_pergunta p ON p.codigo = wp.pergunta WHERE wp.codigo_pdv = ANY(${cods}) ORDER BY wp.ordem, p.codigo`;
@@ -6905,12 +6928,30 @@ async function apiTotemCardapio() {
     })).filter((x) => x.opcoes.length);
     porCod.set(c, { codigo_pdv: c, produto_codigo: t.produto_codigo == null ? null : Number(t.produto_codigo),
       nome: t.nome, tamanho: t.tamanho || null, preco: Number(t.preco), descricao: t.descricao || null,
-      tem_foto: !!t.tem_foto, esgotado: t.sem_estoque === true || !(saldos.get(c) > 0),
-      saldo: saldos.get(c) ?? 0, escolhas });
+      tem_foto: !!t.tem_foto, foto_v: t.foto_v == null ? null : Number(t.foto_v),
+      esgotado: t.sem_estoque === true || !(saldos.get(c) > 0),
+      saldo: saldos.get(c) ?? 0, escolhas,
+      _cat: totemNomeGrupo(t.categoria), _catOrdem: t.categoria_ordem == null ? 999 : Number(t.categoria_ordem) });
   }
-  const grupos = cfg.grupos.map((g) => ({ ...g, itens: cfg.itens.filter((i) => i.grupo === g.id)
-    .sort((a, b) => a.ordem - b.ordem).map((i) => porCod.get(Number(i.codigo))).filter(Boolean) }))
-    .filter((g) => g.itens.length);
+  // Os itens continuam sendo os que a casa ligou no totem (e na ordem dela); o
+  // GRUPO agora é a categoria do cardápio QR. Item sem categoria fica no grupo
+  // de antes (Cervejas / Drinks / Sem álcool).
+  const antigos = new Map(cfg.grupos.map((g) => [g.id, g]));
+  const porGrupo = new Map();
+  for (const i of [...cfg.itens].sort((a, b) => a.ordem - b.ordem)) {
+    const p = porCod.get(Number(i.codigo));
+    if (!p) continue;
+    let k, base;
+    if (p._cat) { k = 'cat:' + p._cat; base = { id: k, nome: p._cat, emoji: totemIconeGrupo(p._cat), _o: p._catOrdem }; }
+    else { const g = antigos.get(i.grupo); if (!g) continue; k = g.id; base = { ...g, _o: 1e9 + cfg.grupos.indexOf(g) }; }
+    if (!porGrupo.has(k)) porGrupo.set(k, { ...base, itens: [] });
+    const gr = porGrupo.get(k);
+    gr._o = Math.min(gr._o, base._o);
+    if (!gr.itens.includes(p)) gr.itens.push(p);
+  }
+  const grupos = [...porGrupo.values()]
+    .sort((a, b) => a._o - b._o || String(a.nome).localeCompare(String(b.nome), 'pt-BR'))
+    .map(({ _o, itens, ...g }) => ({ ...g, itens: itens.map(({ _cat, _catOrdem, ...p }) => p) }));
   return { ok: true, loja: LOJA_NOME, pix, cartao, impressora, grupos };
 }
 /** POST /api/totem/pedido {itens:[{codigo_pdv, qtd, respostas?}]} → ticket + QR do Pix. */
@@ -7064,7 +7105,7 @@ async function totemBaixar(txid) {
       let fechou = false;
       try { fechou = (await apiCaixaFechar(0, ped))?.fechada === true; } catch { /* segue aberta, o caixa vê */ }
       await totemEstoqueBaixar(Number(t.id)).catch((e) => console.error('[totem estoque]', e.message));
-      totemImprimirTickets(Number(t.id)).catch(() => {}).then(() => totemEmitirNfce(Number(t.id)));
+      totemPixImprimir(Number(t.id)).catch((e) => console.error('[totem] impressão do Pix:', e.message));
       console.log(`[totem] pedido ${t.id} PAGO R$ ${valor.toFixed(2)} (Pix ${txid}) · conta ${ped}${fechou ? ' fechada' : ' — NÃO fechou, conferir no caixa'}`);
       return { ok: true, pedido: Number(t.id), conta: ped, fechou };
     } catch (e) {
@@ -7089,6 +7130,7 @@ async function loopTotemFila() {
     const abertos = await sql`SELECT txid FROM pix_cobranca WHERE origem='totem' AND pago_em IS NULL
       AND criado_em > now() - interval '40 minutes' ORDER BY criado_em LIMIT 10`;
     for (const r of abertos) await apiPixConferir(r.txid).catch(() => {});
+    await totemPixSemPapel().catch((e) => console.error('[totem fila] Pix sem papel:', e.message));
   } catch (e) {
     console.error('[totem fila]', e.message);
   }
@@ -7136,8 +7178,9 @@ async function apiTotemCancelar(body) {
 }
 /** GET /api/lio/totem/fila — a LIO do totem pergunta de 3 em 3 s. Entrega o
  *  pedido mais antigo esperando cartão e o prende nela (outra LIO não pega). */
-async function apiLioTotemFila(g) {
+async function apiLioTotemFila(g, pix = false) {
   totemLioVisto = Date.now();
+  if (pix) totemLioPixVisto = Date.now();
   // ninguém pagou em 15 min: sai da fila (o totem já voltou pro início)
   await sql`UPDATE ticket_venda SET status='desistido', erro='ninguém pagou na maquininha'
     WHERE origem='totem' AND status='aguardando_lio' AND criado_em < now() - interval '15 minutes'
@@ -7147,7 +7190,22 @@ async function apiLioTotemFila(g) {
       AND (lio_login IS NULL OR lio_login=${g.login}) ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
     RETURNING id, itens, total, criado_em, cartao_tipo`;
   const impressora = !!(await cfgGet('totem_impressora_ip', '')).trim();
-  if (!t) return { ok: true, pedido: null, impressora };
+  if (!t) {
+    // Pix pago sem impressora da recepção: os tickets e a nota saem NESTA LIO.
+    // Marca impresso_em ao entregar (o servidor não imprime de novo no BAR).
+    if (pix && !impressora) {
+      const [x] = await sql`UPDATE ticket_venda SET impresso_em=now()
+        WHERE id = (SELECT id FROM ticket_venda WHERE origem='totem' AND status='pago' AND pix_txid IS NOT NULL
+          AND impresso_em IS NULL AND pago_em > now() - interval '45 minutes' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED)
+        RETURNING id, itens, total, criado_em`;
+      if (x) {
+        const its = typeof x.itens === 'string' ? JSON.parse(x.itens) : (x.itens || []);
+        console.log(`[totem] pedido ${x.id} (Pix): tickets e nota na LIO ${g.login}`);
+        return { ok: true, pedido: null, impressora, imprimir: { ticket_id: Number(x.id), total: Number(x.total), itens: its, criado_em: x.criado_em, pix: true } };
+      }
+    }
+    return { ok: true, pedido: null, impressora };
+  }
   const itens = typeof t.itens === 'string' ? JSON.parse(t.itens) : (t.itens || []);
   return { ok: true, impressora, pedido: { ticket_id: Number(t.id), total: Number(t.total), itens, criado_em: t.criado_em, cartao: t.cartao_tipo || null } };
 }
@@ -7181,8 +7239,8 @@ function totemTicketsEscpos(t) {
 }
 /** Imprime UMA vez (marca impresso_em antes). Falhou = desmarca e devolve
  *  false; no cartão a LIO imprime no lugar (nunca os dois). */
-async function totemImprimirTickets(id) {
-  const ip = (await cfgGet('totem_impressora_ip', '')).trim();
+async function totemImprimirTickets(id, ipOutra = '') {
+  const ip = (ipOutra || await cfgGet('totem_impressora_ip', '')).trim();
   if (!ip) return false;
   const [t] = await sql`UPDATE ticket_venda SET impresso_em=now()
     WHERE id=${id} AND origem='totem' AND status='pago' AND impresso_em IS NULL RETURNING *`;
@@ -7197,6 +7255,44 @@ async function totemImprimirTickets(id) {
   }
 }
 
+// ---- PIX DO TOTEM sem impressora da recepção (dono, 10/11/2026): o cliente
+// pagava, a venda fechava e não saía papel nenhum — a LIO só pega pedido no
+// cartão. Agora: recepção cadastrada = igual sempre; senão a LIO do totem
+// (1.10.47+, pergunta a fila com ?pix=1) imprime tickets e nota; sem ela por
+// perto, saem na térmica do caixa/BAR (impressora_ip). Quem imprime marca
+// impresso_em antes — nunca sai em dobro.
+let totemLioPixVisto = 0;
+const totemLioPixOn = () => Date.now() - totemLioPixVisto < 90 * 1000;
+async function totemPixImprimir(id) {
+  if (await totemImprimirTickets(id)) return totemEmitirNfce(id);
+  const recepcao = !!(await cfgGet('totem_impressora_ip', '')).trim();
+  if (recepcao || totemLioPixOn()) return totemEmitirNfce(id);
+  const bar = (await cfgGet('impressora_ip', '')).trim();
+  if (bar && await totemImprimirTickets(id, bar)) {
+    console.log(`[totem] pedido ${id} (Pix): tickets na impressora do caixa/BAR (${bar}) — sem recepção nem LIO`);
+    return totemEmitirNfce(id, { impBar: true });
+  }
+  return totemEmitirNfce(id);
+}
+/** Fila de 1 min: Pix pago há 2–45 min ainda sem papel (a LIO sumiu, BAR
+ *  falhou) sai no caixa/BAR, com a nota (reimpressão — não emite outra). */
+async function totemPixSemPapel() {
+  if ((await cfgGet('totem_impressora_ip', '')).trim() || totemLioPixOn()) return;
+  const bar = (await cfgGet('impressora_ip', '')).trim();
+  if (!bar) return;
+  const pend = await sql`SELECT id, pedido_fb, nfce_numero FROM ticket_venda WHERE origem='totem' AND status='pago'
+    AND pix_txid IS NOT NULL AND impresso_em IS NULL AND pedido_fb IS NOT NULL
+    AND pago_em < now() - interval '2 minutes' AND pago_em > now() - interval '45 minutes' ORDER BY id LIMIT 3`;
+  for (const t of pend) {
+    if (!(await totemImprimirTickets(Number(t.id), bar))) continue;
+    console.log(`[totem] pedido ${t.id} (Pix): tickets que faltavam saíram no caixa/BAR (${bar})`);
+    if (t.nfce_numero) {
+      const r = await nfceEmitirCore({ ped: Number(t.pedido_fb), numero: 0, documento: null, destino: 'totem', solicitante: 'totem', impBar: true }).catch((e) => ({ ok: false, erro: e.message }));
+      if (!r.ok || !r.impresso) console.error(`[totem] pedido ${t.id}: nota nº ${t.nfce_numero} não reimprimiu no BAR — ${r.erro || r.imp_erro || '?'}`);
+    } else await totemEmitirNfce(Number(t.id), { impBar: true });
+  }
+}
+
 // ---- NFC-e AUTOMÁTICA do totem (dono, 02/11/2026): pedido pago = nota sai
 // sozinha, sem CPF (consumidor). DANFE na impressora da recepção; a tela do
 // totem mostra o QR da nota. Uma vez por ticket (marca nfce_em antes); SEFAZ
@@ -7206,7 +7302,7 @@ async function totemNfceGravar(ped, r) {
     nfce_erro=${r?.ok ? (r.imp_erro ? 'DANFE não imprimiu: ' + String(r.imp_erro).slice(0, 200) : null) : String(r?.erro || 'falhou').slice(0, 300)}
     WHERE pedido_fb=${ped} AND origem='totem'`.catch(() => {});
 }
-async function totemEmitirNfce(id) {
+async function totemEmitirNfce(id, { impBar = false } = {}) {
   try {
     const [t] = await sql`SELECT id, pedido_fb, status FROM ticket_venda WHERE id=${id} AND origem='totem'`;
     if (!t || t.status !== 'pago' || !(Number(t.pedido_fb) > 0)) return;
@@ -7214,7 +7310,7 @@ async function totemEmitirNfce(id) {
     const [c] = await sql`UPDATE ticket_venda SET nfce_em=now() WHERE id=${id} AND nfce_em IS NULL RETURNING id`;
     if (!c) return;
     const ped = Number(t.pedido_fb);
-    const r = await nfceEmitirCore({ ped, numero: 0, documento: null, destino: 'totem', solicitante: 'totem' });
+    const r = await nfceEmitirCore({ ped, numero: 0, documento: null, destino: 'totem', solicitante: 'totem', impBar });
     await totemNfceGravar(ped, r);
     if (r.ok) console.log(`[totem] pedido ${id}: NFC-e nº ${r.nota?.numero}${r.impresso ? ' impressa na recepção' : r.imp_erro ? ' (DANFE: ' + r.imp_erro + ')' : ''}`);
     else console.error(`[totem] ⚠️ pedido ${id}: NFC-e ${r.pendente ? 'na fila' : 'NÃO saiu'} — ${r.erro}`);
@@ -7991,7 +8087,7 @@ async function apiNfceInfo(nRaw, pedRaw = null) {
  *  final: vira PENDENTE_ENVIO e o loopNfceFila reenvia sozinho (o central é
  *  idempotente e consulta a chave antes de reenviar — não duplica nota).
  *  A mesa NÃO depende disto: o fechamento já aconteceu antes. */
-async function nfceEmitirCore({ ped, numero, documento, destino, solicitante }) {
+async function nfceEmitirCore({ ped, numero, documento, destino, solicitante, impBar = false }) {
   const doc = soDig(documento || '');
   let dados;
   try { dados = await nfceDadosDoPedido(ped, numero); }
@@ -8053,7 +8149,7 @@ async function nfceEmitirCore({ ped, numero, documento, destino, solicitante }) 
   } else if (destino === 'totem') {
     // totem da recepção: DANFE na impressora da recepção (a mesma dos tickets)
     try {
-      const ip = (await cfgGet('totem_impressora_ip', '')).trim();
+      const ip = (await cfgGet('totem_impressora_ip', '')).trim() || (impBar ? (await cfgGet('impressora_ip', '')).trim() : '');
       if (ip) { await imprimirRaw(ip, nfceBlocosEscpos(resp.danfe48 || [], await impOpcoes()), 'DANFE NFC-e totem'); impresso = true; }
       else impErro = 'sem impressora da recepção';
     } catch (e2) { impErro = e2.message; }
@@ -31080,7 +31176,7 @@ function pago(q,d){clearInterval(poll);poll=null;car=[];pedPix=null;document.get
  nfPoll=setInterval(function(){if(++n>6||!document.getElementById('ok').classList.contains('on')){clearInterval(nfPoll);nfPoll=null;return}
   fetch('/api/totem/status?'+q).then(function(r){return r.json()}).then(function(x){if(x&&x.nfce){clearInterval(nfPoll);nfPoll=null;mostraNf(x.nfce)}}).catch(function(){})},1500)}
 function desenhar(){var g=D.g||[];if(aba>=g.length)aba=0;document.getElementById('abas').innerHTML=g.map(function(x,i){return '<button class="aba'+(i===aba?' on':'')+'" onclick="aba='+i+';desenhar()">'+E(x.emoji+' '+x.nome)+'</button>'}).join('');
- var it=(g[aba]||{itens:[]}).itens;document.getElementById('grade').innerHTML=it.map(function(p,i){var foto=p.tem_foto&&p.produto_codigo!=null?'style="background-image:url(/produto-foto/'+p.produto_codigo+')"':'';
+ var it=(g[aba]||{itens:[]}).itens;document.getElementById('grade').innerHTML=it.map(function(p,i){var foto=p.tem_foto&&p.produto_codigo!=null?'style="background-image:url(/produto-foto/'+p.produto_codigo+(p.foto_v?'?v='+p.foto_v:'')+')"':'';
  return '<button class="prod'+(p.esgotado?' esg':'')+'" onclick="abrir('+i+')"><div class="f'+(foto?' ft':'')+'" '+foto+'>'+(foto?'':E((g[aba].emoji)||'🥤'))+'</div><div class="t"><div class="n">'+E(nomeBr(p.nome))+(p.tamanho?' <small>'+E(nomeBr(p.tamanho))+'</small>':'')+'</div>'+(p.descricao?'<div class="d">'+E(p.descricao)+'</div>':'')+'<div class="p">'+(p.esgotado?'Acabou':R(p.preco))+'</div></div></button>'}).join('');
  rodape()}
 function rodape(){var n=car.reduce(function(s,c){return s+c.qtd},0),t=car.reduce(function(s,c){return s+c.unit*c.qtd},0);
@@ -31146,6 +31242,9 @@ function noCarrinho(){tela('menu');if(D)desenhar();rodape();if(car.length)verCar
 function marcaVolta(){try{history.pushState({totem:'pagando'},'')}catch(e){}}
 window.addEventListener('popstate',function(){if(txid||pedCartao)voltarCarrinho()});
 carregar();setInterval(function(){if(document.getElementById('ini').classList.contains('on'))carregar()},120000);
+var VER0=null;function confereVersao(){fetch('/api/versao',{cache:'no-store'}).then(function(r){return r.json()}).then(function(v){var k=v&&(v.versao+'|'+v.iniciado_em);if(!k)return;if(VER0===null){VER0=k;return}
+ if(k!==VER0&&document.getElementById('ini').classList.contains('on'))location.reload()}).catch(function(){})}
+confereVersao();setInterval(confereVersao,60000);
 </script></body></html>`;
 
 // Uma tela só, cinco estados: login → lista → nova entrada → QR → config.
@@ -34089,7 +34188,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/lio/totem/fila') {
       const g = await garcomDaRequisicao(req, u);
       if (!g) { res.writeHead(401, { 'content-type': 'application/json' }); return res.end(JSON.stringify({ ok: false, erro: 'Faça login pra continuar.', sem_sessao: true })); }
-      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiLioTotemFila(g)));
+      res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiLioTotemFila(g, u.searchParams.get('pix') === '1')));
     }
     if (p === '/api/lio/totem/nfce') {
       const g = await garcomDaRequisicao(req, u);

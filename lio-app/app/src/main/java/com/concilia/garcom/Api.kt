@@ -634,7 +634,7 @@ object Api {
      *  esperando. Devolve {ok, impressora, pedido:{ticket_id,total,itens}|null}.
      *  O servidor já reserva o pedido pra este login (outra LIO não pega). */
     @Throws(IOException::class)
-    fun totemFila(base: String, token: String): JSONObject = getJson("$base/api/lio/totem/fila", token)
+    fun totemFila(base: String, token: String): JSONObject = getJson("$base/api/lio/totem/fila?pix=1", token)
 
     /** Nota do pedido do totem pra imprimir AQUI (recepção sem impressora).
      *  pronta=false enquanto a SEFAZ não autorizou; fim=true quando não vai

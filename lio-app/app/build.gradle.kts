@@ -182,8 +182,11 @@ android {
         // 1.10.46 (10/11/2026): totem — o cliente escolhe Crédito ou Débito na
         // tela e a maquininha já abre nele, à vista, com o valor (sem Pix nem
         // parcelado). Pedido sem a escolha (servidor antigo): menu de sempre.
-        versionCode = 70
-        versionName = "1.10.46"
+        // 1.10.47 (10/11/2026): totem — pedido pago no PIX sem impressora da
+        // recepção: os tickets e a nota saem nesta LIO (fila com ?pix=1).
+        // Cartão igual; servidor antigo ignora o ?pix=1 e nada muda.
+        versionCode = 71
+        versionName = "1.10.47"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CONCILIA_BASE", "\"$conciliaBase\"")
     }

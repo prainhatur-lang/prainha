@@ -123,7 +123,9 @@ class TotemActivity : AppCompatActivity() {
                 runOnUiThread {
                     consultando = false
                     if (isFinishing || isDestroyed) return@runOnUiThread
-                    if (ped == null) {
+                    val imp = j.optJSONObject("imprimir")
+                    if (ped == null && imp != null && !cobrando) imprimirPix(imp)
+                    else if (ped == null) {
                         if (!cobrando) mostrar("Esperando pedido",
                             "Quando o cliente escolher 💳 Cartão no totem, a cobrança abre aqui sozinha." +
                                 (if (!j.optBoolean("impressora")) "\n\n⚠️ Impressora da recepção não cadastrada — os tickets vão sair nesta maquininha." else ""))
@@ -293,6 +295,21 @@ class TotemActivity : AppCompatActivity() {
                 }
             }
         }.start()
+    }
+
+    /** Pix pago no totem (1.10.47, 10/11/2026): o cliente pagou na tela do
+     *  totem e a recepção não tem impressora — o servidor entrega o pedido
+     *  aqui e os tickets + a nota saem nesta maquininha. Não cobra nada. */
+    private fun imprimirPix(t: JSONObject) {
+        val id = t.optInt("ticket_id", 0)
+        if (id <= 0) return
+        cobrando = true
+        val fim = {
+            cobrando = false
+            handler.postDelayed({ if (!cobrando) mostrar("Esperando pedido", "Quando o cliente escolher 💳 Cartão no totem, a cobrança abre aqui sozinha.") }, 6000)
+        }
+        mostrar("✅ Pedido $id pago no Pix", "Imprimindo os tickets nesta maquininha…")
+        Ticket.imprimirComRetomada(this, t) { imprimirNota(id) { fim() } }
     }
 
     /** Recepção sem impressora: a NFC-e (que o servidor emite sozinho ao
