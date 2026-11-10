@@ -26,7 +26,10 @@ object Pagamento {
         onCancelado: () -> Unit,
         onErro: (mensagem: String) -> Unit,
         destino: org.json.JSONObject? = null,
-    ) = Lio.cobrar(ref, linhas, valorCentavos, onInicio, onPago, onCancelado, onErro, destino)
+        /** "credito" | "debito" = abre a Cielo já no cartão (casa com Pix pelo
+         *  banco: o Pix não passa pela Cielo). null = menu completo, como sempre. */
+        cartao: String? = null,
+    ) = Lio.cobrar(ref, linhas, valorCentavos, onInicio, onPago, onCancelado, onErro, destino, cartao)
     /** O que o terminal tem gravado desse pedido (null = não deu pra saber). */
     fun consultarPedido(pedidoId: String): PedidoTerminal? = Lio.consultarPedido(pedidoId)
     /** Na demo (/api/config demo), tudo sai carimbado DEMONSTRAÇÃO (ver Demo). */

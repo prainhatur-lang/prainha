@@ -85,6 +85,9 @@ object Api {
         val conhecaUrl: String = "",
         /** Servidor de demonstração: tudo o que imprime sai com DEMONSTRAÇÃO grande. */
         val demo: Boolean = false,
+        /** Pix desta casa pelo BANCO (configurador "Pix por" do Concilia, 10/11/2026):
+         *  sicredi | inter. null = Pix pela maquininha, como sempre foi. */
+        val pixProvedor: String? = null,
     )
 
     /** Mesa/comanda aberta na grade (espelho local — rápido). */
@@ -252,6 +255,22 @@ object Api {
 
     private fun enc(v: String): String = URLEncoder.encode(v, "UTF-8")
 
+    // -------- Pix pelo BANCO (Sicredi/Inter) --------
+    // Mesmo caminho do QR da mesa: o servidor da loja pede a cobrança ao
+    // Concilia, guarda em pix_cobranca e BAIXA SOZINHO quando cai (forma Pix
+    // Online). O app só mostra o QR e pergunta — nunca registra pagamento.
+
+    /** {ok, txid, valor, copia_cola} | {ok:false, erro}. */
+    @Throws(IOException::class)
+    fun pixCobrar(base: String, token: String?, numero: Int, valor: Double, gorjetaPct: Int): JSONObject =
+        postJson("$base/api/pix/cobrar", token, JSONObject()
+            .put("mesa", numero).put("valor", valor).put("gorjeta_pct", gorjetaPct))
+
+    /** {ok, pago, status?} — o servidor já baixa na conta quando pago. */
+    @Throws(IOException::class)
+    fun pixConferir(base: String, token: String?, txid: String): JSONObject =
+        getJson("$base/api/pix/conferir?txid=${enc(txid)}", token)
+
     // -------- servidor / config --------
 
     /** Servidor no ar? Devolve o hash de versão do server.mjs. */
@@ -355,6 +374,7 @@ object Api {
                 passeSaida = j.optBoolean("passe_saida", true),
                 conhecaUrl = j.optString("conheca_url", "").let { if (it.startsWith("https://")) it else "" },
                 demo = j.optBoolean("demo", false),
+                pixProvedor = j.optString("pix_provedor", "").takeIf { it == "sicredi" || it == "inter" },
             )
         } catch (_: Exception) { null }
     }

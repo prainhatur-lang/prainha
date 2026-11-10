@@ -176,8 +176,11 @@ android {
         // 1.10.44 (05/11/2026): servidor de demonstração (/api/config demo) →
         // tudo o que a maquininha imprime sai com DEMONSTRAÇÃO grande em cima,
         // no meio e embaixo (Demo.kt). Lojas (sem demo) imprimem igual.
-        versionCode = 68
-        versionName = "1.10.44"
+        // 1.10.45 (10/11/2026): "Pix por" do Concilia — casa com Pix pelo banco
+        // (Sicredi/Inter) ganha o botão "Pix Sicredi" (QR do banco pela loja) e o
+        // cartão vai direto em Crédito/Débito na Cielo. Casa sem isso: igual.
+        versionCode = 69
+        versionName = "1.10.45"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CONCILIA_BASE", "\"$conciliaBase\"")
     }

@@ -2312,7 +2312,14 @@ let COMANDA_SEM_CADASTRO = false;
 // Desligado (padrao) = tudo como sempre. Com "sem cadastro" ligado junto, a
 // comanda abre sem ninguem e so o campo de WhatsApp some.
 let COMANDA_SO_CPF = false;
+// ---- PIX POR (configurador "Pix por" do Concilia, 10/11/2026) ----
+// 'sicredi'/'inter' = a casa recebe Pix SÓ pelo banco: a loja pede a cobrança
+// pra nuvem (/api/loja/pix — o certificado da API Pix fica lá) e o QR da mesa,
+// o caixa e a maquininha usam esse Pix. Qualquer outro valor (cielo, rede ou
+// nuvem antiga sem o campo) = tudo como sempre, pelo PIX_PROVEDOR do start.bat.
+let PIX_NUVEM = null;
 async function puxarAdquirente() {
+  try { const v = await cfgGet('pix_nuvem', ''); PIX_NUVEM = v || null; } catch {}
   try { ADQUIRENTE_LOJA = (await cfgGet('adquirente', 'cielo')) === 'rede' ? 'rede' : 'cielo'; } catch {}
   try { COMANDA_SEM_CADASTRO = (await cfgGet('comanda_sem_cadastro', '0')) === '1'; } catch {}
   try { COMANDA_SO_CPF = (await cfgGet('comanda_so_cpf', '0')) === '1'; } catch {}
@@ -2339,6 +2346,11 @@ async function puxarAdquirente() {
     console.log(`[comanda] identificação: ${c.comanda_so_cpf ? 'só CPF' : 'CPF ou WhatsApp'} (Concilia)`);
     COMANDA_SO_CPF = c.comanda_so_cpf;
     try { await cfgSet('comanda_so_cpf', COMANDA_SO_CPF ? '1' : '0'); } catch {}
+  }
+  if (c && c.ok && typeof c.pix_provedor === 'string' && (c.pix_provedor || null) !== PIX_NUVEM) {
+    console.log(`[pix] Pix desta casa: ${PIX_NUVEM || 'como no start.bat'} -> ${c.pix_provedor} (Concilia)`);
+    PIX_NUVEM = c.pix_provedor || null;
+    try { await cfgSet('pix_nuvem', PIX_NUVEM || ''); } catch {}
   }
 }
 async function puxarConfigIfood() {
@@ -7432,6 +7444,10 @@ function apiConfig() {
     comanda_sem_cadastro: COMANDA_SEM_CADASTRO,
     // identificação só pelo CPF (sem pedir WhatsApp) — idem
     comanda_so_cpf: COMANDA_SO_CPF,
+    // Pix por (Concilia → Configurações → Pagamento): 'sicredi'/'inter' = Pix SÓ
+    // pelo banco — a maquininha cobra cartão na adquirente e o Pix pelo QR
+    // do banco (/api/pix/cobrar). null = Pix como sempre, na adquirente.
+    pix_provedor: pixPelaNuvem() ? PIX_NUVEM : null,
     // nome do cartão de fidelidade e se a casa usa passe de saída — o app usa
     fidelidade_nome: FIDELIDADE_NOME,
     passe_saida: PASSE_SAIDA,
@@ -21324,6 +21340,37 @@ function cieloCred() {
   const id = process.env.CIELO_MERCHANT_ID, key = process.env.CIELO_MERCHANT_KEY;
   return (id && key) ? { id, key } : null;
 }
+/** A casa escolheu Pix por Sicredi/Inter no Concilia e a loja fala com a nuvem. */
+function pixPelaNuvem() {
+  return (PIX_NUVEM === 'sicredi' || PIX_NUVEM === 'inter') && !!FILIAL_ID && !!PAGAR_MESA_SECRET && PAGAR_MESA_SECRET.length >= 16;
+}
+/** Chamada assinada ao /api/loja/pix da nuvem. partes = o que entra na assinatura depois de [f, e]. */
+async function pixNuvem(params, partes) {
+  const e = Math.floor(Date.now() / 1000) + 120;
+  const s = createHmac('sha256', PAGAR_MESA_SECRET).update([FILIAL_ID, String(e), ...partes].join('|')).digest('hex');
+  const q = new URLSearchParams({ f: FILIAL_ID, e: String(e), ...params, s });
+  let r;
+  try { r = await fetch(`${PAGAR_MESA_URL}/api/loja/pix?${q}`, { signal: AbortSignal.timeout(20000) }); }
+  catch (err) { return { ok: false, erro: 'nuvem não respondeu: ' + err.message }; }
+  const d = await r.json().catch(() => null);
+  if (!d) return { ok: false, erro: 'nuvem: HTTP ' + r.status };
+  if (!d.ok) return { ok: false, erro: 'Pix ' + (PIX_NUVEM || '') + ': ' + (d.erro || 'HTTP ' + r.status) };
+  return d;
+}
+async function pixNuvemCriar(mesa, valor, rotulo) {
+  const centavos = Math.round(Number(valor) * 100);
+  const ref = (String(rotulo || ('Mesa ' + mesa)).slice(0, 30) + ' - ' + String(LOJA_NOME || '')).slice(0, 60);
+  const d = await pixNuvem({ acao: 'criar', valor: String(centavos), ref }, ['criar', String(centavos), ref]);
+  if (!d.ok) return d;
+  if (!d.txid || !d.copiaECola) return { ok: false, erro: 'nuvem não devolveu o código Pix' };
+  return { ok: true, txid: String(d.txid), copia: String(d.copiaECola) };
+}
+async function pixNuvemStatus(txid) {
+  const d = await pixNuvem({ acao: 'status', txid }, ['status', txid]);
+  if (!d.ok) return d;
+  return { ok: true, pago: d.status === 'pago', status: d.detalhe || d.status, e2e: d.e2e || null,
+    recebido: Number(d.valorCentavos || 0) / 100, estornado: d.status === 'reembolsado' };
+}
 function pixStatus() {
   // Diagnostico junto: "disponivel" so diz que a env EXISTE. Se ela vier com
   // aspas sobrando do .bat ou truncada, a Cielo responde "MerchantId is
@@ -21333,6 +21380,8 @@ function pixStatus() {
   const diag = PIX_PROVEDOR === 'cielo'
     ? { merchant_id: fmt(c?.id), merchant_key: fmt(c?.key) }
     : { chave: interCred()?.chave ? 'ok' : 'ausente' };
+  // Pix pelo banco via nuvem (configurador "Pix por"): vale por cima do start.bat
+  if (pixPelaNuvem()) return { disponivel: true, provedor: 'nuvem', banco: PIX_NUVEM, diag: { origem: 'Concilia (Pix por ' + PIX_NUVEM + ')' } };
   if (PIX_PROVEDOR === 'sicredi') return { disponivel: !!sicrediCred(), provedor: 'sicredi', diag: sicrediDiag() };
   if (PIX_PROVEDOR === 'cielo') return { disponivel: !!c, provedor: 'cielo', diag };
   return { disponivel: PIX_PROVEDOR === 'inter' && !!interCred(), provedor: PIX_PROVEDOR, diag };
@@ -21591,6 +21640,13 @@ async function pixCriarCobranca({ valor, mesa = null, rotulo = null, origem = nu
   // pedido_fb: a CONTA que o cliente estava vendo quando gerou o QR. É nela
   // que o Pix pousa — nunca "na mesa", que pode ter trocado de dono até cair.
   const nPed = Number(pedido) > 0 ? Number(pedido) : null;
+  if (pixPelaNuvem()) {
+    const r = await pixNuvemCriar(nMesa, valor, rotulo);
+    if (!r.ok) return r;
+    await sql`INSERT INTO pix_cobranca (txid, mesa, valor, copia_cola, provedor, origem, pedido_fb)
+      VALUES (${r.txid}, ${nMesa}, ${valor}, ${r.copia}, 'nuvem', ${origem}, ${nPed}) ON CONFLICT (txid) DO NOTHING`;
+    return { ok: true, txid: r.txid, copia: r.copia };
+  }
   if (PIX_PROVEDOR === 'cielo') {
     const r = await cieloPixCriar(nMesa, valor, rotulo);
     if (!r.ok) return r;
@@ -23121,6 +23177,18 @@ async function apiPixConferir(txid) {
     if (!s.ok) return s;
     if (!s.pago) return { ok: true, pago: false, status: s.status };
     pago = true; e2e = s.e2e; autorizacao = s.nsu;
+  } else if (cob.provedor === 'nuvem') {
+    // Pix do banco gerado pela nuvem (configurador "Pix por"): mesma régua do
+    // Sicredi local — sem NSU, vai o E2E; só baixa com o valor inteiro.
+    // O txid diz o banco (PRAINHAS/PRAINHAI), então vale mesmo se a casa
+    // trocar o "Pix por" com cobrança ainda aberta.
+    const s = await pixNuvemStatus(String(txid));
+    if (!s.ok) return s;
+    if (!s.pago) return { ok: true, pago: false, status: s.status };
+    if (s.recebido > 0 && s.recebido + 0.01 < Number(cob.valor)) {
+      return { ok: false, erro: 'o banco diz que entrou R$ ' + s.recebido.toFixed(2) + ' e a cobrança é de R$ ' + Number(cob.valor).toFixed(2) + ' — confira no extrato antes de baixar' };
+    }
+    pago = true; e2e = s.e2e; autorizacao = e2e;
   } else if (cob.provedor === 'sicredi') {
     // Sicredi: não tem NSU — vai o E2E, igual ao Inter. Só baixa se entrou o
     // valor inteiro da cobrança (centavo de folga pra arredondamento).

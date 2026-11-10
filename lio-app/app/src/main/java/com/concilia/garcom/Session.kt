@@ -92,6 +92,7 @@ object Session {
             .putBoolean("passe_saida", c.passeSaida)
             .putString("conheca_url", c.conhecaUrl)
             .putBoolean(K_DEMO, c.demo)
+            .putString("pix_provedor", c.pixProvedor.orEmpty())
             .putString(K_DEMO_DE, de.trimEnd('/'))
             .apply()
         saveLan(ctx, c.lan, de) // aprende o IP local da loja (pra preferir local dentro)
@@ -115,6 +116,10 @@ object Session {
 
     /** Link do site de venda do Concilia (só na demo). Vazio = sem botão. */
     fun conhecaUrl(ctx: Context): String = prefs(ctx).getString("conheca_url", null).orEmpty()
+
+    /** Pix desta casa pelo banco (do /api/config): sicredi | inter; null = pela maquininha. */
+    fun pixProvedor(ctx: Context): String? =
+        prefs(ctx).getString("pix_provedor", null)?.takeIf { it == "sicredi" || it == "inter" }
 
     /** Adquirente da maquininha desta filial (do /api/config): cielo | rede. */
     fun adquirente(ctx: Context): String = prefs(ctx).getString("adquirente", null) ?: "cielo"

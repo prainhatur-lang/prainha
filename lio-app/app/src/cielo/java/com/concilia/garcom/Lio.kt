@@ -131,6 +131,7 @@ object Lio {
         onCancelado: () -> Unit,
         onErro: (mensagem: String) -> Unit,
         destino: JSONObject? = null, // pra qual conta é (EmAndamento); null = não anota
+        cartao: String? = null,      // "credito"/"debito" = direto no cartão; null = menu completo
     ) {
         val om = orderManager
         if (om == null || !bound) { onErro("Serviço de pagamento da maquininha indisponível"); return }
@@ -163,7 +164,7 @@ object Lio {
             if (destino != null && ctx != null) EmAndamento.abrir(ctx, pedidoId, ref, valorCentavos, destino)
 
             emCobranca = true
-            om.checkoutOrder(order.id ?: "", valorCentavos, object : PaymentListener {
+            val ouvinte = object : PaymentListener {
                 override fun onStart() { onInicio() }
 
                 override fun onPayment(paidOrder: Order) {
@@ -212,7 +213,16 @@ object Lio {
                     if (t.duvidoso || t.pagamentos.isEmpty()) return emptyList()
                     return if (t.pagamentos.sumOf { it.valorCentavos } == valorCentavos) t.pagamentos else emptyList()
                 }
-            })
+            }
+            // Casa com Pix pelo BANCO: a Cielo abre direto no cartão escolhido
+            // (sem Pix no menu). Sem escolha = a chamada de sempre, menu completo.
+            val codigo = when (cartao) {
+                "credito" -> PaymentCode.CREDITO_AVISTA
+                "debito" -> PaymentCode.DEBITO_AVISTA
+                else -> null
+            }
+            if (codigo != null) om.checkoutOrder(order.id ?: "", valorCentavos, codigo, ouvinte)
+            else om.checkoutOrder(order.id ?: "", valorCentavos, ouvinte)
         } catch (e: Exception) {
             // a anotação (se já foi feita) FICA: a Recuperacao pergunta ao
             // terminal — pedido sem transação some sozinho, sem lançar nada.

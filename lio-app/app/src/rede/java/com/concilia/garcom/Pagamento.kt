@@ -25,6 +25,8 @@ object Pagamento {
         onCancelado: () -> Unit,
         onErro: (mensagem: String) -> Unit,
         destino: org.json.JSONObject? = null,
+        /** só a Cielo usa (crédito/débito direto); na Rede segue o menu de sempre. */
+        @Suppress("UNUSED_PARAMETER") cartao: String? = null,
     ) = Rede.cobrar(ref, linhas, valorCentavos, onInicio, onPago, onCancelado, onErro, destino)
     fun consultarPedido(pedidoId: String): PedidoTerminal? = Rede.consultarPedido(pedidoId)
     fun imprimirBlocos(context: Context, blocos: List<Bloco>, onOk: () -> Unit, onErro: (mensagem: String) -> Unit) =

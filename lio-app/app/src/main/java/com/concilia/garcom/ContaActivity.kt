@@ -1295,7 +1295,7 @@ class ContaActivity : AppCompatActivity() {
             val (_, resta, _) = calc()
             dialogOutroValor(rotuloAlvo, resta, "com $gorj% de serviço") { centavos ->
                 dlg?.dismiss()
-                cobrarNoTerminal(alvo, linhasDoAlvo(texto, cAlvo), centavos)
+                escolherCartao { cartao -> cobrarNoTerminal(alvo, linhasDoAlvo(texto, cAlvo), centavos, null, cartao) }
             }
         }
 
@@ -1334,10 +1334,30 @@ class ContaActivity : AppCompatActivity() {
                     // senão (dividiu / digitou valor) ela é solta no fechar do diálogo
                     val usa = if (fidVale()) fidUso else null
                     if (usa != null) fidUso = null
-                    cobrarNoTerminal(alvo, linhasDoAlvo(texto, cAlvo), Math.round(cobrar * 100), usa)
+                    val linhas = linhasDoAlvo(texto, cAlvo)
+                    // casa com Pix pelo banco: crédito ou débito antes da Cielo
+                    // (cancelar a escolha solta o Cartão Prainha, como cancelar a cobrança)
+                    escolherCartao(onCancelar = { fidLiberar(usa) }) { cartao ->
+                        cobrarNoTerminal(alvo, linhas, Math.round(cobrar * 100), usa, cartao)
+                    }
                 }
             }
             .setNegativeButton("Cancelar", null)
+            .also { b ->
+                // PIX PELO BANCO (configurador "Pix por" do Concilia): botão A MAIS.
+                // O QR sai do servidor da loja, igual ao QR da mesa, e a baixa é dele.
+                val prov = Session.pixProvedor(this) ?: return@also
+                val nomeBanco = if (prov == "inter") "Inter" else "Sicredi"
+                b.setNeutralButton("Pix $nomeBanco") { _, _ ->
+                    val (_, _, cobrar) = calc()
+                    when {
+                        fidUso != null -> Toast.makeText(this,
+                            "${Session.fidelidadeNome(this)} no Pix: use o QR da mesa, ou tire o cartão pra cobrar aqui", Toast.LENGTH_LONG).show()
+                        cobrar <= 0.009 -> Toast.makeText(this, "Nada a cobrar", Toast.LENGTH_SHORT).show()
+                        else -> cobrarPixBanco(alvo, rotuloAlvo, cobrar, gorj, nomeBanco)
+                    }
+                }
+            }
             .create()
         // fechou o Receber sem levar a reserva pra cobrança → solta o código
         dlg?.setOnDismissListener { fidSoltar() }
@@ -1719,7 +1739,7 @@ class ContaActivity : AppCompatActivity() {
     // estava nela (Tabuará 08/10: mesa 14 → 50, cartão passou na 14). Só barra
     // quando o servidor DIZ que não há conta; sem resposta, cobra como sempre —
     // o recebimento vai pra fila e o servidor resolve.
-    private fun cobrarNoTerminal(alvo: Int, linhas: List<Linha>, valorCentavos: Long, fidUso: String? = null) {
+    private fun cobrarNoTerminal(alvo: Int, linhas: List<Linha>, valorCentavos: Long, fidUso: String? = null, cartao: String? = null) {
         cobrando = true
         atualizarBotoes()
         val base = Session.servidor(this)
@@ -1738,10 +1758,131 @@ class ContaActivity : AppCompatActivity() {
                         .setPositiveButton("OK", null)
                         .show()
                 } else {
-                    cobrarNoTerminalJa(alvo, linhas, valorCentavos, fidUso)
+                    cobrarNoTerminalJa(alvo, linhas, valorCentavos, fidUso, cartao)
                 }
             }
         }.start()
+    }
+
+    /** Casa com Pix pelo BANCO: antes da Cielo, crédito ou débito — assim o
+     *  Pix não sai pela Cielo. "Outros" abre o menu completo de sempre (vale-
+     *  refeição etc.). Sem Pix pelo banco, ou fora da Cielo: segue direto, como sempre. */
+    private fun escolherCartao(onCancelar: () -> Unit = {}, seguir: (String?) -> Unit) {
+        val prov = Session.pixProvedor(this)
+        if (prov == null || Pagamento.ADQUIRENTE != "cielo") { seguir(null); return }
+        val nomeBanco = if (prov == "inter") "Inter" else "Sicredi"
+        var escolheu = false
+        AlertDialog.Builder(this)
+            .setTitle("Cartão — o Pix é no botão Pix $nomeBanco")
+            .setItems(arrayOf("💳 Crédito", "💳 Débito", "Outros (vale-refeição etc.)")) { _, i ->
+                escolheu = true
+                seguir(when (i) { 0 -> "credito"; 1 -> "debito"; else -> null })
+            }
+            .setNegativeButton("Voltar", null)
+            .setOnDismissListener { if (!escolheu) onCancelar() }
+            .show()
+    }
+
+    /** Pix pelo banco: o servidor da loja cria a cobrança (Concilia → Sicredi/
+     *  Inter) e baixa sozinho quando cai. Aqui só o QR e a pergunta "caiu?". */
+    private fun cobrarPixBanco(alvo: Int, rotulo: String, valor: Double, gorj: Int, nomeBanco: String) {
+        val base = Session.servidor(this)
+        val tk = Session.token(this)
+        val espera = Toast.makeText(this, "Gerando o Pix $nomeBanco…", Toast.LENGTH_SHORT)
+        espera.show()
+        Thread {
+            var r: org.json.JSONObject? = null
+            var erro: String? = null
+            try { r = Api.pixCobrar(base, tk, alvo, valor, gorj) } catch (e: Exception) { erro = e.message ?: "Sem resposta do servidor" }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                val res = r
+                val txid = res?.optString("txid").orEmpty()
+                val copia = res?.optString("copia_cola").orEmpty()
+                if (res == null || !res.optBoolean("ok") || txid.isBlank() || copia.isBlank()) {
+                    AlertDialog.Builder(this)
+                        .setTitle("Pix $nomeBanco não saiu")
+                        .setMessage((erro ?: res?.optString("erro")?.ifBlank { null } ?: "O servidor não gerou o Pix.") +
+                            "\n\nNada foi cobrado. Tente de novo ou cobre no cartão.")
+                        .setPositiveButton("OK", null)
+                        .show()
+                    return@runOnUiThread
+                }
+                mostrarPixBanco(alvo, rotulo, res.optDouble("valor", valor), txid, copia, nomeBanco)
+            }
+        }.start()
+    }
+
+    private fun mostrarPixBanco(alvo: Int, rotulo: String, valor: Double, txid: String, copia: String, nomeBanco: String) {
+        val base = Session.servidor(this)
+        val tk = Session.token(this)
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        box.gravity = android.view.Gravity.CENTER_HORIZONTAL
+        box.setPadding(dp(16), dp(8), dp(16), dp(8))
+        val valorTxt = TextView(this)
+        valorTxt.text = Cupom.brl(valor)
+        valorTxt.textSize = 30f
+        valorTxt.setTypeface(null, android.graphics.Typeface.BOLD)
+        valorTxt.setTextColor(0xFF111827.toInt())
+        valorTxt.gravity = android.view.Gravity.CENTER
+        val img = android.widget.ImageView(this)
+        Qr.bitmap(copia, dp(260))?.let { img.setImageBitmap(it) }
+        val st = TextView(this)
+        st.textSize = 14f
+        st.gravity = android.view.Gravity.CENTER
+        st.setTextColor(0xFF6B7280.toInt())
+        st.text = "Cliente aponta a câmera do banco pro QR.\nEsperando o Pix cair…"
+        box.addView(valorTxt)
+        box.addView(img, LinearLayout.LayoutParams(dp(260), dp(260)))
+        box.addView(st)
+
+        val h = android.os.Handler(android.os.Looper.getMainLooper())
+        var vivo = true
+        var perguntando = false
+        lateinit var d: AlertDialog
+        fun pergunta() {
+            if (!vivo || perguntando) return
+            perguntando = true
+            Thread {
+                val r = try { Api.pixConferir(base, tk, txid) } catch (_: Exception) { null }
+                runOnUiThread {
+                    perguntando = false
+                    if (!vivo) return@runOnUiThread
+                    if (r != null && r.optBoolean("ok") && r.optBoolean("pago")) {
+                        vivo = false
+                        d.dismiss()
+                        Toast.makeText(this, "✅ Pix $nomeBanco recebido — ${Cupom.brl(valor)} na $rotulo", Toast.LENGTH_LONG).show()
+                        if (!isFinishing && !isDestroyed) carregar()
+                    } else if (r != null && !r.optBoolean("ok")) {
+                        st.text = "Esperando o Pix cair…\n(" + r.optString("erro").take(80) + ")"
+                    }
+                }
+            }.start()
+        }
+        val tique = object : Runnable {
+            override fun run() { if (!vivo) return; pergunta(); h.postDelayed(this, 4000) }
+        }
+        d = AlertDialog.Builder(this)
+            .setTitle("Pix $nomeBanco — $rotulo")
+            .setView(android.widget.ScrollView(this).also { it.addView(box) })
+            .setPositiveButton("Já pagou? Conferir", null)
+            .setNegativeButton("Fechar", null)
+            .create()
+        d.setOnShowListener {
+            d.getButton(AlertDialog.BUTTON_POSITIVE)?.setOnClickListener { pergunta() }
+        }
+        d.setOnDismissListener {
+            if (vivo) {
+                vivo = false
+                // fechou sem ver cair: se o cliente pagar depois, a loja baixa sozinha
+                Toast.makeText(this, "Se o cliente pagar, a loja baixa o Pix sozinha", Toast.LENGTH_LONG).show()
+                if (!isFinishing && !isDestroyed) carregar()
+            }
+            h.removeCallbacksAndMessages(null)
+        }
+        d.show()
+        h.postDelayed(tique, 3000)
     }
 
     /** Cartão Prainha: solta a reserva quando a cobrança não aconteceu. */
@@ -1752,7 +1893,7 @@ class ContaActivity : AppCompatActivity() {
         Thread { Api.lioFidelidadeLiberar(base, tk, fidUso) }.start()
     }
 
-    private fun cobrarNoTerminalJa(alvo: Int, linhas: List<Linha>, valorCentavos: Long, fidUso: String? = null) {
+    private fun cobrarNoTerminalJa(alvo: Int, linhas: List<Linha>, valorCentavos: Long, fidUso: String? = null, cartao: String? = null) {
         cobrando = true
         atualizarBotoes()
 
@@ -1785,6 +1926,7 @@ class ContaActivity : AppCompatActivity() {
                 }
             },
             destino = destino,
+            cartao = cartao,
         )
     }
 
