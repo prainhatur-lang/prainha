@@ -879,6 +879,13 @@ export const MENU_AREAS: MenuArea[] = [
             interno: true,
             aka: ['E.B.'],
           },
+          {
+            label: 'Nota de serviço avulsa (NFS-e)',
+            href: '/eb/nfse-avulsa',
+            perm: 'folha_equipe.fechar',
+            interno: true,
+            aka: ['E.B.', 'NFS-e', 'nota fiscal de serviço', 'empresa de fora', 'tomador externo'],
+          },
         ],
       },
       {

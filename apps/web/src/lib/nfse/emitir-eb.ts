@@ -31,7 +31,7 @@ export type ResultadoEmissao =
   | { ok: false; erro: string };
 
 /** Agora em Brasília, 1 min atrás (a Sefin recusa dhEmi no futuro). */
-function dhEmiAgora(): string {
+export function dhEmiAgora(): string {
   const d = new Date(Date.now() - 3 * 3600_000 - 60_000);
   return d.toISOString().slice(0, 19) + '-03:00';
 }
@@ -56,7 +56,7 @@ export async function carregarPemEb(filialEbId: string): Promise<PemCert | strin
 }
 
 /** Mensagens de erro da Sefin (o formato varia entre erros[] e erro{}). */
-function lerErros(j: Record<string, unknown> | null, texto: string, status: number): string {
+export function lerErros(j: Record<string, unknown> | null, texto: string, status: number): string {
   if (j) {
     const lista = (j.erros ?? j.Erros ?? (j.erro ? [j.erro] : null)) as unknown;
     if (Array.isArray(lista) && lista.length > 0) {
