@@ -84,3 +84,44 @@ export function chamarSefin(opts: {
     req.end();
   });
 }
+
+// DANFSe (o PDF oficial da nota) — sai do Ambiente de Dados Nacional, com o
+// mesmo certificado do prestador: GET /danfse/{chave de acesso}.
+const BASE_ADN: Record<AmbienteNfse, string> = {
+  producao: 'https://adn.nfse.gov.br',
+  homologacao: 'https://adn.producaorestrita.nfse.gov.br',
+};
+
+export function baixarDanfse(opts: {
+  ambiente: AmbienteNfse;
+  chave: string;
+  pem: PemCert;
+}): Promise<{ status: number; tipo: string; corpo: Buffer }> {
+  const u = new URL(`${BASE_ADN[opts.ambiente]}/danfse/${opts.chave}`);
+  return new Promise((resolve, reject) => {
+    const req = request(
+      {
+        method: 'GET',
+        hostname: u.hostname,
+        port: 443,
+        path: u.pathname,
+        cert: opts.pem.certPem,
+        key: opts.pem.privateKeyPem,
+        ca: CA,
+        minVersion: 'TLSv1.2',
+        timeout: 30_000,
+        headers: { Accept: 'application/pdf', 'User-Agent': 'concilia/0.1' },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c) => chunks.push(c as Buffer));
+        res.on('end', () =>
+          resolve({ status: res.statusCode ?? 0, tipo: String(res.headers['content-type'] ?? ''), corpo: Buffer.concat(chunks) }),
+        );
+      },
+    );
+    req.on('timeout', () => req.destroy(new Error('A Receita não respondeu em 30 s')));
+    req.on('error', reject);
+    req.end();
+  });
+}
