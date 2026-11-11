@@ -303,7 +303,7 @@ export function PontoManager({ filialId, dias, funcionarios, grade, gemeos = [],
                         className={`cursor-pointer px-3 py-2 text-center text-xs hover:bg-blue-50 ${
                           incompleto ? 'bg-amber-50' : semIntervalo ? 'bg-red-50' : ''
                         }`}
-                        title={semIntervalo ? 'Mais de 6h sem bater o intervalo: o dia fica fora da folha até lançar a saída e a volta do intervalo (clique pra corrigir)' : undefined}
+                        title={semIntervalo ? 'Sem intervalo batido (mais de 5h desde 11/11; antes, mais de 6h): 48h depois do dia entram 30 min de intervalo automáticos da CCT. Até lá o dia fica fora da folha — pra lançar o intervalo real, a saída e a volta do intervalo (clique pra corrigir)' : undefined}
                       >
                         {atestado && (
                           <div
@@ -329,7 +329,7 @@ export function PontoManager({ filialId, dias, funcionarios, grade, gemeos = [],
                               <div className="font-semibold text-red-700">⚠ sem intervalo</div>
                             )}
                             {!incompleto && !!cel.intervaloPreMin && (
-                              <div className="text-slate-400" title="Intervalo pré-assinalado no cadastro (CCT): desconta 30 min quando não bate o intervalo">
+                              <div className="text-slate-400" title="Intervalo de 30 min da CCT: mais de 5h no dia sem bater o intervalo desconta 30 min (antes de 11/11, só pré-assinalado no cadastro)">
                                 −{cel.intervaloPreMin} min intervalo
                               </div>
                             )}

@@ -107,10 +107,36 @@ export function maiorIntervaloMin(pares: { entrada: string; saida: string }[]): 
  *  Se a pessoa bateu o intervalo, vale o batido (sem desconto extra). */
 export const INTERVALO_PRE_ASSINALADO_MIN = 30;
 
-/** Dia sem intervalo batido que exige intervalo (> 6h, a partir da vigência). */
+// ── Intervalo automático de 30 min (CCT — dono 11/11/2026) ────────────────
+// Passou de 5h no dia, tem 30 min de intervalo pela convenção SEM precisar
+// bater: quem não bateu (ou bateu menos de 15 min) tem 30 min descontados das
+// horas do dia, 48h depois do dia (prazo pro gerente conferir; até lá fica
+// pendente) — vale pra todo mundo, não só pra quem tem a marca de pré-assinalado. A partir de INTERVALO_AUTOMATICO_DESDE;
+// de 04/11 a 10/11 continua a regra anterior (> 6h sem intervalo = pendente).
+export const INTERVALO_AUTOMATICO_DESDE = '2026-11-11';
+export const JORNADA_INTERVALO_CCT_MIN = 5 * 60;
+
+/** Prazo de conferência (dono 11/11/2026): o desconto automático só entra 48h
+ *  depois do fim do dia operacional (que vira às 05:00). Até lá o dia aparece
+ *  "sem intervalo" (pendente) pro gerente conferir e lançar o intervalo real. */
+export const INTERVALO_AUTOMATICO_APOS_H = 48;
+
+/** Já passou o prazo de conferência do dia (fim do dia operacional + 48h)? */
+export function intervaloAutomaticoLiberado(dia: string, agora: number = Date.now()): boolean {
+  if (dia < INTERVALO_AUTOMATICO_DESDE) return false;
+  const fimDoDia = Date.parse(`${dia}T05:00:00-03:00`) + 24 * 3600_000;
+  return agora >= fimDoDia + INTERVALO_AUTOMATICO_APOS_H * 3600_000;
+}
+
+/** Jornada do dia acima da qual o intervalo é devido (6h até 10/11; 5h depois). */
+function jornadaExigeIntervalo(dia: string): number {
+  return dia >= INTERVALO_AUTOMATICO_DESDE ? JORNADA_INTERVALO_CCT_MIN : JORNADA_EXIGE_INTERVALO_MIN;
+}
+
+/** Dia sem intervalo batido que exige intervalo (> 6h; > 5h desde 11/11). */
 function semIntervaloBatido(dia: string, calc: { totalMin: number; pares: { entrada: string; saida: string }[] }): boolean {
   if (dia < INTERVALO_OBRIGATORIO_DESDE) return false;
-  if (calc.totalMin <= JORNADA_EXIGE_INTERVALO_MIN) return false;
+  if (calc.totalMin <= jornadaExigeIntervalo(dia)) return false;
   return maiorIntervaloMin(calc.pares) < INTERVALO_MINIMO_MIN;
 }
 
@@ -121,22 +147,29 @@ export function faltaIntervalo(
   dia: string,
   calc: { totalMin: number; pares: { entrada: string; saida: string }[] },
   preAssinalado = false,
+  agora: number = Date.now(),
 ): boolean {
+  // Desde 11/11 o intervalo é automático (desconta 30 min) depois das 48h de
+  // conferência: aí deixa de ser pendente.
+  if (intervaloAutomaticoLiberado(dia, agora)) return false;
   return !preAssinalado && semIntervaloBatido(dia, calc);
 }
 
-/** Minutos de intervalo pré-assinalado descontados no dia (30 ou 0). */
+/** Minutos de intervalo não batido descontados no dia (30 ou 0): pré-assinalado
+ *  até 10/11; todo mundo com mais de 5h a partir de 11/11. */
 export function descontoIntervaloPre(
   dia: string,
   calc: { totalMin: number; pares: { entrada: string; saida: string }[] },
   preAssinalado = false,
+  agora: number = Date.now(),
 ): number {
-  return preAssinalado && semIntervaloBatido(dia, calc) ? INTERVALO_PRE_ASSINALADO_MIN : 0;
+  const automatico = preAssinalado || intervaloAutomaticoLiberado(dia, agora);
+  return automatico && semIntervaloBatido(dia, calc) ? INTERVALO_PRE_ASSINALADO_MIN : 0;
 }
 
 // ── Intervalo mínimo de 30 min (CCT SINDHOTRE 2026/2028 — dono 11/11/2026) ─
 // Quem bate o intervalo com MENOS de 30 min tem o intervalo contado como 30:
-// no dia > 6h, a diferença até 30 min sai das horas trabalhadas (bateu 20 →
+// no dia > 5h, a diferença até 30 min sai das horas trabalhadas (bateu 20 →
 // desconta mais 10). Vale a partir de INTERVALO_30_DESDE — dia anterior fica
 // como estava. Intervalo abaixo de 15 min continua "não batido" (pendente, ou
 // 30 min no pré-assinalado), como antes.
@@ -149,7 +182,7 @@ export function complementoIntervaloMin(
   calc: { totalMin: number; pares: { entrada: string; saida: string }[] },
 ): number {
   if (dia < INTERVALO_30_DESDE) return 0;
-  if (calc.totalMin <= JORNADA_EXIGE_INTERVALO_MIN) return 0;
+  if (calc.totalMin <= jornadaExigeIntervalo(dia)) return 0;
   const maior = maiorIntervaloMin(calc.pares);
   if (maior < INTERVALO_MINIMO_MIN || maior >= INTERVALO_CCT_MIN) return 0;
   return INTERVALO_CCT_MIN - maior;
@@ -161,8 +194,9 @@ export function minutosDoDia(
   dia: string,
   calc: { totalMin: number; pares: { entrada: string; saida: string }[] },
   preAssinalado = false,
+  agora: number = Date.now(),
 ): number {
-  return calc.totalMin - descontoIntervaloPre(dia, calc, preAssinalado) - complementoIntervaloMin(dia, calc);
+  return calc.totalMin - descontoIntervaloPre(dia, calc, preAssinalado, agora) - complementoIntervaloMin(dia, calc);
 }
 
 /** Minutos que vão pra folha: dia sem intervalo fica pendente (0); com
@@ -171,6 +205,7 @@ export function minutosParaFolha(
   dia: string,
   calc: { totalMin: number; pares: { entrada: string; saida: string }[] },
   preAssinalado = false,
+  agora: number = Date.now(),
 ): number {
-  return faltaIntervalo(dia, calc, preAssinalado) ? 0 : minutosDoDia(dia, calc, preAssinalado);
+  return faltaIntervalo(dia, calc, preAssinalado, agora) ? 0 : minutosDoDia(dia, calc, preAssinalado, agora);
 }
