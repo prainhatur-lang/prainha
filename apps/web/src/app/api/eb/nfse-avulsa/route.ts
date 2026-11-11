@@ -105,6 +105,8 @@ export async function POST(req: Request) {
     if (body.issRetido && body.aliquotaIss === null) {
       return NextResponse.json({ error: 'ISS retido pelo tomador: informe a alíquota.' }, { status: 400 });
     }
+    // E.B. é do Simples: sem retenção a nota não leva alíquota (E0625) — dono 11/11/2026
+    if (!body.issRetido) body.aliquotaIss = null;
     const valor = r2(body.valorServico);
     const iss = body.aliquotaIss === null ? 0 : r2((valor * body.aliquotaIss) / 100);
     const campos = {

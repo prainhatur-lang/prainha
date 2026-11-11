@@ -96,7 +96,8 @@ export async function emitirNfseAvulsa(notaId: string): Promise<ResultadoEmissao
   }
 
   const ambiente: AmbienteNfse = cfg.ambiente === 'homologacao' ? 'homologacao' : 'producao';
-  const aliquota = n.aliquotaIss === null ? null : Number(n.aliquotaIss);
+  // Simples sem retenção: a alíquota não vai na nota (E0625), mesmo se o rascunho antigo tiver uma
+  const aliquota = !n.issRetido || n.aliquotaIss === null ? null : Number(n.aliquotaIss);
   const dados = {
     tpAmb: (ambiente === 'producao' ? 1 : 2) as 1 | 2,
     dhEmi: dhEmiAgora(),
