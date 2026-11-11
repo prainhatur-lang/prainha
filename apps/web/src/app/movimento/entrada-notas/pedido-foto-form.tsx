@@ -23,6 +23,58 @@ interface Resultado {
   notaId?: string;
   /** fornecedor sem cadastro e sem CNPJ legível — mostra o campo do CNPJ */
   pedeCnpj?: boolean;
+  /** o papel não trazia vencimento — mostra o campo "vence em" */
+  pedeVencimento?: boolean;
+}
+
+/** Campo do vencimento: o papel não dizia quando paga, então pergunta o dia. */
+function PedirVencimento({ notaId, onFeito }: { notaId: string; onFeito: (msg: string) => void }) {
+  const [data, setData] = useState('');
+  const [enviando, setEnviando] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  async function enviar() {
+    setEnviando(true);
+    setErro(null);
+    try {
+      const r = await fetch(`/api/nota-compra/${notaId}/vencimento`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ dataVencimento: data }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) setErro(d.error ?? `HTTP ${r.status}`);
+      else onFeito(d.mensagem ?? 'vencimento salvo');
+    } catch (e) {
+      setErro((e as Error).message);
+    } finally {
+      setEnviando(false);
+    }
+  }
+  return (
+    <div className="mt-2 rounded-md border border-sky-300 bg-sky-50 px-2 py-2 text-sky-900">
+      <div className="font-medium">Qual é a data de pagamento (vencimento)?</div>
+      <div className="text-[11px] opacity-80">
+        O papel não traz vencimento, então ficou na data da entrada. Diga o dia certo:
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-2">
+        <input
+          type="date"
+          value={data}
+          onChange={(e) => setData(e.target.value)}
+          className="rounded border border-sky-300 bg-white px-2 py-1 text-xs text-slate-900"
+        />
+        <button
+          type="button"
+          disabled={enviando || !/^\d{4}-\d{2}-\d{2}$/.test(data)}
+          onClick={enviar}
+          className="rounded bg-sky-700 px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
+        >
+          {enviando ? 'Salvando…' : 'Salvar vencimento'}
+        </button>
+        {erro && <span className="w-full text-rose-700">{erro}</span>}
+      </div>
+    </div>
+  );
 }
 
 /** Campo do CNPJ: cadastra o fornecedor (Receita / outra casa) e liga ao pedido. */
@@ -198,6 +250,7 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
         titulo: `Nota de serviço lançada no contas a pagar — ${d.emitNome ?? 'fornecedor'} · ${brl(d.valorTotal)}`,
         detalhes: det,
         notaId: d.id,
+        pedeVencimento: !!d.semVencimento,
       };
     }
     const cab = `${d.emitNome ?? 'fornecedor não identificado'} · ${brl(d.valorTotal)} · ${d.qtdItens} item(ns)`;
@@ -209,6 +262,7 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
         detalhes: [...((d.avisos as string[] | undefined) ?? []), ...(d.pendencias ?? [])],
         notaId: d.id,
         pedeCnpj: !!d.pedeCnpj,
+        pedeVencimento: !!d.semVencimento,
       };
     }
     // Tudo reconhecido: estoque + contas a pagar pela rota de sempre.
@@ -234,7 +288,14 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
     }
     if (ld.pulados > 0) det.push(`${ld.pulados} item(ns) não entraram — abra pra ver`);
     if (!d.categoriaId) det.push('conta a pagar ficou sem categoria (fornecedor ainda não tem histórico)');
-    return { arquivo: f.name, ok: true, titulo: `Lançado — ${cab}`, detalhes: det, notaId: d.id };
+    return {
+      arquivo: f.name,
+      ok: true,
+      titulo: `Lançado — ${cab}`,
+      detalhes: det,
+      notaId: d.id,
+      pedeVencimento: !!d.semVencimento,
+    };
   }
 
   async function onChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -538,6 +599,16 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
                               }
                             : x,
                         ),
+                      )
+                    }
+                  />
+                )}
+                {r.notaId && r.pedeVencimento && (
+                  <PedirVencimento
+                    notaId={r.notaId}
+                    onFeito={(msg) =>
+                      setResultados((rs) =>
+                        rs.map((x, k) => (k === i ? { ...x, pedeVencimento: false, detalhes: [msg, ...x.detalhes] } : x)),
                       )
                     }
                   />

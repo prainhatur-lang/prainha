@@ -526,6 +526,8 @@ export interface ResultadoPedido {
   avisos?: string[];
   /** fornecedor não achado e sem CNPJ no papel — a tela pede o CNPJ */
   pedeCnpj?: boolean;
+  /** o papel não trazia vencimento: ficou na data do pedido — a tela pergunta o dia */
+  semVencimento?: boolean;
 }
 
 /**
@@ -751,6 +753,7 @@ export async function gravarPedido(opts: {
     pendencias,
     ...(fornecedorCadastrado ? { avisos: [fornecedorCadastrado] } : {}),
     ...(pedeCnpj ? { pedeCnpj: true } : {}),
+    ...(lido.vencimentos.length === 0 ? { semVencimento: true } : {}),
   };
 }
 
@@ -978,6 +981,8 @@ export interface ResultadoServico {
   categoriaNome?: string | null;
   /** Chave Pix lida no recibo. */
   chavePix?: string | null;
+  /** a nota não trazia vencimento: ficou na data da nota — a tela pergunta o dia */
+  semVencimento?: boolean;
 }
 
 /**
@@ -1163,5 +1168,6 @@ export async function gravarNotaServico(opts: {
     fornecedorNovo: !!fornecedor.novo,
     categoriaNome,
     chavePix: lido.chavePix ?? null,
+    ...(lido.vencimentos.length === 0 ? { semVencimento: true } : {}),
   };
 }
