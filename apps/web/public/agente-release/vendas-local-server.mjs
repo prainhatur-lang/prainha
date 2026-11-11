@@ -5241,7 +5241,20 @@ async function apiVitrine() {
       // aparece aqui. 'vitrine_cfg'.happy.petiscos = [códigos] troca a lista;
       // .petiscos_desligado = true tira o slide.
       if (cHh.petiscos_desligado !== true) {
-        const cods = (Array.isArray(cHh.petiscos) ? cHh.petiscos : (dHh.codigos || [])).map(Number).filter((n) => n > 0);
+        // Padrão (dono 11/11/2026): no happy da vitrine, só pastéis de carne e
+        // queijo e croquete de carne. 'vitrine_cfg'.happy.petiscos = [códigos] troca;
+        // se a casa não tiver esses itens, vale a lista do destaque do happy.
+        let padrao = [];
+        if (!Array.isArray(cHh.petiscos)) {
+          try {
+            const cand = await sql`SELECT codigo_pdv, nome FROM produto_local
+              WHERE nome ~* '^ *(past[eé]is|pastel) de carne e queijo|^ *croquete de carne'
+                AND NOT COALESCE(sem_estoque, false) AND preco > 1 ORDER BY codigo_pdv`;
+            const um = (res) => { for (const re of res) { const x = cand.find((c) => re.test(String(c.nome || '').trim())); if (x) return Number(x.codigo_pdv); } return 0; };
+            padrao = [um([/^past[eé]is de carne e queijo/i, /^pastel de carne e queijo/i]), um([/^croquete de carne$/i, /^croquete de carne/i])].filter((n) => n > 0);
+          } catch (e) { console.error('[vitrine petiscos padrao]', e.message); }
+        }
+        const cods = (Array.isArray(cHh.petiscos) ? cHh.petiscos : (padrao.length ? padrao : (dHh.codigos || []))).map(Number).filter((n) => n > 0);
         const beb = /chopp|cerveja|long\s*neck|aperol|spritz|drink|caipi|dose|vinho|suco|refri|[aá]gua|gin\b|vodka|whisk/i;
         let pets = [];
         if (cods.length) {
@@ -5278,10 +5291,47 @@ async function apiVitrine() {
   let ocultos = [];
   try { ocultos = (await sql`SELECT categoria FROM grupo_oculto`).map((x) => String(x.categoria)); } catch { ocultos = []; }
   const fora = /bebida|cerveja|chopp|drink|vinho|dose|suco|refri|[aá]gua|complemento|couvert|acompanh|adicional|caf[eé]|destilad|whisk|gin|vodka|cacha/i;
+  // Sem espumante/champanhe e sem item caro (dono 11/11/2026: "é muito caro,
+  // colocar produto mais em conta"). 'vitrine_cfg'.preco_max troca o teto.
+  const tetoPrato = Number(cfg.preco_max) > 0 ? Number(cfg.preco_max) : 150;
+  const caro = /espumante|champ|prosecco|cava\b/i;
   const pratos = comFoto.filter((p) => p.cardapio_digital && !p.sem_estoque && Number(p.preco) > 5
+    && Number(p.preco) <= tetoPrato && !caro.test(String(p.categoria || '') + ' ' + String(p.nome || ''))
     && !fora.test(String(p.categoria || '')) && !ocultos.includes(String(p.categoria || '')));
   for (let i = pratos.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pratos[i], pratos[j]] = [pratos[j], pratos[i]]; }
-  for (const p of pratos.slice(0, 40)) slides.push({ tipo: 'prato', nome: p.nome, preco: Number(p.preco), categoria: p.categoria || '', foto: foto(p) });
+  const slPratos = pratos.slice(0, 40).map((p) => ({ tipo: 'prato', nome: p.nome, preco: Number(p.preco), categoria: p.categoria || '', foto: foto(p) }));
+
+  // ---- Vinho tinto (dono 11/11/2026): os mais em conta da carta, até o teto ----
+  // 'vitrine_cfg'.vinho_desligado tira; vinho_max troca o teto (padrão 150).
+  if (cfg.vinho_desligado !== true) {
+    try {
+      const tetoV = Number(cfg.vinho_max) > 0 ? Number(cfg.vinho_max) : 150;
+      const rows = await sql`SELECT DISTINCT ON (pl.codigo_pdv) pl.codigo_pdv, pl.produto_codigo, pl.nome, pl.tamanho, pl.preco,
+          f.atualizado, (f.produto_codigo IS NOT NULL) AS tem_foto
+        FROM produto_local pl LEFT JOIN produto_foto f ON f.produto_codigo = pl.produto_codigo
+        WHERE pl.nome ~* 'tinto' AND pl.cardapio_digital AND NOT COALESCE(pl.sem_estoque, false)
+          AND pl.preco > 30 AND pl.preco <= ${tetoV}
+        ORDER BY pl.codigo_pdv`;
+      const chave = (n) => String(n || '').toLowerCase().replace(/vinho|tinto|meia garrafa|-?\s*\d+\s*ml/g, '').trim().split(/\s+/).slice(0, 2).join(' ');
+      const vistos = new Set(); const vinhos = [];
+      rows.sort((a, b) => (Number(b.tem_foto) - Number(a.tem_foto)) || (Number(a.preco) - Number(b.preco)));
+      for (const r of rows) {
+        const k = chave(r.nome); if (vistos.has(k)) continue; vistos.add(k);
+        vinhos.push({ nome: String(r.nome || '').replace(/^\s*vinho\s+tinto\s+/i, '').trim(), tamanho: r.tamanho || 'Vinho tinto', preco: Number(r.preco), descricao: '',
+          foto: r.tem_foto ? '/produto-foto/' + r.produto_codigo + '?v=' + (r.atualizado ? new Date(r.atualizado).getTime() : 0) : null });
+        if (vinhos.length >= 4) break;
+      }
+      vinhos.sort((a, b) => a.preco - b.preco);
+      if (vinhos.length) {
+        const sv = { tipo: 'petiscos', vinho: true, titulo: cfg.titulo_vinho || 'Vinho tinto', tag: 'Carta de vinhos', icone: '🍷',
+          rodape: cfg.rodape_vinho || 'Pra acompanhar o prato: peça ao garçom', itens: vinhos };
+        // entra duas vezes no meio dos pratos, pra não sumir na rodada
+        slPratos.splice(Math.min(5, slPratos.length), 0, sv);
+        if (slPratos.length > 20) slPratos.splice(Math.floor(slPratos.length * 0.65), 0, sv);
+      }
+    } catch (e) { console.error('[vitrine vinho]', e.message); }
+  }
+  slides.push(...slPratos);
 
   return { ok: true, loja: LOJA_NOME, agora: agora.ymd + ' ' + Math.floor(agora.min / 60) + ':' + String(agora.min % 60).padStart(2, '0'), slides };
 }
@@ -31308,6 +31358,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:syste
 .sub2{font-size:3vmin;font-weight:800;color:#fff;background:rgba(0,0,0,.28);padding:1vmin 3.2vmin;border-radius:99px}
 /* petiscos do happy */
 .sl.pt{background:radial-gradient(circle at 50% 110%,#ff9a1f 0,#b4400c 35%,#2a0f08 85%)}
+.sl.pt.vt{background:radial-gradient(circle at 50% 110%,#c0285a 0,#6a0c2c 38%,#1c0509 85%)}
 .pt .tag{color:#ffd27a}
 .pt .tt{background:linear-gradient(180deg,#fff,#ffd27a);-webkit-background-clip:text;background-clip:text}
 .cards2{display:flex;align-items:stretch;justify-content:center;gap:4vmin;margin:4vmin 0 3.5vmin;flex-wrap:nowrap}
@@ -31315,6 +31366,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:syste
 .pc2:nth-child(2){animation-delay:.2s}.pc2:nth-child(3){animation-delay:.4s}.pc2:nth-child(4){animation-delay:.6s}
 .pc2 .ft{height:27vmin;background:#123a50 center/cover;display:flex;align-items:center;justify-content:center;gap:1vmin;font-size:12vmin}
 .pc2 .ft.sem{background:radial-gradient(circle at 50% 38%,#ffe1a0 0,#ffb21e 30%,#ff8a00 55%,#9a3412 100%)}
+.vt .pc2 .ft.sem{background:radial-gradient(circle at 50% 38%,#ffd6e0 0,#e0517a 32%,#8e1538 62%,#3a0614 100%)}
 .pc2 .ft.sem span{filter:drop-shadow(0 1.4vmin 1.6vmin rgba(0,0,0,.35));animation:brinde 3s ease-in-out infinite}
 .pc2 .ft.sem span+span{animation-delay:-1.5s}
 .pc2 .tx{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:space-between;gap:1vmin;padding:2.2vmin 2.4vmin 2.8vmin;text-align:center}
@@ -31340,7 +31392,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:syste
   var brlC=function(v){v=Number(v||0);return 'R$ '+(Math.round(v*100)%100?v.toFixed(2).replace('.',','):String(Math.round(v)))};
   var precoDuo=function(p){return p?'<div class="preco duo"><small>sai a</small><b>'+brlC(p/2)+'</b><em>cada chopp</em></div><div class="sub2">2 chopps por '+brlC(p)+'</div>':''};
   var bolhas=function(n){var b='';for(var i=0;i<n;i++)b+='<span class="bolha" style="left:'+(Math.random()*100)+'%;animation-duration:'+(4+Math.random()*5)+'s;animation-delay:-'+(Math.random()*6)+'s;transform:scale('+(0.5+Math.random())+')"></span>';return b};
-  var emoPet=function(n){n=String(n||'').toLowerCase();var e=[];
+  var emoPet=function(n){n=String(n||'').toLowerCase();var e=[];if(/vinho|tinto|malbec|merlot|cabernet|carmen/.test(n))return ['🍷'];
     if(/camar/.test(n))e.push('🦐');else if(/salm|peixe|frutos do mar/.test(n))e.push('🐟');
     if(/picanha|carne|fil[eé]|costela|alcatra|calabresa/.test(n)&&!/past|croquete/.test(n))e.push('🥩');
     if(/past[eé]i?s?|pastel/.test(n))e.push('🥟');
@@ -31374,10 +31426,10 @@ html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:syste
     if(s.tipo==='petiscos'){
       var c2='';
       s.itens.forEach(function(k){
-        var ft=k.foto?'<div class="ft" style="background-image:url('+k.foto+')"></div>':'<div class="ft sem">'+emoPet(k.nome).map(function(x){return '<span>'+x+'</span>'}).join('')+'</div>';
+        var ft=k.foto?'<div class="ft" style="background-image:url('+k.foto+')"></div>':'<div class="ft sem">'+(s.vinho?['🍷']:emoPet(k.nome)).map(function(x){return '<span>'+x+'</span>'}).join('')+'</div>';
         c2+='<div class="pc2">'+ft+'<div class="tx">'+(k.tamanho?'<div class="tm">'+esc(k.tamanho)+'</div>':'')+'<div class="no">'+esc(k.nome)+'</div><div class="vl">'+brl(k.preco)+'</div></div></div>';
       });
-      return bolhas(8)+marca+'<div class="tag">Happy hour · '+esc(s.quando)+'</div><div class="tt">'+esc(s.titulo)+'</div><div class="cards2">'+c2+'</div>'+(s.rodape?'<div class="rod2">🍺 '+esc(s.rodape)+'</div>':'');
+      return (s.vinho?'':bolhas(8))+marca+'<div class="tag">'+esc(s.tag||('Happy hour · '+s.quando))+'</div><div class="tt">'+esc(s.titulo)+'</div><div class="cards2">'+c2+'</div>'+(s.rodape?'<div class="rod2">'+(s.icone||'🍺')+' '+esc(s.rodape)+'</div>':'');
     }
     return '';
   }
@@ -31393,7 +31445,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:syste
     document.getElementById('vazio').style.display=FILA.length?'none':'flex';
     if(!FILA.length){document.getElementById('vazio').textContent='Sem pratos com foto pra mostrar';timer=setTimeout(proximo,15000);return}
     var s=FILA[pos%FILA.length];pos=(pos+1)%FILA.length;
-    var el=document.createElement('div');el.className='sl '+(s.tipo==='executivo'?'ex':s.tipo==='petiscos'?'pt':s.tipo==='happy'?(s.arte&&ARTE[s.arte]===true?'hha':'hh'):'');
+    var el=document.createElement('div');el.className='sl '+(s.tipo==='executivo'?'ex':s.tipo==='petiscos'?(s.vinho?'pt vt':'pt'):s.tipo==='happy'?(s.arte&&ARTE[s.arte]===true?'hha':'hh'):'');
     el.innerHTML=html(s);document.body.appendChild(el);
     void el.offsetWidth;el.classList.add('on');
     var velho=atual;atual=el;
