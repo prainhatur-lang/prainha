@@ -5102,6 +5102,124 @@ async function apiMesaDestaques() {
   }
   return { ok: true, destaques: out };
 }
+// ===== Vitrine: o totem como tela de apresentação (pedido do dono 11/11/2026) =====
+// Em vez de vender, o totem passa os pratos com foto (os mesmos do cardápio QR) e,
+// na hora certa, a promoção: Menu executivo (prato + refri + mini pudim) no
+// horário do almoço executivo, e "Happy hour · chopp dobrado" das 15h às 20h.
+// Dias/horas vêm dos destaques da nuvem (cardapio_destaques); 'vitrine_cfg' em
+// app_config pode trocar textos/preço sem release. Só lê — não lança nada.
+async function apiVitrine() {
+  const agora = agoraAracaju();
+  const json = async (k, d) => { try { const v = JSON.parse(await cfgGet(k, d)); return v == null ? JSON.parse(d) : v; } catch { return JSON.parse(d); } };
+  const cfg = await json('vitrine_cfg', '{}');
+  const destaques = await json('cardapio_destaques', '[]');
+  const feriados = await json('cardapio_feriados', '[]');
+  const feriado = (Array.isArray(feriados) ? feriados : []).some((f) => f && f.data === agora.ymd);
+  const achaDest = (re) => (Array.isArray(destaques) ? destaques : []).find((d) => d && re.test(String(d.titulo || ''))) || null;
+  const mi = (h) => { const [a, b] = String(h).split(':'); return Number(a) * 60 + Number(b || 0); };
+  const hTxt = (h) => { const [a, b] = String(h).split(':'); return Number(a) + 'h' + (Number(b) ? String(b).padStart(2, '0') : ''); };
+  const diasTxt = (ds) => {
+    const v = (ds || []).map(Number).sort();
+    if (!v.length || v.length === 7) return 'todos os dias';
+    if (v.join(',') === '1,2,3,4,5') return 'seg a sex';
+    const n = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
+    return v.map((x) => n[x]).join(', ');
+  };
+  const vale = (d, ini, fim) => {
+    if (d && d.exceto_feriados && feriado) return false;
+    const dd = { dias: (d && d.dias) || [1, 2, 3, 4, 5], hora_inicio: ini, hora_fim: fim };
+    return destaqueValeAgora(dd, agora);
+  };
+  // produtos com foto (um por produto_codigo)
+  let comFoto = [];
+  try {
+    comFoto = await sql`SELECT DISTINCT ON (pl.produto_codigo) pl.codigo_pdv, pl.produto_codigo, pl.nome, pl.preco, pl.categoria,
+        pl.cardapio_digital, pl.sem_estoque, f.atualizado
+      FROM produto_local pl JOIN produto_foto f ON f.produto_codigo = pl.produto_codigo
+      ORDER BY pl.produto_codigo, pl.cardapio_digital DESC, pl.preco DESC`;
+  } catch (e) { console.error('[vitrine fotos]', e.message); }
+  const foto = (p) => p ? '/produto-foto/' + p.produto_codigo + '?v=' + (p.atualizado ? new Date(p.atualizado).getTime() : 0) : null;
+  const acha = (res) => { for (const re of res) { const p = comFoto.find((x) => re.test(String(x.nome || ''))); if (p) return p; } return null; };
+  const slides = [];
+
+  // ---- Menu executivo ----
+  const dEx = achaDest(/execut/i);
+  const cEx = cfg.executivo || {};
+  if (dEx && cEx.desligado !== true) {
+    const ini = cEx.hora_inicio || dEx.hora_inicio || '11:30';
+    const fim = cEx.hora_fim || dEx.hora_fim || '15:00';
+    if (cfg.forcar === 'executivo' || vale(dEx, ini, fim)) {
+      // preço = combo "executivo" + a opção mais barata de cada pergunta
+      let preco = Number(cEx.preco) || 0;
+      let opcoesPrato = [];
+      try {
+        const combo = (await sql`SELECT codigo_pdv, preco FROM produto_local WHERE nome ~* 'execut' AND preco > 1
+          AND codigo_pdv IN (SELECT codigo_pdv FROM wizard_produto) ORDER BY cardapio_digital DESC, preco DESC LIMIT 1`)[0];
+        if (combo) {
+          const perg = await sql`SELECT p.codigo, p.texto FROM wizard_produto wp JOIN wizard_pergunta p ON p.codigo = wp.pergunta
+            WHERE wp.codigo_pdv = ${combo.codigo_pdv} ORDER BY wp.ordem, p.codigo`;
+          let soma = Number(combo.preco || 0);
+          for (const pg of perg) {
+            const ops = await sql`SELECT COALESCE(NULLIF(o.nome,''), pl.nome) AS nome, o.preco FROM wizard_opcao o
+              LEFT JOIN LATERAL (SELECT nome FROM produto_local WHERE codigo_pdv = o.produto_pdv LIMIT 1) pl ON true
+              WHERE o.pergunta = ${pg.codigo} ORDER BY o.codigo`;
+            if (!ops.length) continue;
+            soma += Math.min(...ops.map((o) => Number(o.preco || 0)));
+            if (/prato|principal/i.test(String(pg.texto || '')) || (!opcoesPrato.length && ops.length > 2 && !/bebida|refri|sobremesa|pudim/i.test(String(pg.texto || ''))))
+              opcoesPrato = ops.map((o) => String(o.nome || '').trim()).filter(Boolean);
+          }
+          if (!preco) preco = Math.round(soma * 100) / 100;
+        }
+      } catch (e) { console.error('[vitrine executivo]', e.message); }
+      if (!preco) preco = 69;
+      const prato = acha([/fil[eé].*parm/i, /parm/i, /fil[eé]/i]);
+      const refri = acha([/coca.*lata/i, /coca/i, /refri/i]);
+      const doce = acha([/mini\s*pudim/i, /pudim/i]);
+      slides.push({ tipo: 'executivo', titulo: cEx.titulo || 'Menu executivo',
+        quando: diasTxt(dEx.dias) + ' · ' + hTxt(ini) + ' às ' + hTxt(fim),
+        preco,
+        cards: [
+          { rotulo: 'Prato principal', nome: cEx.prato || 'Filé de frango à parmegiana', foto: foto(prato) },
+          { rotulo: 'Refrigerante', nome: cEx.refri || 'Coca-Cola lata', foto: foto(refri) },
+          { rotulo: 'Sobremesa', nome: cEx.sobremesa || 'Mini pudim', foto: foto(doce) },
+        ],
+        opcoes: (cEx.opcoes || opcoesPrato).slice(0, 6) });
+    }
+  }
+
+  // ---- Happy hour: chopp dobrado ----
+  const dHh = achaDest(/happy/i);
+  const cHh = cfg.happy || {};
+  if (dHh && cHh.desligado !== true) {
+    const ini = cHh.hora_inicio || '15:00';
+    const fim = cHh.hora_fim || dHh.hora_fim || '20:00';
+    if (cfg.forcar === 'happy' || vale(dHh, ini, fim)) {
+      let chopp = null;
+      try {
+        chopp = (await sql`SELECT nome, preco FROM produto_local WHERE nome ~* 'chopp' AND nome !~* 'dobrad' AND nome ~* 'heineken'
+          AND preco > 1 ORDER BY preco LIMIT 1`)[0]
+          || (await sql`SELECT nome, preco FROM produto_local WHERE nome ~* 'chopp' AND nome !~* 'dobrad' AND preco > 1 ORDER BY preco LIMIT 1`)[0] || null;
+      } catch { chopp = null; }
+      slides.push({ tipo: 'happy', titulo: cHh.titulo || 'Happy hour', destaque: cHh.destaque || 'Chopp dobrado',
+        chamada: cHh.chamada || 'Peça 1, leve 2',
+        item: cHh.item || (chopp ? String(chopp.nome).replace(/\s+caneca/i, '') : 'Chopp 300ml'),
+        preco: Number(cHh.preco) || (chopp ? Number(chopp.preco) : 0),
+        quando: diasTxt(dHh.dias) + ' · das ' + hTxt(ini) + ' às ' + hTxt(fim) });
+    }
+  }
+
+  // ---- Pratos com foto (os do cardápio do cliente) ----
+  let ocultos = [];
+  try { ocultos = (await sql`SELECT categoria FROM grupo_oculto`).map((x) => String(x.categoria)); } catch { ocultos = []; }
+  const fora = /bebida|cerveja|chopp|drink|vinho|dose|suco|refri|[aá]gua|complemento|couvert|acompanh|adicional|caf[eé]|destilad|whisk|gin|vodka|cacha/i;
+  const pratos = comFoto.filter((p) => p.cardapio_digital && !p.sem_estoque && Number(p.preco) > 5
+    && !fora.test(String(p.categoria || '')) && !ocultos.includes(String(p.categoria || '')));
+  for (let i = pratos.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pratos[i], pratos[j]] = [pratos[j], pratos[i]]; }
+  for (const p of pratos.slice(0, 40)) slides.push({ tipo: 'prato', nome: p.nome, preco: Number(p.preco), categoria: p.categoria || '', foto: foto(p) });
+
+  return { ok: true, loja: LOJA_NOME, agora: agora.ymd + ' ' + Math.floor(agora.min / 60) + ':' + String(agora.min % 60).padStart(2, '0'), slides };
+}
+
 /** Grupos que a casa escondeu do cardápio do cliente. */
 async function apiGruposOcultos() {
   const todos = await sql`SELECT DISTINCT categoria FROM produto_local WHERE cardapio_digital ORDER BY categoria`;
@@ -31063,6 +31181,125 @@ inicio();
 // ---- TELA DO ESPAÇO KIDS (tablet da monitora) ----
 // Totem de autoatendimento da recepção (32" de toque, em pé). Tela cheia,
 // botões grandes, sem login. Volta pro início sozinha depois de 90 s parada.
+// Vitrine do totem: tela de apresentação (pratos com foto + promoção da hora).
+// /vitrine?modo=venda volta o totem pra venda; /totem?modo=vitrine liga a vitrine.
+const VITRINE_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><meta name="mobile-web-app-capable" content="yes"><link rel="manifest" href="/app.webmanifest?t=vitrine"><meta name="theme-color" content="#0e2a3a">
+<title>${LOJA_NOME} — Vitrine</title><style>
+:root{--bg:#0e2a3a;--bg2:#123a50;--sun:#ffb21e;--sun2:#ff8a00;--sea:#16b3c9;--cream:#fff7e8}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none}
+html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden;cursor:none}
+.sl{position:fixed;inset:0;opacity:0;transition:opacity 1.2s ease;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden}
+.sl.on{opacity:1}
+.marca{position:absolute;top:3vmin;left:0;right:0;text-align:center;font-weight:800;letter-spacing:.35em;text-transform:uppercase;font-size:2.4vmin;color:rgba(255,255,255,.85);z-index:3;text-shadow:0 2px 8px rgba(0,0,0,.5)}
+/* prato */
+.bgimg{position:absolute;inset:-6%;background-size:cover;background-position:center;filter:blur(40px) brightness(.45) saturate(1.3);transform:scale(1.1)}
+.pr{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;gap:3vmin;width:100%;padding:0 4vmin}
+.pr .ft{width:min(86vw,86vh*0.82);height:min(62vh,86vw);border-radius:4vmin;background-size:cover;background-position:center;box-shadow:0 3vmin 8vmin rgba(0,0,0,.55);animation:kb 9s ease-out both}
+@keyframes kb{from{transform:scale(1.0)}to{transform:scale(1.06)}}
+.pr .cat{font-size:2.6vmin;letter-spacing:.25em;text-transform:uppercase;color:var(--sea);font-weight:700}
+.pr .nm{font-size:6vmin;font-weight:800;text-align:center;line-height:1.1;max-width:92vw;text-shadow:0 .4vmin 2vmin rgba(0,0,0,.6)}
+.pr .pc{font-size:5.4vmin;font-weight:900;color:var(--bg);background:linear-gradient(135deg,var(--sun),var(--sun2));padding:1.2vmin 4vmin;border-radius:99px;box-shadow:0 1vmin 4vmin rgba(255,138,0,.45)}
+/* executivo */
+.ex{background:radial-gradient(circle at 50% 0%,#1f7a99 0,#0e2a3a 62%)}
+.tag{font-size:2.8vmin;letter-spacing:.3em;text-transform:uppercase;color:var(--sun);font-weight:800}
+.tt{font-size:11vmin;font-weight:900;line-height:.95;text-align:center;margin:1vmin 0 1vmin;text-transform:uppercase;background:linear-gradient(180deg,#fff,#ffe1a8);-webkit-background-clip:text;background-clip:text;color:transparent}
+.qd{font-size:3.6vmin;font-weight:700;color:#fff;background:rgba(255,255,255,.12);padding:1vmin 3.5vmin;border-radius:99px}
+.cards{display:flex;align-items:center;justify-content:center;gap:1.5vmin;margin:4.5vmin 0 3.5vmin;flex-wrap:nowrap}
+.cd{width:27vmin;display:flex;flex-direction:column;align-items:center;gap:1.4vmin;animation:sobe .9s both}
+.cd:nth-child(3){animation-delay:.25s}.cd:nth-child(5){animation-delay:.5s}
+@keyframes sobe{from{opacity:0;transform:translateY(5vmin)}to{opacity:1;transform:none}}
+.cd .ft{width:27vmin;height:27vmin;border-radius:3vmin;background:#123a50 center/cover;box-shadow:0 2vmin 5vmin rgba(0,0,0,.5);border:.5vmin solid rgba(255,255,255,.9);display:flex;align-items:center;justify-content:center;font-size:12vmin}
+.cd .ro{font-size:2.2vmin;letter-spacing:.18em;text-transform:uppercase;color:var(--sea);font-weight:800;text-align:center}
+.cd .no{font-size:3vmin;font-weight:800;text-align:center;line-height:1.1}
+.mais{font-size:7vmin;font-weight:900;color:var(--sun);margin-bottom:9vmin}
+.op{font-size:2.5vmin;color:rgba(255,255,255,.75);text-align:center;max-width:88vw;margin-bottom:3vmin;line-height:1.35}
+.preco{display:flex;flex-direction:column;align-items:center;background:linear-gradient(135deg,var(--sun),var(--sun2));color:var(--bg);border-radius:4vmin;padding:1.6vmin 6vmin 2vmin;box-shadow:0 2vmin 6vmin rgba(255,138,0,.5);animation:pulsa 2.4s ease-in-out infinite}
+.preco small{font-size:2.6vmin;font-weight:800;letter-spacing:.15em;text-transform:uppercase}
+.preco b{font-size:11vmin;font-weight:900;line-height:1}
+@keyframes pulsa{50%{transform:scale(1.05)}}
+/* happy */
+.hh{background:radial-gradient(circle at 50% 70%,#ff9a1f 0,#c2410c 38%,#3b0d0a 100%)}
+.hh .tag{color:#fff}
+.hh .tt{background:linear-gradient(180deg,#fff,#ffd27a);-webkit-background-clip:text;background-clip:text;font-size:13vmin}
+.copos{font-size:24vmin;line-height:1;margin:3vmin 0 1vmin;filter:drop-shadow(0 2vmin 3vmin rgba(0,0,0,.45));animation:brinde 2.2s ease-in-out infinite}
+@keyframes brinde{0%,100%{transform:rotate(-4deg)}50%{transform:rotate(4deg) scale(1.04)}}
+.ch{font-size:7.5vmin;font-weight:900;text-transform:uppercase;text-align:center;color:#fff;text-shadow:0 .6vmin 2vmin rgba(0,0,0,.4)}
+.it{font-size:3.6vmin;font-weight:700;margin:1.5vmin 0 3vmin;text-align:center;color:#ffe9c2}
+.hh .preco{background:#fff}
+.bolha{position:absolute;bottom:-6vmin;width:3vmin;height:3vmin;border-radius:50%;background:rgba(255,255,255,.35);animation:bolha linear infinite}
+@keyframes bolha{to{transform:translateY(-110vh);opacity:0}}
+#vazio{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2vmin;font-size:4vmin;color:rgba(255,255,255,.7)}
+@media (orientation:landscape){.pr .ft{height:58vh;width:min(70vw,58vh*1.4)}.tt{font-size:9vmin}.cards{margin:3vmin 0 2.5vmin}.cd,.cd .ft{width:24vmin}.cd .ft{height:24vmin}}
+</style></head><body>
+<div id="vazio">Carregando…</div>
+<script>
+(function(){
+  try{var q=new URLSearchParams(location.search);
+    if(q.get('modo')==='venda'){localStorage.removeItem('totem_modo');location.replace('/totem');return}
+    localStorage.setItem('totem_modo','vitrine')}catch(e){}
+  var brl=function(v){return 'R$ '+Number(v||0).toFixed(2).replace('.',',')};
+  var esc=function(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})};
+  var LOJA='',SL=[],FILA=[],pos=0,atual=null,timer=null,assin='';
+  function html(s){
+    var marca='<div class="marca">'+esc(LOJA)+'</div>';
+    if(s.tipo==='prato'){
+      return marca+'<div class="bgimg" style="background-image:url('+s.foto+')"></div><div class="pr"><div class="cat">'+esc(s.categoria)+'</div><div class="ft" style="background-image:url('+s.foto+')"></div><div class="nm">'+esc(s.nome)+'</div><div class="pc">'+brl(s.preco)+'</div></div>';
+    }
+    if(s.tipo==='executivo'){
+      var emo=['🍽️','🥤','🍮'],c='';
+      s.cards.forEach(function(k,i){
+        if(i)c+='<div class="mais">+</div>';
+        c+='<div class="cd"><div class="ft"'+(k.foto?' style="background-image:url('+k.foto+')">':'>'+emo[i])+'</div><div class="ro">'+esc(k.rotulo)+'</div><div class="no">'+esc(k.nome)+'</div></div>';
+      });
+      var op=(s.opcoes&&s.opcoes.length>1)?'<div class="op">Opções de prato: '+s.opcoes.map(esc).join(' · ')+'</div>':'';
+      return marca+'<div class="tag">Hoje no almoço</div><div class="tt">'+esc(s.titulo)+'</div><div class="qd">'+esc(s.quando)+'</div><div class="cards">'+c+'</div>'+op+'<div class="preco"><small>tudo por</small><b>'+brl(s.preco)+'</b></div>';
+    }
+    if(s.tipo==='happy'){
+      var b='';for(var i=0;i<14;i++)b+='<span class="bolha" style="left:'+(Math.random()*100)+'%;animation-duration:'+(4+Math.random()*5)+'s;animation-delay:-'+(Math.random()*6)+'s;transform:scale('+(0.5+Math.random())+')"></span>';
+      return b+marca+'<div class="tag">'+esc(s.quando)+'</div><div class="tt">'+esc(s.titulo)+'</div><div class="copos">🍺🍺</div><div class="ch">'+esc(s.destaque)+'</div><div class="it">'+esc(s.chamada)+' · '+esc(s.item)+'</div>'+(s.preco?'<div class="preco"><small>2 chopps por</small><b>'+brl(s.preco)+'</b></div>':'');
+    }
+    return '';
+  }
+  function monta(){
+    var promos=SL.filter(function(s){return s.tipo!=='prato'}),pratos=SL.filter(function(s){return s.tipo==='prato'});
+    FILA=[];
+    if(!pratos.length){FILA=promos.slice();}
+    else{var pi=0;for(var i=0;i<pratos.length;i++){if(promos.length&&i%2===0){FILA.push(promos[pi%promos.length]);pi++}FILA.push(pratos[i])}}
+    if(pos>=FILA.length)pos=0;
+  }
+  function proximo(){
+    clearTimeout(timer);
+    document.getElementById('vazio').style.display=FILA.length?'none':'flex';
+    if(!FILA.length){document.getElementById('vazio').textContent='Sem pratos com foto pra mostrar';timer=setTimeout(proximo,15000);return}
+    var s=FILA[pos%FILA.length];pos=(pos+1)%FILA.length;
+    var el=document.createElement('div');el.className='sl '+(s.tipo==='executivo'?'ex':s.tipo==='happy'?'hh':'');
+    el.innerHTML=html(s);document.body.appendChild(el);
+    requestAnimationFrame(function(){requestAnimationFrame(function(){el.classList.add('on')})});
+    var velho=atual;atual=el;
+    if(velho){velho.classList.remove('on');setTimeout(function(){velho.remove()},1400)}
+    var nx=FILA[pos%FILA.length];if(nx&&nx.foto){var im=new Image();im.src=nx.foto}
+    timer=setTimeout(proximo,s.tipo==='prato'?7000:13000);
+  }
+  function carregar(){
+    fetch('/api/vitrine',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
+      if(!d||!d.ok)return;LOJA=d.loja||'';
+      var a=JSON.stringify(d.slides.filter(function(s){return s.tipo!=='prato'}))+'|'+d.slides.length;
+      SL=d.slides;var mudou=a!==assin;assin=a;monta();
+      if(!atual||mudou){pos=0;proximo()}
+    }).catch(function(){if(!atual)setTimeout(carregar,10000)});
+  }
+  carregar();setInterval(carregar,60000);
+  var VER0=null;function confereVersao(){fetch('/api/versao',{cache:'no-store'}).then(function(r){return r.json()}).then(function(v){var k=(v&&v.versao)+'|'+(v&&v.iniciado_em);if(VER0&&k!==VER0)location.reload();VER0=k}).catch(function(){})}
+  confereVersao();setInterval(confereVersao,60000);
+  // toque: tela cheia. 5 toques no canto de cima à esquerda = volta pro totem de venda
+  var toques=0,tt=null;
+  document.addEventListener('pointerdown',function(e){
+    try{if(!document.fullscreenElement&&document.documentElement.requestFullscreen)document.documentElement.requestFullscreen().catch(function(){})}catch(x){}
+    if(e.clientX<innerWidth*0.15&&e.clientY<innerHeight*0.12){toques++;clearTimeout(tt);tt=setTimeout(function(){toques=0},2500);if(toques>=5)location.replace('/vitrine?modo=venda')}
+  });
+})();
+</script></body></html>`;
+
 const TOTEM_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"><meta name="mobile-web-app-capable" content="yes"><link rel="manifest" href="/app.webmanifest?t=totem"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><link rel="apple-touch-icon" href="/app-icon.png">
 <title>${LOJA_NOME} — Peça aqui</title><style>
 :root{--bg:#0e2a3a;--bg2:#123a50;--card:#fff;--ink:#14212b;--mut:#5f6f7a;--sun:#ffb21e;--sun2:#ff8a00;--sea:#16b3c9;--green:#16a34a;--red:#dc2626}
@@ -31134,6 +31371,7 @@ header b{font-size:3.2vmin;flex:1}header button{font-size:2.4vmin;padding:1.4vmi
 <div class="modal" id="mCar"><div class="cx"><h2>Seu pedido</h2><div id="carL"></div><div class="tot"><span>Total</span><span id="carT"></span></div><div class="erro" id="carErr"></div>
 <div class="acoes"><button class="bt2" onclick="fechar('mCar')">Continuar pedindo</button><button class="bt1" id="mCarCartao" style="display:none" onclick="fechar('mCar');pagar('cartao')">💳 Cartão</button><button class="bt1" id="mCarPix" onclick="fechar('mCar');pagar()">Pagar no Pix</button></div></div></div>
 <script>
+try{var _qm=new URLSearchParams(location.search).get('modo');if(_qm==='venda')localStorage.removeItem('totem_modo');if(_qm==='vitrine')localStorage.setItem('totem_modo','vitrine');if(localStorage.getItem('totem_modo')==='vitrine')location.replace('/vitrine')}catch(e){}
 var D=null,aba=0,car=[],atual=null,qtd=1,esc={},txid=null,poll=null,ocioso=null,pedCartao=null,volta=null,nfPoll=null,pedPix=null;
 // Nome do jeito do português (10/11/2026): "Agua Cristal COM gas 500 ML" → "Água Cristal com Gás 500 ml".
 // Só na tela: o cadastro continua como está.
@@ -33501,7 +33739,8 @@ const server = http.createServer(async (req, res) => {
         ponto: { nome: LOJA_NOME + ' Ponto', start: '/ponto' },
         tv: { nome: LOJA_NOME + ' TV', start: '/tv' },
         kds: { nome: LOJA_NOME + ' Produção', start: '/' },
-        totem: { nome: LOJA_NOME + ' Totem', start: '/totem', orient: 'any', bg: '#0e2a3a' } };
+        totem: { nome: LOJA_NOME + ' Totem', start: '/totem', orient: 'any', bg: '#0e2a3a' },
+        vitrine: { nome: LOJA_NOME + ' Vitrine', start: '/vitrine', orient: 'any', bg: '#0e2a3a' } };
       const cfg = TELAS[t] || TELAS.kds;
       res.writeHead(200, { 'content-type': 'application/manifest+json; charset=utf-8' });
       return res.end(JSON.stringify({
@@ -34267,6 +34506,8 @@ const server = http.createServer(async (req, res) => {
     if (p === '/conta') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CONTA_HTML); }
     if (p === '/caixa') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CAIXA_HTML); }
     if (p === '/totem') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(TOTEM_HTML); }
+    if (p === '/vitrine') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(VITRINE_HTML); }
+    if (p === '/api/vitrine') { res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); return res.end(JSON.stringify(await apiVitrine())); }
     if (p === '/kids') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(KIDS_HTML); }
     if (p === '/api/pag/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(pagStatus())); }
     if (p === '/api/conta') {
