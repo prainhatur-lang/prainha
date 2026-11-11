@@ -5108,6 +5108,33 @@ async function apiMesaDestaques() {
 // horário do almoço executivo, e "Happy hour · chopp dobrado" das 15h às 20h.
 // Dias/horas vêm dos destaques da nuvem (cardapio_destaques); 'vitrine_cfg' em
 // app_config pode trocar textos/preço sem release. Só lê — não lança nada.
+// Arte do happy hour por casa (post "Chopp dobrado" do Instagram da Mar, 27/10/2026).
+const ARTE_HAPPY_PADRAO = { 'e899dae2-38bf-4f3f-9149-7effd059fab8': 'chopp-dobrado-prainha-mar.jpg' };
+function arteVitrine(a) {
+  a = String(a || '').trim();
+  if (!a) return null;
+  if (/^https:\/\//i.test(a)) return a;
+  return /^[\w.-]+\.(jpe?g|png|webp)$/i.test(a) ? '/vitrine/arte/' + a : null;
+}
+// A loja busca a arte na nuvem uma vez e guarda na memória (a tela não depende
+// da nuvem a cada volta do slide).
+const _arteCache = new Map();
+async function servirArteVitrine(nome, res) {
+  if (!/^[\w.-]+\.(jpe?g|png|webp)$/i.test(nome)) { res.writeHead(404); return res.end(); }
+  let a = _arteCache.get(nome);
+  if (!a || (!a.ok && Date.now() - a.em > 60000)) {
+    try {
+      const r = await fetch(PAGAR_MESA_URL + '/vitrine/' + nome, { signal: AbortSignal.timeout(15000) });
+      a = r.ok ? { ok: true, tipo: r.headers.get('content-type') || 'image/jpeg', buf: Buffer.from(await r.arrayBuffer()), em: Date.now() }
+        : { ok: false, em: Date.now() };
+    } catch { a = a && a.ok ? a : { ok: false, em: Date.now() }; }
+    _arteCache.set(nome, a);
+  }
+  if (!a.ok) { res.writeHead(404); return res.end(); }
+  res.writeHead(200, { 'content-type': a.tipo, 'cache-control': 'public, max-age=3600' });
+  return res.end(a.buf);
+}
+
 async function apiVitrine() {
   const agora = agoraAracaju();
   const json = async (k, d) => { try { const v = JSON.parse(await cfgGet(k, d)); return v == null ? JSON.parse(d) : v; } catch { return JSON.parse(d); } };
@@ -5204,7 +5231,10 @@ async function apiVitrine() {
         chamada: cHh.chamada || 'Peça 1, leve 2',
         item: cHh.item || (chopp ? String(chopp.nome).replace(/\s+caneca/i, '') : 'Chopp 300ml'),
         preco: Number(cHh.preco) || (chopp ? Number(chopp.preco) : 0),
-        quando: diasTxt(dHh.dias) + ' · das ' + hTxt(ini) + ' às ' + hTxt(fim) });
+        quando: diasTxt(dHh.dias) + ' · das ' + hTxt(ini) + ' às ' + hTxt(fim),
+        // arte pronta do marketing (a do Instagram). 'vitrine_cfg'.happy.arte troca
+        // (nome do arquivo em app.prainhabar.com/vitrine/ ou link https; '' desliga).
+        arte: arteVitrine(cHh.arte !== undefined ? cHh.arte : (ARTE_HAPPY_PADRAO[FILIAL_ID] || '')) });
     }
   }
 
@@ -31228,6 +31258,13 @@ html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:syste
 .hh .preco{background:#fff}
 .bolha{position:absolute;bottom:-6vmin;width:3vmin;height:3vmin;border-radius:50%;background:rgba(255,255,255,.35);animation:bolha linear infinite}
 @keyframes bolha{to{transform:translateY(-110vh);opacity:0}}
+/* happy com a arte do marketing */
+.sl.hha{background:#0e2a3a;flex-direction:row;gap:5vmin;padding:0 4vmin}
+.hha .art{position:relative;z-index:2;height:90vh;width:auto;max-width:60vw;object-fit:contain;border-radius:2.5vmin;box-shadow:0 3vmin 9vmin rgba(0,0,0,.6);animation:kb 13s ease-out both}
+.hha .lado{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;gap:2.5vmin}
+.hha .it{margin:0;font-size:3.6vmin;color:#fff}
+@media (orientation:portrait){.sl.hha{flex-direction:column;gap:3vmin}.hha .art{height:auto;width:92vw;max-width:92vw;max-height:76vh}}
+@media (orientation:landscape){.sl.hha{padding-top:0}}
 #vazio{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2vmin;font-size:4vmin;color:rgba(255,255,255,.7)}
 @media (orientation:landscape){.sl{padding-top:7vmin}.pr .ft{height:58vh;width:min(70vw,58vh*1.4)}.tt{font-size:8vmin;margin:.5vmin 0}.hh .tt{font-size:9vmin}.tag{font-size:2.4vmin}.qd{font-size:3vmin}.cards{margin:2.5vmin 0 1.5vmin}.cd,.cd .ft{width:21vmin}.cd .ft{height:21vmin}.cd .no{font-size:2.6vmin}.mais{margin-bottom:7vmin}.op{margin-bottom:1.5vmin;font-size:2.2vmin}.preco b{font-size:8vmin}.copos{font-size:16vmin;margin:1vmin 0}.ch{font-size:6vmin}.it{margin:1vmin 0 2vmin}}
 </style></head><body>
@@ -31239,7 +31276,8 @@ html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:syste
     localStorage.setItem('totem_modo','vitrine')}catch(e){}
   var brl=function(v){return 'R$ '+Number(v||0).toFixed(2).replace('.',',')};
   var esc=function(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})};
-  var LOJA='',SL=[],FILA=[],pos=0,atual=null,timer=null,assin='';
+  var LOJA='',SL=[],FILA=[],pos=0,atual=null,timer=null,assin='',ARTE={};
+  function preArte(u){if(!u||ARTE[u]!==undefined)return;ARTE[u]=null;var im=new Image();im.onload=function(){ARTE[u]=true};im.onerror=function(){ARTE[u]=false;setTimeout(function(){delete ARTE[u]},300000)};im.src=u}
   function html(s){
     var marca='<div class="marca">'+esc(LOJA)+'</div>';
     if(s.tipo==='prato'){
@@ -31253,6 +31291,9 @@ html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:syste
       });
       var op=(s.opcoes&&s.opcoes.length>1)?'<div class="op">Opções de prato: '+s.opcoes.map(esc).join(' · ')+'</div>':'';
       return marca+'<div class="tag">Hoje no almoço</div><div class="tt">'+esc(s.titulo)+'</div><div class="qd">'+esc(s.quando)+'</div><div class="cards">'+c+'</div>'+op+'<div class="preco"><small>tudo por</small><b>'+brl(s.preco)+'</b></div>';
+    }
+    if(s.tipo==='happy'&&s.arte&&ARTE[s.arte]===true){
+      return '<div class="bgimg" style="background-image:url('+s.arte+')"></div><img class="art" src="'+esc(s.arte)+'" alt=""><div class="lado"><div class="it">'+esc(s.item)+'</div>'+(s.preco?'<div class="preco"><small>2 chopps por</small><b>'+brl(s.preco)+'</b></div>':'')+'</div>';
     }
     if(s.tipo==='happy'){
       var b='';for(var i=0;i<14;i++)b+='<span class="bolha" style="left:'+(Math.random()*100)+'%;animation-duration:'+(4+Math.random()*5)+'s;animation-delay:-'+(Math.random()*6)+'s;transform:scale('+(0.5+Math.random())+')"></span>';
@@ -31272,7 +31313,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:syste
     document.getElementById('vazio').style.display=FILA.length?'none':'flex';
     if(!FILA.length){document.getElementById('vazio').textContent='Sem pratos com foto pra mostrar';timer=setTimeout(proximo,15000);return}
     var s=FILA[pos%FILA.length];pos=(pos+1)%FILA.length;
-    var el=document.createElement('div');el.className='sl '+(s.tipo==='executivo'?'ex':s.tipo==='happy'?'hh':'');
+    var el=document.createElement('div');el.className='sl '+(s.tipo==='executivo'?'ex':s.tipo==='happy'?(s.arte&&ARTE[s.arte]===true?'hha':'hh'):'');
     el.innerHTML=html(s);document.body.appendChild(el);
     void el.offsetWidth;el.classList.add('on');
     var velho=atual;atual=el;
@@ -31284,8 +31325,13 @@ html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:syste
     fetch('/api/vitrine',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
       if(!d||!d.ok)return;LOJA=d.loja||'';
       var a=JSON.stringify(d.slides.filter(function(s){return s.tipo!=='prato'}))+'|'+d.slides.length;
+      d.slides.forEach(function(s){if(s.arte)preArte(s.arte)});
       SL=d.slides;var mudou=a!==assin;assin=a;monta();
-      if(!atual||mudou){pos=0;proximo()}
+      if(!atual||mudou){
+        // primeira volta: espera a arte carregar (até 3s) pra não abrir no desenho antigo
+        var pend=!atual&&d.slides.some(function(s){return s.arte&&ARTE[s.arte]===null});
+        if(pend){clearTimeout(timer);timer=setTimeout(function(){pos=0;proximo()},3000)}else{pos=0;proximo()}
+      }
     }).catch(function(){if(!atual)setTimeout(carregar,10000)});
   }
   carregar();setInterval(carregar,60000);
@@ -34507,6 +34553,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/caixa') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CAIXA_HTML); }
     if (p === '/totem') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(TOTEM_HTML); }
     if (p === '/vitrine') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(VITRINE_HTML); }
+    if (p.startsWith('/vitrine/arte/')) return servirArteVitrine(decodeURIComponent(p.slice(14)), res);
     if (p === '/api/vitrine') { res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); return res.end(JSON.stringify(await apiVitrine())); }
     if (p === '/kids') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(KIDS_HTML); }
     if (p === '/api/pag/status') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(pagStatus())); }
