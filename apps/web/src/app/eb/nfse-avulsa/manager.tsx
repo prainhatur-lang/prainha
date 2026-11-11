@@ -350,6 +350,9 @@ export function NfseAvulsaManager(props: { emitente: Emitente; notas: NotaAvulsa
           <label className={`${rotulo} sm:col-span-2`}>
             Alíquota do ISS (%)
             <input value={f.aliquotaIss} onChange={(ev) => set('aliquotaIss', ev.target.value)} inputMode="decimal" placeholder="em branco = não vai na nota" className={campo} />
+            <span className="mt-1 block text-[11px] leading-snug text-slate-500">
+              A E.B. é do Simples: sem retenção, deixe em branco (a Receita recusa a nota com alíquota — erro E0625). Só preencha se o ISS for retido pelo cliente.
+            </span>
           </label>
           <label className="flex items-end gap-2 pb-2 text-sm text-slate-800 sm:col-span-2">
             <input type="checkbox" checked={f.issRetido} onChange={(ev) => set('issRetido', ev.target.checked)} />
@@ -411,6 +414,13 @@ export function NfseAvulsaManager(props: { emitente: Emitente; notas: NotaAvulsa
                 </p>
               )}
               {!n.nfseChave && n.nfseErro && <p className="mt-2 text-xs text-red-700">Último erro da NFS-e: {n.nfseErro}</p>}
+              {!n.nfseChave && n.nfseErro?.includes('E0625') && (
+                <p className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-2 text-xs text-amber-900">
+                  <b>O que fazer:</b> a E.B. é do Simples Nacional. Quando o ISS <b>não</b> é retido pelo cliente, a nota não pode levar
+                  alíquota (o ISS vai na guia do Simples). Clique em corrigir, <b>apague a alíquota do ISS</b> (deixe em branco), salve e
+                  emita de novo. Só informe alíquota se marcar “ISS retido pelo tomador”.
+                </p>
+              )}
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 {!emitida && (
                   <>
