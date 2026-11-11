@@ -337,8 +337,11 @@ export async function lancarContasEbDaFolha(
     /** Já pago (retroativo): grava data_pagamento/valor_pago e a baixa. */
     pagoEm?: string | null;
     obsBaixa?: string | null;
+    /** Empresa que paga a pessoa. Padrão E.B.; 'Lelis' lança na filial da Lelis (11/11/2026). */
+    empresa?: 'E.B.' | 'Lelis';
   },
 ): Promise<number> {
+  const emp = p.empresa ?? 'E.B.';
   const cp = schema.contaPagar;
   const pref = prefixoContaEb(p.casaFilialId, p.comp);
   const ja = await tx
@@ -364,7 +367,7 @@ export async function lancarContasEbDaFolha(
       dataVencimento: p.vencimento,
       valor,
       descricao: `Salário ${mmAaaa(p.comp)} — ${x.nome}`,
-      observacao: `Folha do sistema ${mmAaaa(p.comp)} — empregado da E.B. lotado na ${p.casaNome}. A E.B. paga a pessoa com o "Repasse E.B. — Folha ${mmAaaa(p.comp)}" da casa.`,
+      observacao: `Folha do sistema ${mmAaaa(p.comp)} — empregado da ${emp} lotado na ${p.casaNome}. A ${emp} paga a pessoa com o "Repasse ${emp} — Folha ${mmAaaa(p.comp)}" da casa.`,
       competencia: p.comp,
       codigoReferencia: ref,
       origem: 'FOLHA',
@@ -430,6 +433,7 @@ export async function lancarPagamentosDaFolha(p: {
   }
 
   const ebFilial = escolhidos.some((i) => i.tipo === 'repasse_eb') ? await filialDoCnpj(EB_CNPJ) : null;
+  const lelisFilial = escolhidos.some((i) => i.tipo === 'repasse_lelis') ? await filialDoCnpj(LELIS_CNPJ) : null;
   const [casaRow] = await db
     .select({ nome: schema.filial.nome })
     .from(schema.filial)
@@ -478,6 +482,20 @@ export async function lancarPagamentosDaFolha(p: {
           vencimento: p.vencimento,
           usuarioId: p.usuarioId,
           pessoas: i.pessoas,
+        });
+      }
+      // Lelis: a mesma conta por pessoa, na filial da Lelis (dono 11/11/2026: "não
+      // apareceu na lelis para poder mandar para claudio"). O repasse na casa não muda.
+      if (i.tipo === 'repasse_lelis' && lelisFilial) {
+        await lancarContasEbDaFolha(tx, {
+          ebFilialId: lelisFilial.id,
+          casaFilialId: p.casaFilialId,
+          casaNome: casaRow?.nome ?? '',
+          comp: p.comp,
+          vencimento: p.vencimento,
+          usuarioId: p.usuarioId,
+          pessoas: i.pessoas,
+          empresa: 'Lelis',
         });
       }
       total += i.valor;
@@ -570,6 +588,42 @@ export async function relancarPagamentosDaFolha(p: {
           tabela: 'conta_pagar',
           registroId: c.id,
           filialId: ebFilial.id,
+          usuarioId: p.usuarioId,
+          resumo: resumoConta(c.descricao, c.venc, c.valor),
+          motivo: `Relançar folha ${mmAaaa(p.comp)}${p.motivo ? `: ${p.motivo}` : ' (valor recalculado)'}`,
+          dados: c,
+        });
+        await db.update(cp).set({ dataDelete: new Date() }).where(and(eq(cp.id, c.id), isNull(cp.dataPagamento)));
+      }
+    }
+    // contas por pessoa na Lelis dos repasses relançados: saem junto (só as sem pagamento)
+    const repassesLelis = itens.filter((i) => p.refs.includes(i.ref) && i.tipo === 'repasse_lelis' && i.jaLancadaId);
+    const lelisFilial = repassesLelis.length ? await filialDoCnpj(LELIS_CNPJ) : null;
+    if (lelisFilial) {
+      const pref = prefixoContaEb(p.casaFilialId, p.comp);
+      const refsLelis = repassesLelis.flatMap((i) => i.pessoas.map((x) => `${pref}${digitos(x.cpf) || x.nome}`.slice(0, 50)));
+      const daLelis = refsLelis.length
+        ? await db
+            .select({
+              id: cp.id,
+              descricao: cp.descricao,
+              valor: cp.valor,
+              venc: cp.dataVencimento,
+              dataPagamento: cp.dataPagamento,
+              borderoId: cp.borderoId,
+              codigoReferencia: cp.codigoReferencia,
+              baixas: sql<string>`(select count(*) from conta_pagar_baixa b where b.conta_pagar_id = ${cp.id})::text`,
+            })
+            .from(cp)
+            .where(and(eq(cp.filialId, lelisFilial.id), inArray(cp.codigoReferencia, refsLelis), isNull(cp.dataDelete)))
+        : [];
+      const emPixLelis = await contasEmPixAberto(lelisFilial.id);
+      for (const c of daLelis) {
+        if (c.dataPagamento || Number(c.baixas) > 0 || c.borderoId || emPixLelis.has(c.id)) continue;
+        await registrarExclusao({
+          tabela: 'conta_pagar',
+          registroId: c.id,
+          filialId: lelisFilial.id,
           usuarioId: p.usuarioId,
           resumo: resumoConta(c.descricao, c.venc, c.valor),
           motivo: `Relançar folha ${mmAaaa(p.comp)}${p.motivo ? `: ${p.motivo}` : ' (valor recalculado)'}`,
