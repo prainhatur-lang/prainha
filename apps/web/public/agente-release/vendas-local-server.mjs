@@ -31436,6 +31436,10 @@ html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:syste
   function monta(){
     var promos=SL.filter(function(s){return s.tipo!=='prato'}),pratos=SL.filter(function(s){return s.tipo==='prato'});
     FILA=[];
+    // No horário do executivo/happy a promoção volta a CADA prato (dono 11/11/2026):
+    // promo, prato, promo, prato... O vinho entra no lugar de um prato.
+    var forte=SL.filter(function(s){return s.tipo!=='prato'&&!s.vinho}),miolo=SL.filter(function(s){return s.tipo==='prato'||s.vinho});
+    if(forte.length&&pratos.length){for(var j=0;j<miolo.length;j++){FILA.push(forte[j%forte.length]);FILA.push(miolo[j])}if(pos>=FILA.length)pos=0;return}
     if(!pratos.length){FILA=promos.slice();}
     else{var pi=0;for(var i=0;i<pratos.length;i++){if(promos.length&&i%2===0){FILA.push(promos[pi%promos.length]);pi++}FILA.push(pratos[i])}}
     if(pos>=FILA.length)pos=0;
