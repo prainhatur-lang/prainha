@@ -144,6 +144,9 @@ export function InventarioLelis({ produtos, ajustes }: { produtos: ProdutoInvent
                   <td className="px-3 py-2">
                     <div className="font-medium text-slate-900">{p.descricao}</div>
                     {p.ean && <div className="text-xs text-slate-500">EAN {p.ean}</div>}
+                    <a href={`/lelis/estoque/${p.id}`} target="_blank" rel="noreferrer" className="text-xs font-medium text-sky-700 hover:underline">
+                      Ver extrato →
+                    </a>
                   </td>
                   <td className={`whitespace-nowrap px-3 py-2 text-right font-mono ${p.saldo < 0 ? 'text-red-700' : p.saldo === 0 ? 'text-slate-400' : 'text-slate-900'}`}>
                     {qtd(p.saldo)} <span className="text-xs text-slate-500">{p.unidade}</span>

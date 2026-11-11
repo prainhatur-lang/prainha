@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useState } from 'react';
+import Link from 'next/link';
 
 export type ProdutoEstoque = {
   id: string;
@@ -100,6 +101,9 @@ export function EstoqueLelis({ produtos }: { produtos: ProdutoEstoque[] }) {
                   <div className="text-xs text-slate-500">
                     {[p.fornecedor, p.ean ? `EAN ${p.ean}` : null].filter(Boolean).join(' · ')}
                   </div>
+                  <Link href={`/lelis/estoque/${p.id}`} className="text-xs font-medium text-sky-700 hover:underline print:hidden">
+                    Ver extrato →
+                  </Link>
                 </td>
                 <td className={`whitespace-nowrap px-3 py-2 text-right font-mono text-base font-semibold ${p.saldo < 0 ? 'text-red-700' : p.saldo === 0 ? 'text-slate-400' : 'text-slate-900'}`}>
                   {qtd(p.saldo)} <span className="text-xs font-normal text-slate-500">{p.unidade}</span>
