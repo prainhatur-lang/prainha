@@ -328,6 +328,12 @@ export const MENU_AREAS: MenuArea[] = [
             aka: ['entradas e saídas do estoque', 'kardex'],
           },
           {
+            label: 'Extrato do produto',
+            href: '/relatorios/extrato-produto',
+            perm: 'relatorio.read',
+            aka: ['extrato de estoque', 'saldo do produto', 'ficha do produto'],
+          },
+          {
             label: 'Insumos mais usados',
             href: '/relatorios/insumos',
             perm: 'relatorio.read',

@@ -389,6 +389,12 @@ export default async function RelatorioEstoquePage(props: {
                           >
                             ver →
                           </Link>
+                          <Link
+                            href={`/relatorios/extrato-produto?filialId=${fid}&produtoId=${c.id}`}
+                            className="ml-2 text-[10px] text-sky-700 hover:underline"
+                          >
+                            extrato →
+                          </Link>
                         </td>
                       </tr>
                     );

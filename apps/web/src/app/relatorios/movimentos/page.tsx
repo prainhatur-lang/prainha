@@ -298,6 +298,12 @@ export default async function MovimentosEstoquePage(props: {
                     {produtoFoco.nome ?? '—'}
                   </Link>
                 </p>
+                <Link
+                  href={`/relatorios/extrato-produto?filialId=${filialSelecionada.id}&produtoId=${produtoFoco.id}`}
+                  className="mt-1 inline-block text-xs text-sky-700 hover:underline"
+                >
+                  Ver extrato com saldo →
+                </Link>
               </div>
               <div className="text-right">
                 <p className="text-[10px] font-medium uppercase tracking-wide text-sky-700">
