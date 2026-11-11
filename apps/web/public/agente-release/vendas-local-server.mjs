@@ -31229,7 +31229,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:syste
 .bolha{position:absolute;bottom:-6vmin;width:3vmin;height:3vmin;border-radius:50%;background:rgba(255,255,255,.35);animation:bolha linear infinite}
 @keyframes bolha{to{transform:translateY(-110vh);opacity:0}}
 #vazio{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2vmin;font-size:4vmin;color:rgba(255,255,255,.7)}
-@media (orientation:landscape){.pr .ft{height:58vh;width:min(70vw,58vh*1.4)}.tt{font-size:9vmin}.cards{margin:3vmin 0 2.5vmin}.cd,.cd .ft{width:24vmin}.cd .ft{height:24vmin}}
+@media (orientation:landscape){.sl{padding-top:7vmin}.pr .ft{height:58vh;width:min(70vw,58vh*1.4)}.tt{font-size:8vmin;margin:.5vmin 0}.hh .tt{font-size:9vmin}.tag{font-size:2.4vmin}.qd{font-size:3vmin}.cards{margin:2.5vmin 0 1.5vmin}.cd,.cd .ft{width:21vmin}.cd .ft{height:21vmin}.cd .no{font-size:2.6vmin}.mais{margin-bottom:7vmin}.op{margin-bottom:1.5vmin;font-size:2.2vmin}.preco b{font-size:8vmin}.copos{font-size:16vmin;margin:1vmin 0}.ch{font-size:6vmin}.it{margin:1vmin 0 2vmin}}
 </style></head><body>
 <div id="vazio">Carregando…</div>
 <script>
@@ -31274,7 +31274,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:syste
     var s=FILA[pos%FILA.length];pos=(pos+1)%FILA.length;
     var el=document.createElement('div');el.className='sl '+(s.tipo==='executivo'?'ex':s.tipo==='happy'?'hh':'');
     el.innerHTML=html(s);document.body.appendChild(el);
-    requestAnimationFrame(function(){requestAnimationFrame(function(){el.classList.add('on')})});
+    void el.offsetWidth;el.classList.add('on');
     var velho=atual;atual=el;
     if(velho){velho.classList.remove('on');setTimeout(function(){velho.remove()},1400)}
     var nx=FILA[pos%FILA.length];if(nx&&nx.foto){var im=new Image();im.src=nx.foto}
