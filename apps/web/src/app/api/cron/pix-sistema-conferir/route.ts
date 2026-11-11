@@ -7,6 +7,7 @@
 
 import { NextResponse } from 'next/server';
 import { resolverCredenciaisInterPagamentos } from '@/lib/inter';
+import { baixarIndividuaisDeBorderoAvulso } from '@/lib/bordero-avulso-baixa';
 import { filiaisComPixAberto, sincronizarPixAbertos } from '@/lib/pix-pagamento';
 
 export const dynamic = 'force-dynamic';
@@ -28,5 +29,13 @@ export async function GET(req: Request) {
       saida[filialId] = { erro: e instanceof Error ? e.message : String(e) };
     }
   }
-  return NextResponse.json({ ok: true, casas: saida });
+  // borderô avulso pago: baixa as contas individuais presas nele (não têm tela
+  // de baixa em lote como a folha e o VT)
+  let borderoAvulso: unknown = [];
+  try {
+    borderoAvulso = await baixarIndividuaisDeBorderoAvulso();
+  } catch (e) {
+    borderoAvulso = { erro: e instanceof Error ? e.message : String(e) };
+  }
+  return NextResponse.json({ ok: true, casas: saida, borderoAvulso });
 }
