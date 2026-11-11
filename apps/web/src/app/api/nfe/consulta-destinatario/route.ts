@@ -46,10 +46,33 @@ export async function GET(req: Request) {
       }
       if (!j) return NextResponse.json({ error: 'CNPJ não encontrado na Receita — preencha na mão' }, { status: 404 });
       const tipo = str(j.descricao_tipo_de_logradouro);
+      // Inscrição estadual: a Receita não traz. Sem ela, cliente que é contribuinte
+      // no estado dele volta da SEFAZ com a rejeição 232 ("IE do destinatário não
+      // informada"). Procura a inscrição ATIVA no estado do CNPJ (base pública do
+      // cnpj.ws); se não achar, o campo fica como está e quem emite digita.
+      let ie = '';
+      try {
+        const r = await fetch(`https://publica.cnpj.ws/cnpj/${cnpj}`, {
+          headers: { 'User-Agent': 'concilia-prainha/1.0 (app.prainhabar.com)', Accept: 'application/json' },
+          signal: AbortSignal.timeout(6000),
+        });
+        if (r.ok) {
+          const w = (await r.json()) as { estabelecimento?: { inscricoes_estaduais?: Array<{ inscricao_estadual?: unknown; ativo?: unknown; estado?: { sigla?: unknown } }> } };
+          const uf = str(j.uf).toUpperCase();
+          const ativa = (w.estabelecimento?.inscricoes_estaduais ?? []).find(
+            (i) => i.ativo === true && str(i.estado?.sigla).toUpperCase() === uf && so(i.inscricao_estadual),
+          );
+          if (ativa) ie = so(ativa.inscricao_estadual);
+        }
+      } catch {
+        /* sem a inscrição: segue só com os dados da Receita */
+      }
       return NextResponse.json({
         ok: true,
         situacao: str(j.descricao_situacao_cadastral),
+        ieAchada: ie || null,
         dados: {
+          ie,
           nome: str(j.razao_social),
           logradouro: [tipo, str(j.logradouro)].filter(Boolean).join(' '),
           numero: str(j.numero),

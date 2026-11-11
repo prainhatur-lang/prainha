@@ -95,6 +95,7 @@ export function FormNfeCupom({
       if (tipo === 'cnpj') setOutros(ehCpf && Array.isArray(j.outros) ? j.outros : []);
       if (cepNovo) setAviso('Endereço atualizado pelo CEP — confira o número e o complemento.');
       if (ehCpf) setAviso(`Dados puxados do ${j.origem ?? 'cadastro'} — confira antes de emitir.`);
+      if (tipo === 'cnpj' && !ehCpf && j.ieAchada) setAviso(`Inscrição estadual ${j.ieAchada} preenchida (ativa no estado do cliente) — confira antes de emitir.`);
       if (j.situacao && j.situacao !== 'ATIVA') setAviso(`Atenção: na Receita este CNPJ está ${j.situacao}.`);
     } catch {
       setAviso('consulta fora do ar — preencha na mão');
@@ -124,6 +125,10 @@ export function FormNfeCupom({
       const j = await r.json();
       if (!r.ok || !j.ok) {
         setErro(j.error ?? 'falhou');
+        // 232: o cliente é contribuinte no estado dele e a nota foi sem a inscrição ("isento" não vale)
+        if (/\(232\)/.test(String(j.error ?? ''))) {
+          setAviso('Este cliente tem inscrição estadual ativa no estado dele: a nota precisa do NÚMERO da inscrição (escrever "isento" não serve). Clique em Buscar no CNPJ pra puxar a inscrição, ou peça o número ao cliente, e emita de novo.');
+        }
         router.refresh();
         return;
       }
