@@ -42,6 +42,20 @@ type Emitente = {
 
 const fmtData = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
 const fmtCnpj = (c: string) => c.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5');
+/** Serviços vendidos pra fora, com o código de tributação nacional de cada um. */
+const SERVICOS_PRONTOS = [
+  {
+    nome: 'Sistema online (hospedagem e suporte)',
+    codigo: '010501',
+    descricao: 'Licença de uso de sistema de gestão online, incluindo hospedagem e suporte.',
+  },
+  {
+    nome: 'Pessoal (contrato de mão de obra)',
+    codigo: '170501',
+    descricao: 'Fornecimento de mão de obra, conforme contrato.',
+  },
+];
+
 const fmtCod = (c: string) => c.replace(/^(\d{2})(\d{2})(\d{2})$/, '$1.$2.$3');
 const num = (s: string) => Number(s.replace(/\./g, '').replace(',', '.'));
 const campo = 'mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-900';
@@ -275,6 +289,32 @@ export function NfseAvulsaManager(props: { emitente: Emitente; notas: NotaAvulsa
         </div>
 
         <h3 className="mt-5 text-xs font-semibold uppercase tracking-wide text-slate-500">Serviço</h3>
+        {/* Serviços que a casa já vende pra fora: um toque põe o código (dono, 11/11/2026 —
+            "pra não ter que estar perguntando toda hora"). Só preenche; dá pra trocar depois. */}
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-slate-500">Qual serviço?</span>
+          {SERVICOS_PRONTOS.map((sv) => {
+            const marcado = f.codigoTributacao.replace(/\D/g, '') === sv.codigo;
+            return (
+              <button
+                key={sv.codigo}
+                type="button"
+                onClick={() =>
+                  setF((a) => ({
+                    ...a,
+                    codigoTributacao: fmtCod(sv.codigo),
+                    // a descrição só entra se o campo está vazio ou ainda é a de outra opção
+                    descricao: !a.descricao.trim() || SERVICOS_PRONTOS.some((o) => o.descricao === a.descricao.trim()) ? sv.descricao : a.descricao,
+                  }))
+                }
+                className={`rounded-lg border px-3 py-1.5 text-left ${marcado ? 'border-sky-600 bg-sky-50 text-sky-900' : 'border-slate-300 bg-white text-slate-700 hover:border-sky-400'}`}
+              >
+                <span className="font-medium">{sv.nome}</span>
+                <span className="ml-1.5 font-mono text-slate-500">{fmtCod(sv.codigo)}</span>
+              </button>
+            );
+          })}
+        </div>
         <div className="mt-2 grid gap-3 sm:grid-cols-6">
           <label className={`${rotulo} sm:col-span-2`}>
             Código de tributação nacional (6 dígitos)
