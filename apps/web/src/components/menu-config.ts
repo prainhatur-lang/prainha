@@ -528,6 +528,12 @@ export const MENU_AREAS: MenuArea[] = [
             aka: ['Pix pagos no Inter', 'banco'],
           },
           {
+            label: 'Empréstimos entre empresas',
+            href: '/financeiro/emprestimos',
+            perm: 'conta_pagar.read',
+            aka: ['mútuo', 'mutuo', 'emprestar', 'E.B. emprestou'],
+          },
+          {
             label: 'Dinheiro em espécie (cofre)',
             href: '/financeiro/portadores',
             perm: 'conta_pagar.read',

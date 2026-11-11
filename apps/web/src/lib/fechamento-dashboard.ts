@@ -315,6 +315,8 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
   //  · conta excluída e conta que entrou num borderô (conta o borderô, como no quadro de caixa);
   //  · ENCONTRO_CONTAS: acerto entre as casas que compensa transferências e boletos que já
   //    estão lançados como despesa — somar de novo seria contar duas vezes;
+  //    MUTUO (empréstimo entre empresas, /financeiro/emprestimos) vai junto: emprestar e
+  //    devolver dinheiro não é despesa (11/11/2026);
   //  · provisão do Consumer ("PROVISIONAMENTO ...") quando a conta de verdade do mesmo
   //    fornecedor ou da mesma categoria já está lançada no mês (o Consumer nunca baixa a
   //    provisão quando a conta real é paga). Provisão sem conta real fica, como estimativa.
@@ -331,7 +333,7 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
     ), cls AS (
       SELECT m.*,
              CASE
-               WHEN m.origem = 'ENCONTRO_CONTAS' THEN 'encontro'
+               WHEN m.origem IN ('ENCONTRO_CONTAS', 'MUTUO') THEN 'encontro'
                WHEN m.data_pagamento IS NOT NULL THEN 'paga'
                WHEN m.provisao AND EXISTS (
                  SELECT 1 FROM conta_pagar o
@@ -388,7 +390,7 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
         AND (data_vencimento IS NULL OR data_vencimento NOT BETWEEN ${ymdStart}::date AND ${ymdEnd}::date)), 0)::float8 AS outros_meses,
       coalesce(sum(coalesce(valor_pago, valor)) FILTER (WHERE data_delete IS NULL
         AND data_vencimento BETWEEN ${ymdStart}::date AND ${ymdEnd}::date
-        AND origem = 'ENCONTRO_CONTAS'), 0)::float8 AS encontro_pago
+        AND origem IN ('ENCONTRO_CONTAS', 'MUTUO')), 0)::float8 AS encontro_pago
       FROM conta_pagar
      WHERE filial_id = ${filialId}::uuid
        AND bordero_id IS NULL
@@ -402,18 +404,18 @@ export async function dashboardFechamento(filialId: string, ano: number, mes: nu
   // conta sem pagar: sobra de verdade = vendas − pago no mês − contas do mês não pagas no mês.
   const cxRows = (await db.execute(sql`
     SELECT
-      coalesce(sum(coalesce(valor_pago, valor)) FILTER (WHERE origem IS DISTINCT FROM 'ENCONTRO_CONTAS'
+      coalesce(sum(coalesce(valor_pago, valor)) FILTER (WHERE origem NOT IN ('ENCONTRO_CONTAS', 'MUTUO')
         AND data_pagamento BETWEEN ${ymdStart}::date AND ${ymdEnd}::date), 0)::float8 AS pago_no_mes,
-      coalesce(sum(coalesce(valor_pago, valor)) FILTER (WHERE origem IS DISTINCT FROM 'ENCONTRO_CONTAS'
+      coalesce(sum(coalesce(valor_pago, valor)) FILTER (WHERE origem NOT IN ('ENCONTRO_CONTAS', 'MUTUO')
         AND data_pagamento BETWEEN ${ymdStart}::date AND ${ymdEnd}::date
         AND (data_vencimento IS NULL OR data_vencimento < ${ymdStart}::date)), 0)::float8 AS de_meses_anteriores,
-      coalesce(sum(coalesce(valor_pago, valor)) FILTER (WHERE origem IS DISTINCT FROM 'ENCONTRO_CONTAS'
+      coalesce(sum(coalesce(valor_pago, valor)) FILTER (WHERE origem NOT IN ('ENCONTRO_CONTAS', 'MUTUO')
         AND data_pagamento BETWEEN ${ymdStart}::date AND ${ymdEnd}::date
         AND data_vencimento > ${ymdEnd}::date), 0)::float8 AS adiantadas,
-      coalesce(sum(coalesce(valor_pago, valor)) FILTER (WHERE origem IS DISTINCT FROM 'ENCONTRO_CONTAS'
+      coalesce(sum(coalesce(valor_pago, valor)) FILTER (WHERE origem NOT IN ('ENCONTRO_CONTAS', 'MUTUO')
         AND data_vencimento BETWEEN ${ymdStart}::date AND ${ymdEnd}::date
         AND data_pagamento > ${ymdEnd}::date), 0)::float8 AS pagas_depois,
-      coalesce(sum(coalesce(valor_pago, valor)) FILTER (WHERE origem = 'ENCONTRO_CONTAS'
+      coalesce(sum(coalesce(valor_pago, valor)) FILTER (WHERE origem IN ('ENCONTRO_CONTAS', 'MUTUO')
         AND data_pagamento BETWEEN ${ymdStart}::date AND ${ymdEnd}::date), 0)::float8 AS encontro_no_mes
       FROM conta_pagar
      WHERE filial_id = ${filialId}::uuid

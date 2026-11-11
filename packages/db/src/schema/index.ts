@@ -74,3 +74,4 @@ export * from './estoque-local';
 export * from './saas-interessado';
 export * from './saas-conta';
 export * from './estudo-equipe';
+export * from './mutuo';

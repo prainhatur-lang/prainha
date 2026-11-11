@@ -239,6 +239,8 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
                   ? 'conta do PDV — altera/exclui no PDV da loja'
                   : conta.origem === 'FOLHA'
                     ? 'gerada pela folha — reabra a folha pra mexer'
+                    : conta.origem === 'MUTUO'
+                      ? 'empréstimo (mútuo) entre empresas — cancele em Financeiro › Empréstimos'
                     : 'nascida de NFe — gerencie pela nota de origem'}
               </span>
             )}

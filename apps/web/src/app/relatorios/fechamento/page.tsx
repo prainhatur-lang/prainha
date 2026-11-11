@@ -469,7 +469,7 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
                     O &quot;Resultado operacional&quot; lá em cima dá {brl(d.resultado.lucro)} porque também soma{' '}
                     {[
                       tp.excluidasPagas > 0.004 ? `conta excluída que tinha baixa (${brl(tp.excluidasPagas)})` : null,
-                      tp.encontroPagoNoMes > 0.004 ? `encontro de contas entre as casas (${brl(tp.encontroPagoNoMes)})` : null,
+                      tp.encontroPagoNoMes > 0.004 ? `encontro de contas e empréstimo entre as casas (${brl(tp.encontroPagoNoMes)})` : null,
                       Math.abs(outrosCima) > 0.5 ? `outros lançamentos (${brl(outrosCima)})` : null,
                     ]
                       .filter(Boolean)
@@ -531,7 +531,7 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
                     )}
                     {tp.qtdProvisoesCobertas > 0 && tp.qtdEncontro > 0 && ' ·'}
                     {tp.qtdEncontro > 0 && (
-                      <> encontro de contas entre as casas {brl(tp.encontro)} ({int(tp.qtdEncontro)}), que só compensa transferência e boleto já lançados</>
+                      <> encontro de contas e empréstimo entre as casas {brl(tp.encontro)} ({int(tp.qtdEncontro)}), que só compensa transferência e boleto já lançados ou é dinheiro emprestado/devolvido</>
                     )}
                     .
                   </p>
@@ -540,7 +540,7 @@ export default async function FechamentoDashboardPage(props: { searchParams: Pro
                   Do quadro de cima pra este ({diferenca >= 0 ? '+' : '−'}{brl(Math.abs(diferenca))} no resultado): saem as pagas de outros
                   meses {brl(tp.outrosMeses)}
                   {tp.excluidasPagas > 0.004 && <>, as excluídas {brl(tp.excluidasPagas)}</>}
-                  {tp.encontroPago > 0.004 && <> e o encontro de contas pago {brl(tp.encontroPago)}</>}; entram o em aberto do mês {brl(tp.aberto)}
+                  {tp.encontroPago > 0.004 && <> e o encontro de contas/empréstimo pago {brl(tp.encontroPago)}</>}; entram o em aberto do mês {brl(tp.aberto)}
                   {tp.pagasFora > 0.004 && <> e as do mês pagas fora dele {brl(tp.pagasFora)}</>}.
                 </p>
               </div>

@@ -16,7 +16,7 @@ export const dynamic = 'force-dynamic';
 
 type TipoData = 'vencimento' | 'pagamento' | 'lancamento';
 type StatusFiltro = 'todas' | 'aberto' | 'pago' | 'atrasado';
-type OrigemFiltro = 'todas' | 'CONSUMER' | 'NFE' | 'FOLHA' | 'MANUAL' | 'TRANSFERENCIA' | 'ENCONTRO_CONTAS';
+type OrigemFiltro = 'todas' | 'CONSUMER' | 'NFE' | 'FOLHA' | 'MANUAL' | 'TRANSFERENCIA' | 'ENCONTRO_CONTAS' | 'MUTUO';
 
 interface SP {
   filialId?: string;
@@ -78,7 +78,7 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
   const categoriaId = sp.categoriaId && /^[0-9a-f-]{36}$/.test(sp.categoriaId) ? sp.categoriaId : null;
   const nomeBusca = (sp.nome ?? '').trim();
   const origemFiltro: OrigemFiltro = (
-    ['todas', 'CONSUMER', 'NFE', 'FOLHA', 'MANUAL', 'TRANSFERENCIA', 'ENCONTRO_CONTAS'] as const
+    ['todas', 'CONSUMER', 'NFE', 'FOLHA', 'MANUAL', 'TRANSFERENCIA', 'ENCONTRO_CONTAS', 'MUTUO'] as const
   ).includes(sp.origem as OrigemFiltro)
     ? (sp.origem as OrigemFiltro)
     : 'todas';
@@ -730,6 +730,7 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                     ['MANUAL', '✍ Manual', 'slate'],
                     ['TRANSFERENCIA', '↔ Transferência', 'slate'],
                     ['ENCONTRO_CONTAS', '⚖️ Encontro', 'slate'],
+                    ['MUTUO', '🤝 Empréstimo', 'slate'],
                   ] as Array<[OrigemFiltro, string, 'slate' | 'violet' | 'amber']>
                 ).map(([k, label, tom]) => {
                   const ativo = origemFiltro === k;
@@ -877,6 +878,15 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                                 >
                                   📦 BORDERÔ
                                 </span>
+                              )}
+                              {c.origem === 'MUTUO' && (
+                                <Link
+                                  href="/financeiro/emprestimos"
+                                  className="rounded bg-sky-100 px-1 py-0.5 text-[9px] font-medium text-sky-800"
+                                  title="Empréstimo (mútuo) entre empresas — não é despesa; ver em Empréstimos"
+                                >
+                                  🤝 EMPRÉSTIMO
+                                </Link>
                               )}
                               {(c.origem === 'TRANSFERENCIA' || c.origem === 'ENCONTRO_CONTAS') && (
                                 <Link
