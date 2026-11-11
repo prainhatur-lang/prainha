@@ -33,6 +33,10 @@
       "schedule": "50 14,0 * * *"
     },
     {
+      "path": "/api/cron/baixa-boletos-inter",
+      "schedule": "0 12,18,23 * * *"
+    },
+    {
       "path": "/api/cron/pix-sicredi",
       "schedule": "*/30 * * * *"
     },
