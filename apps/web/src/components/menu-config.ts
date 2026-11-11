@@ -646,20 +646,6 @@ export const MENU_AREAS: MenuArea[] = [
             aka: ['NF-e de venda de bem'],
           },
           { label: 'Mapa mensal do ICMS', href: '/fiscal/mapa-icms', perm: 'nfce.read' },
-          {
-            label: 'Lelis: preço de venda e NF-e',
-            href: '/lelis/precos',
-            perm: 'configuracao.read',
-            interno: true,
-            aka: ['Lelis', 'distribuidora'],
-          },
-          {
-            label: 'Lelis: vender pras casas (pedido)',
-            href: '/lelis/vender',
-            perm: 'configuracao.read',
-            interno: true,
-            aka: ['Lelis pedido', 'vender Lelis', 'saída Lelis'],
-          },
         ],
       },
       {
@@ -865,27 +851,6 @@ export const MENU_AREAS: MenuArea[] = [
             perm: 'folha_equipe.read',
             aka: ['Folha de pagamento', 'Nossa folha', 'contracheque', 'holerite', 'CLT'],
           },
-          {
-            label: 'Pagamentos da E.B. (extrato)',
-            href: '/rh/folha-contador/pagamentos',
-            perm: 'folha_equipe.read',
-            interno: true,
-            aka: ['E.B.', 'rateio'],
-          },
-          {
-            label: 'Faturas da E.B. (NFS-e)',
-            href: '/eb/faturas',
-            perm: 'folha_equipe.fechar',
-            interno: true,
-            aka: ['E.B.'],
-          },
-          {
-            label: 'Nota de serviço avulsa (NFS-e)',
-            href: '/eb/nfse-avulsa',
-            perm: 'folha_equipe.fechar',
-            interno: true,
-            aka: ['E.B.', 'NFS-e', 'nota fiscal de serviço', 'empresa de fora', 'tomador externo'],
-          },
         ],
       },
       {
@@ -991,6 +956,64 @@ export const MENU_AREAS: MenuArea[] = [
             label: 'Diagnóstico do sistema',
             href: '/diagnostico',
             perm: 'configuracao.read',
+          },
+        ],
+      },
+    ],
+  },
+  // Dono 11/11/2026: "essas coisas de Lelis e E.B., vamos separar do sistema em
+  // si, porque são empresas externas. Lá no final, coloca a empresa Lelis e o que
+  // a gente tem dela pra fazer, e a E.B. (emissão de notas etc.). O financeiro
+  // trabalha junto." → as telas próprias das duas saíram de Fiscal e de Equipe e
+  // ficam aqui, no fim do menu; rotas e permissões são as mesmas. Contas a pagar,
+  // empréstimos e impostos das duas continuam no Financeiro.
+  {
+    id: 'externas',
+    label: 'Lelis e E.B.',
+    icon: 'admin',
+    sections: [
+      {
+        label: 'Lelis (distribuidora)',
+        links: [
+          {
+            label: 'Lelis: preço de venda e NF-e',
+            href: '/lelis/precos',
+            perm: 'configuracao.read',
+            interno: true,
+            aka: ['Lelis', 'distribuidora', 'Fiscal'],
+          },
+          {
+            label: 'Lelis: vender pras casas (pedido)',
+            href: '/lelis/vender',
+            perm: 'configuracao.read',
+            interno: true,
+            aka: ['Lelis pedido', 'vender Lelis', 'saída Lelis'],
+          },
+        ],
+      },
+      {
+        label: 'E.B. Serviços',
+        links: [
+          {
+            label: 'Pagamentos da E.B. (extrato)',
+            href: '/rh/folha-contador/pagamentos',
+            perm: 'folha_equipe.read',
+            interno: true,
+            aka: ['E.B.', 'rateio'],
+          },
+          {
+            label: 'Faturas da E.B. (NFS-e)',
+            href: '/eb/faturas',
+            perm: 'folha_equipe.fechar',
+            interno: true,
+            aka: ['E.B.'],
+          },
+          {
+            label: 'Nota de serviço avulsa (NFS-e)',
+            href: '/eb/nfse-avulsa',
+            perm: 'folha_equipe.fechar',
+            interno: true,
+            aka: ['E.B.', 'NFS-e', 'nota fiscal de serviço', 'empresa de fora', 'tomador externo'],
           },
         ],
       },
