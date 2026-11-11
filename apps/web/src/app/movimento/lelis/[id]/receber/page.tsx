@@ -33,7 +33,7 @@ export default async function ConferirPedidoLelisPage(props: { params: Promise<{
   if (!cab || !casa) redirect('/movimento/transferencias');
   const dados = await pedidoLelisParaConferir(id, casa.id);
   if (!dados) redirect('/movimento/transferencias');
-  const { pedido, itens, produtos, sugestoes } = dados;
+  const { pedido, itens, produtos, sugestoes, outras } = dados;
 
   const voltar = `/movimento/transferencias?filialId=${casa.id}`;
   return (
@@ -75,6 +75,7 @@ export default async function ConferirPedidoLelisPage(props: { params: Promise<{
               quantidade: i.quantidade,
               precoUnit: i.preco_unit,
               sugestao: sugestoes[i.revenda_produto_id] ?? null,
+              outras: outras[i.revenda_produto_id] ?? [],
             }))}
             produtos={produtos}
             voltar={voltar}

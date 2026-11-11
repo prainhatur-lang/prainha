@@ -1,6 +1,7 @@
 // POST /api/lelis/pedido/[id]/receber — a casa confere o pedido sem nota da
 // Lelis e dá entrada no estoque dela (06/11/2026: "cada casa confere e dá
-// entrada"). Body: { observacao?, itens: [{ itemId, quantidadeRecebida, produtoCasaId|null }] }
+// entrada"). Body: { observacao?, itens: [{ itemId, quantidadeRecebida, produtoCasaId|null,
+// produtoOutraCasaId?, cadastrar? }] }
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { db } from '@concilia/db';
@@ -19,6 +20,9 @@ const Body = z.object({
       itemId: z.string().uuid(),
       quantidadeRecebida: z.number().min(0),
       produtoCasaId: z.string().uuid().nullable(),
+      // a casa não tem o vinho: traz o cadastro da outra casa, ou cadastra (11/11/2026)
+      produtoOutraCasaId: z.string().uuid().nullable().optional(),
+      cadastrar: z.boolean().optional(),
     }))
     .min(1)
     .max(300),

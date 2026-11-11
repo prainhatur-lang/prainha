@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import type { ProdutoCasaOpcao } from '@/lib/lelis/pedido';
+import type { OpcaoOutraCasa, ProdutoCasaOpcao } from '@/lib/lelis/pedido';
 
 export interface ItemConferir {
   id: string;
@@ -10,9 +10,15 @@ export interface ItemConferir {
   quantidade: number;
   precoUnit: number;
   sugestao: { produtoId: string; fonte: string } | null;
+  /** o mesmo vinho no cadastro das outras casas (pra trazer quando aqui não tem) */
+  outras?: OpcaoOutraCasa[];
 }
 
 const SEM = '__sem';
+/** não existe em casa nenhuma: cadastra aqui com o nome da Lelis */
+const NOVO = '__novo';
+/** traz o cadastro da outra casa: "__outra:<produtoId de lá>" */
+const OUTRA = '__outra:';
 const brl = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const numBr = (s: string) => Number(String(s).replace(/\./g, '').replace(',', '.'));
 const qtdBr = (n: number) => String(Math.round(n * 10000) / 10000).replace('.', ',');
@@ -31,7 +37,13 @@ export function ConferirLelisForm(props: {
     Object.fromEntries(props.itens.map((i) => [i.id, qtdBr(i.quantidade)])),
   );
   const [produto, setProduto] = useState<Record<string, string>>(() =>
-    Object.fromEntries(props.itens.map((i) => [i.id, i.sugestao?.produtoId ?? ''])),
+    Object.fromEntries(
+      props.itens.map((i) => [
+        i.id,
+        // tem aqui → o daqui; não tem → o da outra casa; nem lá → cadastra
+        i.sugestao?.produtoId ?? (i.outras?.[0] ? OUTRA + i.outras[0].produtoId : NOVO),
+      ]),
+    ),
   );
   const [conferido, setConferido] = useState<Record<string, boolean>>({});
   const [obs, setObs] = useState('');
@@ -67,7 +79,12 @@ export function ConferirLelisForm(props: {
         itens: calc.map((c) => ({
           itemId: c.i.id,
           quantidadeRecebida: c.qr,
-          produtoCasaId: !produto[c.i.id] || produto[c.i.id] === SEM ? null : produto[c.i.id],
+          produtoCasaId:
+            !produto[c.i.id] || produto[c.i.id] === SEM || produto[c.i.id] === NOVO || produto[c.i.id]!.startsWith(OUTRA)
+              ? null
+              : produto[c.i.id],
+          produtoOutraCasaId: produto[c.i.id]?.startsWith(OUTRA) ? produto[c.i.id]!.slice(OUTRA.length) : null,
+          cadastrar: produto[c.i.id] === NOVO,
         })),
       }),
     });
@@ -109,6 +126,7 @@ export function ConferirLelisForm(props: {
             {calc.map(({ i, qr, valido, falta }) => {
               const esc = produto[i.id] ?? '';
               const daSugestao = i.sugestao && esc === i.sugestao.produtoId;
+              const daOutra = esc.startsWith(OUTRA) ? i.outras?.find((o) => OUTRA + o.produtoId === esc) : undefined;
               return (
                 <tr key={i.id} className={`border-t border-slate-100 align-top ${conferido[i.id] ? 'bg-emerald-50/40' : ''}`}>
                   <td className="px-3 py-2">
@@ -134,6 +152,12 @@ export function ConferirLelisForm(props: {
                     >
                       <option value="">— escolha —</option>
                       <option value={SEM}>Não dá entrada (não controla estoque)</option>
+                      {(i.outras ?? []).map((o) => (
+                        <option key={o.produtoId} value={OUTRA + o.produtoId}>
+                          ＋ Trazer de {o.casa}: {o.nome}
+                        </option>
+                      ))}
+                      <option value={NOVO}>＋ Cadastrar aqui: {i.descricao}</option>
                       {props.produtos.map((p) => (
                         <option key={p.id} value={p.id}>
                           {p.nome}
@@ -143,6 +167,16 @@ export function ConferirLelisForm(props: {
                       ))}
                     </select>
                     {daSugestao && <div className="text-[10px] text-slate-500">sugestão: {i.sugestao!.fonte}</div>}
+                    {daOutra && (
+                      <div className="text-[10px] text-sky-700">
+                        não achei aqui — cadastra em {props.nomeCasa} igual ao de {daOutra.casa}. Se já existe aqui com outro nome, escolha na lista.
+                      </div>
+                    )}
+                    {esc === NOVO && (
+                      <div className="text-[10px] text-amber-700">
+                        não achei em nenhuma casa — cadastra o vinho em {props.nomeCasa}. Se já existe aqui com outro nome, escolha na lista.
+                      </div>
+                    )}
                   </td>
                   <td className="px-3 py-2 text-right whitespace-nowrap">
                     {i.quantidade.toLocaleString('pt-BR', { maximumFractionDigits: 4 })}

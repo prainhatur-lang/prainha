@@ -12,7 +12,7 @@
 // (só se a casa ainda não pagou).
 
 import { db, schema } from '@concilia/db';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { dateToBrYmd } from '@/lib/datas';
 import { aplicarMpmEntrada, desfazerMpmEntrada } from '@/lib/custo-medio';
 
@@ -253,7 +253,7 @@ export async function listarPedidosLelis(lelisId: string) {
 //     INSUMO (é nele que a venda da bebida baixa).
 
 const PALAVRAS_FORA = new Set([
-  'vinho', 'tinto', 'branco', 'rose', 'tn', 'br', 'rs', 'rose', 'ml', '750ml', '375ml', '1500ml', 'promo', 'pj', 'min',
+  'vinho', 'tinto', 'branco', 'rose', 'tn', 'br', 'ro', 'rs', 'rose', 'ml', '750ml', '375ml', '1500ml', 'promo', 'pj', 'min',
   'de', 'da', 'do', 'des', 'di', 'del', 'la', 'le', 'el', 'e', 'i', 'arg', 'chi', 'ita', 'por', 'pt', 'fra', 'esp', 'uru', 'bra',
   'garrafa', 'gf', 'un', 'cx', 'docg', 'doc', 'igp', 'igt', 'aoc',
 ]);
@@ -374,6 +374,84 @@ export interface ItemConferencia {
   quantidadeRecebida: number;
   /** null = chegou mas não controla estoque na casa (não dá entrada) */
   produtoCasaId: string | null;
+  /** O vinho não existe nesta casa: traz o cadastro deste produto de OUTRA casa
+   *  (cadastra aqui igual) e dá entrada nele. Pedido do dono 11/11/2026. */
+  produtoOutraCasaId?: string | null;
+  /** Não existe em casa nenhuma: cadastra aqui a partir do item da Lelis. */
+  cadastrar?: boolean;
+}
+
+/** Produto parecido nas OUTRAS casas, pra oferecer na conferência quando a casa
+ *  que recebe não tem o vinho (11/11/2026). */
+export interface OpcaoOutraCasa {
+  produtoId: string;
+  nome: string;
+  casa: string;
+  fonte: string;
+}
+
+export async function sugerirDeOutrasCasas(opts: { lelisId: string; casaId: string; revIds: string[] }) {
+  const out: Record<string, OpcaoOutraCasa[]> = {};
+  for (const [outraId, casa] of Object.entries(CASAS_PEDIDO)) {
+    if (outraId === opts.casaId) continue;
+    const s = await sugerirProdutosCasa({ lelisId: opts.lelisId, casaId: outraId, revIds: opts.revIds });
+    const nomes = new Map(s.produtos.map((p) => [p.id, p.nome]));
+    for (const [revId, sg] of Object.entries(s.sugestoes)) {
+      const nome = nomes.get(sg.produtoId);
+      if (!nome) continue;
+      (out[revId] ??= []).push({ produtoId: sg.produtoId, nome, casa, fonte: sg.fonte });
+    }
+  }
+  return out;
+}
+
+/** Produto de estoque novo na casa (INSUMO da nuvem, igual ao que a
+ *  transferência entre casas cadastra). Se já existe um com o MESMO nome na
+ *  casa, usa ele — não duplica. */
+async function cadastrarProdutoNaCasa(
+  tx: Tx,
+  casaId: string,
+  d: {
+    nome: string; descricao?: string | null; unidade?: string | null; ncm?: string | null; cest?: string | null;
+    itemPorKg?: boolean | null; pesoUnitarioPadraoKg?: string | null; volumeUnitarioMl?: string | null;
+    categoriaCompras?: string | null; descricaoCompra?: string | null;
+  },
+): Promise<string> {
+  const nome = d.nome.trim();
+  const [igual] = linhas<{ id: string }>(
+    await tx.execute(sql`
+      SELECT id FROM produto
+       WHERE filial_id = ${casaId}::uuid AND coalesce(descontinuado, false) = false
+         AND lower(btrim(nome)) = lower(${nome})
+       ORDER BY coalesce(controla_estoque, false) DESC LIMIT 1`),
+  );
+  if (igual) return igual.id;
+  const [novo] = await tx
+    .insert(schema.produto)
+    .values({
+      filialId: casaId,
+      codigoExterno: null,
+      nome,
+      descricao: d.descricao ?? null,
+      tipo: 'INSUMO',
+      unidadeEstoque: d.unidade || 'un',
+      controlaEstoque: true,
+      estoqueControlado: true,
+      criadoNaNuvem: true,
+      descontinuado: false,
+      estoqueAtual: '0',
+      precoCusto: '0',
+      itemPorKg: d.itemPorKg ?? undefined,
+      pesoUnitarioPadraoKg: d.pesoUnitarioPadraoKg ?? undefined,
+      volumeUnitarioMl: d.volumeUnitarioMl ?? undefined,
+      categoriaCompras: d.categoriaCompras ?? undefined,
+      descricaoCompra: d.descricaoCompra ?? undefined,
+      ncm: d.ncm ?? undefined,
+      cest: d.cest ?? undefined,
+    })
+    .returning({ id: schema.produto.id });
+  if (!novo) throw new Error('falha ao cadastrar produto na casa');
+  return novo.id;
 }
 
 export async function receberPedidoLelis(opts: {
@@ -401,6 +479,60 @@ export async function receberPedidoLelis(opts: {
     );
     const inf = new Map(opts.itens.map((i) => [i.itemId, i]));
     if (opts.itens.some((i) => !itens.some((x) => x.id === i.itemId))) throw new RecusaPedido('item não é desse pedido');
+
+    // Vinho que a casa não tem (11/11/2026): traz o cadastro da outra casa ou
+    // cadastra do item da Lelis — e segue como se tivesse escolhido o produto.
+    const doItem = new Map(itens.map((x) => [x.id, x]));
+    const jaDaOutra = new Map<string, string>();
+    const jaNovo = new Map<string, string>();
+    for (const i of opts.itens) {
+      if (i.produtoCasaId || !(i.quantidadeRecebida > 0)) continue;
+      const it = doItem.get(i.itemId)!;
+      if (i.produtoOutraCasaId) {
+        let dest = jaDaOutra.get(i.produtoOutraCasaId);
+        if (!dest) {
+          const [po] = await tx.select().from(schema.produto).where(eq(schema.produto.id, i.produtoOutraCasaId));
+          if (!po || po.filialId === opts.casaId || !CASAS_PEDIDO[po.filialId]) {
+            throw new RecusaPedido(`"${it.descricao}": o produto da outra casa não foi encontrado`);
+          }
+          const [dp] = linhas<{ id: string }>(
+            await tx.execute(sql`
+              SELECT p.id FROM produto_depara_filial d JOIN produto p ON p.id = d.produto_destino_id
+               WHERE d.produto_origem_id = ${po.id}::uuid AND d.filial_destino_id = ${opts.casaId}::uuid
+                 AND p.filial_id = ${opts.casaId}::uuid AND coalesce(p.descontinuado, false) = false
+               LIMIT 1`),
+          );
+          dest =
+            dp?.id ??
+            (await cadastrarProdutoNaCasa(tx, opts.casaId, {
+              nome: po.nome ?? it.descricao, descricao: po.descricao, unidade: po.unidadeEstoque, ncm: po.ncm, cest: po.cest,
+              itemPorKg: po.itemPorKg, pesoUnitarioPadraoKg: po.pesoUnitarioPadraoKg, volumeUnitarioMl: po.volumeUnitarioMl,
+              categoriaCompras: po.categoriaCompras, descricaoCompra: po.descricaoCompra,
+            }));
+          // de/para nas duas direções: a transferência entre casas já acha o par
+          for (const [o, f, d] of [[po.id, opts.casaId, dest], [dest, po.filialId, po.id]] as const) {
+            await tx.execute(sql`
+              INSERT INTO produto_depara_filial (produto_origem_id, filial_destino_id, produto_destino_id, atualizado_por, atualizado_em)
+              VALUES (${o}::uuid, ${f}::uuid, ${d}::uuid, ${opts.userId}::uuid, now())
+              ON CONFLICT (produto_origem_id, filial_destino_id) DO NOTHING`);
+          }
+          jaDaOutra.set(i.produtoOutraCasaId, dest);
+        }
+        i.produtoCasaId = dest;
+      } else if (i.cadastrar) {
+        let dest = jaNovo.get(it.revenda_produto_id);
+        if (!dest) {
+          const [rp] = linhas<{ unidade: string | null; ncm: string | null; cest: string | null }>(
+            await tx.execute(sql`SELECT unidade, ncm, cest FROM revenda_produto WHERE id = ${it.revenda_produto_id}::uuid`),
+          );
+          dest = await cadastrarProdutoNaCasa(tx, opts.casaId, {
+            nome: it.descricao, unidade: (rp?.unidade || 'un').toLowerCase(), ncm: rp?.ncm, cest: rp?.cest,
+          });
+          jaNovo.set(it.revenda_produto_id, dest);
+        }
+        i.produtoCasaId = dest;
+      }
+    }
 
     const idsCasa = [...new Set(opts.itens.map((i) => i.produtoCasaId).filter((x): x is string => !!x))];
     if (idsCasa.length) {
@@ -530,7 +662,10 @@ export async function pedidoLelisParaConferir(pedidoId: string, casaId: string) 
        WHERE i.pedido_id = ${ped.id}::uuid ORDER BY i.descricao`),
   );
   const sug = await sugerirProdutosCasa({ lelisId: ped.filial_id, casaId, revIds: [...new Set(itens.map((i) => i.revenda_produto_id))] });
-  return { pedido: ped, itens, produtos: sug.produtos, sugestoes: sug.sugestoes };
+  const revIds = [...new Set(itens.map((i) => i.revenda_produto_id))];
+  // só busca nas outras casas quando o pedido ainda está pra conferir
+  const outras = ped.recebido_em || ped.status === 'CANCELADO' ? {} : await sugerirDeOutrasCasas({ lelisId: ped.filial_id, casaId, revIds });
+  return { pedido: ped, itens, produtos: sug.produtos, sugestoes: sug.sugestoes, outras };
 }
 
 /** Pedido inteiro pra tela /lelis/pedido/[id] (dono 06/11/2026: "não consigo abrir o pedido"). */
