@@ -10,7 +10,31 @@ type Ligado = { codigo: number; grupo: string; ordem: number };
 const brl = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const sem = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 
-export function TotemClient(props: { filialId: string; grupos: Grupo[]; inicial: Ligado[]; itens: Item[] }) {
+/** Foto do produto direto da loja (a mesma do cardápio QR). Sem foto → quadradinho. */
+function Foto({ base, codigo, tam }: { base?: string | null; codigo: number; tam: number }) {
+  const [erro, setErro] = useState(false);
+  const caixa = { width: tam, height: tam };
+  if (!base || erro) {
+    return (
+      <span style={caixa} className="inline-flex flex-none items-center justify-center rounded-md bg-slate-100 text-[9px] leading-tight text-slate-400">
+        sem foto
+      </span>
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={`${base}/produto-foto/${codigo}`}
+      alt=""
+      loading="lazy"
+      style={caixa}
+      onError={() => setErro(true)}
+      className="flex-none rounded-md bg-slate-50 object-contain"
+    />
+  );
+}
+
+export function TotemClient(props: { filialId: string; grupos: Grupo[]; inicial: Ligado[]; itens: Item[]; fotoBase?: string | null }) {
   const router = useRouter();
   const [ligados, setLigados] = useState<Ligado[]>(props.inicial);
   const [busca, setBusca] = useState('');
@@ -89,9 +113,12 @@ export function TotemClient(props: { filialId: string; grupos: Grupo[]; inicial:
               const g = grupoDe.get(i.codigo) ?? null;
               return (
                 <li key={i.codigo} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm">
-                  <span>
+                  <span className="flex items-center gap-2">
+                    <Foto base={props.fotoBase} codigo={i.codigo} tam={36} />
+                    <span>
                     {i.nome} <span className="text-slate-400">· {brl(i.preco)} · #{i.codigo}</span>
                     {!(i.preco > 0) && <span className="ml-1 text-red-600">(sem preço)</span>}
+                    </span>
                   </span>
                   <span className="flex gap-1">
                     {props.grupos.map((gr) => (
@@ -127,9 +154,12 @@ export function TotemClient(props: { filialId: string; grupos: Grupo[]; inicial:
                 const it = porCodigo.get(l.codigo);
                 return (
                   <li key={l.codigo} className="flex items-center justify-between gap-2 py-1.5 text-sm">
-                    <span>
+                    <span className="flex items-center gap-2">
+                      <Foto base={props.fotoBase} codigo={l.codigo} tam={44} />
+                      <span>
                       {it ? it.nome : <span className="text-red-600">item #{l.codigo} não existe mais</span>}
                       {it && <span className="text-slate-400"> · {brl(it.preco)}</span>}
+                      </span>
                     </span>
                     <span className="flex gap-1">
                       <button type="button" disabled={k === 0} onClick={() => mover(l.codigo, -1)} className="rounded border px-2 text-xs disabled:opacity-30">↑</button>

@@ -10,6 +10,7 @@ import { itensDaCasa } from '@/lib/cardapio-destaque';
 import { GRUPOS_TOTEM, listarTotem } from '@/lib/cardapio-totem';
 import { TotemClient } from './totem-client';
 import { EstoqueRecepcao } from './estoque-client';
+import { caixaUrlDaFilial } from '@/lib/caixa-loja';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,7 +23,11 @@ export default async function TotemPage(props: { searchParams: Promise<{ filialI
   const escolhida = await escolherFilial(filiais, sp.filialId);
   if (!escolhida) redirect('/inicio');
   const filial = escolhida;
-  const [ligados, itens] = await Promise.all([listarTotem(filial.id), itensDaCasa(filial.id)]);
+  const [ligados, itens, lojaUrl] = await Promise.all([
+    listarTotem(filial.id),
+    itensDaCasa(filial.id),
+    caixaUrlDaFilial(filial.id).catch(() => null),
+  ]);
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -37,7 +42,8 @@ export default async function TotemPage(props: { searchParams: Promise<{ filialI
         <p className="mt-1 text-xs text-slate-500">
           Cardápio só do totem da recepção: o cliente escolhe, paga no Pix na própria tela e retira no balcão com o
           número do pedido (o pedido sai na impressora do bar). Só aparece o que estiver ligado aqui. A loja
-          atualiza em até 5 min. Tela do totem: <code>/totem</code> no servidor da loja.
+          atualiza em até 5 min. Tela do totem: <code>/totem</code> no servidor da loja. Na tela do totem os grupos
+          seguem as categorias do cardápio QR e a foto é a mesma do cardápio QR (vem da loja).
         </p>
         {filiais.length > 1 && (
           <div className="mt-3 flex flex-wrap gap-2">
@@ -62,6 +68,7 @@ export default async function TotemPage(props: { searchParams: Promise<{ filialI
           grupos={GRUPOS_TOTEM.map((g) => ({ id: g.id, nome: g.nome, emoji: g.emoji }))}
           inicial={ligados}
           itens={itens}
+          fotoBase={lojaUrl}
         />
         <EstoqueRecepcao key={'est-' + filial.id} filialId={filial.id} />
       </div>
