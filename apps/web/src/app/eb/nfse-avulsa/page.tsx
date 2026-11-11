@@ -89,6 +89,7 @@ export default async function NfseAvulsaPage() {
               cnpj: emit.cnpj,
               codigoMunicipio: emit.codigoMunicipio,
               ambiente: emit.ambiente,
+              codigoTributacao: emit.codigoTributacao,
               certificado: cert ? { cn: cert.cn, validadeFim: cert.validadeFim } : null,
             }}
             notas={notas}

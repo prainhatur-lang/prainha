@@ -35,11 +35,14 @@ type Emitente = {
   cnpj: string;
   codigoMunicipio: string;
   ambiente: string;
+  /** código usado nas notas da E.B. pras casas — só sugestão, quem emite escolhe */
+  codigoTributacao: string | null;
   certificado: { cn: string | null; validadeFim: string | null } | null;
 };
 
 const fmtData = (iso: string) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
 const fmtCnpj = (c: string) => c.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5');
+const fmtCod = (c: string) => c.replace(/^(\d{2})(\d{2})(\d{2})$/, '$1.$2.$3');
 const num = (s: string) => Number(s.replace(/\./g, '').replace(',', '.'));
 const campo = 'mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-900';
 const rotulo = 'block text-xs text-slate-500';
@@ -129,6 +132,16 @@ export function NfseAvulsaManager(props: { emitente: Emitente; notas: NotaAvulsa
   }
 
   async function salvar() {
+    const cod = f.codigoTributacao.replace(/\D/g, '');
+    if (cod.length !== 6) {
+      setMsg({
+        t: cod.length === 0
+          ? 'Falta o código de tributação nacional do serviço: são 6 dígitos, no formato 17.05.01 (item da lista de serviços + 2 dígitos finais).'
+          : `O código de tributação nacional tem 6 dígitos, no formato 17.05.01 — você digitou ${cod.length}. Se tem só o item da lista (ex.: 17.05), faltam os 2 dígitos finais, que quase sempre são 01; confirme com o contador.`,
+        erro: true,
+      });
+      return;
+    }
     const j = await chamar('salvar', {
       acao: 'salvar',
       id: f.id,
@@ -265,7 +278,18 @@ export function NfseAvulsaManager(props: { emitente: Emitente; notas: NotaAvulsa
         <div className="mt-2 grid gap-3 sm:grid-cols-6">
           <label className={`${rotulo} sm:col-span-2`}>
             Código de tributação nacional (6 dígitos)
-            <input value={f.codigoTributacao} onChange={(ev) => set('codigoTributacao', ev.target.value)} inputMode="numeric" placeholder="o que o contador passar" className={campo} />
+            <input value={f.codigoTributacao} onChange={(ev) => set('codigoTributacao', ev.target.value)} inputMode="numeric" placeholder="ex.: 17.05.01" className={campo} />
+            <span className="mt-1 block text-[11px] leading-snug text-slate-500">
+              Item da lista de serviços + 2 dígitos finais (17.05 vira 17.05.01). É o contador quem diz qual.
+              {e.codigoTributacao && e.codigoTributacao.length === 6 && (
+                <>
+                  {' '}Nas notas da E.B. pras casas é {fmtCod(e.codigoTributacao)}.{' '}
+                  <button type="button" onClick={() => set('codigoTributacao', fmtCod(e.codigoTributacao!))} className="font-medium text-sky-700 hover:underline">
+                    usar este
+                  </button>
+                </>
+              )}
+            </span>
           </label>
           <label className={`${rotulo} sm:col-span-2`}>
             Cidade onde o serviço foi prestado (IBGE)
