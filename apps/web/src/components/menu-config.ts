@@ -983,6 +983,13 @@ export const MENU_AREAS: MenuArea[] = [
             aka: ['estoque Lelis', 'saldo Lelis', 'distribuidora'],
           },
           {
+            label: 'Lelis: inventário (contagem)',
+            href: '/lelis/inventario',
+            perm: 'configuracao.read',
+            interno: true,
+            aka: ['inventário Lelis', 'contagem de estoque Lelis', 'ajuste de estoque Lelis'],
+          },
+          {
             label: 'Lelis: preço de venda e NF-e',
             href: '/lelis/precos',
             perm: 'configuracao.read',

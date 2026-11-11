@@ -87,6 +87,9 @@ export default async function EstoqueLelisPage() {
             </p>
           </div>
           <div className="flex gap-2">
+            <Link href="/lelis/inventario" className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">
+              Fazer inventário →
+            </Link>
             <Link href="/lelis/vender" className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">
               Vender pras casas →
             </Link>
