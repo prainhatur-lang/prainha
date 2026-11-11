@@ -5235,6 +5235,42 @@ async function apiVitrine() {
         // arte pronta do marketing (a do Instagram). 'vitrine_cfg'.happy.arte troca
         // (nome do arquivo em app.prainhabar.com/vitrine/ ou link https; '' desliga).
         arte: arteVitrine(cHh.arte !== undefined ? cHh.arte : (ARTE_HAPPY_PADRAO[FILIAL_ID] || '')) });
+
+      // ---- Petiscos do happy (pedido do dono 11/11/2026): os itens ligados ao
+      // destaque "Happy hour" na nuvem, menos as bebidas. Ligou mais um item lá,
+      // aparece aqui. 'vitrine_cfg'.happy.petiscos = [códigos] troca a lista;
+      // .petiscos_desligado = true tira o slide.
+      if (cHh.petiscos_desligado !== true) {
+        const cods = (Array.isArray(cHh.petiscos) ? cHh.petiscos : (dHh.codigos || [])).map(Number).filter((n) => n > 0);
+        const beb = /chopp|cerveja|long\s*neck|aperol|spritz|drink|caipi|dose|vinho|suco|refri|[aá]gua|gin\b|vodka|whisk/i;
+        let pets = [];
+        if (cods.length) {
+          try {
+            const rows = await sql`SELECT DISTINCT ON (pl.codigo_pdv) pl.codigo_pdv, pl.produto_codigo, pl.nome, pl.tamanho, pl.preco,
+                pl.descricao, pl.sem_estoque, f.atualizado, (f.produto_codigo IS NOT NULL) AS tem_foto
+              FROM produto_local pl LEFT JOIN produto_foto f ON f.produto_codigo = pl.produto_codigo
+              WHERE pl.codigo_pdv = ANY(${cods}) ORDER BY pl.codigo_pdv`;
+            const vistos = new Set();
+            for (const c of cods) {
+              const r = rows.find((x) => Number(x.codigo_pdv) === c);
+              if (!r || r.sem_estoque || !(Number(r.preco) > 1) || beb.test(String(r.nome || ''))) continue;
+              const k = String(r.nome || '').trim().toLowerCase();
+              if (vistos.has(k)) continue;
+              vistos.add(k);
+              pets.push({ nome: String(r.nome || '').trim(), tamanho: r.tamanho || '', preco: Number(r.preco),
+                descricao: r.descricao || '',
+                foto: r.tem_foto ? '/produto-foto/' + r.produto_codigo + '?v=' + (r.atualizado ? new Date(r.atualizado).getTime() : 0) : null });
+            }
+          } catch (e) { console.error('[vitrine petiscos]', e.message); pets = []; }
+        }
+        if (pets.length) {
+          const pc = Number(cHh.preco) || (chopp ? Number(chopp.preco) : 0);
+          slides.push({ tipo: 'petiscos', titulo: cHh.titulo_petiscos || 'Petiscos do happy',
+            quando: diasTxt(dHh.dias) + ' · das ' + hTxt(ini) + ' às ' + hTxt(fim),
+            itens: pets.slice(0, 4),
+            rodape: cHh.rodape_petiscos || (pc ? 'Pra acompanhar: chopp dobrado, sai a ' + ('R$ ' + (pc / 2).toFixed(2).replace('.', ',').replace(',00', '')) + ' cada' : '') });
+        }
+      }
     }
   }
 
@@ -31259,10 +31295,34 @@ html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:syste
 .bolha{position:absolute;bottom:-6vmin;width:3vmin;height:3vmin;border-radius:50%;background:rgba(255,255,255,.35);animation:bolha linear infinite}
 @keyframes bolha{to{transform:translateY(-110vh);opacity:0}}
 /* happy com a arte do marketing */
-.sl.hha{background:#0e2a3a;flex-direction:row;gap:5vmin;padding:0 4vmin}
-.hha .art{position:relative;z-index:2;height:90vh;width:auto;max-width:60vw;object-fit:contain;border-radius:2.5vmin;box-shadow:0 3vmin 9vmin rgba(0,0,0,.6);animation:kb 13s ease-out both}
-.hha .lado{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;gap:2.5vmin}
-.hha .it{margin:0;font-size:3.6vmin;color:#fff}
+.sl.hha{background:radial-gradient(circle at 72% 55%,#ff9a1f 0,#c2410c 42%,#3b0d0a 100%);flex-direction:row;gap:6vmin;padding:0 5vmin}
+.hha .art{position:relative;z-index:2;height:86vh;width:auto;max-width:56vw;object-fit:contain;border-radius:2.5vmin;border:.8vmin solid #fff;box-shadow:0 3vmin 9vmin rgba(0,0,0,.6);animation:entra 1.1s cubic-bezier(.2,.8,.2,1) both,kb 13s 1.1s ease-out both;transform-origin:center}
+@keyframes entra{from{opacity:0;transform:translateX(-6vmin) rotate(-3deg)}to{opacity:1;transform:none}}
+.hha .lado{position:relative;z-index:2;display:flex;flex-direction:column;align-items:center;gap:1.8vmin;max-width:40vw;text-align:center}
+.hha .lado>*{animation:sobe .8s both}.hha .lado>*:nth-child(2){animation-delay:.15s}.hha .lado>*:nth-child(3){animation-delay:.3s}.hha .lado>*:nth-child(4){animation-delay:.45s}.hha .lado>*:nth-child(5){animation-delay:.6s}
+.hha .tag{color:#fff;font-size:2.4vmin;opacity:.9}
+.hha .ch{font-size:9vmin;line-height:.95;background:linear-gradient(180deg,#fff,#ffd27a);-webkit-background-clip:text;background-clip:text;color:transparent;text-shadow:none;filter:drop-shadow(0 .6vmin 1.4vmin rgba(0,0,0,.35))}
+.hha .it{margin:0;font-size:3.2vmin;color:#ffe9c2}
+.hha .preco{background:#fff;margin-top:1.5vmin}
+.preco.duo b{font-size:13vmin}.preco.duo em{font-style:normal;font-size:3.4vmin;font-weight:900;text-transform:uppercase;letter-spacing:.12em;margin-top:.4vmin}
+.sub2{font-size:3vmin;font-weight:800;color:#fff;background:rgba(0,0,0,.28);padding:1vmin 3.2vmin;border-radius:99px}
+/* petiscos do happy */
+.sl.pt{background:radial-gradient(circle at 50% 110%,#ff9a1f 0,#b4400c 35%,#2a0f08 85%)}
+.pt .tag{color:#ffd27a}
+.pt .tt{background:linear-gradient(180deg,#fff,#ffd27a);-webkit-background-clip:text;background-clip:text}
+.cards2{display:flex;align-items:stretch;justify-content:center;gap:4vmin;margin:4vmin 0 3.5vmin;flex-wrap:nowrap}
+.pc2{width:36vmin;display:flex;flex-direction:column;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.22);border-radius:3.4vmin;overflow:hidden;box-shadow:0 2.4vmin 6vmin rgba(0,0,0,.45);animation:sobe .9s both}
+.pc2:nth-child(2){animation-delay:.2s}.pc2:nth-child(3){animation-delay:.4s}.pc2:nth-child(4){animation-delay:.6s}
+.pc2 .ft{height:27vmin;background:#123a50 center/cover;display:flex;align-items:center;justify-content:center;gap:1vmin;font-size:12vmin}
+.pc2 .ft.sem{background:radial-gradient(circle at 50% 38%,#ffe1a0 0,#ffb21e 30%,#ff8a00 55%,#9a3412 100%)}
+.pc2 .ft.sem span{filter:drop-shadow(0 1.4vmin 1.6vmin rgba(0,0,0,.35));animation:brinde 3s ease-in-out infinite}
+.pc2 .ft.sem span+span{animation-delay:-1.5s}
+.pc2 .tx{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:space-between;gap:1vmin;padding:2.2vmin 2.4vmin 2.8vmin;text-align:center}
+.pc2 .tm{font-size:2vmin;letter-spacing:.22em;text-transform:uppercase;color:var(--sun);font-weight:800}
+.pc2 .no{font-size:3.8vmin;font-weight:900;line-height:1.08}
+.pc2 .vl{margin-top:.6vmin;font-size:4.4vmin;font-weight:900;color:var(--bg);background:linear-gradient(135deg,var(--sun),var(--sun2));padding:.8vmin 3.2vmin;border-radius:99px;box-shadow:0 1vmin 3vmin rgba(255,138,0,.4)}
+.rod2{font-size:3vmin;font-weight:800;color:#fff;background:rgba(0,0,0,.3);padding:1.2vmin 3.6vmin;border-radius:99px}
+@media (orientation:landscape){.cards2{margin:2.5vmin 0 2.5vmin}.pc2{width:34vmin}.pc2 .ft{height:24vmin}}
 @media (orientation:portrait){.sl.hha{flex-direction:column;gap:3vmin}.hha .art{height:auto;width:92vw;max-width:92vw;max-height:76vh}}
 @media (orientation:landscape){.sl.hha{padding-top:0}}
 #vazio{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2vmin;font-size:4vmin;color:rgba(255,255,255,.7)}
@@ -31276,6 +31336,19 @@ html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:syste
     localStorage.setItem('totem_modo','vitrine')}catch(e){}
   var brl=function(v){return 'R$ '+Number(v||0).toFixed(2).replace('.',',')};
   var esc=function(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})};
+  // R$ 7 (sem ,00 quando é redondo) — "sai a R$ 7 cada"
+  var brlC=function(v){v=Number(v||0);return 'R$ '+(Math.round(v*100)%100?v.toFixed(2).replace('.',','):String(Math.round(v)))};
+  var precoDuo=function(p){return p?'<div class="preco duo"><small>sai a</small><b>'+brlC(p/2)+'</b><em>cada chopp</em></div><div class="sub2">2 chopps por '+brlC(p)+'</div>':''};
+  var bolhas=function(n){var b='';for(var i=0;i<n;i++)b+='<span class="bolha" style="left:'+(Math.random()*100)+'%;animation-duration:'+(4+Math.random()*5)+'s;animation-delay:-'+(Math.random()*6)+'s;transform:scale('+(0.5+Math.random())+')"></span>';return b};
+  var emoPet=function(n){n=String(n||'').toLowerCase();var e=[];
+    if(/camar/.test(n))e.push('🦐');else if(/salm|peixe|frutos do mar/.test(n))e.push('🐟');
+    if(/picanha|carne|fil[eé]|costela|alcatra|calabresa/.test(n)&&!/past|croquete/.test(n))e.push('🥩');
+    if(/past[eé]i?s?|pastel/.test(n))e.push('🥟');
+    if(/bolinho|croquete/.test(n)&&e.length<2&&!e.length)e.push('🧆');
+    if(/frit|batata/.test(n))e.push('🍟');
+    if(/frango|asa|coxinha/.test(n)&&!e.length)e.push('🍗');
+    if(/queijo/.test(n)&&!e.length)e.push('🧀');
+    if(!e.length)e.push('🍢');return e.slice(0,2)};
   var LOJA='',SL=[],FILA=[],pos=0,atual=null,timer=null,assin='',ARTE={};
   function preArte(u){if(!u||ARTE[u]!==undefined)return;ARTE[u]=null;var im=new Image();im.onload=function(){ARTE[u]=true};im.onerror=function(){ARTE[u]=false;setTimeout(function(){delete ARTE[u]},300000)};im.src=u}
   function html(s){
@@ -31293,11 +31366,18 @@ html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:syste
       return marca+'<div class="tag">Hoje no almoço</div><div class="tt">'+esc(s.titulo)+'</div><div class="qd">'+esc(s.quando)+'</div><div class="cards">'+c+'</div>'+op+'<div class="preco"><small>tudo por</small><b>'+brl(s.preco)+'</b></div>';
     }
     if(s.tipo==='happy'&&s.arte&&ARTE[s.arte]===true){
-      return '<div class="bgimg" style="background-image:url('+s.arte+')"></div><img class="art" src="'+esc(s.arte)+'" alt=""><div class="lado"><div class="it">'+esc(s.item)+'</div>'+(s.preco?'<div class="preco"><small>2 chopps por</small><b>'+brl(s.preco)+'</b></div>':'')+'</div>';
+      return bolhas(12)+'<img class="art" src="'+esc(s.arte)+'" alt=""><div class="lado"><div class="tag">'+esc(s.titulo)+' · '+esc(s.quando)+'</div><div class="ch">'+esc(s.destaque)+'</div><div class="it">'+esc(s.chamada)+' · '+esc(s.item)+'</div>'+precoDuo(s.preco)+'</div>';
     }
     if(s.tipo==='happy'){
-      var b='';for(var i=0;i<14;i++)b+='<span class="bolha" style="left:'+(Math.random()*100)+'%;animation-duration:'+(4+Math.random()*5)+'s;animation-delay:-'+(Math.random()*6)+'s;transform:scale('+(0.5+Math.random())+')"></span>';
-      return b+marca+'<div class="tag">'+esc(s.quando)+'</div><div class="tt">'+esc(s.titulo)+'</div><div class="copos">🍺🍺</div><div class="ch">'+esc(s.destaque)+'</div><div class="it">'+esc(s.chamada)+' · '+esc(s.item)+'</div>'+(s.preco?'<div class="preco"><small>2 chopps por</small><b>'+brl(s.preco)+'</b></div>':'');
+      return bolhas(14)+marca+'<div class="tag">'+esc(s.quando)+'</div><div class="tt">'+esc(s.titulo)+'</div><div class="copos">🍺🍺</div><div class="ch">'+esc(s.destaque)+'</div><div class="it">'+esc(s.chamada)+' · '+esc(s.item)+'</div>'+precoDuo(s.preco);
+    }
+    if(s.tipo==='petiscos'){
+      var c2='';
+      s.itens.forEach(function(k){
+        var ft=k.foto?'<div class="ft" style="background-image:url('+k.foto+')"></div>':'<div class="ft sem">'+emoPet(k.nome).map(function(x){return '<span>'+x+'</span>'}).join('')+'</div>';
+        c2+='<div class="pc2">'+ft+'<div class="tx">'+(k.tamanho?'<div class="tm">'+esc(k.tamanho)+'</div>':'')+'<div class="no">'+esc(k.nome)+'</div><div class="vl">'+brl(k.preco)+'</div></div></div>';
+      });
+      return bolhas(8)+marca+'<div class="tag">Happy hour · '+esc(s.quando)+'</div><div class="tt">'+esc(s.titulo)+'</div><div class="cards2">'+c2+'</div>'+(s.rodape?'<div class="rod2">🍺 '+esc(s.rodape)+'</div>':'');
     }
     return '';
   }
@@ -31313,12 +31393,13 @@ html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:syste
     document.getElementById('vazio').style.display=FILA.length?'none':'flex';
     if(!FILA.length){document.getElementById('vazio').textContent='Sem pratos com foto pra mostrar';timer=setTimeout(proximo,15000);return}
     var s=FILA[pos%FILA.length];pos=(pos+1)%FILA.length;
-    var el=document.createElement('div');el.className='sl '+(s.tipo==='executivo'?'ex':s.tipo==='happy'?(s.arte&&ARTE[s.arte]===true?'hha':'hh'):'');
+    var el=document.createElement('div');el.className='sl '+(s.tipo==='executivo'?'ex':s.tipo==='petiscos'?'pt':s.tipo==='happy'?(s.arte&&ARTE[s.arte]===true?'hha':'hh'):'');
     el.innerHTML=html(s);document.body.appendChild(el);
     void el.offsetWidth;el.classList.add('on');
     var velho=atual;atual=el;
     if(velho){velho.classList.remove('on');setTimeout(function(){velho.remove()},1400)}
     var nx=FILA[pos%FILA.length];if(nx&&nx.foto){var im=new Image();im.src=nx.foto}
+    if(nx&&nx.itens)nx.itens.forEach(function(k){if(k.foto){var i2=new Image();i2.src=k.foto}});
     timer=setTimeout(proximo,s.tipo==='prato'?7000:13000);
   }
   function carregar(){
