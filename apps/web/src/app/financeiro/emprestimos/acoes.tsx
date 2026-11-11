@@ -5,13 +5,13 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-async function chamar(body: Record<string, unknown>): Promise<{ numero?: number }> {
+async function chamar(body: Record<string, unknown>): Promise<{ numero?: number; cadastros?: number }> {
   const r = await fetch('/api/financeiro/mutuos', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
-  const j = (await r.json().catch(() => ({}))) as { error?: string; numero?: number };
+  const j = (await r.json().catch(() => ({}))) as { error?: string; numero?: number; cadastros?: number };
   if (!r.ok) throw new Error(j.error || `erro ${r.status}`);
   return j;
 }
@@ -139,5 +139,93 @@ export function CancelarMutuo({ mutuoId, numero }: { mutuoId: string; numero: nu
     <button onClick={cancelar} disabled={ocupado} className="text-red-700 hover:underline disabled:opacity-50">
       {ocupado ? 'cancelando…' : 'cancelar'}
     </button>
+  );
+}
+
+type EP = { id: string; nome: string; cnpj: string; chave: string | null; favorecido: string | null; cadastros: number; iguais: number };
+
+/** Cadastro único do Pix de cada empresa: a chave em que ela recebe das outras. */
+export function PixDasEmpresas({ empresas, podeEditar }: { empresas: EP[]; podeEditar: boolean }) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-4">
+      <h2 className="text-sm font-semibold text-slate-700">Pix de cada empresa (cadastro único)</h2>
+      <p className="mb-3 text-xs text-slate-500">
+        A chave em que cada empresa recebe das outras. Salvou aqui, vale no cadastro dela como fornecedor em todas as empresas —
+        o empréstimo e o Pagar por Pix já saem com a chave certa.
+      </p>
+      <div className="divide-y divide-slate-100">
+        {empresas.map((e) => (
+          <LinhaPix key={e.id} e={e} podeEditar={podeEditar} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function LinhaPix({ e, podeEditar }: { e: EP; podeEditar: boolean }) {
+  const router = useRouter();
+  const [chave, setChave] = useState(e.chave ?? '');
+  const [favorecido, setFavorecido] = useState(e.favorecido ?? '');
+  const [msg, setMsg] = useState<{ t: string; ruim: boolean } | null>(null);
+  const [ocupado, setOcupado] = useState(false);
+  const mudou = chave.trim() !== (e.chave ?? '') || favorecido.trim() !== (e.favorecido ?? '');
+
+  async function salvar() {
+    if (!chave.trim()) return setMsg({ t: 'digite a chave', ruim: true });
+    if (!window.confirm(`Pix da ${e.nome}:\n${chave.trim()}\n\nVale pra todas as empresas pagarem a ela. Confirma?`)) return;
+    setOcupado(true);
+    setMsg(null);
+    try {
+      const j = await chamar({ acao: 'pix', filialId: e.id, chave: chave.trim(), favorecido: favorecido.trim() });
+      setMsg({ t: `✓ salvo${j.cadastros ? ` · ${j.cadastros} cadastro(s) atualizado(s)` : ''}`, ruim: false });
+      router.refresh();
+    } catch (er) {
+      setMsg({ t: (er as Error).message, ruim: true });
+    } finally {
+      setOcupado(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-wrap items-end gap-2 py-2">
+      <div className="w-full sm:w-44">
+        <div className="text-sm font-medium text-slate-800">{e.nome}</div>
+        <div className="font-mono text-xs text-slate-500">{e.cnpj}</div>
+      </div>
+      {podeEditar ? (
+        <>
+          <label className="block flex-1 text-xs text-slate-500" style={{ minWidth: 180 }}>
+            Chave Pix
+            <input className={campo} placeholder="sem chave — informe" value={chave} onChange={(ev) => setChave(ev.target.value)} />
+          </label>
+          <label className="block flex-1 text-xs text-slate-500" style={{ minWidth: 160 }}>
+            Quem recebe (se o nome no banco for outro)
+            <input className={campo} value={favorecido} onChange={(ev) => setFavorecido(ev.target.value)} />
+          </label>
+          <button
+            onClick={salvar}
+            disabled={ocupado || !mudou}
+            className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-40"
+          >
+            {ocupado ? 'Salvando…' : 'Salvar'}
+          </button>
+        </>
+      ) : (
+        <div className="flex-1 font-mono text-sm text-slate-700">{e.chave ?? '—'}</div>
+      )}
+      <div className="w-full text-xs">
+        {msg ? (
+          <span className={msg.ruim ? 'text-red-700' : 'text-emerald-700'}>{msg.t}</span>
+        ) : e.chave ? (
+          <span className="text-slate-500">
+            {e.cadastros === 0
+              ? 'ainda não é fornecedor em nenhuma empresa — entra com essa chave quando for'
+              : `${e.iguais} de ${e.cadastros} cadastro(s) de fornecedor com essa chave`}
+          </span>
+        ) : (
+          <span className="font-medium text-amber-700">sem chave cadastrada</span>
+        )}
+      </div>
+    </div>
   );
 }

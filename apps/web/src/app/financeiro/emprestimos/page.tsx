@@ -14,7 +14,8 @@ import { AppHeader } from '@/components/app-header';
 import { brl, formatDate } from '@/lib/format';
 import { hojeBr, diasAtrasBr } from '@/lib/datas';
 import { listarMutuos } from '@/lib/mutuo';
-import { CancelarMutuo, NovoMutuo } from './acoes';
+import { listarPixDasEmpresas } from '@/lib/empresa-pix';
+import { CancelarMutuo, NovoMutuo, PixDasEmpresas } from './acoes';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -35,6 +36,7 @@ export default async function Page() {
   const ativos = todos.filter((m) => m.status !== 'CANCELADO');
   const abertos = ativos.filter((m) => m.saldo > 0.004);
   const hoje = hojeBr();
+  const pixEmpresas = await listarPixDasEmpresas(filiais.map((f) => f.id));
 
   // quem deve a quem (só o que está em aberto)
   const pares = new Map<string, { devedora: string; credora: string; saldo: number; qtd: number; atrasado: number }>();
@@ -93,6 +95,10 @@ export default async function Page() {
             Lançar empréstimo entre empresas é só para o Admin.
           </p>
         )}
+
+        <div className="mt-6">
+          <PixDasEmpresas empresas={pixEmpresas} podeEditar={admin} />
+        </div>
 
         <div className="mt-6 overflow-x-auto rounded-xl border border-slate-200 bg-white">
           <table className="w-full text-sm">

@@ -464,6 +464,15 @@ export const filial = pgTable(
     pixProvedor: text('pix_provedor'),
     /** Chave Pix da conta que recebe (Sicredi/Inter); a cobrança é gerada nela. */
     pixChave: text('pix_chave'),
+    /** Cadastro único do Pix da EMPRESA pra RECEBER das outras empresas do
+     *  sistema (empréstimo/mútuo, repasse entre casas): a chave que o dono
+     *  autorizou. Vale pro cadastro dela como fornecedor em todas as outras
+     *  (lib/empresa-pix). Não é a chave da cobrança (pix_chave acima).
+     *  migrate:empresa-pix, pedido do dono 11/11/2026. */
+    pixTransfChave: varchar('pix_transf_chave', { length: 100 }),
+    pixTransfFavorecido: varchar('pix_transf_favorecido', { length: 200 }),
+    pixTransfPor: uuid('pix_transf_por'),
+    pixTransfEm: timestamp('pix_transf_em', { withTimezone: true }),
     /** Nota minima (1-5) que direciona o cliente a publicar no Google. Abaixo
      *  disso a avaliacao fica interna pra equipe resolver. Default 4. */
     notaCorteGoogle: integer('nota_corte_google').notNull().default(4),

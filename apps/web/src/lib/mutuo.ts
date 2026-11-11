@@ -3,13 +3,15 @@
 // retornar esse dinheiro"). Vive em cima do contas a pagar: ver o cabeçalho de
 // packages/db/src/schema/mutuo.ts. Tela: /financeiro/emprestimos.
 //
-// Não inventa chave Pix: o fornecedor criado aqui entra só com nome e CNPJ; a
-// chave é cadastrada/autorizada pelo dono como em qualquer fornecedor.
+// Não inventa chave Pix: o fornecedor criado aqui entra com nome, CNPJ e a chave
+// do cadastro único da empresa (lib/empresa-pix — a que o dono autorizou). Sem
+// cadastro único, entra sem chave.
 
 import { db, schema } from '@concilia/db';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { recalcularAgregado } from '@/lib/conta-pagar-baixa';
 import { registrarExclusao, resumoConta } from '@/lib/registro-exclusao';
+import { pixDaEmpresa } from '@/lib/empresa-pix';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -23,8 +25,9 @@ type Empresa = { id: string; nome: string; cnpj: string };
 async function fornecedorDaEmpresa(tx: Tx, filialId: string, outra: Empresa): Promise<string> {
   const cnpj = outra.cnpj.replace(/\D/g, '');
   if (cnpj.length !== 14) throw new RecusaMutuo(`${outra.nome} está sem CNPJ no cadastro da empresa`);
+  const pix = await pixDaEmpresa(tx, outra.id);
   const [tem] = await tx
-    .select({ id: schema.fornecedor.id })
+    .select({ id: schema.fornecedor.id, chavePix: schema.fornecedor.chavePix })
     .from(schema.fornecedor)
     .where(and(
       eq(schema.fornecedor.filialId, filialId),
@@ -32,10 +35,24 @@ async function fornecedorDaEmpresa(tx: Tx, filialId: string, outra: Empresa): Pr
       sql`regexp_replace(coalesce(${schema.fornecedor.cnpjOuCpf}, ''), '\\D', '', 'g') = ${cnpj}`,
     ))
     .limit(1);
-  if (tem) return tem.id;
+  if (tem) {
+    // cadastro que já existe: só completa a chave vazia, nunca troca a que está lá
+    if (pix && !tem.chavePix?.trim()) {
+      await tx
+        .update(schema.fornecedor)
+        .set({ chavePix: pix.chave, pixFavorecido: pix.favorecido })
+        .where(eq(schema.fornecedor.id, tem.id));
+    }
+    return tem.id;
+  }
   const [novo] = await tx
     .insert(schema.fornecedor)
-    .values({ filialId, nome: outra.nome.slice(0, 200), cnpjOuCpf: cnpj })
+    .values({
+      filialId,
+      nome: outra.nome.slice(0, 200),
+      cnpjOuCpf: cnpj,
+      ...(pix ? { chavePix: pix.chave, pixFavorecido: pix.favorecido } : {}),
+    })
     .returning({ id: schema.fornecedor.id });
   return novo.id;
 }

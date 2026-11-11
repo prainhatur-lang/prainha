@@ -2,6 +2,7 @@
 // (tela /financeiro/emprestimos). Uma ação por chamada:
 //   { acao:'criar', credoraId, devedoraId, valor, data, dataDevolucao, observacao?, jaSaiu? }
 //   { acao:'cancelar', mutuoId, motivo }
+//   { acao:'pix', filialId, chave, favorecido? }  — cadastro único do Pix da empresa (lib/empresa-pix)
 // Só o grupo Admin (mesmo critério de pagar Pix e de ver a E.B. no financeiro).
 // A devolução não passa por aqui: é baixa na conta de devolução, pelo contas a pagar.
 
@@ -12,6 +13,7 @@ import { exigirPermApi } from '@/lib/exigir-perm';
 import { ehAdmin } from '@/lib/usuario-admin';
 import { filiaisDoFinanceiro } from '@/lib/eb/acesso-financeiro';
 import { RecusaMutuo, cancelarMutuo, criarMutuo } from '@/lib/mutuo';
+import { RecusaEmpresaPix, definirPixDaEmpresa } from '@/lib/empresa-pix';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -65,11 +67,22 @@ export async function POST(request: Request) {
         await cancelarMutuo({ usuarioId: user.id, mutuoId, motivo });
         return NextResponse.json({ ok: true });
       }
+      case 'pix': {
+        const empresa = filiais.find((f) => f.id === String(b.filialId ?? ''));
+        if (!empresa) return err('empresa não encontrada', 404);
+        const r = await definirPixDaEmpresa({
+          usuarioId: user.id,
+          filialId: empresa.id,
+          chave: String(b.chave ?? ''),
+          favorecido: String(b.favorecido ?? '').trim().slice(0, 200) || null,
+        });
+        return NextResponse.json({ ok: true, cadastros: r.cadastros });
+      }
       default:
         return err('ação desconhecida');
     }
   } catch (e) {
-    if (e instanceof RecusaMutuo) return err(e.message);
+    if (e instanceof RecusaMutuo || e instanceof RecusaEmpresaPix) return err(e.message);
     throw e;
   }
 }
