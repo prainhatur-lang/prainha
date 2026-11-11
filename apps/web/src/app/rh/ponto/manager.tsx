@@ -34,6 +34,7 @@ interface Celula {
   semIntervalo?: boolean;
   /** Intervalo pré-assinalado (07/11/2026): minutos descontados (30) no dia sem intervalo batido. */
   intervaloPreMin?: number;
+  intervaloCctMin?: number;
 }
 interface Props {
   /** Casa aberta na tela: a correção grava nela, não na casa do cadastro. */
@@ -330,6 +331,11 @@ export function PontoManager({ filialId, dias, funcionarios, grade, gemeos = [],
                             {!incompleto && !!cel.intervaloPreMin && (
                               <div className="text-slate-400" title="Intervalo pré-assinalado no cadastro (CCT): desconta 30 min quando não bate o intervalo">
                                 −{cel.intervaloPreMin} min intervalo
+                              </div>
+                            )}
+                            {!incompleto && !!cel.intervaloCctMin && (
+                              <div className="text-slate-400" title="Intervalo batido com menos de 30 min conta como 30 (CCT): a diferença sai das horas do dia">
+                                −{cel.intervaloCctMin} min (intervalo de 30)
                               </div>
                             )}
                           </div>
