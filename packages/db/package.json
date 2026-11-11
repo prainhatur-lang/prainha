@@ -224,6 +224,7 @@
     "migrate:portador": "tsx scripts/migrate-portador.ts",
     "migrate:mutuo": "tsx scripts/migrate-mutuo.ts",
     "migrate:empresa-pix": "tsx scripts/migrate-empresa-pix.ts",
+    "migrate:empresa-pix-chaves": "tsx scripts/migrate-empresa-pix-chaves.ts",
     "migrate:portador-atribuido": "tsx scripts/migrate-portador-atribuido.ts",
     "migrate:cartao-rateio": "tsx scripts/migrate-cartao-rateio.ts",
     "migrate:conta-pagar-criado-por": "tsx scripts/migrate-conta-pagar-criado-por.ts",

@@ -142,7 +142,18 @@ export function CancelarMutuo({ mutuoId, numero }: { mutuoId: string; numero: nu
   );
 }
 
-type EP = { id: string; nome: string; cnpj: string; chave: string | null; favorecido: string | null; cadastros: number; iguais: number };
+type CH = { id: string; chave: string; banco: string | null; favorecido: string | null; principal: boolean };
+type EP = {
+  id: string;
+  nome: string;
+  cnpj: string;
+  chave: string | null;
+  favorecido: string | null;
+  banco: string | null;
+  chaves: CH[];
+  cadastros: number;
+  iguais: number;
+};
 
 /** Cadastro único do Pix de cada empresa: a chave em que ela recebe das outras. */
 export function PixDasEmpresas({ empresas, podeEditar }: { empresas: EP[]; podeEditar: boolean }) {
@@ -151,7 +162,8 @@ export function PixDasEmpresas({ empresas, podeEditar }: { empresas: EP[]; podeE
       <h2 className="text-sm font-semibold text-slate-700">Pix de cada empresa (cadastro único)</h2>
       <p className="mb-3 text-xs text-slate-500">
         A chave em que cada empresa recebe das outras. Salvou aqui, vale no cadastro dela como fornecedor em todas as empresas —
-        o empréstimo e o Pagar por Pix já saem com a chave certa.
+        o empréstimo e o Pagar por Pix já saem com a chave certa. Cada empresa pode ter mais de uma chave (uma em cada banco):
+        a principal é a que as outras usam pra pagar; as demais ficam guardadas com o banco.
       </p>
       <div className="divide-y divide-slate-100">
         {empresas.map((e) => (
@@ -166,9 +178,12 @@ function LinhaPix({ e, podeEditar }: { e: EP; podeEditar: boolean }) {
   const router = useRouter();
   const [chave, setChave] = useState(e.chave ?? '');
   const [favorecido, setFavorecido] = useState(e.favorecido ?? '');
+  const [banco, setBanco] = useState(e.banco ?? '');
   const [msg, setMsg] = useState<{ t: string; ruim: boolean } | null>(null);
   const [ocupado, setOcupado] = useState(false);
-  const mudou = chave.trim() !== (e.chave ?? '') || favorecido.trim() !== (e.favorecido ?? '');
+  const mudou =
+    chave.trim() !== (e.chave ?? '') || favorecido.trim() !== (e.favorecido ?? '') || banco.trim() !== (e.banco ?? '');
+  const outras = e.chaves.filter((c) => !c.principal);
 
   async function salvar() {
     if (!chave.trim()) return setMsg({ t: 'digite a chave', ruim: true });
@@ -176,7 +191,7 @@ function LinhaPix({ e, podeEditar }: { e: EP; podeEditar: boolean }) {
     setOcupado(true);
     setMsg(null);
     try {
-      const j = await chamar({ acao: 'pix', filialId: e.id, chave: chave.trim(), favorecido: favorecido.trim() });
+      const j = await chamar({ acao: 'pix', filialId: e.id, chave: chave.trim(), favorecido: favorecido.trim(), banco: banco.trim() });
       setMsg({ t: `✓ salvo${j.cadastros ? ` · ${j.cadastros} cadastro(s) atualizado(s)` : ''}`, ruim: false });
       router.refresh();
     } catch (er) {
@@ -198,6 +213,10 @@ function LinhaPix({ e, podeEditar }: { e: EP; podeEditar: boolean }) {
             Chave Pix
             <input className={campo} placeholder="sem chave — informe" value={chave} onChange={(ev) => setChave(ev.target.value)} />
           </label>
+          <label className="block text-xs text-slate-500" style={{ width: 130 }}>
+            Banco
+            <input className={campo} placeholder="ex.: Sicredi" value={banco} onChange={(ev) => setBanco(ev.target.value)} />
+          </label>
           <label className="block flex-1 text-xs text-slate-500" style={{ minWidth: 160 }}>
             Quem recebe (se o nome no banco for outro)
             <input className={campo} value={favorecido} onChange={(ev) => setFavorecido(ev.target.value)} />
@@ -211,7 +230,10 @@ function LinhaPix({ e, podeEditar }: { e: EP; podeEditar: boolean }) {
           </button>
         </>
       ) : (
-        <div className="flex-1 font-mono text-sm text-slate-700">{e.chave ?? '—'}</div>
+        <div className="flex-1 font-mono text-sm text-slate-700">
+          {e.chave ?? '—'}
+          {e.banco && <span className="ml-2 font-sans text-xs text-slate-500">{e.banco}</span>}
+        </div>
       )}
       <div className="w-full text-xs">
         {msg ? (
@@ -226,6 +248,139 @@ function LinhaPix({ e, podeEditar }: { e: EP; podeEditar: boolean }) {
           <span className="font-medium text-amber-700">sem chave cadastrada</span>
         )}
       </div>
+      {(outras.length > 0 || podeEditar) && (
+        <div className="w-full sm:pl-44">
+          {outras.map((c) => (
+            <OutraChave key={c.id} c={c} empresa={e.nome} podeEditar={podeEditar} />
+          ))}
+          {podeEditar && <NovaChave filialId={e.id} empresa={e.nome} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Chave guardada que não é a principal (outro banco). */
+function OutraChave({ c, empresa, podeEditar }: { c: CH; empresa: string; podeEditar: boolean }) {
+  const router = useRouter();
+  const [ocupado, setOcupado] = useState(false);
+  async function fazer(body: Record<string, unknown>, pergunta?: string) {
+    if (pergunta && !window.confirm(pergunta)) return;
+    setOcupado(true);
+    try {
+      await chamar({ ...body, chaveId: c.id });
+      router.refresh();
+    } catch (er) {
+      window.alert((er as Error).message);
+    } finally {
+      setOcupado(false);
+    }
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 py-1 text-xs text-slate-600">
+      <span className="text-slate-400">outra chave</span>
+      <span className="font-mono text-sm text-slate-800">{c.chave}</span>
+      <span className={c.banco ? 'rounded bg-slate-100 px-1.5 py-0.5 font-medium text-slate-700' : 'text-amber-700'}>
+        {c.banco ?? 'banco não informado'}
+      </span>
+      {c.favorecido && <span>recebe: {c.favorecido}</span>}
+      {podeEditar && (
+        <>
+          <button
+            disabled={ocupado}
+            className="text-sky-700 hover:underline disabled:opacity-50"
+            onClick={() => {
+              const b = window.prompt(`Banco da chave ${c.chave}:`, c.banco ?? '');
+              if (b !== null) void fazer({ acao: 'pix-banco', banco: b });
+            }}
+          >
+            banco
+          </button>
+          <button
+            disabled={ocupado}
+            className="text-sky-700 hover:underline disabled:opacity-50"
+            onClick={() =>
+              fazer(
+                { acao: 'pix-principal' },
+                `Usar ${c.chave}${c.banco ? ` (${c.banco})` : ''} como a chave principal da ${empresa}?\n\nTodas as empresas passam a pagar a ela nessa chave.`,
+              )
+            }
+          >
+            usar como principal
+          </button>
+          <button
+            disabled={ocupado}
+            className="text-red-700 hover:underline disabled:opacity-50"
+            onClick={() => fazer({ acao: 'pix-remover' }, `Tirar a chave ${c.chave} da ${empresa}?`)}
+          >
+            remover
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Guardar mais uma chave da empresa (outro banco). */
+function NovaChave({ filialId, empresa }: { filialId: string; empresa: string }) {
+  const router = useRouter();
+  const [aberto, setAberto] = useState(false);
+  const [chave, setChave] = useState('');
+  const [banco, setBanco] = useState('');
+  const [favorecido, setFavorecido] = useState('');
+  const [erro, setErro] = useState<string | null>(null);
+  const [ocupado, setOcupado] = useState(false);
+
+  async function salvar() {
+    if (!chave.trim()) return setErro('digite a chave');
+    setOcupado(true);
+    setErro(null);
+    try {
+      await chamar({ acao: 'pix-add', filialId, chave: chave.trim(), banco: banco.trim(), favorecido: favorecido.trim() });
+      setChave('');
+      setBanco('');
+      setFavorecido('');
+      setAberto(false);
+      router.refresh();
+    } catch (er) {
+      setErro((er as Error).message);
+    } finally {
+      setOcupado(false);
+    }
+  }
+
+  if (!aberto) {
+    return (
+      <button onClick={() => setAberto(true)} className="py-1 text-xs font-medium text-sky-700 hover:underline">
+        + outra chave (outro banco)
+      </button>
+    );
+  }
+  return (
+    <div className="mt-1 flex flex-wrap items-end gap-2 rounded-lg bg-slate-50 p-2">
+      <label className="block flex-1 text-xs text-slate-500" style={{ minWidth: 180 }}>
+        Outra chave Pix da {empresa}
+        <input className={campo} value={chave} onChange={(ev) => setChave(ev.target.value)} />
+      </label>
+      <label className="block text-xs text-slate-500" style={{ width: 130 }}>
+        Banco
+        <input className={campo} placeholder="ex.: Inter" value={banco} onChange={(ev) => setBanco(ev.target.value)} />
+      </label>
+      <label className="block flex-1 text-xs text-slate-500" style={{ minWidth: 160 }}>
+        Quem recebe (se for outro nome)
+        <input className={campo} value={favorecido} onChange={(ev) => setFavorecido(ev.target.value)} />
+      </label>
+      <button
+        onClick={salvar}
+        disabled={ocupado}
+        className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-40"
+      >
+        {ocupado ? 'Guardando…' : 'Guardar'}
+      </button>
+      <button onClick={() => setAberto(false)} className="px-1 py-2 text-xs text-slate-500 hover:underline">
+        fechar
+      </button>
+      {erro && <div className="w-full text-xs text-red-700">{erro}</div>}
     </div>
   );
 }

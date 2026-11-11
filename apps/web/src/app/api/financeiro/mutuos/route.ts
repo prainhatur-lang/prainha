@@ -2,7 +2,9 @@
 // (tela /financeiro/emprestimos). Uma ação por chamada:
 //   { acao:'criar', credoraId, devedoraId, valor, data, dataDevolucao, observacao?, jaSaiu? }
 //   { acao:'cancelar', mutuoId, motivo }
-//   { acao:'pix', filialId, chave, favorecido? }  — cadastro único do Pix da empresa (lib/empresa-pix)
+//   { acao:'pix', filialId, chave, favorecido?, banco? }  — chave PRINCIPAL da empresa (lib/empresa-pix)
+//   { acao:'pix-add', filialId, chave, banco?, favorecido? } — mais uma chave (outro banco)
+//   { acao:'pix-principal', chaveId } · { acao:'pix-banco', chaveId, banco } · { acao:'pix-remover', chaveId }
 // Só o grupo Admin (mesmo critério de pagar Pix e de ver a E.B. no financeiro).
 // A devolução não passa por aqui: é baixa na conta de devolução, pelo contas a pagar.
 
@@ -13,7 +15,15 @@ import { exigirPermApi } from '@/lib/exigir-perm';
 import { ehAdmin } from '@/lib/usuario-admin';
 import { filiaisDoFinanceiro } from '@/lib/eb/acesso-financeiro';
 import { RecusaMutuo, cancelarMutuo, criarMutuo } from '@/lib/mutuo';
-import { RecusaEmpresaPix, definirPixDaEmpresa } from '@/lib/empresa-pix';
+import {
+  RecusaEmpresaPix,
+  adicionarChaveDaEmpresa,
+  definirBancoDaChave,
+  definirPixDaEmpresa,
+  filialDaChave,
+  removerChaveDaEmpresa,
+  tornarChavePrincipal,
+} from '@/lib/empresa-pix';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -75,8 +85,35 @@ export async function POST(request: Request) {
           filialId: empresa.id,
           chave: String(b.chave ?? ''),
           favorecido: String(b.favorecido ?? '').trim().slice(0, 200) || null,
+          ...(typeof b.banco === 'string' ? { banco: b.banco } : {}),
         });
         return NextResponse.json({ ok: true, cadastros: r.cadastros });
+      }
+      case 'pix-add': {
+        const empresa = filiais.find((f) => f.id === String(b.filialId ?? ''));
+        if (!empresa) return err('empresa não encontrada', 404);
+        const r = await adicionarChaveDaEmpresa({
+          usuarioId: user.id,
+          filialId: empresa.id,
+          chave: String(b.chave ?? ''),
+          banco: String(b.banco ?? '').trim() || null,
+          favorecido: String(b.favorecido ?? '').trim().slice(0, 200) || null,
+        });
+        return NextResponse.json({ ok: true, cadastros: r.cadastros, principal: r.principal });
+      }
+      case 'pix-principal':
+      case 'pix-banco':
+      case 'pix-remover': {
+        const chaveId = String(b.chaveId ?? '');
+        const dona = /^[0-9a-f-]{36}$/i.test(chaveId) ? await filialDaChave(chaveId) : null;
+        if (!dona || !filiais.some((f) => f.id === dona)) return err('chave não encontrada', 404);
+        if (b.acao === 'pix-principal') {
+          const r = await tornarChavePrincipal({ usuarioId: user.id, chaveId });
+          return NextResponse.json({ ok: true, cadastros: r.cadastros });
+        }
+        if (b.acao === 'pix-banco') await definirBancoDaChave({ chaveId, banco: String(b.banco ?? '') });
+        else await removerChaveDaEmpresa({ usuarioId: user.id, chaveId });
+        return NextResponse.json({ ok: true });
       }
       default:
         return err('ação desconhecida');

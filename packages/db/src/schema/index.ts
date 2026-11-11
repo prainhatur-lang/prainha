@@ -75,3 +75,4 @@ export * from './saas-interessado';
 export * from './saas-conta';
 export * from './estudo-equipe';
 export * from './mutuo';
+export * from './empresa-pix';
