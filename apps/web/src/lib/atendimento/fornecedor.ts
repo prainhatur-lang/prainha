@@ -3,6 +3,7 @@
 // cotações pendentes dele e explica (itens, unidades, embalagem, link de
 // resposta). Negociação (preço/prazo/quantidade/condição) → equipe.
 
+import { validarDocumento } from '@/lib/nfce/documento';
 import { db, schema } from '@concilia/db';
 import { desc, eq, inArray, sql } from 'drizzle-orm';
 
@@ -143,6 +144,12 @@ export async function cadastrarFornecedorProspect(p: {
   }
 
   const cnpj = (p.cnpj ?? '').replace(/\D/g, '').slice(0, 14) || null;
+  // Regra do dono (12/11/2026): fornecedor novo só entra com CNPJ/CPF.
+  if (!cnpj || !validarDocumento(cnpj)) {
+    return cnpj
+      ? 'O CNPJ/CPF informado não confere (dígito verificador). NÃO cadastrei — peça para o vendedor conferir o número e chame de novo.'
+      : 'Faltou o CNPJ (ou CPF, se for pessoa física) — fornecedor novo só entra com documento. NÃO cadastrei: peça o CNPJ ao vendedor e chame de novo com ele.';
+  }
   await db.insert(schema.fornecedor).values({
     filialId: p.filialId,
     nome: empresa,

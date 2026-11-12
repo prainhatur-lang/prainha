@@ -51,8 +51,8 @@ export function FornecedorPicker({
     const nome = texto.trim();
     const digitos = doc.replace(/\D/g, '');
     if (!nome) return setErroCad('Digite o nome do fornecedor.');
-    if (digitos && digitos.length !== 11 && digitos.length !== 14)
-      return setErroCad('CPF tem 11 dígitos e CNPJ 14 — ou deixe em branco.');
+    if (digitos.length !== 11 && digitos.length !== 14)
+      return setErroCad('Informe o CPF (11 dígitos) ou o CNPJ (14) — fornecedor novo só entra com documento.');
     setSalvando(true);
     setErroCad(null);
     const r = await fetch('/api/fornecedores', {
@@ -166,7 +166,7 @@ export function FornecedorPicker({
         <div className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 p-3">
           <p className="text-xs font-semibold text-emerald-900">Novo fornecedor: {texto.trim() || '—'}</p>
           <label className="mt-2 block text-[11px] font-medium uppercase tracking-wide text-slate-500">
-            CPF ou CNPJ (se tiver)
+            CPF ou CNPJ *
           </label>
           <input
             value={doc}
@@ -178,7 +178,7 @@ export function FornecedorPicker({
               }
             }}
             inputMode="numeric"
-            placeholder="só números — pode deixar em branco"
+            placeholder="CPF ou CNPJ, só números (obrigatório)"
             className={inputCls}
           />
           {erroCad && <p className="mt-1 text-xs text-red-700">{erroCad}</p>}

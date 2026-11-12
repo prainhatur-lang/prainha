@@ -889,14 +889,14 @@ const FERRAMENTAS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'cadastrar_fornecedor',
       description:
-        'Cadastra um VENDEDOR/EMPRESA que entrou em contato OFERECENDO produto ou serviço (prospecção) no sistema de compras — a empresa passa a poder entrar nas cotações. Chame depois de coletar pelo menos EMPRESA e O QUE ELA VENDE; os demais campos são bem-vindos mas opcionais. NUNCA use pra cliente comum.',
+        'Cadastra um VENDEDOR/EMPRESA que entrou em contato OFERECENDO produto ou serviço (prospecção) no sistema de compras — a empresa passa a poder entrar nas cotações. Chame depois de coletar EMPRESA, O QUE ELA VENDE e o CNPJ (ou CPF, se pessoa física) — sem documento o cadastro NÃO entra; os demais campos são bem-vindos mas opcionais. NUNCA use pra cliente comum.',
       parameters: {
         type: 'object',
         properties: {
           empresa: { type: 'string', description: 'nome da empresa/distribuidora' },
           produtos: { type: 'string', description: 'o que vende, curto (ex: "vinhos e espumantes", "massas", "açúcar e mercearia", "pescados")' },
           vendedor: { type: 'string', description: 'nome do vendedor/representante' },
-          cnpj: { type: 'string', description: 'CNPJ se informado' },
+          cnpj: { type: 'string', description: 'CNPJ da empresa (ou CPF se pessoa física) — OBRIGATÓRIO: peça antes de chamar' },
           email: { type: 'string', description: 'e-mail comercial se informado' },
           cidade: { type: 'string', description: 'cidade/UF se informada' },
           telefone_contato: { type: 'string', description: 'telefone do vendedor SE diferente deste WhatsApp' },

@@ -8,14 +8,18 @@ import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq, isNull, or, sql } from 'drizzle-orm';
 import { conferirChavePix } from '@/lib/pix-titular';
+import { validarDocumento } from '@/lib/nfce/documento';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 const Body = z.object({
   filialId: z.string().uuid(),
-  // Opcional desde 15/10/2026 (cadastro na hora pela conta a pagar — pessoa
-  // física sem o CPF em mãos). Quem manda continua sendo validado.
+  // Foi opcional de 15/10 a 12/11/2026. Regra do dono (12/11/2026): fornecedor
+  // novo só entra com CPF/CNPJ — é o documento que identifica o cadastro e evita
+  // a mesma pessoa com dois nomes (caso Pinheiro Vigilância). O campo segue
+  // aceitando vazio aqui só pra devolver o cadastro que JÁ existe com esse nome;
+  // criar sem documento é barrado mais abaixo.
   cnpjOuCpf: z.string().min(11).max(14).regex(/^\d+$/, 'so digitos').nullable().optional(),
   nome: z.string().min(1).max(200).trim(),
   razaoSocial: z.string().max(200).nullable().optional(),
@@ -78,8 +82,9 @@ export async function POST(req: Request) {
     .where(
       and(
         eq(schema.fornecedor.filialId, d.filialId),
+        isNull(schema.fornecedor.dataDelete),
         d.cnpjOuCpf
-          ? eq(schema.fornecedor.cnpjOuCpf, d.cnpjOuCpf)
+          ? sql`regexp_replace(coalesce(${schema.fornecedor.cnpjOuCpf}, ''), '\\D', '', 'g') = ${d.cnpjOuCpf}`
           : sql`upper(trim(${schema.fornecedor.nome})) = upper(${d.nome})`,
       ),
     )
@@ -98,6 +103,20 @@ export async function POST(req: Request) {
         );
     }
     return NextResponse.json({ id: existente.id, nome: existente.nome, criado: false });
+  }
+
+  // Cadastro NOVO: só com CPF/CNPJ de verdade (dígito verificador confere).
+  if (!d.cnpjOuCpf) {
+    return NextResponse.json(
+      { error: 'Informe o CPF ou o CNPJ do fornecedor. Cadastro novo sem documento não entra mais.' },
+      { status: 400 },
+    );
+  }
+  if (!validarDocumento(d.cnpjOuCpf)) {
+    return NextResponse.json(
+      { error: 'CPF/CNPJ não confere (dígito verificador). Confira os números.' },
+      { status: 400 },
+    );
   }
 
   const [novo] = await db
