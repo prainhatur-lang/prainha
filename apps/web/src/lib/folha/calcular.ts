@@ -38,6 +38,11 @@ export interface PessoaInput {
   /** Registrado no meio da semana: papel 'funcionario', mas os dias até
    *  esta data ('YYYY-MM-DD', inclusive) pagam diária como diarista. */
   diaristaAte?: string | null;
+  /** Diarista que ERA funcionário registrado: último dia do registro
+   *  ('YYYY-MM-DD', data do desligamento). Os dias até essa data não pagam
+   *  diária (ele recebia salário) — só a comissão. Diária só do dia seguinte
+   *  em diante (dono, 12/11/2026 — caso Felipe Feitosa na Mar). */
+  registradoAte?: string | null;
 }
 
 export interface HorasInput {
@@ -274,15 +279,25 @@ export function calcularFolha(args: {
     if (p.papel === 'diarista' && minTotal > 0) {
       let dia = 0;
       let detalhe = '';
+      // Era funcionário registrado até `registradoAte`: esses dias não pagam
+      // diária. Sem a data, vale a semana inteira (igual a antes).
+      const regAte = p.registradoAte ?? null;
+      const porDiaDiaria = Object.fromEntries(
+        Object.entries(horasMap.get(p.fornecedorId) ?? {}).filter(([d]) => !regAte || d > regAte),
+      );
+      const minDiaria = regAte ? sumMin(porDiaDiaria) : minTotal;
+      const sufixo =
+        regAte && minDiaria < minTotal
+          ? ` (registrado até ${regAte.slice(8, 10)}/${regAte.slice(5, 7)}: dias anteriores sem diária)`
+          : '';
       if (p.diaristaModelo === 'fixo_por_dia' && p.diaristaValorFixoDia && p.diaristaValorFixoDia > 0) {
-        const porDia = horasMap.get(p.fornecedorId) ?? {};
-        const diasTrab = Object.values(porDia).filter((m) => m > 0).length;
+        const diasTrab = Object.values(porDiaDiaria).filter((m) => m > 0).length;
         dia = diasTrab * p.diaristaValorFixoDia;
-        detalhe = `${diasTrab} dia(s) × R$ ${p.diaristaValorFixoDia.toFixed(2)}/dia`;
+        detalhe = `${diasTrab} dia(s) × R$ ${p.diaristaValorFixoDia.toFixed(2)}/dia${sufixo}`;
       } else {
         const taxa = p.diaristaTaxaHoraOverride ?? config.taxaDiaristaHora;
-        dia = (minTotal / 60) * taxa;
-        detalhe = `${minutosToHM(minTotal)} × R$ ${taxa.toFixed(2)}/h`;
+        dia = (minDiaria / 60) * taxa;
+        detalhe = `${minutosToHM(minDiaria)} × R$ ${taxa.toFixed(2)}/h${sufixo}`;
       }
       if (dia > 0) {
         lancamentos.push({

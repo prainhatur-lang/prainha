@@ -246,6 +246,23 @@ export async function montarInputsFolha(folhaSemanaId: string, filialId: string)
     }
   }
 
+  // Diarista que era funcionário registrado: até o dia do desligamento ele
+  // recebia salário, então esses dias não pagam diária (só comissão).
+  const registradoAtePorCpf = new Map<string, string>();
+  const cpfsDiaristas = pessoasRows
+    .filter((p) => p.papel === 'diarista' && p.cpf)
+    .map((p) => String(p.cpf).replace(/\D/g, ''))
+    .filter((c) => c.length === 11);
+  if (cpfsDiaristas.length > 0) {
+    const desligados = await db
+      .select({ cpf: schema.funcionario.cpf, ate: schema.funcionario.dataDesligamento })
+      .from(schema.funcionario)
+      .where(inArray(schema.funcionario.cpf, cpfsDiaristas));
+    for (const d of desligados) {
+      if (d.cpf && d.ate) registradoAtePorCpf.set(d.cpf, d.ate);
+    }
+  }
+
   const pessoas: PessoaInput[] = pessoasRows.map((p) => ({
     fornecedorId: p.fornecedorId,
     nome: p.nome ?? '(sem nome)',
@@ -262,6 +279,10 @@ export async function montarInputsFolha(folhaSemanaId: string, filialId: string)
         ? horasDezPctPorCpf.get(String(p.cpf).replace(/\D/g, '')) ?? null
         : null,
     diaristaAte: p.diaristaAte ?? null,
+    registradoAte:
+      p.papel === 'diarista' && p.cpf
+        ? registradoAtePorCpf.get(String(p.cpf).replace(/\D/g, '')) ?? null
+        : null,
   }));
 
   const noturno = folhaRow
