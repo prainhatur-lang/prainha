@@ -98,6 +98,35 @@ export default async function PermutasPage(props: { searchParams: Promise<{ fili
   const saldoDe = (filialId: string, codigo: number | null) =>
     saldos.find((s) => s.filialId === filialId && s.codigo === codigo);
 
+  // Liberação mensal (11/11/2026): andamento das parcelas de crédito de cada casa.
+  const idsCred = credTodos.map((c) => c.id);
+  const libs = idsCred.length
+    ? await db
+        .select({
+          creditoId: schema.permutaLiberacao.creditoId,
+          numero: schema.permutaLiberacao.numero,
+          data: schema.permutaLiberacao.data,
+          valor: schema.permutaLiberacao.valor,
+          status: schema.permutaLiberacao.status,
+        })
+        .from(schema.permutaLiberacao)
+        .where(inArray(schema.permutaLiberacao.creditoId, idsCred))
+        .orderBy(schema.permutaLiberacao.numero)
+    : [];
+  const liberacaoDe = (creditoId: string) => {
+    const l = libs.filter((x) => x.creditoId === creditoId);
+    if (l.length === 0) return null;
+    const lancadas = l.filter((x) => x.status === 'lancada');
+    const prox = l.find((x) => x.status === 'agendada');
+    return {
+      total: l.length,
+      lancadas: lancadas.length,
+      valorLiberado: lancadas.reduce((t, x) => t + Math.round(Number(x.valor) * 100), 0) / 100,
+      valorMes: Number(l[0]!.valor),
+      proxima: prox ? { data: prox.data, valor: Number(prox.valor) } : null,
+    };
+  };
+
   const nomeCasa = new Map(filiais.map((f) => [f.id, f.nome]));
   const linhas: ContratoLinha[] = contratos.map((k) => ({
     id: k.id,
@@ -116,6 +145,8 @@ export default async function PermutasPage(props: { searchParams: Promise<{ fili
     tipo: (k.tipo === 'receber' || k.tipo === 'pagar' ? k.tipo : 'credito') as ContratoLinha['tipo'],
     arquivos: (k.arquivos ?? []).map((a) => ({ nome: a.nome })),
     vencimentos: k.vencimentos ?? [],
+    liberacaoMeses: k.liberacaoMeses ?? null,
+    liberacaoInicio: k.liberacaoInicio ?? null,
     criadoPor: k.criadoPor,
     criadoEm: k.criadoEm.toISOString(),
     cancelado: k.canceladoEm ? { em: k.canceladoEm.toISOString(), motivo: k.canceladoMotivo } : null,
@@ -135,6 +166,7 @@ export default async function PermutasPage(props: { searchParams: Promise<{ fili
           saldo: s?.saldo != null ? Number(s.saldo) : null,
           fiadoDesligado: s ? !(Number(s.limite ?? 0) > 0) : false,
           contaPagarIds: c.contaPagarIds ?? null,
+          liberacao: liberacaoDe(c.id),
         };
       }),
   }));

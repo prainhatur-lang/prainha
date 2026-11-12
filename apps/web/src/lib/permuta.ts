@@ -16,6 +16,12 @@
 //
 // `processarPermutas` é idempotente: roda no cron de 5 min, ao abrir a tela e
 // no botão "tentar de novo".
+//
+// Liberação mensal (11/11/2026): contrato de crédito com `liberacaoMeses` não
+// entra inteiro. Cada casa ganha N linhas em `permuta_liberacao`; com o
+// cadastro pronto o crédito fica 'mensal' e `processarLiberacoes` lança a
+// parcela no dia dela (mesma fila do fiado, forma 20). Sem `liberacaoMeses`,
+// nada muda: o crédito entra de uma vez.
 
 import { db, schema } from '@concilia/db';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
@@ -98,6 +104,114 @@ async function pedirCadastro(contrato: Contrato, filialId: string): Promise<stri
     .values({ filialId, tipo: 'criar_cliente', payload: { campos: campos.loja, origem: 'permuta' } })
     .returning({ id: schema.agenteComando.id });
   return cmd!.id;
+}
+
+/** Contrato de crédito liberado mês a mês? */
+const ehMensal = (k: Pick<Contrato, 'tipo' | 'liberacaoMeses'>) => k.tipo === 'credito' && (k.liberacaoMeses ?? 0) > 1;
+
+/** `inicio` + n meses, no mesmo dia (31 em mês curto cai no último dia). */
+export function somarMeses(inicio: string, n: number): string {
+  const [a, m, d] = inicio.split('-').map(Number) as [number, number, number];
+  const idx = a * 12 + (m - 1) + n;
+  const ano = Math.floor(idx / 12);
+  const mes = (idx % 12) + 1;
+  const ultimo = new Date(Date.UTC(ano, mes, 0)).getUTCDate();
+  return `${ano}-${String(mes).padStart(2, '0')}-${String(Math.min(d, ultimo)).padStart(2, '0')}`;
+}
+
+/** Divide o valor da casa em N liberações mensais iguais (a sobra de centavos vai na última). */
+export function liberacoesDaCasa(valorCasa: number, meses: number, inicio: string): Array<{ numero: number; data: string; valor: number }> {
+  const cent = Math.round(valorCasa * 100);
+  const base = Math.floor(cent / meses);
+  return Array.from({ length: meses }, (_, i) => ({
+    numero: i + 1,
+    data: somarMeses(inicio, i),
+    valor: (i === meses - 1 ? cent - base * (meses - 1) : base) / 100,
+  }));
+}
+
+/** Contrato mensal: o cadastro existe → guarda o código; o crédito sai por `processarLiberacoes`. */
+async function marcarMensal(cred: Credito, codigo: number) {
+  await db
+    .update(schema.permutaCredito)
+    .set({ status: 'mensal', clienteCodigoExterno: codigo, erro: null })
+    .where(eq(schema.permutaCredito.id, cred.id));
+}
+
+/**
+ * Lança as liberações mensais que já venceram (data <= hoje) de contratos não
+ * cancelados cujo parceiro já tem cadastro na casa. Cada uma vira um PAGAMENTO
+ * na fila do fiado (forma 20). A troca 'agendada' → 'lancada' e o lançamento
+ * vão na mesma transação: cron e tela rodando juntos não lançam em dobro, e se
+ * o lançamento falhar a liberação continua agendada pra próxima rodada.
+ */
+export async function processarLiberacoes(opts: { contratoId?: string } = {}) {
+  const pendentes = await db
+    .select({
+      id: schema.permutaLiberacao.id,
+      numero: schema.permutaLiberacao.numero,
+      valor: schema.permutaLiberacao.valor,
+      filialId: schema.permutaLiberacao.filialId,
+      codigo: schema.permutaCredito.clienteCodigoExterno,
+      parceiroNome: schema.permutaContrato.parceiroNome,
+      meses: schema.permutaContrato.liberacaoMeses,
+      criadoPor: schema.permutaContrato.criadoPor,
+    })
+    .from(schema.permutaLiberacao)
+    .innerJoin(schema.permutaCredito, eq(schema.permutaCredito.id, schema.permutaLiberacao.creditoId))
+    .innerJoin(schema.permutaContrato, eq(schema.permutaContrato.id, schema.permutaLiberacao.contratoId))
+    .where(
+      and(
+        eq(schema.permutaLiberacao.status, 'agendada'),
+        sql`${schema.permutaLiberacao.data} <= ${hojeBr()}::date`,
+        eq(schema.permutaCredito.status, 'mensal'),
+        sql`${schema.permutaCredito.clienteCodigoExterno} IS NOT NULL`,
+        isNull(schema.permutaContrato.canceladoEm),
+        opts.contratoId ? eq(schema.permutaLiberacao.contratoId, opts.contratoId) : undefined,
+      ),
+    )
+    .orderBy(schema.permutaLiberacao.data, schema.permutaLiberacao.numero);
+  if (pendentes.length === 0) return { liberadas: 0 };
+  const [forma] = await db
+    .select({ descricao: schema.formaPagamentoConsumer.descricao })
+    .from(schema.formaPagamentoConsumer)
+    .where(eq(schema.formaPagamentoConsumer.codigo, PERMUTA_FORMA_CODIGO))
+    .limit(1);
+  let n = 0;
+  for (const l of pendentes) {
+    try {
+      const fez = await db.transaction(async (tx) => {
+        const [minha] = await tx
+          .update(schema.permutaLiberacao)
+          .set({ status: 'lancada', lancadoEm: new Date() })
+          .where(and(eq(schema.permutaLiberacao.id, l.id), eq(schema.permutaLiberacao.status, 'agendada')))
+          .returning({ id: schema.permutaLiberacao.id });
+        if (!minha) return false; // outra rodada pegou
+        const [f] = await tx
+          .insert(schema.fiadoLancamento)
+          .values({
+            filialId: l.filialId,
+            clienteCodigoExterno: l.codigo!,
+            clienteNome: l.parceiroNome,
+            tipo: 'pagamento',
+            valor: Number(l.valor).toFixed(2),
+            formaCodigo: PERMUTA_FORMA_CODIGO,
+            formaNome: forma?.descricao ?? 'Crédito Virtual',
+            condicao: 'avista',
+            vencimento: null,
+            criadoPor: l.criadoPor ?? 'permuta',
+            observacao: `Permuta — crédito do mês ${l.numero}/${l.meses ?? '?'} (${l.parceiroNome})`.slice(0, 200),
+          })
+          .returning({ id: schema.fiadoLancamento.id });
+        await tx.update(schema.permutaLiberacao).set({ fiadoLancamentoId: f!.id }).where(eq(schema.permutaLiberacao.id, l.id));
+        return true;
+      });
+      if (fez) n++;
+    } catch {
+      // fica agendada; a próxima rodada tenta de novo
+    }
+  }
+  return { liberadas: n };
 }
 
 /** Lança o crédito na conta corrente do parceiro (fila do fiado). */
@@ -236,6 +350,7 @@ async function avancar(contrato: Contrato, cred: Credito): Promise<void> {
 
     // 1. Já tem cadastro na casa?
     const cli = await clienteDaCasa(cred.filialId, doc);
+    if (cli && ehMensal(contrato)) return marcarMensal(cred, cli.codigo!);
     if (cli) return lancarCredito(contrato, cred, cli.codigo!, cli.nome);
 
     // 2. Cadastro pedido à loja: a loja devolve o código no resultado.
@@ -247,6 +362,9 @@ async function avancar(contrato: Contrato, cred: Credito): Promise<void> {
         .limit(1);
       const res = (cmd?.resultado ?? {}) as { codigo?: number | string; erro?: string; error?: string; mensagem?: string; msg?: string };
       const codigo = Number(res.codigo);
+      if (cmd?.status === 'sucesso' && Number.isInteger(codigo) && codigo > 0 && ehMensal(contrato)) {
+        return marcarMensal(cred, codigo);
+      }
       if (cmd?.status === 'sucesso' && Number.isInteger(codigo) && codigo > 0) {
         return lancarCredito(contrato, cred, codigo, contrato.parceiroNome);
       }
@@ -293,7 +411,10 @@ export async function processarPermutas(opts: { contratoId?: string; incluirErro
         opts.contratoId ? eq(schema.permutaCredito.contratoId, opts.contratoId) : undefined,
       ),
     );
-  if (creds.length === 0) return { avancados: 0 };
+  if (creds.length === 0) {
+    await processarLiberacoes({ contratoId: opts.contratoId }).catch(() => {});
+    return { avancados: 0 };
+  }
   const contratos = await db
     .select()
     .from(schema.permutaContrato)
@@ -306,5 +427,7 @@ export async function processarPermutas(opts: { contratoId?: string; incluirErro
     await avancar(k, c);
     n++;
   }
+  // Parcela do mês dos contratos liberados aos poucos (inclusive a 1ª, logo que o cadastro sai).
+  await processarLiberacoes({ contratoId: opts.contratoId }).catch(() => {});
   return { avancados: n };
 }

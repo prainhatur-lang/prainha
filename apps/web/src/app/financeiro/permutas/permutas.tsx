@@ -27,6 +27,14 @@ export interface CreditoLinha {
   saldo: number | null;
   fiadoDesligado: boolean;
   contaPagarIds: string[] | null;
+  /** Crédito liberado mês a mês: quantas parcelas já saíram e a próxima. */
+  liberacao?: {
+    total: number;
+    lancadas: number;
+    valorLiberado: number;
+    valorMes: number;
+    proxima: { data: string; valor: number } | null;
+  } | null;
 }
 
 export type TipoPermuta = 'credito' | 'receber' | 'pagar';
@@ -55,6 +63,8 @@ export interface ContratoLinha {
   tipo: TipoPermuta;
   arquivos: Array<{ nome: string }>;
   vencimentos: Array<{ data: string; valor: number }>;
+  liberacaoMeses?: number | null;
+  liberacaoInicio?: string | null;
   criadoPor: string | null;
   criadoEm: string;
   cancelado: { em: string; motivo: string | null } | null;
@@ -88,6 +98,12 @@ function situacao(c: CreditoLinha, tipo: TipoPermuta = 'credito'): { texto: stri
     return { texto: 'Enviado — aguardando a loja aplicar', cor: 'bg-sky-100 text-sky-700' };
   }
   if (c.status === 'aguardando_cadastro') return { texto: 'Cadastrando o parceiro na loja…', cor: 'bg-amber-100 text-amber-800' };
+  if (c.status === 'mensal') {
+    const l = c.liberacao;
+    if (!l) return { texto: 'Liberando por mês', cor: 'bg-sky-100 text-sky-700' };
+    if (l.lancadas >= l.total) return { texto: `Crédito todo liberado (${l.total} meses)`, cor: 'bg-emerald-100 text-emerald-700' };
+    return { texto: `Liberando por mês — ${l.lancadas} de ${l.total}`, cor: 'bg-sky-100 text-sky-700' };
+  }
   if (c.fiadoStatus === 'aplicado') return { texto: 'Crédito no PDV', cor: 'bg-emerald-100 text-emerald-700' };
   if (c.fiadoStatus === 'erro') return { texto: 'Loja recusou o crédito', cor: 'bg-red-100 text-red-700' };
   return { texto: 'Enviado — aguardando a loja aplicar', cor: 'bg-sky-100 text-sky-700' };
@@ -220,6 +236,12 @@ function Contrato({ k, podeCriar }: { k: ContratoLinha; podeCriar: boolean }) {
           {k.vencimentos.map((v) => `${dataBr(v.data)} ${brl(v.valor)}`).join(' · ')}
         </p>
       )}
+      {k.tipo === 'credito' && (k.liberacaoMeses ?? 0) > 1 && (
+        <p className="mt-1 text-xs text-slate-600">
+          <span className="font-medium">Crédito liberado por mês:</span> {brl(k.valorTotal / k.liberacaoMeses!)} por mês, em{' '}
+          {k.liberacaoMeses} meses, a partir de {dataBr(k.liberacaoInicio ?? null)}
+        </p>
+      )}
       {k.observacao && <p className="mt-1 text-sm text-slate-500">{k.observacao}</p>}
       {k.cancelado && <p className="mt-1 text-xs text-slate-500">Cancelado: {k.cancelado.motivo}</p>}
 
@@ -244,7 +266,13 @@ function Contrato({ k, podeCriar }: { k: ContratoLinha; podeCriar: boolean }) {
                   <td className="py-2 pr-3">
                     <span className={`rounded px-2 py-0.5 text-xs ${s.cor}`}>{s.texto}</span>
                     {(c.erro || c.fiadoErro) && <div className="mt-1 text-xs text-red-600">{c.erro ?? c.fiadoErro}</div>}
-                    {c.fiadoDesligado && c.status === 'lancado' && k.tipo === 'credito' && (
+                    {c.status === 'mensal' && c.liberacao && (
+                      <div className="mt-1 text-xs text-slate-600">
+                        {brl(c.liberacao.valorMes)} por mês · já liberado {brl(c.liberacao.valorLiberado)} de {brl(c.valor)}
+                        {c.liberacao.proxima && ` · próxima ${dataBr(c.liberacao.proxima.data)} (${brl(c.liberacao.proxima.valor)})`}
+                      </div>
+                    )}
+                    {c.fiadoDesligado && (c.status === 'lancado' || c.status === 'mensal') && k.tipo === 'credito' && (
                       <div className="mt-1 text-xs text-amber-700">
                         ⚠ O fiado desse cliente está desligado (limite zero) — ligue o limite no cadastro pra ele conseguir consumir.
                       </div>
@@ -318,6 +346,10 @@ function NovaPermuta({ casas, podePagar, onFechar }: { casas: CasaOpcao[]; podeP
   const enviados = useRef(new WeakMap<File, string>());
   const [tipo, setTipo] = useState<TipoPermuta>('credito');
   const [parcelas, setParcelas] = useState<Array<{ data: string; valor: string }>>([]);
+  // Crédito liberado mês a mês (11/11/2026). Padrão: tudo de uma vez, como sempre foi.
+  const [porMes, setPorMes] = useState(false);
+  const [meses, setMeses] = useState('12');
+  const [libInicio, setLibInicio] = useState('');
   const [lendo, setLendo] = useState(false);
   const [leitura, setLeitura] = useState<string | null>(null);
   const [marcadas, setMarcadas] = useState<string[]>(padrao.length ? padrao : casas.slice(0, 1).map((c) => c.id));
@@ -450,6 +482,9 @@ function NovaPermuta({ casas, podePagar, onFechar }: { casas: CasaOpcao[]; podeP
     if (venc.length && Math.round(somaParc * 100) !== Math.round(totalNum * 100)) {
       return setErro(`As parcelas (${brl(somaParc)}) não fecham com o valor do contrato (${brl(totalNum)}).`);
     }
+    const mensal = tipo === 'credito' && porMes;
+    const nMeses = Number(meses);
+    if (mensal && !(Number.isInteger(nMeses) && nMeses >= 2 && nMeses <= 60)) return setErro('Informe em quantos meses o crédito é liberado (de 2 a 60).');
     try {
       const lista = await enviarTodos();
       setEtapa(tipo === 'pagar' ? 'Gravando e lançando a conta a pagar…' : tipo === 'receber' ? 'Gravando e lançando a cobrança…' : 'Gravando e lançando o crédito…');
@@ -474,6 +509,7 @@ function NovaPermuta({ casas, podePagar, onFechar }: { casas: CasaOpcao[]; podeP
           arquivos: lista,
           vencimentos: venc,
           creditos: divisao.map((d) => ({ filialId: d.id, valor: d.valor })),
+          ...(mensal ? { liberacaoMeses: nMeses, liberacaoInicio: libInicio || null } : {}),
         }),
       });
       const j = await r2.json().catch(() => ({}));
@@ -699,6 +735,68 @@ function NovaPermuta({ casas, podePagar, onFechar }: { casas: CasaOpcao[]; podeP
       </div>
 
       {tipo === 'credito' && (
+        <div className="mt-4">
+          <h3 className="text-sm font-medium text-slate-800">Quando o crédito entra</h3>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setPorMes(false)}
+              className={`rounded-md border px-3 py-1.5 text-sm ${!porMes ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 hover:bg-slate-50'}`}
+            >
+              Tudo de uma vez
+            </button>
+            <button
+              type="button"
+              onClick={() => setPorMes(true)}
+              className={`rounded-md border px-3 py-1.5 text-sm ${porMes ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 hover:bg-slate-50'}`}
+            >
+              Um pouco por mês
+            </button>
+          </div>
+          {porMes && (
+            <div className="mt-2 space-y-2">
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="text-sm">
+                  Em quantos meses
+                  <input
+                    value={meses}
+                    onChange={(e) => setMeses(e.target.value.replace(/\D/g, ''))}
+                    className="mt-1 block w-24 rounded-md border border-slate-300 px-2 py-1 text-right text-sm"
+                    inputMode="numeric"
+                  />
+                </label>
+                <label className="text-sm">
+                  1ª liberação (em branco = hoje)
+                  <input
+                    type="date"
+                    value={libInicio}
+                    onChange={(e) => setLibInicio(e.target.value)}
+                    className="mt-1 block rounded-md border border-slate-300 px-2 py-1 text-sm"
+                  />
+                </label>
+              </div>
+              {Number(meses) >= 2 && totalNum > 0 && (
+                <p className="text-xs text-slate-600">
+                  {brl(totalNum / Number(meses))} por mês no total:{' '}
+                  {divisao
+                    .map((d) => `${casas.find((c) => c.id === d.id)?.nome ?? '—'} ${brl(Math.floor(Math.round(d.valor * 100) / Number(meses)) / 100)}`)
+                    .join(' · ')}
+                  . As outras liberações saem no mesmo dia dos meses seguintes, sozinhas.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {tipo === 'credito' && porMes && (
+        <p className="mt-3 rounded-md bg-slate-50 p-3 text-xs text-slate-600">
+          Ao salvar: o parceiro vira cliente da casa (se ainda não for) e só a parcela do mês entra como crédito na conta
+          corrente dele (forma &quot;Crédito Virtual&quot;). As seguintes entram sozinhas, uma por mês. O que ele não
+          consumir num mês fica de saldo pro seguinte. Cancelar o contrato para as liberações que ainda não saíram.
+        </p>
+      )}
+      {tipo === 'credito' && !porMes && (
       <p className="mt-3 rounded-md bg-slate-50 p-3 text-xs text-slate-600">
         Ao salvar: se o parceiro ainda não é cliente da casa, o cadastro é criado na loja com o fiado travado no
         crédito (não passa do valor). O crédito entra como pagamento na conta corrente dele (forma &quot;Crédito

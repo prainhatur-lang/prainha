@@ -21,7 +21,8 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { createAdminClient } from '@/lib/supabase/server';
 import { exigirPermApi, negarSemPerm } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
-import { BUCKET_PERMUTA, PERMUTA_EXTENSOES, PERMUTA_TAMANHO_MAX, lancarContasPagar, processarPermutas } from '@/lib/permuta';
+import { BUCKET_PERMUTA, PERMUTA_EXTENSOES, PERMUTA_TAMANHO_MAX, lancarContasPagar, liberacoesDaCasa, processarPermutas } from '@/lib/permuta';
+import { hojeBr } from '@/lib/datas';
 import { lerContratoPermuta } from '@/lib/permuta-ler';
 import { podeUsuario } from '@/lib/permissoes-runtime';
 
@@ -55,6 +56,9 @@ const Body = z.discriminatedUnion('acao', [
       .max(120)
       .optional(),
     creditos: z.array(z.object({ filialId: z.string().uuid(), valor: z.number().positive() })).min(1).max(10),
+    /** Crédito liberado mês a mês (só tipo 'credito'); vazio = tudo de uma vez. */
+    liberacaoMeses: z.number().int().min(2).max(60).nullable().optional(),
+    liberacaoInicio: Ymd,
   }),
   z.object({
     acao: z.literal('ler'),
@@ -151,6 +155,11 @@ export async function POST(req: Request) {
         .update(schema.permutaCredito)
         .set({ status: 'cancelado' })
         .where(and(eq(schema.permutaCredito.contratoId, k.id), isNull(schema.permutaCredito.fiadoLancamentoId)));
+      // Liberação mensal que ainda não saiu também não sai mais (a que já saiu fica).
+      await tx
+        .update(schema.permutaLiberacao)
+        .set({ status: 'cancelada' })
+        .where(and(eq(schema.permutaLiberacao.contratoId, k.id), eq(schema.permutaLiberacao.status, 'agendada')));
     });
     return NextResponse.json({ ok: true });
   }
@@ -192,6 +201,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: `as parcelas (R$ ${(somaV / 100).toFixed(2)}) não fecham com o valor do contrato` }, { status: 400 });
     }
   }
+  // Liberação mensal: só no crédito de consumo. Cada casa precisa dar ao menos 1 centavo por mês.
+  const meses = tipo === 'credito' && d.liberacaoMeses ? d.liberacaoMeses : null;
+  const liberacaoInicio = meses ? d.liberacaoInicio || hojeBr() : null;
+  if (meses && d.creditos.some((c) => centavos(c.valor) < meses)) {
+    return NextResponse.json({ error: 'valor da casa pequeno demais pra dividir nesses meses' }, { status: 400 });
+  }
   const primeiro = arquivos[0];
   const [org] = await db
     .select({ organizacaoId: schema.filial.organizacaoId })
@@ -220,12 +235,29 @@ export async function POST(req: Request) {
         tipo,
         arquivos: arquivos.length ? arquivos : null,
         vencimentos: vencimentos.length ? vencimentos : null,
+        liberacaoMeses: meses,
+        liberacaoInicio,
         criadoPor: user.email ?? user.id,
       })
       .returning({ id: schema.permutaContrato.id });
-    await tx.insert(schema.permutaCredito).values(
-      d.creditos.map((c) => ({ contratoId: k!.id, filialId: c.filialId, valor: c.valor.toFixed(2) })),
-    );
+    const creds = await tx
+      .insert(schema.permutaCredito)
+      .values(d.creditos.map((c) => ({ contratoId: k!.id, filialId: c.filialId, valor: c.valor.toFixed(2) })))
+      .returning({ id: schema.permutaCredito.id, filialId: schema.permutaCredito.filialId, valor: schema.permutaCredito.valor });
+    if (meses && liberacaoInicio) {
+      await tx.insert(schema.permutaLiberacao).values(
+        creds.flatMap((c) =>
+          liberacoesDaCasa(Number(c.valor), meses, liberacaoInicio).map((l) => ({
+            creditoId: c.id,
+            contratoId: k!.id,
+            filialId: c.filialId,
+            numero: l.numero,
+            data: l.data,
+            valor: l.valor.toFixed(2),
+          })),
+        ),
+      );
+    }
     return k!;
   });
   if (tipo === 'pagar') {

@@ -45,6 +45,11 @@ export const permutaContrato = pgTable(
     arquivos: jsonb('arquivos').$type<Array<{ path: string; nome: string }>>(),
     /** Parcelas do contrato [{data: 'YYYY-MM-DD', valor}] — pagar/receber. */
     vencimentos: jsonb('vencimentos').$type<Array<{ data: string; valor: number }>>(),
+    /** Crédito liberado aos poucos (11/11/2026): nº de meses. null = tudo de
+     *  uma vez, como sempre. Só tipo 'credito'. Parcelas em permuta_liberacao. */
+    liberacaoMeses: integer('liberacao_meses'),
+    /** Dia da 1ª liberação (as outras caem no mesmo dia dos meses seguintes). */
+    liberacaoInicio: date('liberacao_inicio'),
   },
   (t) => ({
     porOrg: index('idx_permuta_contrato_org').on(t.organizacaoId, t.criadoEm),
@@ -58,7 +63,8 @@ export const permutaCredito = pgTable(
     contratoId: uuid('contrato_id').notNull().references(() => permutaContrato.id, { onDelete: 'cascade' }),
     filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
     valor: numeric('valor', { precision: 12, scale: 2 }).notNull(),
-    /** 'aguardando_cadastro' | 'lancado' | 'erro' | 'cancelado' */
+    /** 'aguardando_cadastro' | 'lancado' | 'erro' | 'cancelado' | 'mensal'
+     *  (cadastro pronto; o crédito sai mês a mês por permuta_liberacao) */
     status: varchar('status', { length: 24 }).notNull().default('aguardando_cadastro'),
     clienteCodigoExterno: integer('cliente_codigo_externo'),
     /** criar_cliente pedido à loja (quando o parceiro não existia lá). */
@@ -73,5 +79,32 @@ export const permutaCredito = pgTable(
   (t) => ({
     porContrato: index('idx_permuta_credito_contrato').on(t.contratoId),
     porStatus: index('idx_permuta_credito_status').on(t.status),
+  }),
+);
+
+// Liberação mensal do crédito (dono, 11/11/2026: contrato de R$ 2.500/mês por
+// 12 meses não pode entrar inteiro no PDV). Uma linha por casa e por mês; no
+// dia, vira um PAGAMENTO no fiado do parceiro (forma 20), igual ao crédito de
+// uma vez só. Regra em apps/web/src/lib/permuta.ts (processarLiberacoes).
+export const permutaLiberacao = pgTable(
+  'permuta_liberacao',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    creditoId: uuid('credito_id').notNull().references(() => permutaCredito.id, { onDelete: 'cascade' }),
+    contratoId: uuid('contrato_id').notNull().references(() => permutaContrato.id, { onDelete: 'cascade' }),
+    filialId: uuid('filial_id').notNull().references(() => filial.id, { onDelete: 'cascade' }),
+    /** 1..N */
+    numero: integer('numero').notNull(),
+    data: date('data').notNull(),
+    valor: numeric('valor', { precision: 12, scale: 2 }).notNull(),
+    /** 'agendada' | 'lancada' | 'cancelada' */
+    status: varchar('status', { length: 12 }).notNull().default('agendada'),
+    fiadoLancamentoId: uuid('fiado_lancamento_id'),
+    lancadoEm: timestamp('lancado_em', { withTimezone: true }),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    porCredito: index('idx_permuta_liberacao_credito').on(t.creditoId),
+    porStatus: index('idx_permuta_liberacao_status').on(t.status, t.data),
   }),
 );
