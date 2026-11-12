@@ -5,7 +5,7 @@
 // Sem credencial em nenhuma casa, não faz nada. Auth: Bearer CRON_SECRET.
 
 import { NextResponse } from 'next/server';
-import { contasSicrediConfiguradas, processarPixSicrediApi } from '@/lib/sicredi-pix';
+import { contasSicredi, processarPixSicrediApi } from '@/lib/sicredi-pix';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -16,7 +16,7 @@ export async function GET(req: Request) {
   if (!process.env.CRON_SECRET || auth !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
-  const contas = contasSicrediConfiguradas();
+  const contas = await contasSicredi();
   if (contas.length === 0) return NextResponse.json({ ok: true, contas: 0, msg: 'nenhuma casa com API Pix Sicredi' });
 
   const fim = new Date();

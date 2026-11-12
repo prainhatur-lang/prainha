@@ -12,6 +12,9 @@ export interface FilialCred {
   /** Rede (e.Rede): idem. */
   propriaRede: boolean;
   pistasRede: Record<string, string | null>;
+  /** Sicredi (API Pix direto na conta): cadastrada pela tela, cifrada. */
+  propriaSicredi: boolean;
+  pistasSicredi: Record<string, string | null>;
   /** Por qual adquirente esta casa cobra ONLINE hoje. */
   adquirenteOnline: 'cielo' | 'rede';
   /** Cartão na maquininha (LIO) por qual adquirente. */
@@ -23,7 +26,7 @@ export interface FilialCred {
   faltaPix: { sicredi: string | null; inter: string | null };
 }
 
-type Campo = { chave: string; rotulo: string; ajuda: string; segredo?: boolean };
+type Campo = { chave: string; rotulo: string; ajuda: string; segredo?: boolean; arquivo?: string };
 
 /** As 7 chaves da Cielo, com o rótulo que a pessoa vê na tela. */
 const CAMPOS_CIELO: Campo[] = [
@@ -42,6 +45,28 @@ const CAMPOS_REDE: Campo[] = [
   { chave: 'chaveIntegracao', rotulo: 'Chave de Integração', ajuda: 'Gerada no Portal Use Rede pelo usuário master', segredo: true },
   { chave: 'softDescriptor', rotulo: 'Nome na fatura', ajuda: 'Até 18 letras, sem acento. Ex.: PRAINHA BAR' },
 ];
+
+/** API Pix da Sicredi (pedido do dono 12/11/2026: as envs não cabem mais na Vercel). */
+const CAMPOS_SICREDI: Campo[] = [
+  { chave: 'clientId', rotulo: 'Client ID', ajuda: 'Portal Sicredi → API Pix → credenciais da aplicação' },
+  { chave: 'clientSecret', rotulo: 'Client Secret', ajuda: 'Aparece junto com o Client ID', segredo: true },
+  { chave: 'cert', rotulo: 'Certificado (.cer)', ajuda: 'O .cer que a Sicredi devolveu (ex.: 33159574000328.cer)', arquivo: '.cer,.crt,.pem' },
+  { chave: 'key', rotulo: 'Chave privada (.key)', ajuda: 'O .key gerado junto com o pedido (CSR)', arquivo: '.key,.pem' },
+  { chave: 'chave', rotulo: 'Chave Pix (opcional)', ajuda: 'Em branco = a do quadro "como esta casa recebe"' },
+];
+
+/** Lê o arquivo e devolve o conteúdo em base64 (é como a lib guarda .cer/.key). */
+function arquivoBase64(f: File): Promise<string> {
+  return new Promise((ok, erro) => {
+    const r = new FileReader();
+    r.onload = () => {
+      const u = String(r.result ?? '');
+      ok(u.slice(u.indexOf(',') + 1));
+    };
+    r.onerror = () => erro(r.error);
+    r.readAsDataURL(f);
+  });
+}
 
 const inp =
   'mt-1 w-full rounded-md border border-slate-300 px-2.5 py-1.5 text-sm text-slate-900 outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20';
@@ -86,6 +111,18 @@ export function PagamentoClient({
             pistas={f.pistasRede}
             podeEditar={podeEditar && segredoOk}
             nota="Pix pela Rede só funciona com conta Itaú (chave Pix habilitada no Use Rede). A URL do webhook do Pix é cadastrada por CNPJ na central da Rede."
+          />
+          <CardCredencial
+            filial={f}
+            provedor="sicredi"
+            titulo="Sicredi (API Pix direto na conta)"
+            campos={CAMPOS_SICREDI}
+            propriaInicial={f.propriaSicredi}
+            pistas={f.pistasSicredi}
+            podeEditar={podeEditar && segredoOk}
+            rotuloPropria={['Usando a credencial ', 'cadastrada aqui']}
+            rotuloGeral="Sem cadastro aqui: usa a da Vercel, se houver"
+            nota="Depois de salvar, recarregue a página: o aviso “não configurado” do Pix por Sicredi some e dá pra escolher Sicredi no quadro acima. Apagar daqui volta pra credencial da Vercel (se a casa tiver)."
           />
         </div>
       ))}
@@ -269,21 +306,26 @@ function CardCredencial({
   pistas,
   podeEditar,
   nota,
+  rotuloPropria,
+  rotuloGeral,
 }: {
   filial: FilialCred;
-  provedor: 'cielo' | 'rede';
+  provedor: 'cielo' | 'rede' | 'sicredi';
   titulo: string;
   campos: Campo[];
   propriaInicial: boolean;
   pistas: Record<string, string | null>;
   podeEditar: boolean;
   nota?: string;
+  rotuloPropria?: [string, string];
+  rotuloGeral?: string;
 }) {
   const [propria, setPropria] = useState(propriaInicial);
   const [valores, setValores] = useState<Record<string, string>>({});
   const [salvando, setSalvando] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [aberto, setAberto] = useState(false);
+  const [nomesArq, setNomesArq] = useState<Record<string, string>>({});
 
   async function salvar() {
     setSalvando(true);
@@ -298,6 +340,7 @@ function CardCredencial({
       if (!r.ok) { setMsg(d.error ?? `Erro ${r.status}`); return; }
       setMsg(d.gravadas ? `Salvo ✓ (${d.gravadas} campo(s))` : 'Nada preenchido pra salvar');
       setValores({});
+      setNomesArq({});
       if (d.gravadas) setPropria(true);
     } catch (e) {
       setMsg((e as Error).message);
@@ -328,7 +371,13 @@ function CardCredencial({
           <h3 className="text-sm font-semibold text-slate-800">{titulo}</h3>
           <p className="mt-0.5 text-xs text-slate-500">
             {propria ? (
-              <>Cobrando na <b className="text-emerald-700">conta própria</b> desta casa</>
+              rotuloPropria ? (
+                <>{rotuloPropria[0]}<b className="text-emerald-700">{rotuloPropria[1]}</b></>
+              ) : (
+                <>Cobrando na <b className="text-emerald-700">conta própria</b> desta casa</>
+              )
+            ) : rotuloGeral ? (
+              <>{rotuloGeral}</>
             ) : (
               <>Cobrando pela <b>credencial geral</b> do servidor</>
             )}
@@ -357,6 +406,30 @@ function CardCredencial({
               return (
                 <div key={c.chave}>
                   <label className="text-xs font-semibold text-slate-700">{c.rotulo}</label>
+                  {c.arquivo ? (
+                    <>
+                      <input
+                        type="file"
+                        accept={c.arquivo}
+                        disabled={!podeEditar}
+                        onChange={async (e) => {
+                          const f = e.target.files?.[0];
+                          if (!f) return;
+                          const b64 = await arquivoBase64(f);
+                          setValores((v) => ({ ...v, [c.chave]: b64 }));
+                          setNomesArq((n) => ({ ...n, [c.chave]: f.name }));
+                        }}
+                        className="mt-1 block w-full text-xs text-slate-700 file:mr-2 file:rounded-md file:border-0 file:bg-slate-100 file:px-2.5 file:py-1.5 file:text-xs file:font-medium"
+                      />
+                      <p className="mt-0.5 text-[11px] text-slate-500">
+                        {nomesArq[c.chave]
+                          ? `Pronto pra salvar: ${nomesArq[c.chave]}`
+                          : pista
+                            ? 'Já tem arquivo salvo. Escolha outro só pra trocar.'
+                            : c.ajuda}
+                      </p>
+                    </>
+                  ) : (<>
                   <input
                     type={c.segredo ? 'password' : 'text'}
                     autoComplete="off"
@@ -369,6 +442,7 @@ function CardCredencial({
                   <p className="mt-0.5 text-[11px] text-slate-500">
                     {pista ? 'Deixe em branco pra manter o que já está salvo.' : c.ajuda}
                   </p>
+                  </>)}
                 </div>
               );
             })}

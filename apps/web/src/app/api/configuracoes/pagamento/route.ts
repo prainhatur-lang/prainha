@@ -18,15 +18,19 @@ import { filiaisDoUsuario } from '@/lib/filiais';
 import { cifrar, pista, segredoConfigurado } from '@/lib/segredo';
 import { CHAVES_CIELO, CHAVES_CIELO_SECRETAS } from '@/lib/cielo-credenciais';
 import { CHAVES_REDE, CHAVES_REDE_SECRETAS } from '@/lib/rede-credenciais';
+import { CHAVES_SICREDI, CHAVES_SICREDI_SECRETAS } from '@/lib/sicredi-pix';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-// Dois provedores na mesma tabela: 'cielo' (padrão) e 'rede' (e.Rede).
-type Provedor = 'cielo' | 'rede';
-const provedorDe = (v: unknown): Provedor => (v === 'rede' ? 'rede' : 'cielo');
-const chavesDe = (p: Provedor): readonly string[] => (p === 'rede' ? CHAVES_REDE : CHAVES_CIELO);
-const secretasDe = (p: Provedor): readonly string[] => (p === 'rede' ? CHAVES_REDE_SECRETAS : CHAVES_CIELO_SECRETAS);
+// Provedores na mesma tabela: 'cielo' (padrão), 'rede' (e.Rede) e 'sicredi'
+// (API Pix direto na conta: Client ID/Secret + .cer/.key em base64).
+type Provedor = 'cielo' | 'rede' | 'sicredi';
+const provedorDe = (v: unknown): Provedor => (v === 'rede' ? 'rede' : v === 'sicredi' ? 'sicredi' : 'cielo');
+const chavesDe = (p: Provedor): readonly string[] =>
+  p === 'rede' ? CHAVES_REDE : p === 'sicredi' ? CHAVES_SICREDI : CHAVES_CIELO;
+const secretasDe = (p: Provedor): readonly string[] =>
+  p === 'rede' ? CHAVES_REDE_SECRETAS : p === 'sicredi' ? CHAVES_SICREDI_SECRETAS : CHAVES_CIELO_SECRETAS;
 
 export async function GET(request: Request) {
   const { user, error } = await exigirPermApi('configuracao.read');

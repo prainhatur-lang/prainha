@@ -54,8 +54,9 @@ export default async function PagamentoPage() {
 
   const porFilial = new Map<string, Record<string, string | null>>();      // cielo
   const porFilialRede = new Map<string, Record<string, string | null>>();  // rede
+  const porFilialSicredi = new Map<string, Record<string, string | null>>(); // sicredi
   for (const l of linhas) {
-    const alvo = l.provedor === 'rede' ? porFilialRede : porFilial;
+    const alvo = l.provedor === 'rede' ? porFilialRede : l.provedor === 'sicredi' ? porFilialSicredi : porFilial;
     const m = alvo.get(l.filialId) ?? {};
     m[l.chave] = l.pista;
     alvo.set(l.filialId, m);
@@ -79,6 +80,8 @@ export default async function PagamentoPage() {
     pistas: porFilial.get(f.id) ?? {},
     propriaRede: porFilialRede.has(f.id),
     pistasRede: porFilialRede.get(f.id) ?? {},
+    propriaSicredi: porFilialSicredi.has(f.id),
+    pistasSicredi: porFilialSicredi.get(f.id) ?? {},
     adquirenteOnline: adqPorFilial.get(f.id) ?? 'cielo',
     adquirenteMaquininha: escolhaPor.get(f.id)?.maq === 'rede' ? 'rede' : 'cielo',
     pixProvedor: (escolhaPor.get(f.id)?.pixProvedor as FilialCred['pixProvedor']) ?? null,

@@ -23,6 +23,7 @@ import { db, schema } from '@concilia/db';
 import { sql as drizzleSql } from 'drizzle-orm';
 import { dateToBrYmd } from './datas';
 import { SICREDI_CA_PADRAO } from './sicredi-ca';
+import { decifrar, segredoConfigurado } from './segredo';
 
 export const CODIGO_BANCO_SICREDI = '748';
 
@@ -41,7 +42,16 @@ export interface SicrediCredenciais {
   cert: Buffer;
   key: Buffer;
   ca: Buffer | null;
+  /** Chave Pix cadastrada junto com a credencial na tela (opcional). */
+  chave?: string | null;
+  /** De onde veio: tela de Pagamento (banco, cifrada) ou env da Vercel. */
+  fonte?: 'filial' | 'env';
 }
+
+/** Chaves gravadas em filial_credencial (provedor 'sicredi') pela tela
+ *  Configurações → Pagamento → Sicredi. cert/key = conteúdo do arquivo em base64. */
+export const CHAVES_SICREDI = ['clientId', 'clientSecret', 'cert', 'key', 'chave'] as const;
+export const CHAVES_SICREDI_SECRETAS: string[] = ['clientSecret', 'cert', 'key'];
 
 /** O portal costuma entregar o .cer em DER; o Node só entende PEM. */
 function pemDe(b64: string | undefined, tipo: 'CERTIFICATE' | 'KEY'): Buffer | null {
@@ -77,6 +87,73 @@ export function contasSicrediConfiguradas(): SicrediCredenciais[] {
     });
   }
   return out;
+}
+
+/** Credenciais Sicredi cadastradas pela tela (banco, cifradas). Pedido do dono
+ *  12/11/2026: as envs da Prainha Mar não cabiam no limite de 64 KB da Vercel. */
+async function contasSicrediDoBanco(): Promise<SicrediCredenciais[]> {
+  if (!segredoConfigurado()) return [];
+  let linhas: Array<{ filialId: string; chave: string; valor: string }> = [];
+  try {
+    linhas = await db
+      .select({
+        filialId: schema.filialCredencial.filialId,
+        chave: schema.filialCredencial.chave,
+        valor: schema.filialCredencial.valor,
+      })
+      .from(schema.filialCredencial)
+      .where(drizzleSql`${schema.filialCredencial.provedor} = 'sicredi'`);
+  } catch {
+    return [];
+  }
+  const porFilial = new Map<string, Map<string, string>>();
+  for (const l of linhas) {
+    try {
+      const m = porFilial.get(l.filialId) ?? new Map<string, string>();
+      m.set(l.chave, decifrar(l.valor));
+      porFilial.set(l.filialId, m);
+    } catch {
+      // segredo que não abre (CREDENCIAL_SECRET trocada) = como se não tivesse
+    }
+  }
+  const out: SicrediCredenciais[] = [];
+  for (const [filialId, m] of porFilial) {
+    const clientId = m.get('clientId')?.trim();
+    const clientSecret = m.get('clientSecret')?.trim();
+    const cert = pemDe(m.get('cert'), 'CERTIFICATE');
+    const key = pemDe(m.get('key'), 'KEY');
+    if (!(clientId && clientSecret && cert && key)) continue;
+    const casa = CASAS.find((c) => c.filialId === filialId);
+    out.push({
+      sigla: casa?.sigla ?? filialId.slice(0, 8),
+      nome: casa?.nome ?? filialId,
+      filialId,
+      clientId,
+      clientSecret,
+      cert,
+      key,
+      ca: Buffer.from(SICREDI_CA_PADRAO + '\n'),
+      chave: m.get('chave')?.trim() || null,
+      fonte: 'filial',
+    });
+  }
+  return out;
+}
+
+/** Todas as casas com Sicredi: a credencial da tela (banco) vale primeiro;
+ *  casa sem cadastro na tela continua pela env da Vercel, como antes. */
+export async function contasSicredi(): Promise<SicrediCredenciais[]> {
+  const doBanco = await contasSicrediDoBanco();
+  const comBanco = new Set(doBanco.map((c) => c.filialId));
+  const env = contasSicrediConfiguradas()
+    .filter((c) => !comBanco.has(c.filialId))
+    .map((c) => ({ ...c, fonte: 'env' as const }));
+  return [...doBanco, ...env];
+}
+
+/** Credencial Sicredi desta filial, da tela ou da env (null = não configurada). */
+export async function credencialSicredi(filialId: string): Promise<SicrediCredenciais | null> {
+  return (await contasSicredi()).find((c) => c.filialId === filialId) ?? null;
 }
 
 function host(): { hostname: string; port?: number } {
@@ -287,7 +364,7 @@ export function credencialSicrediDaFilial(filialId: string): SicrediCredenciais 
 
 /** Chave Pix da conta Sicredi da casa vinda da env (o configurador tem precedência). */
 export function chaveSicrediEnv(c: SicrediCredenciais): string | null {
-  return process.env[`SICREDI_${c.sigla}_CHAVE`]?.trim() || null;
+  return c.chave?.trim() || process.env[`SICREDI_${c.sigla}_CHAVE`]?.trim() || null;
 }
 
 /** Chamada autenticada à API Pix da Sicredi (cobrança/devolução). */

@@ -14,7 +14,7 @@ import QRCode from 'qrcode-svg';
 import sharp from 'sharp';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
-import { chamarSicredi, chaveSicrediEnv, credencialSicrediDaFilial } from '@/lib/sicredi-pix';
+import { chamarSicredi, chaveSicrediEnv, credencialSicredi } from '@/lib/sicredi-pix';
 import { chamarPixInter, resolverCredenciaisInter } from '@/lib/inter';
 
 export type BancoPix = 'sicredi' | 'inter';
@@ -42,7 +42,7 @@ const ESCOPO_DEV_INTER = 'pix.write pix.read';
 
 /** O que falta pra esta casa receber Pix por este banco (null = pronta). */
 export async function faltaPraPixBanco(banco: BancoPix, filialId: string): Promise<string | null> {
-  const temCred = banco === 'sicredi' ? !!credencialSicrediDaFilial(filialId) : !!resolverCredenciaisInter(filialId);
+  const temCred = banco === 'sicredi' ? !!(await credencialSicredi(filialId)) : !!resolverCredenciaisInter(filialId);
   const chave = await chavePixDaFilial(banco, filialId);
   if (!temCred && !chave) return `falta a credencial da API Pix ${banco === 'sicredi' ? 'Sicredi' : 'Inter'} e a chave Pix`;
   if (!temCred) return `falta a credencial da API Pix ${banco === 'sicredi' ? 'Sicredi' : 'Inter'}`;
@@ -58,7 +58,7 @@ async function chavePixDaFilial(banco: BancoPix, filialId: string): Promise<stri
     .limit(1);
   if (f?.chave?.trim()) return f.chave.trim();
   if (banco === 'sicredi') {
-    const c = credencialSicrediDaFilial(filialId);
+    const c = await credencialSicredi(filialId);
     return c ? chaveSicrediEnv(c) : null;
   }
   return null;
@@ -73,7 +73,7 @@ async function chamar(
   json?: unknown,
 ): Promise<{ status: number; data: any }> {
   if (banco === 'sicredi') {
-    const c = credencialSicrediDaFilial(filialId);
+    const c = await credencialSicredi(filialId);
     if (!c) throw new Error('Pix Sicredi: casa sem credencial da API Pix configurada');
     return chamarSicredi(c, method, `/api/v2${path}`, tipo === 'cob' ? ESCOPO_COB_SICREDI() : ESCOPO_DEV_SICREDI(), json);
   }
