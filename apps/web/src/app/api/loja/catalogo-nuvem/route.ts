@@ -87,45 +87,14 @@ export async function GET(request: Request) {
   // do insumo. O saldo próprio continua valendo quando é positivo (a lata de
   // Coca tem o estoque nela mesma); zerado, só é esgotado se o insumo também
   // estiver. Sem conta de unidade (kg × g): basta o insumo ter saldo.
-  const temInsumo = new Set<string>();
-  const faltaInsumo = new Set<string>();
-  {
-    const insumo = (await import('drizzle-orm/pg-core')).alias(schema.produto, 'insumo');
-    const ficha = await db
-      .select({
-        produtoId: schema.fichaTecnica.produtoId,
-        varianteId: schema.fichaTecnica.varianteId,
-        saldo: insumo.estoqueAtual,
-      })
-      .from(schema.fichaTecnica)
-      .innerJoin(insumo, eq(insumo.id, schema.fichaTecnica.insumoId))
-      .where(
-        and(
-          eq(schema.fichaTecnica.filialId, f),
-          eq(schema.fichaTecnica.baixaEstoque, true),
-          eq(insumo.controlaEstoque, true),
-        ),
-      );
-    for (const l of ficha) {
-      // linha sem tamanho vale pro produto inteiro; com tamanho, só pra ele
-      const chave = l.varianteId ? `v:${l.varianteId}` : `p:${l.produtoId}`;
-      // insumo que nunca teve entrada (saldo null) não diz nada
-      if (l.saldo == null) continue;
-      if (Number(l.saldo) > 0) temInsumo.add(chave);
-      else faltaInsumo.add(chave);
-    }
-  }
-  const saldoPraLoja = (l: { controla: boolean | null; saldo: string | null; produtoId: string; varianteId: string }) => {
-    if (!l.controla) return null;
-    const proprio = Number(l.saldo ?? 0);
-    if (proprio > 0) return proprio;
-    const chaves = [`p:${l.produtoId}`, `v:${l.varianteId}`];
-    const tem = chaves.some((c) => temInsumo.has(c));
-    const falta = chaves.some((c) => faltaInsumo.has(c));
-    // tem insumo e nenhum zerado → disponível, sem número (o saldo é do insumo)
-    if (tem && !falta) return null;
-    return proprio;
-  };
+  // A conta mora em @/lib/estoque-venda (a mesma do delivery). Desde 11/11/2026
+  // ela também esgota a REVENDA 1:1 (o vinho que não controla estoque mas sai
+  // de um insumo que controla) quando o insumo zera — regra do dono: autorizado
+  // some quando o estoque acaba e volta quando o estoque volta.
+  const { carregarFichaDeVenda, saldoDeVenda } = await import('@/lib/estoque-venda');
+  const fichaDeVenda = await carregarFichaDeVenda(f);
+  const saldoPraLoja = (l: { controla: boolean | null; saldo: string | null; produtoId: string; varianteId: string }) =>
+    saldoDeVenda(l, fichaDeVenda);
 
   // No modo próprio a loja perde TODO o resto do cardápio junto com o
   // Firebird: as praças (COZINHAS), as observações prontas e o wizard. Vão no

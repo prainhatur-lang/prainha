@@ -273,6 +273,7 @@
     "migrate:permuta": "tsx scripts/migrate-permuta.ts",
     "migrate:permuta-tipo": "tsx scripts/migrate-permuta-tipo.ts",
     "migrate:permuta-mensal": "tsx scripts/migrate-permuta-mensal.ts",
+    "migrate:venda-pergunta": "tsx scripts/migrate-venda-pergunta.ts",
     "migrate:revenda-preco": "tsx scripts/migrate-revenda-preco.ts",
     "migrate:lelis-entrada": "tsx scripts/migrate-lelis-entrada.ts",
     "migrate:lelis-pedido": "tsx scripts/migrate-lelis-pedido.ts",

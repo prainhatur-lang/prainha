@@ -77,3 +77,4 @@ export * from './estudo-equipe';
 export * from './mutuo';
 export * from './empresa-pix';
 export * from './nfse-avulsa';
+export * from './venda-pergunta';

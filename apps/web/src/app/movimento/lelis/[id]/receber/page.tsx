@@ -63,6 +63,12 @@ export default async function ConferirPedidoLelisPage(props: { params: Promise<{
                 </li>
               ))}
             </ul>
+            <p className="text-sm text-slate-600">
+              Algum desses está desligado pro garçom, pro cliente ou pro delivery?{' '}
+              <Link href={`/relatorios/ativar-venda?filialId=${casa.id}`} className="text-sky-700 hover:underline">
+                Ver o que chegou e não está à venda
+              </Link>
+            </p>
           </div>
         ) : (
           <ConferirLelisForm

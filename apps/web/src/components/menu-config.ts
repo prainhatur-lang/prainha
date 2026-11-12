@@ -334,6 +334,12 @@ export const MENU_AREAS: MenuArea[] = [
             aka: ['extrato de estoque', 'saldo do produto', 'ficha do produto'],
           },
           {
+            label: 'Chegou estoque e não vende',
+            href: '/relatorios/ativar-venda',
+            perm: 'relatorio.read',
+            aka: ['ativar venda', 'ligar garçom', 'ligar cliente', 'ligar delivery', 'produto desligado', 'cardápio qr'],
+          },
+          {
             label: 'Insumos mais usados',
             href: '/relatorios/insumos',
             perm: 'relatorio.read',
