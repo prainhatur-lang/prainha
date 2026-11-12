@@ -93,6 +93,8 @@ export function BotoesCabecalho({
   lerPagamentoXml = false,
   valorTotalNota = null,
   dataEmissao = null,
+  cartoes = [],
+  cartaoAtual = null,
 }: {
   notaId: string;
   totalItens: number;
@@ -110,6 +112,10 @@ export function BotoesCabecalho({
   valorTotalNota?: number | null;
   /** Emissão da nota (YYYY-MM-DD BRT): vencimento lido antes dela é leitura errada. */
   dataEmissao?: string | null;
+  /** Cartões de crédito da empresa (faturas enviadas) pra opção "paguei no cartão". */
+  cartoes?: { banco: string; final: string }[];
+  /** Cartão já informado nesta nota (pré-marca a opção). */
+  cartaoAtual?: { banco: string; final: string; parcelas: number } | null;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -243,6 +249,8 @@ export function BotoesCabecalho({
           lerPagamentoXml={lerPagamentoXml}
           valorTotalNota={valorTotalNota}
           dataEmissao={dataEmissao}
+          cartoes={cartoes}
+          cartaoAtual={cartaoAtual}
           onXmlLido={() => start(() => router.refresh())}
           onSuccess={(texto) => {
             setMsg({ tipo: 'ok', texto });
@@ -275,6 +283,8 @@ function ModalLancar({
   lerPagamentoXml,
   valorTotalNota,
   dataEmissao,
+  cartoes,
+  cartaoAtual,
   onXmlLido,
   onSuccess,
   onFechar,
@@ -290,6 +300,8 @@ function ModalLancar({
   lerPagamentoXml: boolean;
   valorTotalNota: number | null;
   dataEmissao: string | null;
+  cartoes: { banco: string; final: string }[];
+  cartaoAtual: { banco: string; final: string; parcelas: number } | null;
   onXmlLido: () => void;
   onSuccess: (texto: string) => void;
   onFechar: () => void;
@@ -315,6 +327,11 @@ function ModalLancar({
     return c && (c.tipo == null || c.tipo === 'DESPESA' || c.tipo === 'P') ? sug : '';
   });
   const [modoSemDup, setModoSemDup] = useState<ModoSemDup>('avista');
+  // Paguei no cartão de crédito (12/11/2026): opção à parte, desligada por
+  // padrão. Ligada, grava o cartão na nota e não cria conta a pagar.
+  const [noCartao, setNoCartao] = useState(cartaoAtual != null);
+  const [cartaoSel, setCartaoSel] = useState(cartaoAtual ? `${cartaoAtual.banco}|${cartaoAtual.final}` : '');
+  const [cartaoParcelas, setCartaoParcelas] = useState(String(cartaoAtual?.parcelas ?? 1));
   const [parcelas, setParcelas] = useState<ParcelaForm[]>([
     { dataVencimento: '', valor: '' },
   ]);
@@ -453,23 +470,27 @@ function ModalLancar({
   );
 
   // Quando precisa criar contas a pagar?
-  const vaiCriarContas = temDuplicatasXml || (!temDuplicatasXml && modoSemDup !== 'avista');
+  const vaiCriarContas = !noCartao && (temDuplicatasXml || (!temDuplicatasXml && modoSemDup !== 'avista'));
+  const nParcelasCartao = Number(cartaoParcelas);
+  const cartaoValido =
+    !noCartao || (cartaoSel !== '' && Number.isInteger(nParcelasCartao) && nParcelasCartao >= 1 && nParcelasCartao <= 36);
   const precisaCategoria = vaiCriarContas && temFornecedor;
 
   // Validacao das parcelas manuais (modo manual ou celular)
   const parcelasValidas = useMemo(() => {
-    if (temDuplicatasXml || modoSemDup === 'avista') return true;
+    if (noCartao || temDuplicatasXml || modoSemDup === 'avista') return true;
     if (parcelas.length === 0) return false;
     return parcelas.every(
       (p) =>
         p.dataVencimento && /^\d{4}-\d{2}-\d{2}$/.test(p.dataVencimento) &&
         Number(p.valor.replace(',', '.')) > 0,
     );
-  }, [parcelas, modoSemDup, temDuplicatasXml]);
+  }, [parcelas, modoSemDup, temDuplicatasXml, noCartao]);
 
   const podeConfirmar =
     (!precisaCategoria || categoriaId !== '') &&
     parcelasValidas &&
+    cartaoValido &&
     !lendoXml &&
     !loading;
 
@@ -485,7 +506,7 @@ function ModalLancar({
   const fonteRef = valorBoletoXml > 0 ? 'o boleto do XML da nota' : 'o total da nota';
   const somaParcelas = parcelas.reduce((s, p) => s + (Number(p.valor.replace(',', '.')) || 0), 0);
   const parcelasDivergem =
-    valorReferencia != null && !temDuplicatasXml && modoSemDup !== 'avista' && somaParcelas > 0 &&
+    valorReferencia != null && !noCartao && !temDuplicatasXml && modoSemDup !== 'avista' && somaParcelas > 0 &&
     Math.abs(somaParcelas - valorReferencia) > Math.max(0.05, valorReferencia * 0.01);
 
   /** Aplica o que a foto leu numa parcela: vencimento só se não for antes da
@@ -618,7 +639,18 @@ function ModalLancar({
       const rEstoque = await fetch(`/api/nota-compra/${notaId}/lancar-estoque`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ categoriaId: temDuplicatasXml ? categoriaId || null : null }),
+        body: JSON.stringify(
+          noCartao
+            ? {
+                categoriaId: null,
+                cartao: {
+                  banco: cartaoSel.split('|')[0],
+                  final: cartaoSel.split('|')[1],
+                  parcelas: nParcelasCartao,
+                },
+              }
+            : { categoriaId: temDuplicatasXml ? categoriaId || null : null },
+        ),
       });
       const dEstoque = await rEstoque.json().catch(() => ({}));
       if (!rEstoque.ok) {
@@ -629,7 +661,7 @@ function ModalLancar({
       // 2. Se nao tem duplicatas XML e user escolheu modo manual/celular,
       //    cria parcelas manualmente
       let contasManualCriadas = 0;
-      if (!temDuplicatasXml && modoSemDup !== 'avista') {
+      if (!noCartao && !temDuplicatasXml && modoSemDup !== 'avista') {
         const parcelasPayload = parcelas.map((p) => ({
           dataVencimento: p.dataVencimento,
           valor: Number(p.valor.replace(',', '.')),
@@ -655,7 +687,11 @@ function ModalLancar({
       if (dEstoque.lancados > 0) partes.push(`✓ ${dEstoque.lancados} item(ns) lançado(s)`);
       if (dEstoque.contasPagarCriadas > 0) partes.push(`💰 ${dEstoque.contasPagarCriadas} conta(s) (XML)`);
       if (contasManualCriadas > 0) partes.push(`💰 ${contasManualCriadas} parcela(s) manual(is)`);
-      if (!temDuplicatasXml && modoSemDup === 'avista') partes.push('compra à vista');
+      if (noCartao) {
+        partes.push(
+          `💳 no cartão ${cartaoSel.replace('|', ' final ')} em ${nParcelasCartao}x (sem conta a pagar)`,
+        );
+      } else if (!temDuplicatasXml && modoSemDup === 'avista') partes.push('compra à vista');
       onSuccess(partes.join(' · '));
     } catch (e) {
       setErro((e as Error).message);
@@ -687,8 +723,70 @@ function ModalLancar({
           </div>
         )}
 
+        {/* === Paguei no cartão de crédito (opção à parte, desligada por padrão) === */}
+        {!lendoXml && (
+          <div className={`rounded-lg border p-3 ${noCartao ? 'border-violet-300 bg-violet-50' : 'border-slate-200 bg-white'}`}>
+            <label className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-slate-800">
+              <input
+                type="checkbox"
+                checked={noCartao}
+                onChange={(e) => setNoCartao(e.target.checked)}
+                className="h-4 w-4"
+              />
+              💳 Paguei no cartão de crédito
+            </label>
+            {noCartao && (
+              <div className="mt-2 space-y-2">
+                <div className="flex flex-wrap items-end gap-2">
+                  <label className="text-[11px] text-slate-600">
+                    Qual cartão *
+                    <select
+                      value={cartaoSel}
+                      onChange={(e) => setCartaoSel(e.target.value)}
+                      className="mt-0.5 block rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                    >
+                      <option value="">-- escolha --</option>
+                      {cartoes.map((c) => (
+                        <option key={`${c.banco}|${c.final}`} value={`${c.banco}|${c.final}`}>
+                          {c.banco} final {c.final}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="text-[11px] text-slate-600">
+                    Em quantas vezes *
+                    <input
+                      type="number"
+                      min={1}
+                      max={36}
+                      value={cartaoParcelas}
+                      onChange={(e) => setCartaoParcelas(e.target.value)}
+                      className="mt-0.5 block w-20 rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                    />
+                  </label>
+                  {(valorTotalNota ?? 0) > 0 && nParcelasCartao >= 1 && (
+                    <span className="pb-1.5 text-[11px] text-violet-900">
+                      {nParcelasCartao}x de{' '}
+                      <span className="font-mono font-semibold">{brl((valorTotalNota ?? 0) / nParcelasCartao)}</span>
+                    </span>
+                  )}
+                </div>
+                {cartoes.length === 0 && (
+                  <p className="text-[11px] text-amber-700">
+                    Nenhum cartão ainda: envie uma fatura em Financeiro → Cartões.
+                  </p>
+                )}
+                <p className="text-[10px] text-violet-900">
+                  Não cria conta a pagar: quem paga é a fatura. A nota fica ligada ao cartão e mostra as
+                  parcelas conforme as faturas forem entrando.
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* === CASO 1: NFe traz duplicatas no XML === */}
-        {!lendoXml && temDuplicatasXml && (
+        {!lendoXml && !noCartao && temDuplicatasXml && (
           <div className="rounded-lg border border-sky-200 bg-sky-50 p-3">
             <h3 className="text-xs font-semibold text-sky-900">
               💰 Contas a pagar (do XML)
@@ -716,7 +814,7 @@ function ModalLancar({
         )}
 
         {/* === CASO 2: NFe não tem duplicatas === */}
-        {!lendoXml && !temDuplicatasXml && (
+        {!lendoXml && !noCartao && !temDuplicatasXml && (
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-3">
             <div>
               <h3 className="text-xs font-semibold text-amber-900">

@@ -26,6 +26,8 @@ import { FaixaTipoNota } from './faixa-tipo';
 import { acharGemea } from '@/lib/juntar-pedido-foto';
 import { EditPix } from '@/app/cadastros/fornecedores/edit-pix';
 import { ReciboPeloCelular } from './recibo-pelo-celular';
+import { CartaoNota } from './cartao-nota';
+import { cartoesDaEmpresa, parcelasDaNotaNoCartao } from '@/lib/nota-cartao';
 
 export const dynamic = 'force-dynamic';
 
@@ -411,6 +413,24 @@ export default async function NotaDetalhePage(props: {
 
   // Fator de rateio: distribui frete/outros/desconto pelos itens
   const valorTotalNota = Number(nota.valorTotal ?? 0);
+
+  // Cartão de crédito: lista pra escolher e, se a nota já foi marcada, as
+  // parcelas dela que já apareceram nas faturas.
+  const cartoesEmpresa = await cartoesDaEmpresa(nota.filialId);
+  const cartaoAtual =
+    nota.cartaoBanco && nota.cartaoFinal
+      ? { banco: nota.cartaoBanco, final: nota.cartaoFinal, parcelas: nota.cartaoParcelas ?? 1 }
+      : null;
+  const parcelasCartao = cartaoAtual
+    ? await parcelasDaNotaNoCartao({
+        filialId: nota.filialId,
+        banco: cartaoAtual.banco,
+        final: cartaoAtual.final,
+        parcelas: cartaoAtual.parcelas,
+        valorTotal: valorTotalNota,
+        dataEmissao: nota.dataEmissao ? dateToBrYmd(new Date(nota.dataEmissao)) : null,
+      })
+    : [];
   const valorProdutos = Number(nota.valorProdutos ?? 0);
   const valorFrete = Number(nota.valorFrete ?? 0);
   const valorSeguro = Number(nota.valorSeguro ?? 0);
@@ -605,6 +625,8 @@ export default async function NotaDetalhePage(props: {
             pagamentoXml={(nota.pagamentoXml as PagamentoXml | null) ?? null}
             valorTotalNota={valorTotalNota > 0 ? valorTotalNota : null}
             dataEmissao={nota.dataEmissao ? dateToBrYmd(new Date(nota.dataEmissao)) : null}
+            cartoes={cartoesEmpresa}
+            cartaoAtual={cartaoAtual}
             lerPagamentoXml={
               nota.origemImportacao === 'SEFAZ_DFE' &&
               nota.pagamentoXml == null &&
@@ -691,6 +713,18 @@ export default async function NotaDetalhePage(props: {
               />
             )}
           </div>
+        )}
+
+        {/* Pago no cartão de crédito: qual cartão, parcelas e o encontro com a fatura */}
+        {nota.situacao !== 'CANCELADA' && nota.situacao !== 'DENEGADA' && (
+          <CartaoNota
+            notaId={id}
+            cartoes={cartoesEmpresa}
+            atual={cartaoAtual}
+            valorTotal={valorTotalNota}
+            achadas={parcelasCartao}
+            contasAbertas={cartaoAtual ? contasPagar.length : 0}
+          />
         )}
 
         {/* Card: pedido de compra vinculado a esta NF */}

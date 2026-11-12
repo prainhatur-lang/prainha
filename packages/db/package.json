@@ -228,6 +228,7 @@
     "migrate:nfse-avulsa": "tsx scripts/migrate-nfse-avulsa.ts",
     "migrate:portador-atribuido": "tsx scripts/migrate-portador-atribuido.ts",
     "migrate:cartao-rateio": "tsx scripts/migrate-cartao-rateio.ts",
+    "migrate:nota-cartao": "tsx scripts/migrate-nota-cartao.ts",
     "migrate:conta-pagar-criado-por": "tsx scripts/migrate-conta-pagar-criado-por.ts",
     "migrate:registro-exclusao": "tsx scripts/migrate-registro-exclusao.ts",
     "migrate:pix-pagamento": "tsx scripts/migrate-pix-pagamento.ts",

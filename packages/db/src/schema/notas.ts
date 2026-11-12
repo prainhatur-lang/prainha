@@ -89,6 +89,15 @@ export const notaCompra = pgTable(
      *  não lido pra isso (nota da SEFAZ de antes de 14/10/2026). */
     pagamentoXml: jsonb('pagamento_xml'),
 
+    /** Compra paga no CARTÃO DE CRÉDITO da empresa (informado em "Lançar no
+     *  estoque" ou no card da nota): banco + final que dá nome à fatura
+     *  (cartao_fatura.cartao_final) e em quantas vezes. Serve pro encontro com
+     *  as parcelas em cartao_lancamento. Nota no cartão não gera conta a pagar:
+     *  quem paga é a fatura. NULL = não foi no cartão / não informado. */
+    cartaoBanco: varchar('cartao_banco', { length: 60 }),
+    cartaoFinal: varchar('cartao_final', { length: 8 }),
+    cartaoParcelas: integer('cartao_parcelas'),
+
     // Metadata
     // UPLOAD | SEFAZ_DFE | SEFAZ_DFE_RESUMO | SEFAZ_DFE_RESUMO_CIENTE (23 chars — por isso 40, não 20)
     origemImportacao: varchar('origem_importacao', { length: 40 }).default('UPLOAD'),

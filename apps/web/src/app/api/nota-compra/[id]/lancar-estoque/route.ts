@@ -35,6 +35,7 @@ import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { aplicarMpmEntrada, fatorRateioNfe } from '@/lib/custo-medio';
 import { lerConferenciaNota } from '@/lib/nota-conferencia';
 import { fatorDoItemNota } from '@/lib/fator-nota-item';
+import { gravarCartaoDaNota } from '@/lib/nota-cartao';
 import { acharContaMesmoPedido, fornecedoresMesmaEmpresa, msgContaDuplicada } from '@/lib/conta-duplicada';
 
 export const dynamic = 'force-dynamic';
@@ -42,6 +43,16 @@ export const runtime = 'nodejs';
 
 const Body = z.object({
   categoriaId: z.string().uuid().nullable().optional(),
+  // Compra paga no cartão de crédito (12/11/2026): grava o cartão na nota e
+  // NÃO cria conta a pagar — quem paga é a fatura. Sem este campo, tudo igual.
+  cartao: z
+    .object({
+      banco: z.string().min(1).max(60),
+      final: z.string().min(1).max(8),
+      parcelas: z.number().int().min(1).max(36),
+    })
+    .nullable()
+    .optional(),
 });
 
 export async function POST(
@@ -64,6 +75,7 @@ export async function POST(
     return NextResponse.json({ error: 'body invalido' }, { status: 400 });
   }
   const categoriaId = parsed.data.categoriaId ?? null;
+  const cartao = parsed.data.cartao ?? null;
 
   const [nota] = await db
     .select({
@@ -161,6 +173,13 @@ export async function POST(
       { error: 'nenhum item mapeado — vincule os produtos primeiro' },
       { status: 400 },
     );
+  }
+
+  // Pago no cartão: marca a nota antes de mexer no estoque (cartão inválido
+  // recusa sem lançar nada).
+  if (cartao) {
+    const g = await gravarCartaoDaNota({ notaId: id, filialId: nota.filialId, cartao });
+    if (!g.ok) return NextResponse.json({ error: g.erro }, { status: 400 });
   }
 
   const dataMov = nota.dataEntrada ?? nota.dataEmissao ?? new Date();
@@ -278,7 +297,8 @@ export async function POST(
   let contasCriadas = 0;
   let contasPuladas = 0;
   let contasAproveitadas = 0;
-  if (nota.fornecedorId) {
+  // Nota no cartão não vira conta a pagar (a fatura é que é paga).
+  if (nota.fornecedorId && !cartao) {
     const duplicatas = await db
       .select({
         id: schema.notaCompraDuplicata.id,
@@ -425,5 +445,6 @@ export async function POST(
     contasPagarCriadas: contasCriadas,
     contasPagarPuladas: contasPuladas,
     contasPagarAproveitadas: contasAproveitadas,
+    noCartao: cartao != null,
   });
 }
