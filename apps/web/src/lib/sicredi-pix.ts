@@ -22,6 +22,7 @@ import tls from 'node:tls';
 import { db, schema } from '@concilia/db';
 import { sql as drizzleSql } from 'drizzle-orm';
 import { dateToBrYmd } from './datas';
+import { SICREDI_CA_PADRAO } from './sicredi-ca';
 
 export const CODIGO_BANCO_SICREDI = '748';
 
@@ -71,7 +72,8 @@ export function contasSicrediConfiguradas(): SicrediCredenciais[] {
       clientSecret,
       cert,
       key,
-      ca: pemDe(process.env[`${p}_CA_B64`], 'CERTIFICATE'),
+      // sem _CA_B64 da casa usa a cadeia pública da Sicredi do código (limite de envs da Vercel)
+      ca: pemDe(process.env[`${p}_CA_B64`], 'CERTIFICATE') ?? Buffer.from(SICREDI_CA_PADRAO + '\n'),
     });
   }
   return out;
