@@ -35,7 +35,8 @@ export interface ItemPagamentoFolha {
   cnpj: string;
   tipo: 'repasse_eb' | 'repasse_lelis' | 'direto';
   descricao: string;
-  pessoas: { nome: string; cpf: string | null; liquido: number; fornecedorId?: string | null }[];
+  /** registradoEm: só pra quem é registrado em outro estabelecimento da empresa da casa e entra no Repasse E.B. */
+  pessoas: { nome: string; cpf: string | null; liquido: number; fornecedorId?: string | null; registradoEm?: string | null }[];
   valor: number;
   /** Conta já criada por este botão. */
   jaLancadaId: string | null;
@@ -220,13 +221,20 @@ export async function pagamentosDaFolha(casaFilialId: string, comp: string): Pro
       });
       continue;
     }
-    if (cnpj === EB_CNPJ) {
-      const ref = `fc:${comp}:${cnpj}`;
+    // Registrado em OUTRO estabelecimento da mesma empresa da casa (mesma raiz de
+    // CNPJ — ex.: Edjane, registrada na Prainha Turismo matriz e lotada na Mar):
+    // antes ficava fora sem aviso (salário de out/2026 não foi lançado). Dono
+    // 11/11/2026: a casa onde a pessoa trabalha paga a parte dela à E.B. e a E.B.
+    // paga o valor integral à pessoa → entra no Repasse E.B. da casa.
+    const outroEstabelecimento =
+      cnpj !== casaCnpj && cnpj !== EB_CNPJ && cnpj.length === 14 && casaCnpj.length === 14 && cnpj.slice(0, 8) === casaCnpj.slice(0, 8);
+    if (cnpj === EB_CNPJ || outroEstabelecimento) {
+      const ref = `fc:${comp}:${EB_CNPJ}`;
       const it = itens.get(ref) ?? {
         ref,
         casaFilialId,
-        empresa,
-        cnpj,
+        empresa: cnpj === EB_CNPJ ? empresa : 'E.B. Serviços',
+        cnpj: EB_CNPJ,
         tipo: 'repasse_eb' as const,
         descricao: `Repasse E.B. — Folha ${mmAaaa(comp)}`,
         pessoas: [],
@@ -235,7 +243,7 @@ export async function pagamentosDaFolha(casaFilialId: string, comp: string): Pro
         pareceLancada: null,
         semFavorecido: [],
       };
-      it.pessoas.push(pessoa);
+      it.pessoas.push(outroEstabelecimento ? { ...pessoa, registradoEm: l.empresaRegistro || 'outro estabelecimento da empresa' } : pessoa);
       it.valor += liquido;
       itens.set(ref, it);
       continue;
@@ -367,7 +375,7 @@ export async function lancarContasEbDaFolha(
       dataVencimento: p.vencimento,
       valor,
       descricao: `Salário ${mmAaaa(p.comp)} — ${x.nome}`,
-      observacao: `Folha do sistema ${mmAaaa(p.comp)} — empregado da ${emp} lotado na ${p.casaNome}. A ${emp} paga a pessoa com o "Repasse ${emp} — Folha ${mmAaaa(p.comp)}" da casa.`,
+      observacao: `Folha do sistema ${mmAaaa(p.comp)} — ${x.registradoEm ? `registrado em ${x.registradoEm}, trabalha na ${p.casaNome} (regra do dono 11/11/2026: a casa paga a parte dela à ${emp} e a ${emp} paga o valor integral)` : `empregado da ${emp} lotado na ${p.casaNome}`}. A ${emp} paga a pessoa com o "Repasse ${emp} — Folha ${mmAaaa(p.comp)}" da casa.`,
       competencia: p.comp,
       codigoReferencia: ref,
       origem: 'FOLHA',
