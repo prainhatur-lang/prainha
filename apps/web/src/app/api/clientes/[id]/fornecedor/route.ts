@@ -42,7 +42,12 @@ export async function POST(_req: Request, ctx: { params: Promise<{ id: string }>
     .limit(1);
   if (!acesso) return NextResponse.json({ error: 'sem acesso à filial' }, { status: 403 });
 
-  const r = await marcarClienteComoFornecedor(id);
+  let r: Awaited<ReturnType<typeof marcarClienteComoFornecedor>>;
+  try {
+    r = await marcarClienteComoFornecedor(id);
+  } catch (e) {
+    return NextResponse.json({ error: (e as Error).message }, { status: 400 });
+  }
   if (!r) return NextResponse.json({ error: 'cliente não encontrado' }, { status: 404 });
   return NextResponse.json({ ok: true, ...r });
 }

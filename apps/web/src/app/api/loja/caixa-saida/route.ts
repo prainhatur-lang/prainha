@@ -82,8 +82,8 @@ export async function GET(request: Request) {
   return NextResponse.json({ ok: true, fornecedores: achados });
 }
 
-/** Acha na casa o cadastro com esse nome (sem acento/caixa) ou cria um novo —
- *  é o "cadastrar direto no caixa". Fica fora da lista de compras. */
+/** Acha na casa o cadastro com esse nome (sem acento/caixa). Não cria mais
+ *  cadastro novo (sem documento não entra). */
 async function fornecedorPeloNome(filialId: string, nome: string): Promise<string | null> {
   const alvo = semAcento(nome);
   if (alvo.length < 2) return null;
@@ -93,11 +93,10 @@ async function fornecedorPeloNome(filialId: string, nome: string): Promise<strin
     .where(and(eq(schema.fornecedor.filialId, filialId), isNull(schema.fornecedor.dataDelete)));
   const igual = daCasa.find((x) => semAcento(x.nome ?? '') === alvo);
   if (igual) return igual.id;
-  const [novo] = await db
-    .insert(schema.fornecedor)
-    .values({ filialId, nome: nome.trim().slice(0, 200) })
-    .returning({ id: schema.fornecedor.id });
-  return novo?.id ?? null;
+  // Dono 12/11/2026: fornecedor novo só entra com CPF/CNPJ. O caixa não tem o
+  // documento, então não cria cadastro: a despesa entra do mesmo jeito, sem
+  // fornecedor, com o nome de quem recebeu na observação ("Recebeu: …").
+  return null;
 }
 
 export async function POST(request: Request) {

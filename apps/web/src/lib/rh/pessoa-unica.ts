@@ -20,6 +20,7 @@
 
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
+import { validarDocumento } from '@/lib/nfce/documento';
 
 const soDigitos = (s?: string | null) => (s ?? '').replace(/\D/g, '');
 
@@ -102,6 +103,15 @@ export async function garantirPapeisDaPessoa(
     if (achado) {
       fornecedorId = achado.id;
     } else {
+      // Dono 12/11/2026: fornecedor novo só entra com CPF/CNPJ que confere.
+      // Quem já tem cadastro de fornecedor não passa por aqui.
+      if (!validarDocumento(cpf)) {
+        throw new Error(
+          cpf
+            ? 'O CPF da ficha não confere (dígito verificador). Corrija o CPF pra configurar o pagamento.'
+            : 'Informe o CPF na ficha do funcionário pra configurar o pagamento. Cadastro de quem recebe não entra mais sem CPF.',
+        );
+      }
       const [novo] = await db
         .insert(schema.fornecedor)
         .values({
@@ -270,6 +280,15 @@ export async function marcarClienteComoFornecedor(
       )
       .limit(1);
     if (achado) return { fornecedorId: achado.id, criou: false };
+  }
+
+  // Dono 12/11/2026: fornecedor novo só entra com CPF/CNPJ que confere.
+  if (!validarDocumento(doc)) {
+    throw new Error(
+      doc
+        ? 'O CPF/CNPJ deste cliente não confere (dígito verificador). Corrija o documento antes de marcar como fornecedor.'
+        : 'Este cliente não tem CPF/CNPJ no cadastro. Informe o documento antes de marcar como fornecedor.',
+    );
   }
 
   const [novo] = await db

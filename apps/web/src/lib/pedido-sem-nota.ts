@@ -12,6 +12,7 @@ import { db, schema } from '@concilia/db';
 import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { hojeBr } from '@/lib/datas';
 import { resolverFornecedorParaNota } from '@/lib/match-fornecedor';
+import { validarDocumento } from '@/lib/nfce/documento';
 
 export const ORIGEM_PEDIDO_FOTO = 'PEDIDO_FOTO';
 export const BUCKET_PEDIDO = 'producao-fotos';
@@ -811,6 +812,9 @@ export async function garantirFornecedorDoServico(
       .limit(1);
     if (mesmoNome) return { id: mesmoNome.id, nome: mesmoNome.nome ?? nome, cnpj: mesmoNome.cnpj };
   }
+  // Dono 12/11/2026: fornecedor novo só entra com CPF/CNPJ que confere. Recibo
+  // sem documento legível não cria cadastro — a rota avisa pra cadastrar na mão.
+  if (!doc || !validarDocumento(doc)) return null;
   const [novo] = await db
     .insert(schema.fornecedor)
     .values({
