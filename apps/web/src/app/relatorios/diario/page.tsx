@@ -476,6 +476,12 @@ function Casa({ c, ff }: { c: RelatorioCasa; ff?: FolhaFaturamentoMes | null }) 
             {c.documentosVencendo!.map((d, i) => (
               <li key={i}>
                 {d.titulo} — {fraseDocVencendo(d)}
+                {d.link && (
+                  <>
+                    {' '}
+                    <a href={d.link.replace('https://app.prainhabar.com', '')} className="underline">renovar</a>
+                  </>
+                )}
               </li>
             ))}
           </ul>

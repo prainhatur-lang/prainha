@@ -15,6 +15,8 @@ import { sql, type SQL } from 'drizzle-orm';
 import { dateToBrYmd, hojeBr } from './datas';
 import { diasEntre, rotuloTipoDoc } from './empresa-documento';
 import { chamarLojaCaixa } from './caixa-loja';
+import { X509Certificate } from 'node:crypto';
+import { credencialSicredi } from './sicredi-pix';
 import { contarEvento } from './evento-ticket';
 import { pendenciasEscala, totalPendencias, type PendenciasEscala } from './rh/escala-pendencias';
 import { calcularDia, faltaIntervalo } from './rh/calcular-ponto';
@@ -315,6 +317,8 @@ export interface DocVencendo {
   validade: string;
   /** dias até vencer (negativo = vencido há N dias) */
   dias: number;
+  /** Onde renovar, quando não é /empresa/documentos (certificados, 12/11/2026). */
+  link?: string;
 }
 
 /** Dia de ponto que não fechou: mesma regra do /rh/ponto/relatorio (incompleto ou saída órfã). */
@@ -1818,7 +1822,50 @@ async function documentosVencendoDaCasa(filialId: string): Promise<DocVencendo[]
        AND validade <= (${hoje}::date + 30)
      ORDER BY validade
   `)) as unknown as Array<{ tipo: string; titulo: string | null; validade: string }>;
-  return rows.map((r) => ({ titulo: r.titulo || rotuloTipoDoc(r.tipo), validade: r.validade, dias: diasEntre(hoje, r.validade) }));
+  const lista: DocVencendo[] = rows.map((r) => ({ titulo: r.titulo || rotuloTipoDoc(r.tipo), validade: r.validade, dias: diasEntre(hoje, r.validade) }));
+  // Certificados também vencem (pedido do dono 12/11/2026): avisa a partir de 30 dias antes.
+  const certs = await certificadosVencendoDaCasa(filialId, hoje).catch((e) => {
+    console.error('[relatorio-diario] certificados:', e);
+    return [] as DocVencendo[];
+  });
+  return [...lista, ...certs].sort((a, b) => a.validade.localeCompare(b.validade));
+}
+
+/** Certificado da API Pix Sicredi e certificado digital A1 (SEFAZ) vencidos ou vencendo em até 30 dias. */
+async function certificadosVencendoDaCasa(filialId: string, hoje: string): Promise<DocVencendo[]> {
+  const out: DocVencendo[] = [];
+  const sic = await credencialSicredi(filialId).catch(() => null);
+  if (sic?.cert?.length) {
+    try {
+      const validade = dateToBrYmd(new Date(new X509Certificate(sic.cert).validTo));
+      const dias = diasEntre(hoje, validade);
+      if (dias <= 30) {
+        out.push({
+          titulo: 'Certificado da API Pix Sicredi',
+          validade,
+          dias,
+          link: `https://app.prainhabar.com/configuracoes/pagamento?${new URLSearchParams({ filialId }).toString()}`,
+        });
+      }
+    } catch { /* certificado ilegível: o teste de conexão da tela já acusa */ }
+  }
+  const a1 = (await db.execute(sql`
+    SELECT validade_fim::text AS validade
+      FROM certificado_filial
+     WHERE filial_id = ${filialId} AND ativo AND validade_fim IS NOT NULL
+       AND validade_fim <= (${hoje}::date + 30)
+     ORDER BY validade_fim DESC
+     LIMIT 1
+  `)) as unknown as Array<{ validade: string }>;
+  for (const r of a1) {
+    out.push({
+      titulo: 'Certificado digital A1 (notas/SEFAZ)',
+      validade: r.validade,
+      dias: diasEntre(hoje, r.validade),
+      link: 'https://app.prainhabar.com/configuracoes/certificados',
+    });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1882,8 +1929,11 @@ function linhasDocumentos(c: RelatorioCasa): string[] {
   const lista = c.documentosVencendo ?? [];
   if (!lista.length) return [];
   const L = [`📄 Documentos (${lista.length}) — vencido ou vencendo em até 30 dias:`];
-  for (const d of lista) L.push(`• ${d.dias < 0 ? '🔴' : d.dias <= 7 ? '🟠' : '🟡'} ${d.titulo} — ${fraseDocVencendo(d)}`);
-  L.push(`Renovar: https://app.prainhabar.com/empresa/documentos?${new URLSearchParams({ filialId: c.filialId }).toString()}`);
+  for (const d of lista) {
+    L.push(`• ${d.dias < 0 ? '🔴' : d.dias <= 7 ? '🟠' : '🟡'} ${d.titulo} — ${fraseDocVencendo(d)}`);
+    if (d.link) L.push(`  Renovar: ${d.link}`);
+  }
+  if (lista.some((d) => !d.link)) L.push(`Renovar: https://app.prainhabar.com/empresa/documentos?${new URLSearchParams({ filialId: c.filialId }).toString()}`);
   return L;
 }
 
