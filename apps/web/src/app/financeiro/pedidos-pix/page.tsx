@@ -64,12 +64,20 @@ interface SP {
 
 const ORIGENS_FORA = ['CONSUMER', 'FOLHA', 'TRANSFERENCIA', 'ENCONTRO_CONTAS'];
 
+const DIA_MES = String.raw`\d{1,2}\s*\/\s*\d{1,2}(?:\s*\/\s*\d{2,4})?`;
+/** Duas ou mais datas seguidas: "31/10, 01/11 e 02/11", "07/11 e 08/11/2026". */
+const RE_LISTA_DATAS = new RegExp(String.raw`\b${DIA_MES}(?:\s*(?:,|\be\b)\s*${DIA_MES})+`, 'gi');
+
 /** Conta com cara de boleto ou guia — não se paga por Pix ao fornecedor. */
 function pareceBoleto(descricao: string, fornecedor: string, temBoleto: boolean) {
   if (temBoleto) return true;
   if (/(darf|fgts|inss|guia|boleto)/i.test(descricao)) return true;
   // Datas não são parcela (26/10/2026): "16/10/2026" e "09/10 a 16/10" saem antes do teste.
+  // Lista de datas também não é parcela (12/11/2026, recibos do Glaedson:
+  // "31/10, 01/11 e 02/11" e "07/11 e 08/11/2026" liam "01/11" como parcela
+  // 1 de 11 e as contas sumiam do Pix): 2+ datas ligadas por vírgula ou "e".
   const semDatas = descricao
+    .replace(RE_LISTA_DATAS, ' ')
     .replace(/\b\d{1,2}\s*\/\s*\d{1,2}\s*(?:a|até|ate|-|–)\s*\d{1,2}\s*\/\s*\d{1,2}(?:\s*\/\s*\d{2,4})?\b/gi, ' ')
     .replace(/\b\d{1,2}\s*\/\s*\d{1,2}\s*\/\s*\d{2,4}\b/g, ' ');
   // Parcela "2/4": n ≤ total. "TOCOU 23/10" (27/10/2026) é data do show, não
