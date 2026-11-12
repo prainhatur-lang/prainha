@@ -15,7 +15,8 @@ import { db, schema } from '@concilia/db';
 import { and, eq, inArray } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
-import { cifrar, pista, segredoConfigurado } from '@/lib/segredo';
+import { cifrar, decifrar, pista, segredoConfigurado } from '@/lib/segredo';
+import { certBateComChave, certValido } from '@/lib/sicredi-csr';
 import { CHAVES_CIELO, CHAVES_CIELO_SECRETAS } from '@/lib/cielo-credenciais';
 import { CHAVES_REDE, CHAVES_REDE_SECRETAS } from '@/lib/rede-credenciais';
 import { CHAVES_SICREDI, CHAVES_SICREDI_SECRETAS } from '@/lib/sicredi-pix';
@@ -96,7 +97,61 @@ export async function PUT(request: Request) {
     return NextResponse.json({ error: 'filial não acessível' }, { status: 403 });
   }
 
-  const valores = (b?.valores ?? {}) as Record<string, unknown>;
+  const valores = { ...((b?.valores ?? {}) as Record<string, unknown>) };
+
+  // Sicredi: o .cer tem que ser da chave privada — senão a casa fica com a
+  // credencial "salva" e o Pix não sai. Confere com o .key enviado agora, senão
+  // com a chave do pedido gerado aqui (keyPendente), senão com a já salva.
+  let promoverPendente = false;
+  if (PROVEDOR === 'sicredi') {
+    const cert = typeof valores.cert === 'string' ? valores.cert.trim() : '';
+    const keyNova = typeof valores.key === 'string' ? valores.key.trim() : '';
+    if (cert || keyNova) {
+      const salvas = await db
+        .select({ chave: schema.filialCredencial.chave, valor: schema.filialCredencial.valor })
+        .from(schema.filialCredencial)
+        .where(and(
+          eq(schema.filialCredencial.filialId, filialId),
+          eq(schema.filialCredencial.provedor, 'sicredi'),
+          inArray(schema.filialCredencial.chave, ['cert', 'key', 'keyPendente']),
+        ));
+      const salva = (k: string) => {
+        const l = salvas.find((x) => x.chave === k);
+        try { return l ? decifrar(l.valor) : ''; } catch { return ''; }
+      };
+      if (cert && !certValido(cert).ok) {
+        return NextResponse.json({ error: 'O arquivo do certificado não é um .cer válido.' }, { status: 400 });
+      }
+      const certFinal = cert || salva('cert');
+      if (certFinal) {
+        if (keyNova) {
+          if (!certBateComChave(certFinal, keyNova)) {
+            return NextResponse.json(
+              { error: 'O certificado (.cer) não é desta chave privada (.key). Confira se os dois são do mesmo pedido.' },
+              { status: 400 },
+            );
+          }
+        } else if (cert) {
+          const pend = salva('keyPendente');
+          const atual = salva('key');
+          if (pend && certBateComChave(cert, pend)) {
+            valores.key = pend;
+            promoverPendente = true;
+          } else if (!(atual && certBateComChave(cert, atual))) {
+            return NextResponse.json(
+              {
+                error: pend || atual
+                  ? 'Este certificado não é do pedido gerado aqui nem da chave salva. Envie o .cer que a Sicredi devolveu para o último pedido (ou envie o .key junto).'
+                  : 'Falta a chave privada: gere o pedido de certificado aqui (botão "Gerar pedido") ou envie o .key junto com o .cer.',
+              },
+              { status: 400 },
+            );
+          }
+        }
+      }
+    }
+  }
+
   let gravadas = 0;
   for (const chave of chavesDe(PROVEDOR)) {
     const bruto = valores[chave];
@@ -126,7 +181,18 @@ export async function PUT(request: Request) {
     gravadas += 1;
   }
 
-  return NextResponse.json({ ok: true, gravadas });
+  if (promoverPendente) {
+    // A chave do pedido virou a chave em uso; o pedido está atendido.
+    await db
+      .delete(schema.filialCredencial)
+      .where(and(
+        eq(schema.filialCredencial.filialId, filialId),
+        eq(schema.filialCredencial.provedor, 'sicredi'),
+        inArray(schema.filialCredencial.chave, ['keyPendente', 'csr']),
+      ));
+  }
+
+  return NextResponse.json({ ok: true, gravadas, chaveDoPedido: promoverPendente });
 }
 
 export async function DELETE(request: Request) {

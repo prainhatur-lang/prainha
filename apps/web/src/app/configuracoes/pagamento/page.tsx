@@ -10,9 +10,9 @@ import { createClient } from '@/lib/supabase/server';
 import { podeUsuario } from '@/lib/permissoes-runtime';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { db, schema } from '@concilia/db';
-import { inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
-import { segredoConfigurado } from '@/lib/segredo';
+import { decifrar, segredoConfigurado } from '@/lib/segredo';
 import { faltaPraPixBanco } from '@/lib/pix-cob';
 import { PagamentoClient, type FilialCred } from './pagamento-client';
 
@@ -62,6 +62,22 @@ export default async function PagamentoPage() {
     alvo.set(l.filialId, m);
   }
 
+  // Último teste da API Pix Sicredi de cada casa (pro aviso "configurado e funcionando").
+  const testes = filiais.length
+    ? await db
+        .select({ filialId: schema.filialCredencial.filialId, valor: schema.filialCredencial.valor })
+        .from(schema.filialCredencial)
+        .where(and(
+          inArray(schema.filialCredencial.filialId, filiais.map((f) => f.id)),
+          eq(schema.filialCredencial.provedor, 'sicredi'),
+          eq(schema.filialCredencial.chave, 'teste'),
+        ))
+    : [];
+  const testePor = new Map<string, FilialCred['testeSicredi']>();
+  for (const t of testes) {
+    try { testePor.set(t.filialId, JSON.parse(decifrar(t.valor))); } catch { /* ilegível = sem teste */ }
+  }
+
   const escolhaPor = new Map(escolhas.map((e) => [e.id, e]));
   // O que falta pra cada casa poder receber Pix pelo banco (null = pronta).
   const faltaBanco = new Map(
@@ -80,7 +96,10 @@ export default async function PagamentoPage() {
     pistas: porFilial.get(f.id) ?? {},
     propriaRede: porFilialRede.has(f.id),
     pistasRede: porFilialRede.get(f.id) ?? {},
-    propriaSicredi: porFilialSicredi.has(f.id),
+    // 'teste'/'csr'/'keyPendente' sozinhos não são credencial: só conta com o Client ID.
+    propriaSicredi: !!porFilialSicredi.get(f.id)?.clientId,
+    testeSicredi: testePor.get(f.id) ?? null,
+    pedidoSicrediPendente: !!porFilialSicredi.get(f.id)?.keyPendente,
     pistasSicredi: porFilialSicredi.get(f.id) ?? {},
     adquirenteOnline: adqPorFilial.get(f.id) ?? 'cielo',
     adquirenteMaquininha: escolhaPor.get(f.id)?.maq === 'rede' ? 'rede' : 'cielo',

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 
 export interface FilialCred {
   id: string;
@@ -15,6 +15,10 @@ export interface FilialCred {
   /** Sicredi (API Pix direto na conta): cadastrada pela tela, cifrada. */
   propriaSicredi: boolean;
   pistasSicredi: Record<string, string | null>;
+  /** Último teste da API Pix Sicredi (o card avisa "configurado e funcionando"). */
+  testeSicredi: TesteSicredi | null;
+  /** Gerou o pedido de certificado aqui e ainda não chegou o .cer. */
+  pedidoSicrediPendente: boolean;
   /** Por qual adquirente esta casa cobra ONLINE hoje. */
   adquirenteOnline: 'cielo' | 'rede';
   /** Cartão na maquininha (LIO) por qual adquirente. */
@@ -24,6 +28,16 @@ export interface FilialCred {
   pixChave: string;
   /** O que falta pra ligar o Pix no banco (null = pronto). */
   faltaPix: { sicredi: string | null; inter: string | null };
+}
+
+export interface TesteSicredi {
+  ok: boolean;
+  em: string;
+  erro: string | null;
+  fonte: 'filial' | 'env' | null;
+  certValidoAte: string | null;
+  falta: string | null;
+  ligado: boolean;
 }
 
 type Campo = { chave: string; rotulo: string; ajuda: string; segredo?: boolean; arquivo?: string };
@@ -51,7 +65,7 @@ const CAMPOS_SICREDI: Campo[] = [
   { chave: 'clientId', rotulo: 'Client ID', ajuda: 'Portal Sicredi → API Pix → credenciais da aplicação' },
   { chave: 'clientSecret', rotulo: 'Client Secret', ajuda: 'Aparece junto com o Client ID', segredo: true },
   { chave: 'cert', rotulo: 'Certificado (.cer)', ajuda: 'O .cer que a Sicredi devolveu (ex.: 33159574000328.cer)', arquivo: '.cer,.crt,.pem' },
-  { chave: 'key', rotulo: 'Chave privada (.key)', ajuda: 'O .key gerado junto com o pedido (CSR)', arquivo: '.key,.pem' },
+  { chave: 'key', rotulo: 'Chave privada (.key)', ajuda: 'Só se o pedido (CSR) foi feito fora daqui. Pedido gerado por esta tela: deixe em branco', arquivo: '.key,.pem' },
   { chave: 'chave', rotulo: 'Chave Pix (opcional)', ajuda: 'Em branco = a do quadro "como esta casa recebe"' },
 ];
 
@@ -112,18 +126,7 @@ export function PagamentoClient({
             podeEditar={podeEditar && segredoOk}
             nota="Pix pela Rede só funciona com conta Itaú (chave Pix habilitada no Use Rede). A URL do webhook do Pix é cadastrada por CNPJ na central da Rede."
           />
-          <CardCredencial
-            filial={f}
-            provedor="sicredi"
-            titulo="Sicredi (API Pix direto na conta)"
-            campos={CAMPOS_SICREDI}
-            propriaInicial={f.propriaSicredi}
-            pistas={f.pistasSicredi}
-            podeEditar={podeEditar && segredoOk}
-            rotuloPropria={['Usando a credencial ', 'cadastrada aqui']}
-            rotuloGeral="Sem cadastro aqui: usa a da Vercel, se houver"
-            nota="Depois de salvar, recarregue a página: o aviso “não configurado” do Pix por Sicredi some e dá pra escolher Sicredi no quadro acima. Apagar daqui volta pra credencial da Vercel (se a casa tiver)."
-          />
+          <CardSicredi filial={f} podeEditar={podeEditar && segredoOk} />
         </div>
       ))}
     </div>
@@ -308,6 +311,8 @@ function CardCredencial({
   nota,
   rotuloPropria,
   rotuloGeral,
+  onSalvo,
+  extra,
 }: {
   filial: FilialCred;
   provedor: 'cielo' | 'rede' | 'sicredi';
@@ -319,6 +324,8 @@ function CardCredencial({
   nota?: string;
   rotuloPropria?: [string, string];
   rotuloGeral?: string;
+  onSalvo?: () => void;
+  extra?: ReactNode;
 }) {
   const [propria, setPropria] = useState(propriaInicial);
   const [valores, setValores] = useState<Record<string, string>>({});
@@ -338,10 +345,17 @@ function CardCredencial({
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) { setMsg(d.error ?? `Erro ${r.status}`); return; }
-      setMsg(d.gravadas ? `Salvo ✓ (${d.gravadas} campo(s))` : 'Nada preenchido pra salvar');
+      setMsg(
+        d.gravadas
+          ? `Salvo ✓ (${d.gravadas} campo(s))${d.chaveDoPedido ? ' — certificado confere com o pedido gerado aqui' : ''}`
+          : 'Nada preenchido pra salvar',
+      );
       setValores({});
       setNomesArq({});
-      if (d.gravadas) setPropria(true);
+      if (d.gravadas) {
+        setPropria(true);
+        onSalvo?.();
+      }
     } catch (e) {
       setMsg((e as Error).message);
     } finally {
@@ -397,6 +411,7 @@ function CardCredencial({
           Credencial própria
         </label>
       </div>
+      {extra}
 
       {(propria || aberto) && (
         <div className="mt-4 border-t border-slate-100 pt-4">
@@ -466,5 +481,154 @@ function CardCredencial({
         </div>
       )}
     </div>
+  );
+}
+
+const dataHora = (iso: string) =>
+  new Date(iso).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+
+/** Card da Sicredi: credencial + aviso "configurado e funcionando" + pedido de
+ *  certificado gerado pelo sistema (pedido do dono 12/11/2026, SaaS). */
+function CardSicredi({ filial, podeEditar }: { filial: FilialCred; podeEditar: boolean }) {
+  const [teste, setTeste] = useState<TesteSicredi | null>(filial.testeSicredi);
+  const [testando, setTestando] = useState(false);
+  const [pendente, setPendente] = useState(filial.pedidoSicrediPendente);
+  const [gerando, setGerando] = useState(false);
+  const [msgPedido, setMsgPedido] = useState<string | null>(null);
+  const temCredencial = filial.propriaSicredi || !filial.faltaPix.sicredi?.includes('credencial');
+
+  async function testar() {
+    setTestando(true);
+    try {
+      const r = await fetch('/api/configuracoes/pagamento/sicredi-teste', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filialId: filial.id }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) setTeste({ ok: false, em: new Date().toISOString(), erro: d.error ?? `Erro ${r.status}`, fonte: null, certValidoAte: null, falta: null, ligado: false });
+      else setTeste(d as TesteSicredi);
+    } finally {
+      setTestando(false);
+    }
+  }
+
+  // Casa com credencial e sem teste ainda: testa sozinho ao abrir.
+  useEffect(() => {
+    if (!filial.testeSicredi && temCredencial) void testar();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function gerarPedido() {
+    if (pendente && !confirm('Já existe um pedido gerado aqui esperando o .cer. Gerar outro invalida o anterior — o .cer daquele pedido não vai mais servir. Gerar mesmo assim?')) return;
+    setGerando(true);
+    setMsgPedido(null);
+    try {
+      const r = await fetch('/api/configuracoes/pagamento/sicredi-csr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filialId: filial.id }),
+      });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        setMsgPedido(d.error ?? `Erro ${r.status}`);
+        return;
+      }
+      const nome = /filename="([^"]+)"/.exec(r.headers.get('content-disposition') ?? '')?.[1] ?? 'sicredi-pix.csr';
+      const url = URL.createObjectURL(await r.blob());
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = nome;
+      a.click();
+      URL.revokeObjectURL(url);
+      setPendente(true);
+      setMsgPedido(`Baixado: ${nome}`);
+    } finally {
+      setGerando(false);
+    }
+  }
+
+  const status = teste ? (
+    teste.ok ? (
+      <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900">
+        <b>✅ Configurado e funcionando.</b> A Sicredi aceitou a credencial desta casa
+        (testado {dataHora(teste.em)}{teste.fonte === 'env' ? ', credencial da Vercel' : ''}).
+        {teste.certValidoAte && <> Certificado vale até {new Date(teste.certValidoAte).toLocaleDateString('pt-BR')}.</>}
+        <div className="mt-1">
+          {teste.ligado && !teste.falta ? (
+            <>O Pix desta casa já sai pela Sicredi, direto na conta.</>
+          ) : teste.falta ? (
+            <>Pra começar a receber: {teste.falta} (quadro “como esta casa recebe”, acima).</>
+          ) : (
+            <>Pra começar a receber, escolha <b>Sicredi</b> em “Pix por”, no quadro acima.</>
+          )}
+        </div>
+      </div>
+    ) : (
+      <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-900">
+        <b>⚠️ Não funcionou</b> (testado {dataHora(teste.em)}): {teste.erro}
+      </div>
+    )
+  ) : null;
+
+  const extra = (
+    <>
+      {status}
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+        {temCredencial && (
+          <button
+            onClick={testar}
+            disabled={testando}
+            className="rounded-md border border-slate-300 px-2.5 py-1 font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+          >
+            {testando ? 'Testando…' : 'Testar conexão'}
+          </button>
+        )}
+        {podeEditar && (
+          <button
+            onClick={gerarPedido}
+            disabled={gerando}
+            className="rounded-md border border-slate-300 px-2.5 py-1 font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+          >
+            {gerando ? 'Gerando…' : 'Gerar pedido de certificado (CSR)'}
+          </button>
+        )}
+        {msgPedido && <span className="text-slate-600">{msgPedido}</span>}
+      </div>
+      {pendente && (
+        <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-[11px] leading-relaxed text-amber-900">
+          <b>Pedido gerado, aguardando o certificado.</b> Envie o arquivo .csr no portal da Sicredi
+          (API Pix → certificado). Quando ela devolver o .cer, ligue “Credencial própria”, escolha o
+          .cer, preencha Client ID e Secret e salve — não precisa de .key, a chave foi gerada aqui e
+          fica guardada cifrada.{' '}
+          <a
+            href={`/api/configuracoes/pagamento/sicredi-csr?filialId=${filial.id}`}
+            className="font-medium text-sky-700 underline"
+          >
+            Baixar o pedido de novo
+          </a>
+        </p>
+      )}
+    </>
+  );
+
+  return (
+    <CardCredencial
+      filial={filial}
+      provedor="sicredi"
+      titulo="Sicredi (API Pix direto na conta)"
+      campos={CAMPOS_SICREDI}
+      propriaInicial={filial.propriaSicredi}
+      pistas={filial.pistasSicredi}
+      podeEditar={podeEditar}
+      rotuloPropria={['Usando a credencial ', 'cadastrada aqui']}
+      rotuloGeral="Sem cadastro aqui: usa a da Vercel, se houver"
+      nota="Depois de salvar, a conexão é testada sozinha. Apagar daqui volta pra credencial da Vercel (se a casa tiver)."
+      onSalvo={() => {
+        setPendente(false);
+        void testar();
+      }}
+      extra={extra}
+    />
   );
 }
