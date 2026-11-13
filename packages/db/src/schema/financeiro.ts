@@ -98,6 +98,10 @@ export const fornecedor = pgTable(
      *  sync — normalmente pelo FIXO da empresa, onde wa.me não chega. Este
      *  campo é só da nuvem: o mapper nunca toca nele. */
     foneWhatsapp: varchar('fone_whatsapp', { length: 30 }),
+    /** Nome da PESSOA que atende nesse WhatsApp (ex.: "Júnior", da lotérica).
+     *  Usado na saudação quando o comprovante vai com o borderô — o `nome` é o
+     *  da empresa. Só da nuvem; vale pro cadastro do mesmo CNPJ nas outras casas. */
+    contatoNome: varchar('contato_nome', { length: 120 }),
     foneSecundario: varchar('fone_secundario', { length: 30 }),
     rgOuIe: varchar('rg_ou_ie', { length: 30 }),
     /** Flag pra cotacao: true = aparece como opção na tela de Nova Cotacao.

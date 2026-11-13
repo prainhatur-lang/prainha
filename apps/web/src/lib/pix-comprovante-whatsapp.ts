@@ -21,6 +21,8 @@ import { desc, eq, sql } from 'drizzle-orm';
 import { consultarPagamentoPixInter, resolverCredenciaisInterPagamentos, type InterPixConsulta } from '@/lib/inter';
 import { celular11, rotuloMotivoFora, telefonesForaDosEnvios } from '@/lib/whatsapp-nao-enviar';
 import { estadoModeloComprovante, type EstadoModeloComprovante } from '@/lib/pix-comprovante-modelo';
+import { relacoesDoPix, resumoBorderos, textoBordero } from '@/lib/bordero-relacao';
+import { nomeArquivoBordero } from '@/lib/bordero-pdf';
 
 const VALIDADE_LINK_MS = 60 * 24 * 3600 * 1000; // 60 dias
 
@@ -58,6 +60,24 @@ export function linkComprovantePdf(pixId: string): string {
 export function conferirLinkComprovante(id: string, x: string, s: string): boolean {
   if (!id || !x || !s) return false;
   const esperado = Buffer.from(assinar(`${id}.${x}`));
+  const veio = Buffer.from(s);
+  if (esperado.length !== veio.length || !timingSafeEqual(esperado, veio)) return false;
+  return Number(x) > Date.now();
+}
+
+// Pix de BORDERÔ pro intermediário (lotérica) — dono, 13/11/2026: "já envia o
+// comprovante e o borderô automaticamente". O mesmo endereço, com `b=1`,
+// devolve o comprovante na 1ª página e a relação (nome, CPF, conta e valor de
+// cada pessoa) nas seguintes. Assinatura própria (".b"): o link do comprovante
+// puro não abre a relação, e o da relação não vira o outro trocando a URL.
+export function linkComprovanteComBordero(pixId: string): string {
+  const x = String(Date.now() + VALIDADE_LINK_MS);
+  return `${baseUrlApp()}/api/financeiro/pedidos-pix/comprovante?id=${pixId}&x=${x}&b=1&s=${assinar(`${pixId}.${x}.b`)}`;
+}
+
+export function conferirLinkComprovanteComBordero(id: string, x: string, s: string): boolean {
+  if (!id || !x || !s) return false;
+  const esperado = Buffer.from(assinar(`${id}.${x}.b`));
   const veio = Buffer.from(s);
   if (esperado.length !== veio.length || !timingSafeEqual(esperado, veio)) return false;
   return Number(x) > Date.now();
@@ -450,6 +470,42 @@ export function textoComprovante(d: DadosComprovantePix): string {
   );
 }
 
+type AnexoBordero = {
+  link: string;
+  arquivo: string;
+  /** Texto da conversa aberta / wa.me. */
+  legenda: string;
+  /** {{1}}..{{4}} do modelo aprovado (sem quebra de linha). */
+  parametros: string[];
+};
+
+/** Pix que paga borderô (folha, vale-transporte ou avulso) ao intermediário: o
+ *  PDF leva a relação junto. null = Pix comum, relação que não fecha com o
+ *  valor do borderô, ou qualquer erro → segue o envio de sempre (só o
+ *  comprovante). Nunca lança. */
+async function anexoDoBordero(pixId: string, d: DadosComprovantePix): Promise<AnexoBordero | null> {
+  try {
+    const relacoes = await relacoesDoPix(pixId);
+    if (relacoes.length === 0 || relacoes.some((r) => !r.confere)) return null;
+    const contato = relacoes.map((r) => r.intermediario.contatoNome).find((n) => !!n) ?? null;
+    const umaLinha = (s: string) => s.replace(/\s+/g, ' ').trim();
+    return {
+      link: linkComprovanteComBordero(pixId),
+      arquivo: nomeArquivoBordero({ comprovante: d, relacoes }),
+      legenda: textoBordero(relacoes, { comComprovante: true, casa: d.casa }),
+      parametros: [
+        contato || d.recebedor || 'tudo bem',
+        d.casa,
+        brl(d.valor),
+        `${d.dataCurta || 'hoje'}, referente ao ${resumoBorderos(relacoes)} (a relação com nome, CPF, conta e valor de cada pessoa está no mesmo PDF)`,
+      ].map(umaLinha),
+    };
+  } catch (e) {
+    console.error('pix-comprovante: relação do borderô', e instanceof Error ? e.message : e);
+    return null;
+  }
+}
+
 export type ResultadoEnvioComprovante = {
   status: 'ENVIADO' | 'ERRO' | 'SEM_NUMERO' | 'SEM_TEMPLATE' | 'NAO_ENVIAR' | 'INDISPONIVEL';
   telefone: string | null;
@@ -465,6 +521,7 @@ export async function enviarComprovantePix(
   let filialId: string | null = null;
   let telefone: string | null = null;
   let origem: string | null = null;
+  let comBordero = false;
   const gravar = async (r: ResultadoEnvioComprovante, wamid: string | null, erro: string | null) => {
     if (!filialId) return;
     await db
@@ -480,6 +537,7 @@ export async function enviarComprovantePix(
         erro,
         usuarioEmail: opts.usuarioEmail ?? null,
         auto: opts.auto,
+        comBordero,
       })
       .catch((e) => console.error('pix-comprovante: gravar envio', e instanceof Error ? e.message : e));
   };
@@ -535,18 +593,23 @@ export async function enviarComprovantePix(
       return r;
     }
     const para = `55${dest.telefone}`;
-    const link = linkComprovantePdf(pixId);
-    const arquivo = nomeArquivoComprovante(d);
+    // Pix de borderô: o PDF leva a relação junto. Sem borderô (ou relação que
+    // não fecha), `bord` é null e tudo abaixo sai igual a antes.
+    const bord = await anexoDoBordero(pixId, d);
+    comBordero = !!bord;
+    const link = bord?.link ?? linkComprovantePdf(pixId);
+    const arquivo = bord?.arquivo ?? nomeArquivoComprovante(d);
+    const enviado = bord ? 'Comprovante e borderô enviados.' : 'Comprovante enviado.';
 
     if (await janelaAberta(p.filialId, dest.telefone)) {
       const res = await postar(phoneId, {
         messaging_product: 'whatsapp',
         to: para,
         type: 'document',
-        document: { link, filename: arquivo, caption: textoComprovante(d) },
+        document: { link, filename: arquivo, caption: bord?.legenda ?? textoComprovante(d) },
       });
       if (res.wamid) {
-        const r: ResultadoEnvioComprovante = { status: 'ENVIADO', telefone, modo: 'janela', mensagem: 'Comprovante enviado.' };
+        const r: ResultadoEnvioComprovante = { status: 'ENVIADO', telefone, modo: 'janela', mensagem: enviado };
         await gravar(r, res.wamid, null);
         return r;
       }
@@ -583,7 +646,7 @@ export async function enviarComprovantePix(
     }
     const corpo = {
       type: 'body',
-      parameters: [d.recebedor || 'tudo bem', d.casa, brl(d.valor), d.dataCurta || 'hoje'].map((t) => ({
+      parameters: (bord?.parametros ?? [d.recebedor || 'tudo bem', d.casa, brl(d.valor), d.dataCurta || 'hoje']).map((t) => ({
         type: 'text',
         text: t,
       })),
@@ -612,7 +675,7 @@ export async function enviarComprovantePix(
       },
     });
     if (res.wamid) {
-      const r: ResultadoEnvioComprovante = { status: 'ENVIADO', telefone, modo: 'template', mensagem: 'Comprovante enviado.' };
+      const r: ResultadoEnvioComprovante = { status: 'ENVIADO', telefone, modo: 'template', mensagem: enviado };
       await gravar(r, res.wamid, null);
       return r;
     }
@@ -679,6 +742,9 @@ export async function linkWaMeComprovante(
 ): Promise<{ ok: true; link: string } | { ok: false; motivo: string }> {
   const dd = await dadosComprovantePix(pixId);
   if (!dd.ok) return dd;
-  const texto = `${textoComprovante(dd.dados)}\n\nComprovante: ${linkComprovantePdf(pixId)}`;
+  const bord = await anexoDoBordero(pixId, dd.dados);
+  const texto = bord
+    ? `${bord.legenda}\n\nComprovante e borderô: ${bord.link}`
+    : `${textoComprovante(dd.dados)}\n\nComprovante: ${linkComprovantePdf(pixId)}`;
   return { ok: true, link: `https://wa.me/${telefone ? `55${telefone}` : ''}?text=${encodeURIComponent(texto)}` };
 }

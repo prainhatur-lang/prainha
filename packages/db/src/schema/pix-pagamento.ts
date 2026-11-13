@@ -56,6 +56,9 @@ export const pixComprovanteEnvio = pgTable(
     erro: text('erro'),
     usuarioEmail: text('usuario_email'),
     auto: boolean('auto').notNull().default(false),
+    /** O PDF enviado levou, além do comprovante, a relação do borderô
+     *  (Pix de borderô pro intermediário/lotérica). */
+    comBordero: boolean('com_bordero').notNull().default(false),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
     atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
   },

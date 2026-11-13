@@ -33,6 +33,8 @@ export async function PATCH(
     categoriaCompras?: string | null;
     fonePrincipal?: string | null;
     foneWhatsapp?: string | null;
+    /** Nome da pessoa que atende nesse WhatsApp (ex.: Júnior, da lotérica). */
+    contatoNome?: string | null;
     email?: string | null;
     nome?: string;
     chavePix?: string | null;
@@ -73,6 +75,7 @@ export async function PATCH(
     // mensagem some (foi o que aconteceu com o pedido 24 da Megga).
     updates.foneWhatsapp = f;
   }
+  if ('contatoNome' in body) updates.contatoNome = body.contatoNome?.trim().slice(0, 120) || null;
   if ('email' in body) updates.email = body.email?.trim().slice(0, 200) || null;
   if (typeof body.nome === 'string' && body.nome.trim()) {
     updates.nome = body.nome.trim().slice(0, 200);
