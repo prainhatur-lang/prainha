@@ -82,6 +82,8 @@ interface LojaInfo {
    *  aberto pelo domínio próprio da loja (tabuara.com.br) — aí o cliente veio
    *  do site e tem que conseguir voltar; no /delivery genérico não há pra onde. */
   siteUrl?: string | null;
+  /** Logomarca da casa no topo (só quem tem; hoje a Prainha Mar). */
+  logo?: string | null;
 }
 
 interface Props {
@@ -1024,6 +1026,16 @@ export function CardapioClient({
           >
             {t.voltarSite}
           </a>
+        ) : null}
+        {loja.logo ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={loja.logo}
+            alt=""
+            width={112}
+            height={112}
+            className="mx-auto mb-3 h-24 w-24 lg:h-28 lg:w-28"
+          />
         ) : null}
         <span
           className="block text-3xl tracking-tight text-[var(--dlv-accent-ink)] lg:text-5xl"

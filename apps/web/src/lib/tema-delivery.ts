@@ -8,6 +8,9 @@ export interface TemaDelivery {
   fonte: 'dm' | 'playfair';
   /** Marca no topo (o ponto sai na cor de destaque). */
   marca: string;
+  /** Logomarca da casa no topo do cardápio (arquivo em public/). Sem ela o
+   *  topo fica só com o nome, como sempre foi. */
+  logo?: string;
   vars: Record<string, string>;
 }
 
@@ -38,6 +41,13 @@ const PRAINHA: TemaDelivery = {
     '--dlv-nota': '#a86a2e',
     '--dlv-capa': 'linear-gradient(180deg,#07191c 0%,#143a3d 55%,#5a6a4f 85%,#c98a3f 115%)',
   },
+};
+
+// A Prainha Mar usa as cores do Prainha e ganha o selo da sereia no topo
+// (versão creme, que é a que aparece em cima da capa escura).
+const PRAINHA_MAR: TemaDelivery = {
+  ...PRAINHA,
+  logo: '/marcas/03-prainha-mar/prainha-mar-selo-creme.svg',
 };
 
 const TABUARA: TemaDelivery = {
@@ -74,6 +84,7 @@ const TABUARA: TemaDelivery = {
 export function temaDeliveryDaFilial(nomeFilial: string): TemaDelivery {
   const n = nomeFilial.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
   if (n.includes('tabuara')) return TABUARA;
+  if (/\bmar\b/.test(n)) return PRAINHA_MAR;
   return PRAINHA;
 }
 

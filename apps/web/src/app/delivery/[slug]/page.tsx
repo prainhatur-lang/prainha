@@ -244,6 +244,7 @@ export default async function DeliveryLojaPage(props: {
         cidade: c.endereco?.cidade ?? 'Aracaju',
         uf: c.endereco?.uf ?? 'SE',
         siteUrl,
+        logo: tema.logo ?? null,
       }}
       categorias={categoriasTela}
       agendaInicial={{ dias, asapDisponivel }}
