@@ -267,6 +267,17 @@ export function contaDoCadastroBate(
  *  só a FOLHA era procurada. */
 const CONTA_DA_EQUIPE = sql`(${schema.contaPagar.origem} = 'FOLHA' OR (${schema.contaPagar.origem} = 'MANUAL' AND ${schema.contaPagar.descricao} ILIKE '%transporte%'))`;
 
+/** Quantos dias depois do Pix do borderô o depósito da lotérica ainda casa. */
+const DIAS_DEPOSITO_BORDERO = 15;
+
+/** Conta da pessoa já baixada por um borderô ATIVO até DIAS_DEPOSITO_BORDERO
+ *  dias antes do depósito (`ref` = data do comprovante). */
+function pagaPorBordero(ref: string) {
+  return sql`(${schema.contaPagar.borderoId} IS NOT NULL
+    AND ${schema.contaPagar.dataPagamento} BETWEEN (${ref}::date - ${DIAS_DEPOSITO_BORDERO}::int) AND ${ref}::date
+    AND EXISTS (SELECT 1 FROM bordero b_dep WHERE b_dep.id = ${schema.contaPagar.borderoId} AND b_dep.status = 'ATIVO'))`;
+}
+
 function contaDaEquipe(origem: string | null, descricao: string | null): boolean {
   return origem === 'FOLHA' || (origem === 'MANUAL' && /transporte/i.test(descricao ?? ''));
 }
@@ -458,8 +469,12 @@ export async function casarComprovante(
         CONTA_DA_EQUIPE,
         // em aberto, ou já paga por outro caminho no mesmo dia do depósito
         // (alguém baixou na mão antes de subir o comprovante)
+        // ...ou já baixada pelo BORDERÔ: o Pix saiu pra lotérica (aí a conta da
+        // pessoa foi baixada) e o depósito dela vem até uns dias depois. O
+        // comprovante casa com essa conta só pra ficar guardado — não baixa de
+        // novo (Fagner: Pix 11/11, depósito 13/11/2026).
         ref
-          ? sql`(${schema.contaPagar.dataPagamento} IS NULL OR ${schema.contaPagar.dataPagamento} = ${ref}::date)`
+          ? sql`(${schema.contaPagar.dataPagamento} IS NULL OR ${schema.contaPagar.dataPagamento} = ${ref}::date OR ${pagaPorBordero(ref)})`
           : isNull(schema.contaPagar.dataPagamento),
         isNull(schema.contaPagar.dataDelete),
         ref
@@ -550,7 +565,7 @@ export async function casarComprovante(
       .slice(0, 4)
       .map((gs) => {
         const valores = gs
-          .map((g) => `${g.map((c) => brl(c.liquido)).join(' + ')}${multiCasa ? ` na ${g[0]!.casa ?? '?'}` : ''}`)
+          .map((g) => `${g.map((c) => `${brl(c.liquido)}${c.pagaNoDia ? ' (já paga)' : ''}`).join(' + ')}${multiCasa ? ` na ${g[0]!.casa ?? '?'}` : ''}`)
           .join(', ');
         return `${gs[0]![0]!.pessoa}: ${valores} (venc. ${gs[0]![0]!.vencimento.split('-').reverse().join('/')})`;
       })
@@ -817,6 +832,7 @@ export async function baixarComprovante(comprovanteId: string, userId: string, f
       )
       .returning({ id: schema.contaPagar.id });
     let jaPagas = 0;
+    let peloBordero = false;
     if (r.length !== ids.length) {
       // As que faltaram podem ter sido pagas por outro caminho (baixa na mão
       // em contas a pagar) no MESMO dia do depósito: aí o comprovante só fica
@@ -825,13 +841,14 @@ export async function baixarComprovante(comprovanteId: string, userId: string, f
       const feitas = new Set(r.map((x) => x.id));
       const faltam = ids.filter((x) => !feitas.has(x));
       const pagasNoDia = await tx
-        .select({ id: schema.contaPagar.id })
+        .select({ id: schema.contaPagar.id, pagaEm: schema.contaPagar.dataPagamento })
         .from(schema.contaPagar)
         .where(
           and(
             inArray(schema.contaPagar.id, faltam),
             eq(schema.contaPagar.filialId, c.filialId),
-            eq(schema.contaPagar.dataPagamento, data),
+            // no dia do depósito, ou antes dele pelo borderô (Pix pra lotérica)
+            sql`(${schema.contaPagar.dataPagamento} = ${data}::date OR ${pagaPorBordero(data)})`,
             isNull(schema.contaPagar.dataDelete),
           ),
         );
@@ -854,12 +871,14 @@ export async function baixarComprovante(comprovanteId: string, userId: string, f
         throw new RecusaComprovante('alguma conta deste comprovante já foi paga ou excluída — clique em "procurar de novo"');
       }
       jaPagas = faltam.length;
+      // paga em dia anterior ao depósito = foi o borderô (Pix pra lotérica)
+      peloBordero = pagasNoDia.some((x) => x.pagaEm !== data);
     }
     await tx
       .update(schema.comprovanteLoterica)
       .set({
         status: 'BAIXADO',
-        erro: jaPagas ? `${jaPagas === ids.length ? 'a conta já estava paga' : `${jaPagas} conta(s) já estavam pagas`} no dia — comprovante guardado` : null,
+        erro: jaPagas ? `${jaPagas === ids.length ? 'a conta já estava paga' : `${jaPagas} conta(s) já estavam pagas`} ${peloBordero ? 'pelo borderô (Pix pra lotérica)' : 'no dia'} — comprovante guardado` : null,
         baixadoEm: new Date(),
         baixadoPor: userId,
       })
@@ -883,7 +902,7 @@ export async function desfazerBaixa(comprovanteId: string, filialIds: string[]):
     const ids = c.contaPagarIds ?? [];
     // Conta que já estava paga por outro caminho quando o comprovante foi
     // guardado não é dele pra reabrir.
-    const soGuardou = /já esta(va|vam) pagas? no dia/.test(c.erro ?? '');
+    const soGuardou = /já esta(va|vam) pagas? (no dia|pelo borderô)/.test(c.erro ?? '');
     const r =
       ids.length === 0 || !c.dataPagamento || soGuardou
         ? []

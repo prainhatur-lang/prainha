@@ -19,6 +19,9 @@ import { PagaOutraCasa } from './paga-outra-casa';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { ehAdmin } from '@/lib/usuario-admin';
 import { origemInterDasBaixas } from '@/lib/comprovante-inter';
+import { borderoDaConta, pixPagoDaConta, relacaoDoBordero } from '@/lib/bordero-relacao';
+import { podePagarPix } from '@/lib/pix-pagamento';
+import { BorderoCard, type BorderoCardDados } from './bordero-card';
 
 export const dynamic = 'force-dynamic';
 
@@ -190,6 +193,65 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
       ),
     )
     .orderBy(desc(schema.comprovanteLoterica.dataPagamento));
+
+  // Conta do intermediário (lotérica): a relação do borderô, pra quem vai e o
+  // último envio do comprovante + borderô.
+  let borderoCard: BorderoCardDados | null = null;
+  if (conta.origem === 'BORDERO') {
+    const borderoId = await borderoDaConta(conta.id);
+    const rel = borderoId ? await relacaoDoBordero(borderoId) : null;
+    if (rel) {
+      const pixId = await pixPagoDaConta(conta.id, conta.filialId);
+      const [envio] = pixId
+        ? await db
+            .select({
+              status: schema.pixComprovanteEnvio.status,
+              criadoEm: schema.pixComprovanteEnvio.criadoEm,
+              telefone: schema.pixComprovanteEnvio.telefone,
+              comBordero: schema.pixComprovanteEnvio.comBordero,
+              erro: schema.pixComprovanteEnvio.erro,
+            })
+            .from(schema.pixComprovanteEnvio)
+            .where(eq(schema.pixComprovanteEnvio.pixPagamentoId, pixId))
+            .orderBy(desc(schema.pixComprovanteEnvio.criadoEm))
+            .limit(1)
+        : [];
+      borderoCard = {
+        contaId: conta.id,
+        titulo: rel.titulo,
+        valor: rel.valor,
+        soma: rel.soma,
+        confere: rel.confere,
+        pessoas: rel.pessoas.map((p) => ({
+          nome: p.nome,
+          documento: p.documento,
+          conta:
+            [p.bancoNome, p.bancoAgencia && `ag. ${p.bancoAgencia}`, p.bancoConta && `conta ${p.bancoConta}`]
+              .filter(Boolean)
+              .join(' · ') || (p.chavePix ? `Pix ${p.chavePix}` : null),
+          total: p.total,
+        })),
+        intermediario: rel.intermediario,
+        pixId,
+        ultimoEnvio: envio
+          ? {
+              status: envio.status,
+              quando: new Date(envio.criadoEm).toLocaleString('pt-BR', {
+                timeZone: 'America/Sao_Paulo',
+                day: '2-digit',
+                month: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+              }),
+              telefone: envio.telefone,
+              comBordero: envio.comBordero,
+              erro: envio.erro,
+            }
+          : null,
+        podeEnviar: await podePagarPix(user.id),
+      };
+    }
+  }
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -427,6 +489,8 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
             </ul>
           </div>
         )}
+
+        {borderoCard && <BorderoCard d={borderoCard} />}
 
         <PagaOutraCasa
           contaId={conta.id}
