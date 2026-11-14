@@ -216,10 +216,12 @@ export interface GrupoPedidos {
   /** Rescisão (26/10/2026): sem chave no cadastro, o Pix sai pelo CPF do funcionário. */
   chaveCpfRescisao?: string | null;
   /** Folha semanal liberada pra Pix (14/11/2026): sem chave, o Pix vai pra conta Inter do funcionário. */
-  contaInterFolha?: { destino: string; nome: string } | null;
+  contaInterFolha?: { destino: string; nome: string; /** Lançamentos da folha semanal: podem sair num Pix só. */ contaIds?: string[] } | null;
 }
 
 const brl = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+/** Marca do painel de confirmação quando os lançamentos da folha semanal saem num Pix só. */
+const TODAS_JUNTAS = '__todas_juntas__';
 const dataBr = (ymd: string) => ymd.split('-').reverse().join('/');
 const valorParaCopiar = (v: number) => v.toFixed(2).replace('.', ',');
 
@@ -301,7 +303,20 @@ export function GrupoPix({
   const conferencia = conferirChavePix({ chave, docFornecedor: grupo.documento, favorecido: grupo.pixFavorecido });
   const travadas = useMemo(() => new Set(contasTravadas), [contasTravadas]);
   const [confirmandoId, setConfirmandoId] = useState<string | null>(null);
-  const contaConfirmando = grupo.contas.find((c) => c.id === confirmandoId) ?? null;
+  // Folha semanal (dono 14/11/2026, "junte as contas diária + gratificação"): os
+  // lançamentos da mesma pessoa podem sair num Pix só. O Pix por conta continua.
+  const idsFolha = useMemo(() => new Set(grupo.contaInterFolha?.contaIds ?? []), [grupo.contaInterFolha]);
+  const contasJuntas = grupo.contas.filter((c) => idsFolha.has(c.id) && !travadas.has(c.id));
+  const totalJuntas = Math.round(contasJuntas.reduce((s, c) => s + c.saldo, 0) * 100) / 100;
+  const confirmandoJuntas = confirmandoId === TODAS_JUNTAS && contasJuntas.length > 1;
+  const contaConfirmando: PedidoPix | null = confirmandoJuntas
+    ? {
+        ...contasJuntas[0]!,
+        id: TODAS_JUNTAS,
+        descricao: `${contasJuntas.length} lançamentos juntos: ${contasJuntas.map((c) => `${c.descricao} ${brl(c.saldo)}`).join(' + ')}`,
+        saldo: totalJuntas,
+      }
+    : (grupo.contas.find((c) => c.id === confirmandoId) ?? null);
   const [valorDigitado, setValorDigitado] = useState('');
   const [enviando, setEnviando] = useState(false);
   const totalCentavos = Math.round((contaConfirmando?.saldo ?? 0) * 100);
@@ -319,7 +334,7 @@ export function GrupoPix({
 
   async function pagarPix() {
     if (!filialId || !grupo.fornecedorId || !valorConfere || !contaConfirmando) return;
-    const contas = [contaConfirmando];
+    const contas = confirmandoJuntas ? contasJuntas : [contaConfirmando];
     setEnviando(true);
     setMsg(null);
     const r = await fetch('/api/financeiro/pedidos-pix/pagar', {
@@ -557,6 +572,45 @@ export function GrupoPix({
           );
         })}
       </ul>
+
+      {podeBotaoPix && contasJuntas.length > 1 && (
+        <div className="border-t border-slate-100 bg-violet-50/50 px-4 py-3">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <span className="text-xs text-slate-600">
+              {contasJuntas.length} lançamentos da folha semanal (diária + gratificação) num Pix só:
+            </span>
+            <button
+              type="button"
+              disabled={pending || enviando}
+              onClick={() => {
+                setConfirmandoId(confirmandoId === TODAS_JUNTAS ? null : TODAS_JUNTAS);
+                setValorDigitado('');
+                setMsg(null);
+              }}
+              className="rounded-md bg-violet-700 px-3 py-1.5 text-xs font-semibold text-white disabled:bg-slate-400"
+              title="Mandar um Pix só com todos os lançamentos desta pessoa na folha semanal"
+            >
+              💸 Pagar tudo junto ({brl(totalJuntas)})
+            </button>
+          </div>
+        </div>
+      )}
+      {confirmandoJuntas && contaConfirmando && (chave || contaInter) && (
+        <PainelConfirmar
+          filialId={filialId}
+          recebe={contaInter ? contaInter.nome : grupo.pixFavorecido || grupo.nome}
+          chave={chave ?? contaInter?.destino ?? ''}
+          rotuloDestino={chave ? undefined : 'Conta de destino'}
+          conferencia={conferencia}
+          conta={contaConfirmando}
+          valorDigitado={valorDigitado}
+          setValorDigitado={setValorDigitado}
+          valorConfere={valorConfere}
+          enviando={enviando}
+          cancelar={() => setConfirmandoId(null)}
+          confirmar={() => void pagarPix()}
+        />
+      )}
 
       {podeBaixar && (
         <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-100 bg-slate-50 px-4 py-3">

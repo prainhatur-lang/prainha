@@ -453,7 +453,8 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
       grupos.set(chave, g);
     }
     if (rescisao?.cpf && !g.chaveCpfRescisao) g.chaveCpfRescisao = rescisao.cpf;
-    if (semanal && !g.contaInterFolha) g.contaInterFolha = { destino: destinoContaInter(semanal.contaFmt), nome: semanal.nome };
+    if (semanal && !g.contaInterFolha) g.contaInterFolha = { destino: destinoContaInter(semanal.contaFmt), nome: semanal.nome, contaIds: [] };
+    if (semanal) g.contaInterFolha?.contaIds?.push(l.id);
     g.contas.push({
       id: l.id,
       venc: l.venc,

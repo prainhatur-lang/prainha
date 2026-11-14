@@ -39,7 +39,9 @@ const ORIGENS_FORA = ['CONSUMER', 'FOLHA', 'TRANSFERENCIA', 'ENCONTRO_CONTAS'];
 const Body = z.object({
   filialId: z.string().uuid(),
   fornecedorId: z.string().uuid(),
-  contaIds: z.array(z.string().uuid()).length(1),
+  // Um Pix por conta. Exceção (dono 14/11/2026, "junte as contas diária + gratificação"):
+  // os lançamentos da MESMA pessoa na folha semanal liberada saem num Pix só.
+  contaIds: z.array(z.string().uuid()).min(1).max(12),
   valorConfirmado: z.number().positive(),
 });
 
@@ -88,6 +90,9 @@ export async function POST(req: Request) {
   // sem chave no cadastro, o destino é a CONTA Inter do funcionário (não o CPF).
   const semanais = await folhaSemanalPixDasContas(contaIds);
   for (const id of semanais.keys()) if (!rescisoes.has(id)) rescisoes.set(id, { contaId: id, cpf: null });
+  if (contaIds.length > 1 && !contaIds.every((id) => semanais.has(id))) {
+    return NextResponse.json({ error: 'Um Pix por conta. Só os lançamentos da mesma pessoa na folha semanal saem juntos.' }, { status: 400 });
+  }
   const cpfRescisao = contaIds.map((id) => rescisoes.get(id)?.cpf).find(Boolean) ?? null;
   // Dono 10/11/2026 (permanente): Pix SÓ na chave autorizada no cadastro. O CPF do
   // funcionário NÃO vira chave sozinho (pode cair numa conta que a pessoa não usa).
@@ -156,7 +161,10 @@ export async function POST(req: Request) {
   await sincronizarPixAbertos(filialId, cred).catch(() => null);
 
   const conta0 = contas[0]!;
-  const descricao = `${forn.nome} - ${conta0.descricao ?? 'pedido'} (venc ${conta0.venc})`.slice(0, 140);
+  const descricao = (contas.length > 1
+    ? `${forn.nome} - folha semanal, ${contas.length} lançamentos juntos (venc ${conta0.venc})`
+    : `${forn.nome} - ${conta0.descricao ?? 'pedido'} (venc ${conta0.venc})`
+  ).slice(0, 140);
   const resultado = await db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${'pix_pagamento:' + filialId}))`);
     const presas = (await tx.execute(sql`
