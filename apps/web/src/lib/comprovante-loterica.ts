@@ -239,6 +239,25 @@ function digitosConta(s: unknown): string {
   return (pedacos[pedacos.length - 1] ?? '').replace(/\D/g, '').replace(/^0+/, '');
 }
 
+/** Impressora da lotérica com a fita fraca: o 9 e o 8 saem sem um pedaço e a
+ *  leitura da foto devolve 3 (ou 0 no lugar do 8). Ryan Nike recebe na conta do
+ *  Paulo Henrique (cadastro "959409893-2") e o comprovante de 13/11/2026 foi
+ *  lido "959409833-2": ficou "sem conta". Aceita até 2 dígitos assim, desde
+ *  que todos os outros sejam iguais e o tamanho seja o mesmo. */
+function contaIgualComDigitoApagado(lido: string, cadastro: string): boolean {
+  const n = Math.min(lido.length, cadastro.length);
+  const a = lido.slice(-n);
+  const b = cadastro.slice(-n);
+  let trocas = 0;
+  for (let i = 0; i < n; i++) {
+    if (a[i] === b[i]) continue;
+    const apagado = (a[i] === '3' && (b[i] === '8' || b[i] === '9')) || (a[i] === '0' && b[i] === '8');
+    if (!apagado) return false;
+    trocas++;
+  }
+  return trocas > 0 && trocas <= 2;
+}
+
 /** A conta do comprovante é a do cadastro da pessoa? Quem recebe na conta de
  *  outro (André Gustavo na conta do João Vitor) tem essa conta no cadastro,
  *  então o nome da foto não bate mas a conta sim. Agência, quando as duas
@@ -250,7 +269,7 @@ export function contaDoCadastroBate(
   const dc = digitosConta(lido?.conta);
   const df = digitosConta(cadastro.conta);
   if (dc.length < 6 || df.length < 6) return false;
-  if (!(dc === df || dc.endsWith(df) || df.endsWith(dc))) return false;
+  if (!(dc === df || dc.endsWith(df) || df.endsWith(dc) || contaIgualComDigitoApagado(dc, df))) return false;
   // Agência: só o primeiro número. Cadastro da Caixa vem "3880 op 1288"
   // (agência + operação) e o comprovante lê só "3880".
   const numAgencia = (s: unknown) => ((String(s ?? '').match(/\d+/) ?? [''])[0]).replace(/^0+/, '');
@@ -419,6 +438,8 @@ function variantes8Apagado(valor: number): number[] {
   const out: number[] = [];
   for (let i = 0; i < s.length; i++) {
     if (s[i] === '3' || s[i] === '0') out.push(Number(s.slice(0, i) + '8' + s.slice(i + 1)));
+    // 9 apagado também vira 3 na leitura (Gabriel, 13/11/2026: 296,07 lido 236,07)
+    if (s[i] === '3') out.push(Number(s.slice(0, i) + '9' + s.slice(i + 1)));
   }
   return out;
 }
@@ -710,7 +731,7 @@ export async function casarEGravar(comprovanteId: string, userId: string): Promi
       ...(r.valorCorrigido !== undefined
         ? {
             valor: r.valorCorrigido.toFixed(2),
-            erro: `valor lido ${brl(Number(c.valor))} corrigido pra ${brl(r.valorCorrigido)} (8 apagado na impressão)`,
+            erro: `valor lido ${brl(Number(c.valor))} corrigido pra ${brl(r.valorCorrigido)} (8 ou 9 apagado na impressão)`,
           }
         : { erro: null }),
       contaPagarIds: r.contas.map((x) => x.id),
