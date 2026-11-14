@@ -563,6 +563,54 @@ export async function incluirPagamentoPixInter(
   return data;
 }
 
+/**
+ * Pix pra uma CONTA do próprio Inter (agência 0001 + conta), sem chave — folha
+ * semanal liberada pra Pix (dono 14/11/2026). Contrato da documentação do Inter
+ * (developers.inter.co → Pix Pagamento → "dadosBancarios"): destinatario com
+ * tipo DADOS_BANCARIOS, nome, contaCorrente, tipoConta, cpfCnpj, agencia e
+ * instituicaoFinanceira.ispb. Mesmos erros de `incluirPagamentoPixInter`.
+ */
+export async function incluirPagamentoPixInterConta(
+  cred: InterCredenciais,
+  p: { valor: number; nome: string; cpfCnpj: string; conta: string; descricao?: string; idempotencia: string },
+): Promise<InterPixIncluirResposta> {
+  let token: string;
+  try {
+    token = await getAccessToken(cred, 'pagamento-pix.write');
+  } catch (e) {
+    throw new InterPixRecusado(e instanceof Error ? e.message : String(e), 401, null);
+  }
+  const body = JSON.stringify({
+    valor: p.valor.toFixed(2),
+    ...(p.descricao ? { descricao: p.descricao.slice(0, 140) } : {}),
+    destinatario: {
+      tipo: 'DADOS_BANCARIOS',
+      nome: p.nome.slice(0, 100),
+      contaCorrente: p.conta.replace(/\D/g, ''),
+      tipoConta: 'CONTA_CORRENTE',
+      cpfCnpj: p.cpfCnpj.replace(/\D/g, ''),
+      agencia: '0001',
+      instituicaoFinanceira: { ispb: '00416968' }, // Banco Inter
+    },
+  });
+  const { status, data } = await requestJson<InterPixIncluirResposta>({
+    method: 'POST',
+    path: '/banking/v2/pix',
+    body,
+    authorization: `Bearer ${token}`,
+    headers: { 'x-id-idempotente': p.idempotencia },
+    timeoutMs: 45_000,
+    cred,
+  });
+  if (status >= 400 && status < 500 && status !== 408 && status !== 409) {
+    throw new InterPixRecusado(`Inter recusou o Pix (${status}): ${JSON.stringify(data).slice(0, 500)}`, status, data);
+  }
+  if (status < 200 || status >= 300) {
+    throw new Error(`Inter Pix resposta ${status}: ${JSON.stringify(data).slice(0, 500)}`);
+  }
+  return data;
+}
+
 export interface InterPixConsulta {
   transacaoPix?: {
     status?: string;

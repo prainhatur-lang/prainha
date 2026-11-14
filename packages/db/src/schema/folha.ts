@@ -29,6 +29,7 @@ import {
   unique,
   index,
   jsonb,
+  text,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
@@ -155,6 +156,9 @@ export const folhaSemana = pgTable(
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
     fechadaEm: timestamp('fechada_em', { withTimezone: true }),
     fechadaPor: uuid('fechada_por'), // user.id que fechou
+    /** Liberada pra pagar por Pix na conta Inter de cada um (dono 14/11/2026). */
+    pixLiberadoEm: timestamp('pix_liberado_em', { withTimezone: true }),
+    pixLiberadoPor: text('pix_liberado_por'),
   },
   (t) => ({
     uniqSemana: unique('uq_folha_semana_filial_inicio').on(t.filialId, t.dataInicio),

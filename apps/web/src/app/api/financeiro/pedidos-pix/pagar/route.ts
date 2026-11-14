@@ -22,10 +22,11 @@ import { db, schema } from '@concilia/db';
 import { sql } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { ebLiberadaNoFinanceiro } from '@/lib/eb/acesso-financeiro';
-import { consultarPagamentoPixInter, incluirPagamentoPixInter, InterPixRecusado, InterSaldoErro, resolverCredenciaisInterPagamentos } from '@/lib/inter';
+import { consultarPagamentoPixInter, incluirPagamentoPixInter, incluirPagamentoPixInterConta, InterPixRecusado, InterSaldoErro, resolverCredenciaisInterPagamentos } from '@/lib/inter';
 import { conferirChavePix, recebedorBate } from '@/lib/pix-titular';
 import { rescisoesDasContas } from '@/lib/rh/rescisao-pix';
 import { folhaMensalDasContas } from '@/lib/rh/folha-mensal-pix';
+import { destinoContaInter, folhaSemanalPixDasContas } from '@/lib/rh/folha-semanal-pix';
 import { consumerParado, FORNECEDORES_CONSUMER_NO_PIX } from '@/lib/consumer-contas';
 import { baixarContasDoPix, lerSaldoParaPix, podePagarPix, sincronizarPixAbertos, type SaldoParaPix } from '@/lib/pix-pagamento';
 
@@ -83,16 +84,21 @@ export async function POST(req: Request) {
   const rescisoes = await rescisoesDasContas(contaIds);
   // Folha mensal do sistema (05/11/2026): entra como a rescisão — CPF do funcionário no salário direto, repasse sem CPF.
   for (const [id, fm] of await folhaMensalDasContas(contaIds)) if (!rescisoes.has(id)) rescisoes.set(id, fm);
+  // Folha semanal liberada pra Pix (14/11/2026): passa como a folha mensal e,
+  // sem chave no cadastro, o destino é a CONTA Inter do funcionário (não o CPF).
+  const semanais = await folhaSemanalPixDasContas(contaIds);
+  for (const id of semanais.keys()) if (!rescisoes.has(id)) rescisoes.set(id, { contaId: id, cpf: null });
   const cpfRescisao = contaIds.map((id) => rescisoes.get(id)?.cpf).find(Boolean) ?? null;
   // Dono 10/11/2026 (permanente): Pix SÓ na chave autorizada no cadastro. O CPF do
   // funcionário NÃO vira chave sozinho (pode cair numa conta que a pessoa não usa).
-  const chave = forn.chave?.trim() || null;
+  const contaInter = !forn.chave?.trim() ? (semanais.get(contaIds[0]!) ?? null) : null;
+  const chave = forn.chave?.trim() || (contaInter ? destinoContaInter(contaInter.contaFmt) : null);
   if (!chave) return NextResponse.json({ error: 'Sem chave Pix autorizada no cadastro. Cadastre a chave que a pessoa informou; o sistema não usa o CPF como chave por conta própria.' }, { status: 400 });
   // Documento pra conferir a chave: o do cadastro; na rescisão sem documento, o CPF do funcionário.
   const docConferir = forn.doc?.trim() || cpfRescisao;
   // Anti-fraude (pedido do dono 22/10/2026): chave CPF/CNPJ de OUTRA pessoa ou
   // empresa, sem "quem recebe" declarado no cadastro, não recebe Pix.
-  const conf = conferirChavePix({ chave, docFornecedor: docConferir, favorecido: forn.favorecido });
+  const conf = contaInter ? null : conferirChavePix({ chave, docFornecedor: docConferir, favorecido: forn.favorecido });
   if (conf?.nivel === 'diverge') {
     return NextResponse.json(
       {
@@ -240,7 +246,16 @@ export async function POST(req: Request) {
 
   let resp;
   try {
-    resp = await incluirPagamentoPixInter(cred, { valor: total, chave, descricao, idempotencia: criado.id });
+    resp = contaInter
+      ? await incluirPagamentoPixInterConta(cred, {
+          valor: total,
+          nome: contaInter.nome,
+          cpfCnpj: contaInter.cpf,
+          conta: contaInter.conta,
+          descricao,
+          idempotencia: criado.id,
+        })
+      : await incluirPagamentoPixInter(cred, { valor: total, chave, descricao, idempotencia: criado.id });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (e instanceof InterPixRecusado) {

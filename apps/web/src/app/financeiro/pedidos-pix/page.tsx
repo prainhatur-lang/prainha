@@ -52,6 +52,7 @@ import { urlFotoPedido } from '@/lib/pedido-sem-nota';
 import { recebedorBate } from '@/lib/pix-titular';
 import { rescisoesDasContas, sqlEhRescisao } from '@/lib/rh/rescisao-pix';
 import { folhaMensalDasContas, sqlEhFolhaMensal } from '@/lib/rh/folha-mensal-pix';
+import { destinoContaInter, folhaSemanalPixDasContas, sqlEhFolhaSemanalPix } from '@/lib/rh/folha-semanal-pix';
 import { consumerParado, FORNECEDORES_CONSUMER_NO_PIX } from '@/lib/consumer-contas';
 
 export const dynamic = 'force-dynamic';
@@ -280,6 +281,8 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
           sqlEhRescisao(c.id),
           // Folha mensal do sistema (05/11/2026): "Lançar pagamentos da folha" → Pix aqui.
           sqlEhFolhaMensal(c),
+          // Folha semanal LIBERADA pra Pix (14/11/2026): só quem tem conta Inter.
+          sqlEhFolhaSemanalPix(),
           consumerDaCasaParado ? eq(c.origem, 'CONSUMER') : undefined,
         ),
         // Rescisão entra mesmo vencendo depois do "até" (06/11/2026, Felipe
@@ -384,6 +387,9 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
   // Folha mensal do sistema (05/11/2026): mesma regra da rescisão.
   for (const [id, fm] of await folhaMensalDasContas(linhas.map((l) => l.id)).catch(() => new Map())) if (!rescisoes.has(id)) rescisoes.set(id, fm);
 
+  // Folha semanal liberada pra Pix (14/11/2026): destino = conta Inter do funcionário.
+  const semanais = await folhaSemanalPixDasContas(linhas.map((l) => l.id)).catch(() => new Map<string, Awaited<ReturnType<typeof folhaSemanalPixDasContas>> extends Map<string, infer V> ? V : never>());
+
   let escondidas = 0;
   const grupos = new Map<string, GrupoPedidos>();
   for (const l of linhas) {
@@ -395,6 +401,7 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
     // Borderô da folha (22/10/2026): conta única do intermediário (Sobral) se
     // paga por Pix — aparece mesmo sem chave cadastrada, pra cadastrar e pagar.
     const rescisao = rescisoes.get(l.id);
+    const semanal = semanais.get(l.id);
     // Conta do Consumer só dos fornecedores liberados (hoje só a Maria Mistão),
     // com chave Pix, sem cara de boleto e vencida há no
     // máximo 30 dias (nem em "Todas"): as mais velhas do Bar (Pescados 2022,
@@ -415,6 +422,7 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
       : l.origem === 'NFE' && !semNota;
     const ehPix =
       !!rescisao ||
+      !!semanal ||
       l.origem === 'BORDERO' ||
       (ehNota
         ? !l.temBoleto && notaAVistaPix(o?.nf_pagamento ?? null, o?.nf_dups ?? 0)
@@ -445,6 +453,7 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
       grupos.set(chave, g);
     }
     if (rescisao?.cpf && !g.chaveCpfRescisao) g.chaveCpfRescisao = rescisao.cpf;
+    if (semanal && !g.contaInterFolha) g.contaInterFolha = { destino: destinoContaInter(semanal.contaFmt), nome: semanal.nome };
     g.contas.push({
       id: l.id,
       venc: l.venc,
@@ -529,7 +538,7 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
     0,
   );
   const qtd = lista.reduce((s, g) => s + g.contas.length, 0);
-  const semChave = lista.filter((g) => g.fornecedorId && !g.chavePix?.trim()).length;
+  const semChave = lista.filter((g) => g.fornecedorId && !g.chavePix?.trim() && !g.contaInterFolha).length;
 
   return (
     <main className="min-h-screen bg-slate-50">

@@ -215,6 +215,8 @@ export interface GrupoPedidos {
   contas: PedidoPix[];
   /** Rescisão (26/10/2026): sem chave no cadastro, o Pix sai pelo CPF do funcionário. */
   chaveCpfRescisao?: string | null;
+  /** Folha semanal liberada pra Pix (14/11/2026): sem chave, o Pix vai pra conta Inter do funcionário. */
+  contaInterFolha?: { destino: string; nome: string } | null;
 }
 
 const brl = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -311,7 +313,9 @@ export function GrupoPix({
   })();
   const valorConfere = digitadoCentavos !== null && digitadoCentavos === totalCentavos;
   const mostraPagarPix = podePagarPix && !!filialId && !!grupo.fornecedorId;
-  const podeBotaoPix = mostraPagarPix && temInterPix && !!chave;
+  // Folha semanal liberada: sem chave, o destino é a conta Inter do cadastro da folha.
+  const contaInter = !chave ? (grupo.contaInterFolha ?? null) : null;
+  const podeBotaoPix = mostraPagarPix && temInterPix && (!!chave || !!contaInter);
 
   async function pagarPix() {
     if (!filialId || !grupo.fornecedorId || !valorConfere || !contaConfirmando) return;
@@ -442,6 +446,11 @@ export function GrupoPix({
                 <span className="text-[11px] text-slate-500">CPF do funcionário (rescisão/folha)</span>
               )}
             </div>
+          ) : contaInter ? (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <span className="rounded-md bg-orange-50 px-2 py-1 font-mono text-sm text-orange-900">🏦 {contaInter.destino}</span>
+              <span className="text-[11px] text-slate-500">conta da folha no Inter, em nome de {contaInter.nome}</span>
+            </div>
           ) : (
             <div className="mt-2 text-xs font-medium text-amber-700">Sem chave Pix autorizada no cadastro — cadastre a chave que a pessoa informou</div>
           )}
@@ -526,11 +535,12 @@ export function GrupoPix({
                 </button>
               )}
             </div>
-            {contaConfirmando?.id === c.id && chave && (
+            {contaConfirmando?.id === c.id && (chave || contaInter) && (
               <PainelConfirmar
                 filialId={filialId}
-                recebe={grupo.pixFavorecido || grupo.nome}
-                chave={chave}
+                recebe={contaInter ? contaInter.nome : grupo.pixFavorecido || grupo.nome}
+                chave={chave ?? contaInter?.destino ?? ''}
+                rotuloDestino={chave ? undefined : 'Conta de destino'}
                 conferencia={conferencia}
                 conta={c}
                 valorDigitado={valorDigitado}
@@ -591,6 +601,7 @@ function PainelConfirmar({
   filialId,
   recebe,
   chave,
+  rotuloDestino,
   conferencia,
   conta,
   valorDigitado,
@@ -603,6 +614,7 @@ function PainelConfirmar({
   filialId?: string;
   recebe: string;
   chave: string;
+  rotuloDestino?: string;
   conferencia: ConferenciaPix | null;
   conta: PedidoPix;
   valorDigitado: string;
@@ -625,7 +637,7 @@ function PainelConfirmar({
           <div className="font-medium text-slate-900">{recebe}</div>
         </div>
         <div className="min-w-0">
-          <div className="text-slate-500">Chave Pix</div>
+          <div className="text-slate-500">{rotuloDestino ?? 'Chave Pix'}</div>
           <div className="break-all font-mono text-slate-900">{chave}</div>
         </div>
         <div className="min-w-0">
