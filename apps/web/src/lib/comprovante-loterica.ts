@@ -15,6 +15,7 @@
 // Vitor) casa pela AGÊNCIA + CONTA do cadastro (fornecedor.banco_conta), já
 // que o nome impresso é o do titular.
 
+import { contasPorCpf, temConta } from '@/lib/rh/conta-da-pessoa';
 import { db, schema } from '@concilia/db';
 import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { createAdminClient } from '@/lib/supabase/server';
@@ -482,6 +483,9 @@ export async function casarComprovante(
       liquido: sql<string>`(${schema.contaPagar.valor} - COALESCE(${schema.contaPagar.descontos}, 0))::numeric(14,2)`,
       vencimento: schema.contaPagar.dataVencimento,
       pagaEm: schema.contaPagar.dataPagamento,
+      borderoId: schema.contaPagar.borderoId,
+      documento: schema.fornecedor.cnpjOuCpf,
+      chavePix: schema.fornecedor.chavePix,
       // está na relação de um borderô ATIVO cujo Pix já saiu pra lotérica
       // até DIAS_DEPOSITO_BORDERO dias antes deste depósito
       noBorderoPago: ref
@@ -526,6 +530,26 @@ export async function casarComprovante(
     );
   const presas = new Set(outros.flatMap((o) => o.ids ?? []));
 
+  // Conta de destino que foi na relação do borderô: quem não tem conta no
+  // cadastro desta casa foi com a do cadastro de outra casa (mesma regra de
+  // bordero-relacao.ts) — é essa que a lotérica usou no depósito.
+  {
+    const semConta = abertas.filter(
+      (c) => c.noBorderoPago && !temConta(c) && (c.documento ?? '').replace(/\D/g, '').length === 11,
+    );
+    for (const filialId of new Set(semConta.map((c) => c.filialId))) {
+      const daCasa = semConta.filter((c) => c.filialId === filialId);
+      const outras = await contasPorCpf(daCasa.map((c) => c.documento as string), filialId).catch(() => null);
+      if (!outras) continue;
+      for (const c of daCasa) {
+        const o = outras.get((c.documento as string).replace(/\D/g, ''));
+        if (!o) continue;
+        c.bancoAgencia = o.bancoAgencia;
+        c.bancoConta = o.bancoConta;
+      }
+    }
+  }
+
   // A mesma pessoa em várias casas (mesmo CPF) conta como uma só: o nome que
   // bate numa casa vale pras outras, e a mensagem mostra um nome só.
   const unicas = await pessoasUnicas(abertas.map((c) => c.fornecedorId));
@@ -549,6 +573,68 @@ export async function casarComprovante(
   const daPessoa = comParec
     .map((c) => ({ ...c, parec: parecDaPessoa.get(c.chavePessoa) ?? c.parec }))
     .filter((c) => c.parec >= PARECENCA_MIN && !presas.has(c.id));
+  // ── Pela CONTA DE DESTINO do borderô (antes de olhar o nome) ──
+  // Dono (14/11/2026): "você sabe para onde a conta vai, independente da
+  // pessoa. Tem que casar a conta que você mandou pagar com o valor que vai
+  // baixar a conta daquela outra pessoa, porque às vezes a conta é de um
+  // terceiro". A relação mandada pra lotérica diz conta de destino + valor de
+  // cada pessoa; o depósito que caiu naquela conta com aquele valor é o dela,
+  // seja qual for o nome impresso (Ryan recebe na conta do Paulo). Várias
+  // pessoas na mesma conta: o valor separa. O valor é o TOTAL da pessoa no
+  // borderô (10% + gratificação saem num depósito só).
+  {
+    const naConta = comParec.filter(
+      (c) => c.noBorderoPago && contaDoCadastroBate(lido, { agencia: c.bancoAgencia, conta: c.bancoConta }),
+    );
+    const porPessoaBordero = new Map<string, typeof naConta>();
+    for (const c of naConta) {
+      const k = `${c.borderoId}|${c.fornecedorId ?? c.pessoa}`;
+      porPessoaBordero.set(k, [...(porPessoaBordero.get(k) ?? []), c]);
+    }
+    // só quem ainda não tem comprovante em nenhuma das contas
+    const livres = [...porPessoaBordero.values()].filter((g) => g.every((c) => !presas.has(c.id)));
+    const total = (g: typeof naConta) => g.reduce((t, c) => t + centavos(c.liquido), 0);
+    const alvoC = centavos(lido.valor);
+    const umDigitoC = (a: number, b: number) => {
+      const x = String(a);
+      const y = String(b);
+      if (x.length !== y.length) return false;
+      let d = 0;
+      for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) d++;
+      return d === 1;
+    };
+    const exatos = livres.filter((g) => total(g) === alvoC);
+    const quaseC = exatos.length === 0 ? livres.filter((g) => umDigitoC(total(g), alvoC)) : [];
+    const achado = exatos.length === 1 ? exatos[0]! : quaseC.length === 1 ? quaseC[0]! : null;
+    if (achado) {
+      const corrigido = exatos.length === 1 ? undefined : total(achado) / 100;
+      const outroNome = parecencaNome(lido.nome, achado[0]!.pessoa) < PARECENCA_MIN;
+      const avisos = [
+        corrigido !== undefined
+          ? `valor lido ${brl(lido.valor)} corrigido pra ${brl(corrigido)}: é o que foi no borderô da lotérica pra essa conta de depósito`
+          : null,
+        outroNome
+          ? `depósito na conta de ${lido.nome}, que é a conta de destino de ${achado[0]!.pessoa} no borderô da lotérica`
+          : null,
+      ].filter(Boolean);
+      return {
+        ok: true,
+        valorCorrigido: corrigido,
+        ...(avisos.length > 0 ? { avisoBordero: avisos.join(' · ') } : {}),
+        contas: achado.map((c) => ({
+          id: c.id,
+          filialId: c.filialId,
+          folhaSemanaId: c.folhaSemanaId,
+          fornecedorId: c.fornecedorId,
+          pessoa: c.pessoa,
+          descricao: c.descricao,
+          liquido: c.liquido,
+          vencimento: c.vencimento,
+        })),
+      };
+    }
+  }
+
   // ── Pela relação do borderô ──
   // Dono (14/11/2026): "No borderô não tem já a conta que vai ser depositada?
   // Verifica o borderô que mandou para a lotérica que tem que casar." O
