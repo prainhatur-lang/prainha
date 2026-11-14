@@ -142,6 +142,9 @@ export default async function ComprovantesLotericaPage() {
                       {c.erro && c.status !== 'CASADO' ? (
                         <div className="mt-1 max-w-xs text-xs text-slate-600">{c.erro}</div>
                       ) : null}
+                      {c.erro && c.status === 'CASADO' ? (
+                        <div className="mt-1 max-w-xs text-xs text-indigo-700">{c.erro}</div>
+                      ) : null}
                     </td>
                     <td className="px-3 py-2 text-xs text-slate-700">
                       {cs.length === 0 && !sugestoes.has(c.id) ? '—' : null}

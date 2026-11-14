@@ -425,7 +425,9 @@ export interface ContaCasada {
 export type ResultadoCasamento =
   // valorCorrigido: o valor lido tinha um 8 apagado (lido como 3 ou 0) e o
   // casamento só fechou trocando esse dígito — gravar o valor certo.
-  | { ok: true; contas: ContaCasada[]; valorCorrigido?: number }
+  // avisoBordero: o depósito só casou pela relação do borderô da lotérica
+  // (nome ou valor do comprovante não batiam) — texto que fica no comprovante.
+  | { ok: true; contas: ContaCasada[]; valorCorrigido?: number; avisoBordero?: string }
   | { ok: false; motivo: string };
 
 /**
@@ -480,6 +482,13 @@ export async function casarComprovante(
       liquido: sql<string>`(${schema.contaPagar.valor} - COALESCE(${schema.contaPagar.descontos}, 0))::numeric(14,2)`,
       vencimento: schema.contaPagar.dataVencimento,
       pagaEm: schema.contaPagar.dataPagamento,
+      // está na relação de um borderô ATIVO cujo Pix já saiu pra lotérica
+      // até DIAS_DEPOSITO_BORDERO dias antes deste depósito
+      noBorderoPago: ref
+        ? sql<boolean>`EXISTS (SELECT 1 FROM bordero b_rel JOIN conta_pagar cp_rel ON cp_rel.id = b_rel.conta_pagar_id
+            WHERE b_rel.id = ${schema.contaPagar.borderoId} AND b_rel.status = 'ATIVO'
+              AND cp_rel.data_pagamento BETWEEN (${ref}::date - ${DIAS_DEPOSITO_BORDERO}::int) AND ${ref}::date)`
+        : sql<boolean>`false`,
     })
     .from(schema.contaPagar)
     .leftJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.contaPagar.fornecedorId))
@@ -540,7 +549,77 @@ export async function casarComprovante(
   const daPessoa = comParec
     .map((c) => ({ ...c, parec: parecDaPessoa.get(c.chavePessoa) ?? c.parec }))
     .filter((c) => c.parec >= PARECENCA_MIN && !presas.has(c.id));
+  // ── Pela relação do borderô ──
+  // Dono (14/11/2026): "No borderô não tem já a conta que vai ser depositada?
+  // Verifica o borderô que mandou para a lotérica que tem que casar." O
+  // borderô pago diz quem a lotérica deposita e quanto; quando o comprovante
+  // não fecha sozinho (nome de outra pessoa, dígito apagado), procura nas
+  // linhas do borderô que ainda não têm comprovante.
+  const peloBordero = (): ResultadoCasamento | null => {
+    const linhas = comParec.filter((c) => c.noBorderoPago && !presas.has(c.id));
+    if (linhas.length === 0) return null;
+    const alvoB = centavos(lido.valor);
+    const pronto = (c: (typeof linhas)[number], valorCorrigido: number | undefined, aviso: string): ResultadoCasamento => ({
+      ok: true,
+      valorCorrigido,
+      avisoBordero: aviso,
+      contas: [
+        {
+          id: c.id,
+          filialId: c.filialId,
+          folhaSemanaId: c.folhaSemanaId,
+          fornecedorId: c.fornecedorId,
+          pessoa: c.pessoa,
+          descricao: c.descricao,
+          liquido: c.liquido,
+          vencimento: c.vencimento,
+        },
+      ],
+    });
+    // 1) valor igual ao de uma linha do borderô: se é a única, é ela (o Ryan
+    //    recebe na conta do Paulo — o nome do comprovante é outro). Com mais
+    //    de uma do mesmo valor, o nome/conta tem que apontar uma só.
+    let exatas = linhas.filter((c) => centavos(c.liquido) === alvoB);
+    if (exatas.length > 1) {
+      const melhorP = Math.max(...exatas.map((c) => c.parec));
+      exatas = melhorP >= PARECENCA_MIN ? exatas.filter((c) => c.parec === melhorP) : [];
+    }
+    if (exatas.length === 1) {
+      const c = exatas[0]!;
+      return pronto(
+        c,
+        undefined,
+        c.parec >= PARECENCA_MIN
+          ? 'casado pela relação do borderô da lotérica'
+          : `casado pela relação do borderô da lotérica: única linha de ${brl(lido.valor)} sem comprovante é de ${c.pessoa} (depósito em nome de ${lido.nome})`,
+      );
+    }
+    if (exatas.length > 1) return null;
+    // 2) a pessoa está no borderô (nome quase igual ou conta do cadastro) e o
+    //    valor lido difere do da linha em UM dígito só (leitura da foto).
+    const umDigito = (a: number, b: number) => {
+      const x = String(a);
+      const y = String(b);
+      if (x.length !== y.length) return false;
+      let d = 0;
+      for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) d++;
+      return d === 1;
+    };
+    const quase = linhas.filter((c) => c.parec >= 0.85 && umDigito(centavos(c.liquido), alvoB));
+    if (quase.length === 1) {
+      const c = quase[0]!;
+      return pronto(
+        c,
+        c.liquido,
+        `valor lido ${brl(lido.valor)} corrigido pra ${brl(c.liquido)}: é o que está na relação do borderô da lotérica pra ${c.pessoa}`,
+      );
+    }
+    return null;
+  };
+
   if (daPessoa.length === 0) {
+    const b = peloBordero();
+    if (b) return b;
     return { ok: false, motivo: `não achei conta da equipe em aberto (10%, comissão, gratificação, VT ou rescisão) pra "${lido.nome}" (nem pela conta de depósito do cadastro)` };
   }
 
@@ -572,6 +651,8 @@ export async function casarComprovante(
     }
   }
   if (batem.length === 0) {
+    const b = peloBordero();
+    if (b) return b;
     // uma linha por pessoa e vencimento, com as casas juntas (Paulo: "R$ 350
     // na Prainha Mar, R$ 350 na Tabuara") em vez de um nome por casa
     const porPessoa = new Map<string, Array<typeof daPessoa>>();
@@ -734,6 +815,14 @@ export async function casarEGravar(comprovanteId: string, userId: string): Promi
             erro: `valor lido ${brl(Number(c.valor))} corrigido pra ${brl(r.valorCorrigido)} (8 ou 9 apagado na impressão)`,
           }
         : { erro: null }),
+      // casou pela relação do borderô: o aviso (com o valor corrigido, se
+      // houve) fica gravado no comprovante
+      ...(r.avisoBordero
+        ? {
+            erro: r.avisoBordero.slice(0, 500),
+            ...(r.valorCorrigido !== undefined ? { valor: r.valorCorrigido.toFixed(2) } : {}),
+          }
+        : {}),
       contaPagarIds: r.contas.map((x) => x.id),
       filialId: primeira.filialId,
       folhaSemanaId: primeira.folhaSemanaId,
