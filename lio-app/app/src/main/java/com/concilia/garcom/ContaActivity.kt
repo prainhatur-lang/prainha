@@ -1295,7 +1295,9 @@ class ContaActivity : AppCompatActivity() {
             val (_, resta, _) = calc()
             dialogOutroValor(rotuloAlvo, resta, "com $gorj% de serviço") { centavos ->
                 dlg?.dismiss()
-                escolherCartao { cartao -> cobrarNoTerminal(alvo, linhasDoAlvo(texto, cAlvo), centavos, null, cartao) }
+                escolherCartao(onPix = { banco -> cobrarPixBanco(alvo, rotuloAlvo, centavos / 100.0, gorj, banco) }) { cartao ->
+                    cobrarNoTerminal(alvo, linhasDoAlvo(texto, cAlvo), centavos, null, cartao)
+                }
             }
         }
 
@@ -1337,7 +1339,13 @@ class ContaActivity : AppCompatActivity() {
                     val linhas = linhasDoAlvo(texto, cAlvo)
                     // casa com Pix pelo banco: crédito ou débito antes da Cielo
                     // (cancelar a escolha solta o Cartão Prainha, como cancelar a cobrança)
-                    escolherCartao(onCancelar = { fidLiberar(usa) }) { cartao ->
+                    escolherCartao(onCancelar = { fidLiberar(usa) }, onPix = { banco ->
+                        if (usa != null) {
+                            fidLiberar(usa)
+                            Toast.makeText(this,
+                                "${Session.fidelidadeNome(this)} no Pix: use o QR da mesa, ou tire o cartão pra cobrar aqui", Toast.LENGTH_LONG).show()
+                        } else cobrarPixBanco(alvo, rotuloAlvo, cobrar, gorj, banco)
+                    }) { cartao ->
                         cobrarNoTerminal(alvo, linhas, Math.round(cobrar * 100), usa, cartao)
                     }
                 }
@@ -1767,16 +1775,24 @@ class ContaActivity : AppCompatActivity() {
     /** Casa com Pix pelo BANCO: antes da Cielo, crédito ou débito — assim o
      *  Pix não sai pela Cielo. "Outros" abre o menu completo de sempre (vale-
      *  refeição etc.). Sem Pix pelo banco, ou fora da Cielo: segue direto, como sempre. */
-    private fun escolherCartao(onCancelar: () -> Unit = {}, seguir: (String?) -> Unit) {
+    private fun escolherCartao(onCancelar: () -> Unit = {}, onPix: ((String) -> Unit)? = null, seguir: (String?) -> Unit) {
         val prov = Session.pixProvedor(this)
         if (prov == null || Pagamento.ADQUIRENTE != "cielo") { seguir(null); return }
         val nomeBanco = if (prov == "inter") "Inter" else "Sicredi"
         var escolheu = false
+        // 1.10.48 (14/11/2026): o Pix é a PRIMEIRA opção desta lista. O botão
+        // "Pix Sicredi" do rodapé do Receber (continua lá) ficava cortado na
+        // telinha da LIO e o garçom só achava o Pix pelo "Outros" da Cielo.
+        val opcoes = mutableListOf<String>()
+        if (onPix != null) opcoes.add("Pix $nomeBanco")
+        opcoes.addAll(listOf("💳 Crédito", "💳 Débito", "Outros (vale-refeição etc.)"))
+        val desloca = if (onPix != null) 1 else 0
         AlertDialog.Builder(this)
-            .setTitle("Cartão — o Pix é no botão Pix $nomeBanco")
-            .setItems(arrayOf("💳 Crédito", "💳 Débito", "Outros (vale-refeição etc.)")) { _, i ->
+            .setTitle(if (onPix != null) "Como o cliente vai pagar?" else "Cartão — o Pix é no botão Pix $nomeBanco")
+            .setItems(opcoes.toTypedArray()) { _, i ->
                 escolheu = true
-                seguir(when (i) { 0 -> "credito"; 1 -> "debito"; else -> null })
+                if (onPix != null && i == 0) onPix(nomeBanco)
+                else seguir(when (i - desloca) { 0 -> "credito"; 1 -> "debito"; else -> null })
             }
             .setNegativeButton("Voltar", null)
             .setOnDismissListener { if (!escolheu) onCancelar() }

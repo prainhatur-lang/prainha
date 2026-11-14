@@ -185,8 +185,10 @@ android {
         // 1.10.47 (10/11/2026): totem — pedido pago no PIX sem impressora da
         // recepção: os tickets e a nota saem nesta LIO (fila com ?pix=1).
         // Cartão igual; servidor antigo ignora o ?pix=1 e nada muda.
-        versionCode = 71
-        versionName = "1.10.47"
+        // 1.10.48 (14/11/2026): Cobrar abre "Pix Sicredi / Crédito / Débito /
+        // Outros" — o botão Pix do rodapé ficava cortado na telinha da LIO.
+        versionCode = 72
+        versionName = "1.10.48"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CONCILIA_BASE", "\"$conciliaBase\"")
     }
