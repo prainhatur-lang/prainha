@@ -1029,6 +1029,64 @@ export async function processarEntrada(params: {
       usouFerramentaComEfeito = resposta.usouFerramentaComEfeito === true;
       reservaCriada = resposta.reservaCriada === true;
       reservaLocalizada = resposta.reservaLocalizada === true;
+      // "VOU VERIFICAR" SEM VERIFICAR (dono, 14/11/2026, caso Laís): a Nina
+      // prometeu "vou verificar a disponibilidade do Terraço" duas vezes sem
+      // chamar ferramenta; a rede de promessa (abaixo) jogava pra humano e a
+      // cliente parava ali, mesmo depois de "Devolver pra Nina". Antes de
+      // desistir, UMA segunda geração com o rascunho recusado: consultar agora
+      // e levar até o fechamento (orçamento/reserva). Só quando a promessa é
+      // dela mesma (sem citar equipe/colega) e nada foi feito nesta rodada. Se
+      // a segunda falhar ou prometer de novo, a rede de baixo age como sempre.
+      if (
+        modo === 'cliente' &&
+        texto &&
+        !transferiu &&
+        !leadRegistrado &&
+        !usouFerramentaComEfeito &&
+        !reservaCriada &&
+        /\bvou (verificar|confirmar|checar|consultar|conferir|ver)\b|j[aá] (te )?retorno/i.test(texto) &&
+        !/\b(colega|equipe|time|algu[eé]m|pessoal|gerente|respons[aá]vel)\b/i.test(texto) &&
+        // "Vou confirmar a reserva pra 4 pessoas, ok?" é pedir o sim — segue como está.
+        !/\bvou (confirmar|fazer|marcar|criar|garantir) (a |sua |a sua )?reserva\b[^.!?\n]*\?/i.test(texto)
+      ) {
+        try {
+          const refeita = await gerarResposta({
+            nomeAtendente: config.nomeAtendente,
+            filialId: entrada.filialId,
+            filialNome,
+            persona: config.persona,
+            conhecimento: config.conhecimento ?? [],
+            espacos: config.espacosEvento ?? [],
+            historico,
+            executores,
+            modo,
+            ocupacaoAgora,
+            nomePerfil: conversa.nomeCliente,
+            retomada: params.retomada === true,
+            perguntaPendente: params.retomada === true ? entrada.corpo : null,
+            duasCasas: /prainha bar/i.test(filialNome),
+            imagem,
+            imagemJaRespondida,
+            outrasCasas,
+            casasCobertas: cobertas,
+            passagem,
+            instagrams,
+            rascunhoRecusado: texto,
+          });
+          if (refeita.texto?.trim() || refeita.transferiu) {
+            console.log('[nina] rascunho "vou verificar" refeito', registro.conversaId);
+            texto = refeita.texto;
+            transferiu = refeita.transferiu;
+            leadRegistrado = refeita.leadRegistrado;
+            usouFerramenta = usouFerramenta || refeita.usouFerramenta === true;
+            usouFerramentaComEfeito = refeita.usouFerramentaComEfeito === true;
+            reservaCriada = refeita.reservaCriada === true;
+            reservaLocalizada = reservaLocalizada || refeita.reservaLocalizada === true;
+          }
+        } catch (e) {
+          console.error('[nina] refazer rascunho falhou:', e instanceof Error ? e.message : e);
+        }
+      }
       // RESPOSTA AUTOMÁTICA DE OUTRO NEGÓCIO (09/10/2026): convite nosso caiu
       // em número com saudação automática ("O Gprado Contabilidade agradece o
       // seu contato") e a Nina se apresentou e ofereceu reserva pro robô — 5

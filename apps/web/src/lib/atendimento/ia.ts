@@ -1338,6 +1338,9 @@ export async function gerarResposta(params: {
   passagem?: { deAtendente: string; deCasa: string; mensagens: MsgHistorico[] } | null;
   /** Instagram de cada casa (marketing), pra quem pede foto/vídeo do ambiente. */
   instagrams?: { filialNome: string; usuario: string }[];
+  /** Rascunho que o motor recusou por prometer "vou verificar" sem consultar
+   *  nada: a Nina refaz consultando AGORA (14/11/2026, caso Laís). */
+  rascunhoRecusado?: string | null;
 }): Promise<RespostaNina> {
   // Motor por env: ATENDIMENTO_MODELO começando com 'claude' usa a Anthropic
   // (obediência melhor ao prompt longo da Nina — loops e regras ignoradas do
@@ -1541,6 +1544,26 @@ Como usar, SEM EXCEÇÃO:
         '- Nunca diga "registrei seu interesse" sem ter chamado a ferramenta que registra. Sem ferramenta pro assunto, diga onde sai a novidade (ex.: Instagram) e pronto.\n' +
         '- Nunca se contradiga. Se errou antes, corrija em meia frase ("me enganei: hoje abrimos sim, às 9h") e siga.\n' +
         '- Cliente perguntou se você é IA/robô: responda com honestidade em meia frase (sou a assistente virtual da casa) e resolva o pedido na mesma mensagem.',
+    });
+  }
+
+  // RASCUNHO RECUSADO (dono, 14/11/2026, caso Laís — despedida de solteira no
+  // Terraço): a Nina escreveu "Vou verificar a disponibilidade para os dias 08
+  // e 09 de janeiro" DUAS vezes sem chamar ferramenta nenhuma; a rede de
+  // promessa jogava pra humano e a cliente ficava parada, mesmo depois de
+  // devolvida. Ela não tem "depois": o motor recusa o rascunho e manda refazer
+  // consultando agora e levando a conversa até o fechamento.
+  if (modo === 'cliente' && params.rascunhoRecusado?.trim()) {
+    mensagens.push({
+      role: 'system',
+      content:
+        `SEU RASCUNHO FOI RECUSADO e NÃO foi enviado ao cliente: "${params.rascunhoRecusado.trim().slice(0, 600)}". ` +
+        'Ele promete verificar/confirmar DEPOIS — e você não tem "depois": só fala quando o cliente escreve, então quem ouve "vou verificar" fica esperando pra sempre. Refaça a resposta AGORA:\n' +
+        '- O que dá pra consultar, consulte JÁ pela ferramenta (disponibilidade de reserva, cardápio, opções e orçamento de evento) e responda com o RESULTADO.\n' +
+        '- EVENTO/comemoração em espaço fechado: com data (ou datas) e número aproximado de pessoas você já tem o bastante — siga pro ORÇAMENTO nesta resposta (as ferramentas de orçamento de evento/espaço), mostrando valor e link. Duas datas possíveis: faça com a primeira e diga que troca se preferir a outra. Número "em torno de 25" vale como 25.\n' +
+        '- Falta UM dado pra ferramenta rodar: pergunte só esse dado, sem anunciar que vai verificar.\n' +
+        '- PROIBIDO nesta resposta: "vou verificar", "vou confirmar", "vou checar", "já retorno", e encerrar com "gostaria de mais alguma informação?". Termine com o próximo passo concreto pra FECHAR.\n' +
+        '- Só se nem os blocos nem as ferramentas resolverem, chame transferir_para_humano.',
     });
   }
 
