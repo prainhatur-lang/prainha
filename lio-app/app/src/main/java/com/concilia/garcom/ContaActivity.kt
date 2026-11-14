@@ -1356,7 +1356,7 @@ class ContaActivity : AppCompatActivity() {
                 // O QR sai do servidor da loja, igual ao QR da mesa, e a baixa é dele.
                 val prov = Session.pixProvedor(this) ?: return@also
                 val nomeBanco = if (prov == "inter") "Inter" else "Sicredi"
-                b.setNeutralButton("Pix $nomeBanco") { _, _ ->
+                b.setNeutralButton("Pix") { _, _ ->
                     val (_, _, cobrar) = calc()
                     when {
                         fidUso != null -> Toast.makeText(this,
@@ -1784,11 +1784,11 @@ class ContaActivity : AppCompatActivity() {
         // "Pix Sicredi" do rodapé do Receber (continua lá) ficava cortado na
         // telinha da LIO e o garçom só achava o Pix pelo "Outros" da Cielo.
         val opcoes = mutableListOf<String>()
-        if (onPix != null) opcoes.add("Pix $nomeBanco")
+        if (onPix != null) opcoes.add("Pix")
         opcoes.addAll(listOf("💳 Crédito", "💳 Débito", "Outros (vale-refeição etc.)"))
         val desloca = if (onPix != null) 1 else 0
         AlertDialog.Builder(this)
-            .setTitle(if (onPix != null) "Como o cliente vai pagar?" else "Cartão — o Pix é no botão Pix $nomeBanco")
+            .setTitle(if (onPix != null) "Como o cliente vai pagar?" else "Cartão — o Pix é no botão Pix")
             .setItems(opcoes.toTypedArray()) { _, i ->
                 escolheu = true
                 if (onPix != null && i == 0) onPix(nomeBanco)
@@ -1804,7 +1804,7 @@ class ContaActivity : AppCompatActivity() {
     private fun cobrarPixBanco(alvo: Int, rotulo: String, valor: Double, gorj: Int, nomeBanco: String) {
         val base = Session.servidor(this)
         val tk = Session.token(this)
-        val espera = Toast.makeText(this, "Gerando o Pix $nomeBanco…", Toast.LENGTH_SHORT)
+        val espera = Toast.makeText(this, "Gerando o Pix…", Toast.LENGTH_SHORT)
         espera.show()
         Thread {
             var r: org.json.JSONObject? = null
@@ -1817,7 +1817,7 @@ class ContaActivity : AppCompatActivity() {
                 val copia = res?.optString("copia_cola").orEmpty()
                 if (res == null || !res.optBoolean("ok") || txid.isBlank() || copia.isBlank()) {
                     AlertDialog.Builder(this)
-                        .setTitle("Pix $nomeBanco não saiu")
+                        .setTitle("Pix não saiu")
                         .setMessage((erro ?: res?.optString("erro")?.ifBlank { null } ?: "O servidor não gerou o Pix.") +
                             "\n\nNada foi cobrado. Tente de novo ou cobre no cartão.")
                         .setPositiveButton("OK", null)
@@ -1868,7 +1868,7 @@ class ContaActivity : AppCompatActivity() {
                     if (r != null && r.optBoolean("ok") && r.optBoolean("pago")) {
                         vivo = false
                         d.dismiss()
-                        Toast.makeText(this, "✅ Pix $nomeBanco recebido — ${Cupom.brl(valor)} na $rotulo", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this, "✅ Pix recebido — ${Cupom.brl(valor)} na $rotulo", Toast.LENGTH_LONG).show()
                         if (!isFinishing && !isDestroyed) carregar()
                     } else if (r != null && !r.optBoolean("ok")) {
                         st.text = "Esperando o Pix cair…\n(" + r.optString("erro").take(80) + ")"
@@ -1880,7 +1880,7 @@ class ContaActivity : AppCompatActivity() {
             override fun run() { if (!vivo) return; pergunta(); h.postDelayed(this, 4000) }
         }
         d = AlertDialog.Builder(this)
-            .setTitle("Pix $nomeBanco — $rotulo")
+            .setTitle("Pix — $rotulo")
             .setView(android.widget.ScrollView(this).also { it.addView(box) })
             .setPositiveButton("Já pagou? Conferir", null)
             .setNegativeButton("Fechar", null)

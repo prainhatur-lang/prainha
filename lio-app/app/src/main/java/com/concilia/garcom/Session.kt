@@ -119,7 +119,7 @@ object Session {
 
     /** Pix desta casa pelo banco (do /api/config): sicredi | inter; null = pela maquininha. */
     fun pixProvedor(ctx: Context): String? =
-        prefs(ctx).getString("pix_provedor", null)?.takeIf { it == "sicredi" || it == "inter" }
+        prefs(ctx).getString("pix_provedor", null)?.takeIf { it.isNotBlank() && it != "null" && it != "cielo" && it != "rede" }
 
     /** Adquirente da maquininha desta filial (do /api/config): cielo | rede. */
     fun adquirente(ctx: Context): String = prefs(ctx).getString("adquirente", null) ?: "cielo"

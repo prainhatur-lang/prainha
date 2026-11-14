@@ -374,7 +374,7 @@ object Api {
                 passeSaida = j.optBoolean("passe_saida", true),
                 conhecaUrl = j.optString("conheca_url", "").let { if (it.startsWith("https://")) it else "" },
                 demo = j.optBoolean("demo", false),
-                pixProvedor = j.optString("pix_provedor", "").takeIf { it == "sicredi" || it == "inter" },
+                pixProvedor = j.optString("pix_provedor", "").takeIf { it.isNotBlank() && it != "null" && it != "cielo" && it != "rede" },
             )
         } catch (_: Exception) { null }
     }
