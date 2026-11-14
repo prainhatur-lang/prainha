@@ -1122,6 +1122,15 @@ export async function processarEntrada(params: {
         /\b(me passar|me (informar|dizer|mandar|enviar)|qual (é |o |a )|poderia (me )?(passar|informar))\b[^?]*\?/i.test(texto) &&
         !/\b(colega|equipe|time|algu[eé]m|pessoal|gerente|respons[aá]vel)\b/i.test(texto)
       ) &&
+      // "Vou verificar a disponibilidade de hoje pra você. Quantas pessoas vêm
+      // e em qual horário?" (14/11/2026, 06:35): mesma coisa — ela pedindo o
+      // dado da reserva pra consultar. A rede jogou pra humano, a cliente
+      // respondeu 6-7 pessoas às 11h e ficou no vácuo. A exceção de cima não
+      // conhecia "quantas pessoas" nem "(em) qual/que horário/dia".
+      !(
+        /(\bquant[ao]s (pessoas|adultos|crian[cç]as|lugares|s[aã]o|v[eê]m|ser[aã]o|v[aã]o)|\b(qual|que) (hor[aá]rio|hora|dia|data)|\bque horas)\b[^?]*\?/i.test(texto) &&
+        !/\b(colega|equipe|time|algu[eé]m|pessoal|gerente|respons[aá]vel)\b/i.test(texto)
+      ) &&
       // Inclui a promessa de "colega": "já chamei um colega, ele te responde"
       // saiu SEM transferir e a cliente esperou 2h no vácuo (hospedagem, 26/08).
       (/\bvou (verificar|confirmar|perguntar|checar|falar com|ver com)\b|j[aá] (te )?retorno|retorno (em breve|j[aá] j[aá])|\b(chamei|vou chamar|j[aá] chamo|pedi pra?)\s+(um colega|uma colega|algu[eé]m)\b/i.test(
