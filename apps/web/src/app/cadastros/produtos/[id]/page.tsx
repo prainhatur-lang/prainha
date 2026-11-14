@@ -410,7 +410,7 @@ export default async function ProdutoDetalhePage(props: {
   // Catálogo de tamanhos da casa pro seletor "a opção lança o produto…"
   // (Carne → File kids): a resposta entra na conta como item, não observação.
   const catalogoOpcao =
-    aba === 'pdv' && opcoesPdv.length > 0
+    aba === 'pdv' && (opcoesPdv.length > 0 || codigosVar.length > 0)
       ? await db
           .select({
             codigo: schema.produtoVariante.codigoExterno,
@@ -428,6 +428,21 @@ export default async function ProdutoDetalhePage(props: {
             isNull(schema.produtoVariante.dataDelete),
           ))
           .orderBy(asc(schema.produto.nome))
+      : [];
+
+  // Perguntas que a CASA já tem — pra ligar uma pronta neste produto, como no
+  // Consumer (a mesma "Qual acompanhamento?" serve vários pratos).
+  const perguntasCasa =
+    aba === 'pdv' && codigosVar.length > 0
+      ? [...(await db.execute<{ codigo: number; texto: string | null; opcoes: number; usos: number }>(sqlDrizzle`
+          SELECT q.codigo_externo AS codigo, q.texto,
+                 (SELECT count(*)::int FROM wizard_opcao o
+                   WHERE o.filial_id = q.filial_id AND o.codigo_pergunta = q.codigo_externo) AS opcoes,
+                 (SELECT count(DISTINCT w.codigo_variante_externo)::int FROM wizard_produto w
+                   WHERE w.filial_id = q.filial_id AND w.codigo_pergunta = q.codigo_externo) AS usos
+            FROM wizard_pergunta q
+           WHERE q.filial_id = ${produto.filialId}
+           ORDER BY q.texto, q.codigo_externo`))]
       : [];
 
   // Complementos aceitos por cada tamanho (PRODUTODETALHECOMPLEMENTO).
@@ -707,6 +722,9 @@ export default async function ProdutoDetalhePage(props: {
                     precoPromo: o.precoPromo,
                     lancaVariante: o.codigoVarianteExterno,
                   })),
+              }))}
+              perguntasCasa={perguntasCasa.map((q) => ({
+                codigo: Number(q.codigo), texto: q.texto, opcoes: Number(q.opcoes), usos: Number(q.usos),
               }))}
               catalogo={catalogoOpcao.map((c) => ({
                 codigo: c.codigo,

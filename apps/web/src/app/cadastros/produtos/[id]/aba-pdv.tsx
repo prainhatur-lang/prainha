@@ -11,6 +11,7 @@
 // baixo é a fonte da verdade do preço; o cabeçalho é só o produto.
 import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
+import { AdicionarPergunta, MaisOpcao, TirarPergunta } from './perguntas-adicionar';
 
 /** O que uma linha de pergunta/opção manda no "Salvar" único (null = nada mudou). */
 type Envio = { tag: string; alvoCodigo: number; campos: Record<string, unknown>; invalido?: string };
@@ -106,6 +107,8 @@ interface Props {
   perguntas: PerguntaPdv[];
   /** Tamanhos da casa que uma opção de pergunta pode lançar como item. */
   catalogo?: Array<{ codigo: number; rotulo: string }>;
+  /** Perguntas que a casa já tem, pra ligar uma pronta neste produto. */
+  perguntasCasa?: Array<{ codigo: number; texto: string | null; opcoes: number; usos: number }>;
   complementos: ComplementoPdv[];
   insumos: InsumoPdv[];
   /** Quadro "Onde vende" (🎟 Ticket da maquininha e totem), por tamanho. */
@@ -524,7 +527,7 @@ export function AbaPdv(p: Props) {
           <div className="divide-y divide-slate-100">
             {p.perguntas.map((q) => (
               <BlocoPergunta key={`${q.varianteCodigo}-${q.codigo}`} q={q} registrar={registrar}
-                catalogo={p.catalogo ?? []} />
+                catalogo={p.catalogo ?? []} produtoId={p.produtoId} />
             ))}
             {/* uma lista só pra todas as opções (o catálogo tem ~1.700 tamanhos) */}
             <datalist id="cat-opcao-pdv">
@@ -533,6 +536,15 @@ export function AbaPdv(p: Props) {
               ))}
             </datalist>
           </div>
+        )}
+        {p.variantes.length > 0 && (
+          <AdicionarPergunta
+            produtoId={p.produtoId}
+            variantes={p.variantes.map((v) => ({ codigo: v.codigo, tamanho: v.tamanho }))}
+            perguntasCasa={p.perguntasCasa ?? []}
+            jaLigadas={p.perguntas.map((q) => `${q.varianteCodigo}-${q.codigo}`)}
+            catalogo={p.catalogo ?? []}
+          />
         )}
         {p.perguntas.length > 0 && (
           <div className="flex items-center gap-3 border-t border-slate-200 bg-slate-50 px-5 py-3">
@@ -621,10 +633,12 @@ function BlocoPergunta({
   q,
   registrar,
   catalogo,
+  produtoId,
 }: {
   q: PerguntaPdv;
   catalogo: Array<{ codigo: number; rotulo: string }>;
   registrar: Registrar;
+  produtoId: string;
 }) {
   const [texto, setTexto] = useState(q.texto ?? '');
   const [min, setMin] = useState(String(q.min ?? 0));
@@ -683,6 +697,12 @@ function BlocoPergunta({
         ))}
         {q.opcoes.length === 0 && <li className="text-xs text-slate-400">sem opções cadastradas</li>}
       </ul>
+      <div className="mt-3 flex flex-wrap items-start gap-3">
+        <MaisOpcao produtoId={produtoId} varianteCodigo={q.varianteCodigo} perguntaCodigo={q.codigo}
+          usos={q.usos} catalogo={catalogo} />
+        <TirarPergunta produtoId={produtoId} varianteCodigo={q.varianteCodigo} perguntaCodigo={q.codigo}
+          texto={q.texto} />
+      </div>
     </div>
   );
 }
