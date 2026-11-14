@@ -91,6 +91,19 @@ export interface BalancoDados {
     caixas_abertos: number;
     caixas: number;
   } | null;
+  /** Pix da conta pago pelo próprio cliente no QR da mesa, sem garçom
+   *  (loja a partir da versão que marca `pix_cobranca.canal`). */
+  pix_qr?: {
+    n: number;
+    valor: number;
+    mesas: number;
+    /** Pix da conta gerado pela equipe (maquininha/telas da loja). */
+    equipe_n: number;
+    equipe_valor: number;
+    /** Pix pagos sem a marca de quem gerou (cobrança de antes da versão). */
+    sem_marca: number;
+    lista: { mesa: number | null; valor: number | null; pago_em: string }[];
+  } | null;
   cancelamentos?: {
     n: number;
     valor: number;

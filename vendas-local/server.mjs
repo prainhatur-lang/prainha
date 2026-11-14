@@ -600,6 +600,12 @@ async function initSchema() {
   // pedido nenhum pra pousar — sem esta marca, o Pix da recreação pagaria a
   // conta da mesa e fecharia a comanda de quem ainda estava jantando.
   await addCol('pix_cobranca', 'origem text');
+  // QUEM GEROU O QR do Pix da conta. 'cliente' = a própria pessoa, na página do
+  // QR da mesa, sem chamar ninguém; 'lio' = garçom na maquininha; 'equipe' =
+  // garçom/caixa nas telas da loja. É o que o balanço do dia conta em "pagaram
+  // sozinhos". Cobrança de antes desta coluna fica vazia (não dá pra saber).
+  await addCol('pix_cobranca', 'canal text');
+  await addCol('pix_cobranca', 'cobrado_por text');
   // CARTÃO FIDELIDADE: a cobrança nasce com o desconto já descontado. fid_uso
   // é a reserva na nuvem; fid_aplicado_em = o desconto já entrou na conta
   // (TOTALDESCONTO) — é a trava pra retentativa da baixa não descontar 2x;
@@ -22093,7 +22099,7 @@ async function pixCriarCobranca({ valor, mesa = null, rotulo = null, origem = nu
     VALUES (${txid}, ${nMesa}, ${valor}, ${copia}, ${origem}, ${nPed}) ON CONFLICT (txid) DO NOTHING`;
   return { ok: true, txid, copia };
 }
-async function apiPixCobrar(body) {
+async function apiPixCobrar(body, quem = null) {
   if (!pixStatus().disponivel) return { ok: false, erro: 'Pix na tela ainda não está habilitado nesta casa.' };
   const conta = await apiContaTexto(body.mesa);
   if (!conta.ok) return conta;
@@ -22117,6 +22123,11 @@ async function apiPixCobrar(body) {
   if (fid) {
     await sql`UPDATE pix_cobranca SET fid_uso=${fid.uso_id}, fid_desconto=${fid.desconto}, fid_pct=${fid.pct}, fid_nome=${fid.nome}
       WHERE txid=${r.txid}`;
+  }
+  // só anota quem gerou o QR (balanço do dia) — nunca atrapalha a cobrança
+  if (quem && quem.canal) {
+    await sql`UPDATE pix_cobranca SET canal=${quem.canal}, cobrado_por=${quem.login || null} WHERE txid=${r.txid}`
+      .catch((e) => console.error('[pix] canal:', e.message));
   }
   return { ok: true, txid: r.txid, valor, copia_cola: r.copia, imagem: pixQrImagem(r.copia),
     fidelidade: fid ? { nome: fid.nome, nivel: fid.nivel, pct: fid.pct, pct_bonus: fid.pct_bonus, desconto: fid.desconto, sem_desconto: cob.restaTotal } : null };
@@ -33182,6 +33193,18 @@ async function montarBalanco() {
     FROM chamado WHERE criado_em >= ${dia}::date`);
   const chamLista = await many(sql`SELECT id, mesa, tipo, origem, nota, texto, assunto, criado_em, atendido_em, atendido_por
     FROM chamado WHERE criado_em >= ${dia}::date AND tipo='reclamacao' ORDER BY criado_em DESC LIMIT 30`);
+  // PAGARAM SOZINHOS: Pix da conta gerado pelo próprio cliente no QR da mesa,
+  // sem passar pelo garçom (canal='cliente'). Ao lado, o Pix da conta que a
+  // equipe gerou (maquininha/telas) e o que é de antes da marca existir.
+  const pixQr = await one(sql`SELECT COUNT(*) FILTER (WHERE canal='cliente')::int n,
+      COALESCE(SUM(valor) FILTER (WHERE canal='cliente'),0)::float valor,
+      COUNT(DISTINCT mesa) FILTER (WHERE canal='cliente')::int mesas,
+      COUNT(*) FILTER (WHERE canal IN ('lio','equipe'))::int equipe_n,
+      COALESCE(SUM(valor) FILTER (WHERE canal IN ('lio','equipe')),0)::float equipe_valor,
+      COUNT(*) FILTER (WHERE canal IS NULL)::int sem_marca
+    FROM pix_cobranca WHERE pago_em >= ${dia}::date AND origem IS NULL AND mesa IS NOT NULL`);
+  const pixQrLista = await many(sql`SELECT mesa, valor, pago_em FROM pix_cobranca
+    WHERE pago_em >= ${dia}::date AND origem IS NULL AND mesa IS NOT NULL AND canal='cliente' ORDER BY pago_em DESC LIMIT 40`);
   let caixa = null;
   try {
     const r = await apiCaixaRelatorio(null);
@@ -33213,6 +33236,8 @@ async function montarBalanco() {
       delta_ontem_pct: fluxo.delta_ontem_pct, delta_semana_pct: fluxo.delta_semana_pct, delta_pessoas_semana_pct: fluxo.delta_pessoas_semana_pct,
       ontem_total: fluxo.ontem_total, semana_total: fluxo.semana_total, semana_dia: fluxo.semana_dia },
     caixa,
+    pix_qr: { n: pixQr.n || 0, valor: pixQr.valor || 0, mesas: pixQr.mesas || 0, equipe_n: pixQr.equipe_n || 0,
+      equipe_valor: pixQr.equipe_valor || 0, sem_marca: pixQr.sem_marca || 0, lista: pixQrLista.map(lin) },
     cancelamentos: { n: canc.n || 0, valor: canc.valor || 0, pedidos: canc.pedidos || 0, produzidos: canc.produzidos || 0,
       valor_produzidos: canc.valor_produzidos || 0, devolucoes: canc.devolucoes || 0, lista: cancLista.map(lin) },
     estornos: { n: est.n || 0, valor: est.valor || 0, lista: estLista.map(lin) },
@@ -34928,7 +34953,18 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/cartao/cobrar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiCartaoCobrar(body))); }
     if (p === '/api/cartao/conferir') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiCartaoConferir(u.searchParams.get('ref') || ''))); }
     if (p === '/api/pix/conferir') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPixConferir(u.searchParams.get('txid') || ''))); }
-    if (req.method === 'POST' && p === '/api/pix/cobrar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPixCobrar(body))); }
+    if (req.method === 'POST' && p === '/api/pix/cobrar') {
+      const body = await readBody(req);
+      // quem está gerando o QR: com sessão (x-garcom) é a equipe — na maquininha
+      // ou nas telas da loja; sem sessão é o cliente na página do QR da mesa.
+      let quem = { canal: 'cliente', login: null };
+      try {
+        const v = garcomVerificaToken(String(req.headers['x-garcom'] || ''));
+        if (v) quem = { canal: req.headers['x-concilia-app'] ? 'lio' : 'equipe', login: v.login || null };
+      } catch { /* sem sessão = cliente */ }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(await apiPixCobrar(body, quem)));
+    }
     if (p === '/conta/ver') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(CONTAVER_HTML); }
     if (p === '/pix/comprovante') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(PIXCOMPROV_HTML); }
     if (p === '/api/pix/comprovante') {

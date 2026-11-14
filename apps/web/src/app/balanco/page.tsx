@@ -355,6 +355,7 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
           const ms = d?.mesas ?? null;
           const at = d?.atrasos ?? null;
           const cx = d?.caixa ?? null;
+          const pq = d?.pix_qr ?? null;
           const baixaFiado = ultimo ? baixaAte(ultimo.capturadoEm) : 0;
           const caLoja = d?.cancelamentos;
           // cancelamento de verdade = o total da loja menos o que é estorno de item
@@ -461,6 +462,20 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
                         )
                       }
                     />
+                    {pq && (
+                      <Kpi
+                        titulo="Pagaram sozinhos (Pix no QR da mesa)"
+                        valor={int(pq.n)}
+                        sub={
+                          <>
+                            {brl(pq.valor)} · {int(pq.mesas)} mesa{pq.mesas === 1 ? '' : 's'} · sem passar pelo garçom
+                            {pq.equipe_n > 0 && <> · Pix gerado pela equipe: {int(pq.equipe_n)} ({brl(pq.equipe_valor)})</>}
+                            {pq.sem_marca > 0 && <> · {int(pq.sem_marca)} Pix sem identificação de quem gerou</>}
+                          </>
+                        }
+                        tom={pq.n > 0 ? 'bom' : 'neutro'}
+                      />
+                    )}
                     <Kpi
                       titulo={ehHoje ? 'Ocupação agora' : 'Ocupação na última foto'}
                       valor={ms ? `${ms.pct}%` : '—'}
