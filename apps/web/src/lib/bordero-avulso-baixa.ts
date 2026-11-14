@@ -6,9 +6,18 @@
 // por Pix pelo sistema. Aqui a individual recebe a baixa do saldo na data em
 // que a conta do borderô foi paga. Borderô de folha/VT não entra (continua na
 // baixa em lote, como sempre). Idempotente.
+//
+// 14/11/2026 (pedido do dono: "só com o depósito"): conta da EQUIPE (folha,
+// vale transporte) presa em borderô avulso NÃO recebe mais a baixa aqui. A
+// ordem é: sai o Pix pra lotérica e a conta da pessoa fica aberta ("no
+// borderô", sem contar como saída) até chegar o comprovante do depósito dela em
+// /folha-equipe/comprovantes — é ele que dá a baixa, na data do depósito, igual
+// ao borderô da folha e do VT. Continua baixando aqui só a conta que o
+// comprovante da lotérica não alcança (não é da equipe), pra não ficar aberta
+// pra sempre.
 
 import { db, schema } from '@concilia/db';
-import { and, eq, isNotNull, isNull } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 import { recalcularAgregado } from '@/lib/conta-pagar-baixa';
 
 export async function baixarIndividuaisDeBorderoAvulso(): Promise<{ contaId: string; data: string; valor: number }[]> {
@@ -29,6 +38,10 @@ export async function baixarIndividuaisDeBorderoAvulso(): Promise<{ contaId: str
         isNotNull(schema.bordero.contaPagarId),
         isNull(schema.contaPagar.dataPagamento),
         isNull(schema.contaPagar.dataDelete),
+        // conta da equipe (mesma regra de CONTA_DA_EQUIPE em comprovante-loterica):
+        // a baixa é do comprovante do depósito, não daqui
+        sql`NOT (COALESCE(${schema.contaPagar.origem}, '') = 'FOLHA'
+          OR (COALESCE(${schema.contaPagar.origem}, '') = 'MANUAL' AND COALESCE(${schema.contaPagar.descricao}, '') ILIKE '%transporte%'))`,
       ),
     );
   const feitas: { contaId: string; data: string; valor: number }[] = [];

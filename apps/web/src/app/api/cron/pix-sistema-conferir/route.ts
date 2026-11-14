@@ -30,7 +30,8 @@ export async function GET(req: Request) {
     }
   }
   // borderô avulso pago: baixa as contas individuais presas nele (não têm tela
-  // de baixa em lote como a folha e o VT)
+  // de baixa em lote como a folha e o VT). Conta da equipe fica de fora: essa
+  // só baixa com o comprovante do depósito (14/11/2026).
   let borderoAvulso: unknown = [];
   try {
     borderoAvulso = await baixarIndividuaisDeBorderoAvulso();

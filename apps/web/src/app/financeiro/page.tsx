@@ -950,6 +950,13 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                               <span className="inline-flex items-center gap-1 rounded-md bg-emerald-100 px-2 py-0.5 text-emerald-800">
                                 ✓ {pgto} · {brl(c.valorPago)}
                               </span>
+                            ) : c.borderoId ? (
+                              <span
+                                className="inline-flex items-center gap-1 rounded-md bg-indigo-100 px-2 py-0.5 text-indigo-800"
+                                title="Está num borderô da lotérica. A baixa entra quando chegar o comprovante do depósito da pessoa (Folha → Baixa por comprovantes)."
+                              >
+                                ⏳ aguardando depósito
+                              </span>
                             ) : atrasado ? (
                               <span className="inline-flex items-center gap-1 rounded-md bg-rose-100 px-2 py-0.5 text-rose-800">
                                 ⚠ atrasada
