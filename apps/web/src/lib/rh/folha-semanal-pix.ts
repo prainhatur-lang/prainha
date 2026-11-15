@@ -68,6 +68,35 @@ export const sqlEhFolhaSemanalPix = () =>
     and exists (select 1 from folha_semana fs_pix
                  where fs_pix.id = conta_pagar.folha_semana_id and fs_pix.pix_liberado_em is not null)
     and exists (select 1 from fornecedor fo_pix
-                  join conta_inter_folha ci_pix
+                  left join conta_inter_folha ci_pix
                     on ci_pix.cpf = regexp_replace(coalesce(fo_pix.cnpj_ou_cpf, ''), '[^0-9]', '', 'g')
-                 where fo_pix.id = conta_pagar.fornecedor_id))`;
+                 where fo_pix.id = conta_pagar.fornecedor_id
+                   and (ci_pix.cpf is not null or nullif(btrim(fo_pix.chave_pix), '') is not null)))`;
+
+/**
+ * Contas (dentre as passadas) da folha semanal liberada pra Pix cujo
+ * funcionário tem CHAVE PIX no cadastro — a chave que o dono autorizou
+ * (15/11/2026, Antonio da Mar: "lança o de antonio nesse pix da esposa dele").
+ * Não precisa de conta Inter: o Pix vai na chave do cadastro, como qualquer
+ * fornecedor. Sem chave e sem conta Inter continua de fora.
+ */
+export async function folhaSemanalChavePixDasContas(contaIds: string[]): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (contaIds.length === 0) return out;
+  const lista = sql.join(
+    contaIds.map((id) => sql`${id}::uuid`),
+    sql`, `,
+  );
+  const rows = (await db.execute(sql`
+    SELECT cp.id::text AS id
+      FROM conta_pagar cp
+      JOIN folha_semana fs ON fs.id = cp.folha_semana_id AND fs.pix_liberado_em IS NOT NULL
+      JOIN fornecedor fo ON fo.id = cp.fornecedor_id
+     WHERE cp.id IN (${lista})
+       AND cp.origem = 'FOLHA'
+       AND cp.bordero_id IS NULL
+       AND nullif(btrim(fo.chave_pix), '') IS NOT NULL
+  `)) as unknown as Array<{ id: string }>;
+  for (const r of rows) out.add(r.id);
+  return out;
+}

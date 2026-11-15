@@ -26,7 +26,7 @@ import { consultarPagamentoPixInter, incluirPagamentoPixInter, incluirPagamentoP
 import { conferirChavePix, recebedorBate } from '@/lib/pix-titular';
 import { rescisoesDasContas } from '@/lib/rh/rescisao-pix';
 import { folhaMensalDasContas } from '@/lib/rh/folha-mensal-pix';
-import { destinoContaInter, folhaSemanalPixDasContas } from '@/lib/rh/folha-semanal-pix';
+import { destinoContaInter, folhaSemanalChavePixDasContas, folhaSemanalPixDasContas } from '@/lib/rh/folha-semanal-pix';
 import { consumerParado, FORNECEDORES_CONSUMER_NO_PIX } from '@/lib/consumer-contas';
 import { baixarContasDoPix, lerSaldoParaPix, podePagarPix, sincronizarPixAbertos, type SaldoParaPix } from '@/lib/pix-pagamento';
 
@@ -90,6 +90,8 @@ export async function POST(req: Request) {
   // sem chave no cadastro, o destino é a CONTA Inter do funcionário (não o CPF).
   const semanais = await folhaSemanalPixDasContas(contaIds);
   for (const id of semanais.keys()) if (!rescisoes.has(id)) rescisoes.set(id, { contaId: id, cpf: null });
+  // Folha semanal liberada, funcionário com chave Pix no cadastro (15/11/2026): passa pela chave.
+  for (const id of await folhaSemanalChavePixDasContas(contaIds)) if (!rescisoes.has(id)) rescisoes.set(id, { contaId: id, cpf: null });
   if (contaIds.length > 1 && !contaIds.every((id) => semanais.has(id))) {
     return NextResponse.json({ error: 'Um Pix por conta. Só os lançamentos da mesma pessoa na folha semanal saem juntos.' }, { status: 400 });
   }

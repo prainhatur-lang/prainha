@@ -52,7 +52,7 @@ import { urlFotoPedido } from '@/lib/pedido-sem-nota';
 import { recebedorBate } from '@/lib/pix-titular';
 import { rescisoesDasContas, sqlEhRescisao } from '@/lib/rh/rescisao-pix';
 import { folhaMensalDasContas, sqlEhFolhaMensal } from '@/lib/rh/folha-mensal-pix';
-import { destinoContaInter, folhaSemanalPixDasContas, sqlEhFolhaSemanalPix } from '@/lib/rh/folha-semanal-pix';
+import { destinoContaInter, folhaSemanalChavePixDasContas, folhaSemanalPixDasContas, sqlEhFolhaSemanalPix } from '@/lib/rh/folha-semanal-pix';
 import { consumerParado, FORNECEDORES_CONSUMER_NO_PIX } from '@/lib/consumer-contas';
 
 export const dynamic = 'force-dynamic';
@@ -389,6 +389,12 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
 
   // Folha semanal liberada pra Pix (14/11/2026): destino = conta Inter do funcionário.
   const semanais = await folhaSemanalPixDasContas(linhas.map((l) => l.id)).catch(() => new Map<string, Awaited<ReturnType<typeof folhaSemanalPixDasContas>> extends Map<string, infer V> ? V : never>());
+
+  // Folha semanal liberada, funcionário com chave Pix no cadastro (15/11/2026,
+  // Antonio da Mar no Pix da esposa): entra como a folha mensal, pela chave.
+  for (const id of await folhaSemanalChavePixDasContas(linhas.map((l) => l.id)).catch(() => new Set<string>())) {
+    if (!rescisoes.has(id)) rescisoes.set(id, { contaId: id, cpf: null });
+  }
 
   let escondidas = 0;
   const grupos = new Map<string, GrupoPedidos>();
