@@ -1424,6 +1424,8 @@ export async function gerarResposta(params: {
 
 🚫 OUTRO DIA: se o cliente está falando de uma data que NÃO é hoje (${hojeTexto}) — "domingo", "sábado", "amanhã", "feriado", uma data — IGNORE este bloco inteiro. É PROIBIDO responder sobre esse dia com "hoje a casa está com espaço", "a reserva está liberada", "13h/15h/17h está liberado" ou qualquer frase tirada daqui. O corte da tarde liberado pelo movimento só existe NO PRÓPRIO DIA. Pra outro dia, só vale o que consultar_disponibilidade_reserva/criar_reserva daquela data disserem; se ela disse "reserva até 11h30", a resposta é essa — e se a reserva já foi FEITA, NÃO ofereça outro horário depois dela.
 
+🚫 OUTRO ASSUNTO (15/11/2026, caso Ágora Arquitetos — perguntou de aluguel de lancha e ouviu "hoje as reservas estão fechadas, mas a casa está com mesas livres, pode vir"): este bloco só entra na sua resposta quando o CLIENTE fala em VIR HOJE, RESERVAR PRA HOJE ou pergunta do movimento de hoje. Pergunta sobre qualquer outra coisa (passeio, lancha, cardápio, preço, evento, endereço, estacionamento...) em que ele NÃO disse que vem hoje: responda SÓ o que foi perguntado — é PROIBIDO puxar por conta própria "as reservas de hoje estão fechadas", "a casa está com mesa livre" ou "pode vir". Cliente que diz que quer vir sem dizer o DIA: NÃO presuma que é hoje — pergunte pra quando.
+
 Como usar, SEM EXCEÇÃO:
 - Antes de dizer qualquer coisa sobre reserva de HOJE — inclusive responder "precisa reservar?", "ainda dá tempo?", "tem mesa?" — olhe a linha acima. Ela é a verdade do dia.
 - Casa com espaço = a reserva de hoje está LIBERADA até o horário indicado: ofereça com entusiasmo (o objetivo é encher a casa) e feche pela ferramenta criar_reserva.

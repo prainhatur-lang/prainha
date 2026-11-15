@@ -270,6 +270,27 @@ export async function medirOcupacaoHoje(
     }
   }
 
+  // PERTO DE FECHAR (15/11/2026, caso Ágora Arquitetos): domingo às 18:55, com
+  // o Bar fechando às 19h, a cliente perguntou de aluguel de lancha e a Nina
+  // respondeu "a casa está com mesas livres, pode vir e aproveitar o pôr do
+  // sol direto daqui" — o resumo mandava "convide a vir direto" sem olhar o
+  // relógio. Na última hora de funcionamento o resumo ganha este aviso, que
+  // vale mais que o convite escrito antes dele. Só texto: as contas e os
+  // campos (casaTranquila, corteEstendido) seguem iguais.
+  const fechaAs = janelasHoje
+    ? janelasHoje.find((j) => agora >= j.abre && agora < j.fecha)?.fecha ?? null
+    : FECHA;
+  const minutosDe = (hhmm: string) => {
+    const [h, m] = hhmm.split(':').map(Number);
+    return h * 60 + m;
+  };
+  const faltamMin = fechaAs ? minutosDe(fechaAs) - minutosDe(agora) : null;
+  const avisoFechando =
+    fechaAs && faltamMin !== null && faltamMin > 0 && faltamMin <= 60
+      ? ` ⏰ ATENÇÃO, VALE MAIS QUE QUALQUER CONVITE ACIMA: a casa FECHA às ${fechaAs} — faltam só ${faltamMin} min. É PROIBIDO convidar a vir agora/hoje ("pode vir", "vem aproveitar", "tem mesa livre")${janelasHoje ? '' : ' e é PROIBIDO convidar pro pôr do sol de hoje (ele já passou ou está acabando)'}. Se o cliente disser que quer vir hoje, seja honesta: a casa fecha às ${fechaAs} e não dá mais tempo de aproveitar — convide pro próximo dia aberto e ofereça reserva pra essa visita. Quem já está na casa ou a caminho segue normal.`
+      : '';
+  resumoFinal += avisoFechando;
+
   // Dia FECHADO pra reserva pela casa (exceção do calendário): o resumo acima
   // não sabia disso e mandava "reserva liberada até 11h30"; a Nina oferecia, o
   // cliente dizia "pode" e a ferramenta recusava (11/10/2026, caso Valciria —
@@ -283,7 +304,7 @@ export async function medirOcupacaoHoje(
         : 'A casa está movimentada — pode ter espera.';
     return {
       comandasAbertas, reservasFuturasHoje, capacidadeMesas, taxa, corteEstendido: null, casaTranquila, esperaRecepcao, fonte,
-      resumo: `HOJE A CASA FECHOU AS RESERVAS (${medida}): NÃO dá pra reservar pra hoje em área nenhuma e é PROIBIDO oferecer reserva de hoje, "tentar reservar" ou citar horário de chegada liberado. Hoje é por ordem de chegada: chegando, é só procurar a recepção, que acomoda conforme as mesas forem vagando. ${movimento} Reserva que o cliente JÁ TEM pra hoje continua valendo.`,
+      resumo: `HOJE A CASA FECHOU AS RESERVAS (${medida}): NÃO dá pra reservar pra hoje em área nenhuma e é PROIBIDO oferecer reserva de hoje, "tentar reservar" ou citar horário de chegada liberado. Hoje é por ordem de chegada: chegando, é só procurar a recepção, que acomoda conforme as mesas forem vagando. ${movimento} Reserva que o cliente JÁ TEM pra hoje continua valendo.${avisoFechando}`,
     };
   }
 
