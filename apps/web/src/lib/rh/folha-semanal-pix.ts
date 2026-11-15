@@ -71,7 +71,9 @@ export const sqlEhFolhaSemanalPix = () =>
                   left join conta_inter_folha ci_pix
                     on ci_pix.cpf = regexp_replace(coalesce(fo_pix.cnpj_ou_cpf, ''), '[^0-9]', '', 'g')
                  where fo_pix.id = conta_pagar.fornecedor_id
-                   and (ci_pix.cpf is not null or nullif(btrim(fo_pix.chave_pix), '') is not null)))`;
+                   and (ci_pix.cpf is not null
+                        or (fo_pix.folha_semanal_pix_em is not null
+                            and nullif(btrim(fo_pix.chave_pix), '') is not null))))`;
 
 /**
  * Contas (dentre as passadas) da folha semanal liberada pra Pix cujo
@@ -79,6 +81,9 @@ export const sqlEhFolhaSemanalPix = () =>
  * (15/11/2026, Antonio da Mar: "lança o de antonio nesse pix da esposa dele").
  * Não precisa de conta Inter: o Pix vai na chave do cadastro, como qualquer
  * fornecedor. Sem chave e sem conta Inter continua de fora.
+ * Só entra quem o dono autorizou pessoa por pessoa
+ * (fornecedor.folha_semanal_pix_em — "só antonio", 15/11/2026): ter chave no
+ * cadastro não basta, os outros seguem pro caixa/lotérica.
  */
 export async function folhaSemanalChavePixDasContas(contaIds: string[]): Promise<Set<string>> {
   const out = new Set<string>();
@@ -96,6 +101,7 @@ export async function folhaSemanalChavePixDasContas(contaIds: string[]): Promise
        AND cp.origem = 'FOLHA'
        AND cp.bordero_id IS NULL
        AND nullif(btrim(fo.chave_pix), '') IS NOT NULL
+       AND fo.folha_semanal_pix_em IS NOT NULL
   `)) as unknown as Array<{ id: string }>;
   for (const r of rows) out.add(r.id);
   return out;

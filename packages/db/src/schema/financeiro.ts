@@ -129,6 +129,9 @@ export const fornecedor = pgTable(
     /** Quem recebe o Pix quando não é o próprio fornecedor (nome que aparece no
      *  extrato). Ex.: Butique da Carne recebe em nome de Elizabeth Vieira dos Santos. */
     pixFavorecido: varchar('pix_favorecido', { length: 200 }),
+    /** Dono autorizou pagar a folha SEMANAL liberada desta pessoa por Pix na chave
+     *  do cadastro (15/11/2026, Antonio da Mar). NULL = segue pro caixa/lotérica. */
+    folhaSemanalPixEm: timestamp('folha_semanal_pix_em', { withTimezone: true }),
     /** Mesma empresa nas outras casas (cadastro único). Ver grupoEconomico. */
     grupoEconomicoId: uuid('grupo_economico_id').references(() => grupoEconomico.id, { onDelete: 'set null' }),
     contatoTravado: boolean('contato_travado').notNull().default(false),
