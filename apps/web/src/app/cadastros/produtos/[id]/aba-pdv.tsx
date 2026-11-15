@@ -12,6 +12,7 @@
 import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
 import { AdicionarPergunta, MaisOpcao, TirarPergunta } from './perguntas-adicionar';
+import { NACIONALIDADES_SUGERIDAS } from '@/lib/nacionalidades';
 
 /** O que uma linha de pergunta/opção manda no "Salvar" único (null = nada mudou). */
 type Envio = { tag: string; alvoCodigo: number; campos: Record<string, unknown>; invalido?: string };
@@ -97,6 +98,7 @@ interface Props {
   /** Fora da base da taxa de serviço (os 10%). Mora na nuvem, não na fila. */
   semTaxaServico?: boolean | null;
   dobradoVale?: boolean | null;
+  nacionalidade?: string | null;
   etiquetas: Array<{ codigo: number; nome: string }>;
   /** Praça do KDS onde o produto é produzido (codigo da area_producao). */
   codigoCozinha?: number | null;
@@ -208,6 +210,33 @@ export function AbaPdv(p: Props) {
     } catch {
       setSemServico(!novo);
       setMsgServico({ ok: false, texto: 'sem conexão' });
+    }
+  }
+
+  const [nacionalidade, setNacionalidade] = useState(p.nacionalidade ?? '');
+  const [salvandoNac, setSalvandoNac] = useState(false);
+  const [msgNac, setMsgNac] = useState<{ ok: boolean; texto: string } | null>(null);
+  // Campo da nuvem (não existe no PDV): grava direto, sem fila.
+  async function salvarNacionalidade() {
+    setSalvandoNac(true);
+    setMsgNac(null);
+    try {
+      const r = await fetch(`/api/produtos/${p.produtoId}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ nacionalidade: nacionalidade.trim() || null }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setMsgNac({ ok: false, texto: j.error || 'não deu pra salvar' });
+        return;
+      }
+      setMsgNac({ ok: true, texto: nacionalidade.trim() ? 'Nacionalidade salva.' : 'Nacionalidade removida.' });
+      router.refresh();
+    } catch {
+      setMsgNac({ ok: false, texto: 'sem conexão' });
+    } finally {
+      setSalvandoNac(false);
     }
   }
 
@@ -429,6 +458,43 @@ export function AbaPdv(p: Props) {
         >
           {salvando === 'produto' ? 'enviando…' : 'Salvar dados do produto'}
         </button>
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-white p-5">
+        <h2 className="text-sm font-semibold text-slate-900">Nacionalidade</h2>
+        <p className="mt-1 text-xs text-slate-500">
+          País de origem do produto — vinho português, italiano, chileno. Em branco = não informado.
+        </p>
+        <div className="mt-3 flex flex-wrap items-end gap-3">
+          <div className="w-full max-w-xs">
+            <label className={rotulo} htmlFor="pdv-nacionalidade">Nacionalidade</label>
+            <input
+              id="pdv-nacionalidade"
+              list="pdv-nacionalidades"
+              value={nacionalidade}
+              onChange={(e) => setNacionalidade(e.target.value)}
+              maxLength={60}
+              placeholder="ex: Português, Italiano, Chileno"
+              className={campo}
+            />
+            <datalist id="pdv-nacionalidades">
+              {NACIONALIDADES_SUGERIDAS.map((n) => (
+                <option key={n} value={n} />
+              ))}
+            </datalist>
+          </div>
+          <button
+            type="button"
+            disabled={salvandoNac || nacionalidade.trim() === (p.nacionalidade ?? '')}
+            onClick={salvarNacionalidade}
+            className="rounded-lg bg-slate-900 px-5 py-2 text-sm font-semibold text-white disabled:opacity-40"
+          >
+            {salvandoNac ? 'salvando…' : 'Salvar nacionalidade'}
+          </button>
+        </div>
+        {msgNac && (
+          <p className={`mt-2 text-xs ${msgNac.ok ? 'text-blue-800' : 'text-rose-700'}`}>{msgNac.texto}</p>
+        )}
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-white p-5">

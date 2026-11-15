@@ -172,6 +172,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
       pesoRelativoProducao: schema.produto.pesoRelativoProducao,
       semTaxaServico: schema.produto.semTaxaServico,
       dobradoVale: schema.produto.dobradoVale,
+      nacionalidade: schema.produto.nacionalidade,
       codigoEtiqueta: schema.produto.codigoEtiqueta,
     })
     .from(schema.produto)
@@ -633,6 +634,7 @@ export default async function ProdutosPage(props: { searchParams: Promise<SP> })
                             pesoRelativoProducao: p.pesoRelativoProducao,
                             semTaxaServico: p.semTaxaServico,
                             dobradoVale: p.dobradoVale,
+                            nacionalidade: p.nacionalidade,
                           }}
                         />
                       </td>

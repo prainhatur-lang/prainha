@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
+import { NACIONALIDADES_SUGERIDAS } from '@/lib/nacionalidades';
 
 const UNIDADES = ['un', 'ml', 'g', 'kg', 'l'] as const;
 const TIPOS = [
@@ -28,6 +29,7 @@ interface Produto {
   pesoRelativoProducao?: string | null;
   semTaxaServico?: boolean | null;
   dobradoVale?: boolean | null;
+  nacionalidade?: string | null;
 }
 
 export function EditarProdutoButton({ produto }: { produto: Produto }) {
@@ -52,6 +54,7 @@ export function EditarProdutoButton({ produto }: { produto: Produto }) {
   );
   const [semServico, setSemServico] = useState(produto.semTaxaServico ?? false);
   const [dobrado, setDobrado] = useState(produto.dobradoVale ?? false);
+  const [nacionalidade, setNacionalidade] = useState(produto.nacionalidade ?? '');
   const [pending, start] = useTransition();
   const [erro, setErro] = useState<string | null>(null);
 
@@ -95,6 +98,7 @@ export function EditarProdutoButton({ produto }: { produto: Produto }) {
     if (descontinuado !== (produto.descontinuado ?? false)) body.descontinuado = descontinuado;
     if (semServico !== (produto.semTaxaServico ?? false)) body.semTaxaServico = semServico;
     if (dobrado !== (produto.dobradoVale ?? false)) body.dobradoVale = dobrado;
+    if (nacionalidade.trim() !== (produto.nacionalidade ?? '')) body.nacionalidade = nacionalidade.trim() || null;
 
     const minAtual = produto.estoqueMinimo ? Number(produto.estoqueMinimo) : 0;
     const minNovo = estoqueMinimo.trim() ? Number(estoqueMinimo.replace(',', '.')) : 0;
@@ -310,6 +314,29 @@ export function EditarProdutoButton({ produto }: { produto: Produto }) {
                 Quanto do custo por kg este produto carrega quando sai de uma ordem de
                 produção. 1 = corte comum · 0,3 = subproduto/apara (cada kg vale 30%) ·
                 maior que 1 = corte nobre. Em branco = usa o último peso da produção (ou 1).
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                Nacionalidade
+              </label>
+              <input
+                type="text"
+                list={`nacionalidades-${produto.id}`}
+                value={nacionalidade}
+                onChange={(e) => setNacionalidade(e.target.value)}
+                maxLength={60}
+                placeholder="ex: Português, Italiano, Chileno"
+                className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
+              />
+              <datalist id={`nacionalidades-${produto.id}`}>
+                {NACIONALIDADES_SUGERIDAS.map((n) => (
+                  <option key={n} value={n} />
+                ))}
+              </datalist>
+              <p className="mt-1 text-[10px] text-slate-500">
+                País de origem do produto (vinho, cerveja, destilado). Em branco = não informado.
               </p>
             </div>
 

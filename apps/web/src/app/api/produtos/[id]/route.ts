@@ -37,6 +37,8 @@ const Body = z.object({
   pesoRelativoProducao: z.number().positive().max(100).nullable().optional(),
   semTaxaServico: z.boolean().optional(),
   dobradoVale: z.boolean().optional(),
+  /** Nacionalidade / país de origem (vinho português, italiano...). Vazio ou null = limpar. */
+  nacionalidade: z.string().max(60).trim().nullable().optional(),
 });
 
 export async function PATCH(
@@ -86,7 +88,7 @@ export async function PATCH(
     .limit(1);
   if (!link) return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
 
-  const { nome, unidadeEstoque, controlaEstoque, estoqueMinimo, estoqueMaximo, descontinuado, tipo, pesoUnitarioPadraoKg, pesoRelativoProducao, semTaxaServico, dobradoVale } = parsed.data;
+  const { nome, unidadeEstoque, controlaEstoque, estoqueMinimo, estoqueMaximo, descontinuado, tipo, pesoUnitarioPadraoKg, pesoRelativoProducao, semTaxaServico, dobradoVale, nacionalidade } = parsed.data;
   const set: Record<string, unknown> = {};
   if (unidadeEstoque !== undefined) set.unidadeEstoque = unidadeEstoque;
   if (controlaEstoque !== undefined) set.controlaEstoque = controlaEstoque;
@@ -96,6 +98,7 @@ export async function PATCH(
   if (tipo !== undefined) set.tipo = tipo;
   if (semTaxaServico !== undefined) set.semTaxaServico = semTaxaServico;
   if (dobradoVale !== undefined) set.dobradoVale = dobradoVale;
+  if (nacionalidade !== undefined) set.nacionalidade = nacionalidade ? nacionalidade : null;
   if (pesoUnitarioPadraoKg !== undefined) {
     set.pesoUnitarioPadraoKg =
       pesoUnitarioPadraoKg !== null ? pesoUnitarioPadraoKg.toFixed(4) : null;

@@ -111,6 +111,10 @@ export const produto = pgTable(
      *  2º fica como VALE na conta (R$ 0) e só vai pro bar quando o garçom
      *  solta. Vai pra loja pelo /api/loja/catalogo-nuvem (`dobrado_vale`). */
     dobradoVale: boolean('dobrado_vale').notNull().default(false),
+    /** Nacionalidade / país de origem do produto (vinho português, italiano,
+     *  chileno...). Texto livre, campo da nuvem — o sync da loja não mexe.
+     *  Null = não informado. */
+    nacionalidade: varchar('nacionalidade', { length: 60 }),
 
     versaoReg: integer('versao_reg'),
     sincronizadoEm: timestamp('sincronizado_em', { withTimezone: true }).notNull().defaultNow(),

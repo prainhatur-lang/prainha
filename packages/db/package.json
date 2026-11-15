@@ -295,7 +295,8 @@
     "migrate:marketing-metrica": "tsx scripts/migrate-marketing-metrica.ts",
     "migrate:fornecedor-grupo-pix": "tsx scripts/migrate-fornecedor-grupo-pix.ts",
     "migrate:folha-semana-pix": "tsx scripts/migrate-folha-semana-pix.ts",
-    "migrate:fornecedor-folha-semanal-pix": "tsx scripts/migrate-fornecedor-folha-semanal-pix.ts"
+    "migrate:fornecedor-folha-semanal-pix": "tsx scripts/migrate-fornecedor-folha-semanal-pix.ts",
+    "migrate:produto-nacionalidade": "tsx scripts/migrate-produto-nacionalidade.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",
