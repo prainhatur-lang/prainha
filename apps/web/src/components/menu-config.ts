@@ -203,7 +203,7 @@ export const MENU_AREAS: MenuArea[] = [
           },
           {
             label: 'Restrições alimentares',
-            href: '/cardapio/restricoes', soNaBusca: true,
+            href: '/cardapio/restricoes',
             perm: 'produto.read',
             aka: ['cardápio inclusivo', 'alérgenos', 'vegano', 'sem glúten'],
           },
