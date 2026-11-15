@@ -8,7 +8,7 @@
 // as visitas de TODOS os cartões da mesma pessoa (mesmo telefone ou CPF) nas
 // casas da organização contam juntas pro nível, e o código de um cartão de
 // qualquer casa é aceito nas outras. Em cada casa valem as regras DELA (% do
-// nível, bônus, só dia útil na Prainha Mar). 1 uso por dia em cada casa.
+// nível, bônus, só dia útil se a casa marcar). 1 uso por dia em cada casa.
 //
 // Fluxo:
 //   0. no celular do dono (confirmado pelo WhatsApp), o cliente toca "Vou pagar

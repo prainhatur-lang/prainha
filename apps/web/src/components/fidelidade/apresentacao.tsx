@@ -95,7 +95,7 @@ export function ApresentacaoPrograma({ cfg, destaque, casa }: { cfg: FidelidadeC
         />
         <Faq p="Quantas vezes posso usar?" r={`Uma vez por dia em cada casa do Prainha.`} />
         {so && <Faq p="Vale no fim de semana?" r={`Não. No ${casa} o desconto vale de segunda a sexta, fora feriado. Sábado, domingo e feriado o cartão não dá desconto.`} />}
-        <Faq p="Vale nas outras casas do grupo?" r={`Sim. O cartão vale no Prainha Bar, no Tabuará e na Prainha Mar, e as visitas nas 3 casas somam juntas pra subir de categoria. Em cada casa vale o desconto dela (na Prainha Mar, só de segunda a sexta).`} />
+        <Faq p="Vale nas outras casas do grupo?" r={`Sim. O cartão vale no Prainha Bar, no Tabuará e na Prainha Mar, e as visitas nas 3 casas somam juntas pra subir de categoria. Em cada casa vale o desconto dela.`} />
         <Faq p="Posso passar o cartão pra outra pessoa?" r="Não. O cartão é pessoal, ligado ao seu telefone: o código só é gerado no celular confirmado pelo WhatsApp do seu número. Mas ele vale pra conta da mesa inteira que você pagar." />
         <Faq p="Troquei de celular" r="Abra o link do cartão no celular novo e confirme com o código que chega no WhatsApp do seu número." />
         <Faq p="O que conta como dia útil?" r="Segunda a sexta, fora feriados." />
