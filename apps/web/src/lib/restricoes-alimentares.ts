@@ -66,6 +66,8 @@ export interface PratoCalculado {
   nome: string;
   nomeNorm: string;
   noMenu: boolean;
+  /** é opção de alguma pergunta do prato (acompanhamento, molho, dose…) */
+  emPergunta: boolean;
   /** categoria do cardápio (etiqueta do Consumer: Pratos, Petiscos, Vinho…) */
   categoria: string;
   /** de onde veio a ficha: 'casa', nome da outra casa, ou null (sem ficha) */
@@ -121,14 +123,23 @@ export async function calcularCasa(filialId: string): Promise<CalculoCasa | null
                LIMIT 1) AS categoria,
              EXISTS (SELECT 1 FROM produto_variante pv
                      WHERE pv.produto_id = p.id AND pv.menu_dino AND pv.data_delete IS NULL
-                       AND pv.preco_venda > 0) AS no_menu
+                       AND pv.preco_venda > 0) AS no_menu,
+             EXISTS (SELECT 1 FROM wizard_opcao wo
+                     JOIN produto_variante pv ON pv.filial_id = wo.filial_id
+                      AND pv.codigo_externo = wo.codigo_variante_externo
+                     WHERE wo.filial_id = p.filial_id AND pv.produto_id = p.id) AS em_pergunta
       FROM produto p
       WHERE p.filial_id = ${filialId}
-        AND p.descontinuado IS NOT TRUE
+        -- acompanhamento/molho que é opção de pergunta entra mesmo descontinuado
+        -- (os "T ..." do executivo): o QR só oferece a opção depois de conferida
+        AND (p.descontinuado IS NOT TRUE OR EXISTS (SELECT 1 FROM wizard_opcao wo
+                     JOIN produto_variante pv ON pv.filial_id = wo.filial_id
+                      AND pv.codigo_externo = wo.codigo_variante_externo
+                     WHERE wo.filial_id = p.filial_id AND pv.produto_id = p.id))
         AND p.tipo <> 'INSUMO'
         AND (p.codigo_externo IS NOT NULL
              OR EXISTS (SELECT 1 FROM produto_variante pv WHERE pv.produto_id = p.id AND pv.menu_dino))
-    `) as unknown as Promise<Array<{ id: string; nome: string | null; codigo_externo: number | null; categoria: string | null; no_menu: boolean }>>,
+    `) as unknown as Promise<Array<{ id: string; nome: string | null; codigo_externo: number | null; categoria: string | null; no_menu: boolean; em_pergunta: boolean }>>,
     db.execute(sql`
       SELECT ft.filial_id, p.nome AS prato, i.nome AS insumo
       FROM ficha_tecnica ft
@@ -212,6 +223,7 @@ export async function calcularCasa(filialId: string): Promise<CalculoCasa | null
       nome,
       nomeNorm: pn,
       noMenu: !!p.no_menu,
+      emPergunta: !!p.em_pergunta,
       categoria: (p.categoria ?? '').trim() || 'Sem categoria',
       fichaFonte: ficha.fonte,
       insumos: [...ficha.insumos.values()],

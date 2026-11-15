@@ -3023,9 +3023,16 @@ async function espelhoPerguntas() {
   console.log(`[perguntas] ok — ${perguntas.length} perguntas, ${opcoes.length} opções, ${ligacoes.length} vínculos`);
 }
 /** As perguntas de UM item, prontas pra tela. Só as que têm opção. */
-async function apiPerguntas(codigoPdv) {
+async function apiPerguntas(codigoPdv, restr) {
   const pdv = Number(codigoPdv);
   if (!(pdv > 0)) return { ok: false, erro: 'produto inválido' };
+  // Cardápio inclusivo (15/11/2026): o prato pode servir e o acompanhamento não
+  // (a farofa da moqueca leva manteiga). Com ?restr=, a opção que é um PRODUTO
+  // só entra se a cozinha conferiu que ele serve — mesma régua do cardápio
+  // ("não conferido não é seguro"). Opção que é só texto (ponto da carne, gelo,
+  // copos) fica. Sem restr (garçom, caixa, cliente sem restrição) nada muda.
+  const rPed = restrPedida(restr);
+  if (rPed) return apiPerguntasRestr(pdv, rPed);
   const ps = await sql`SELECT p.codigo, p.texto, p.min, p.max, wp.ordem
     FROM wizard_produto wp JOIN wizard_pergunta p ON p.codigo = wp.pergunta
     WHERE wp.codigo_pdv = ${pdv} ORDER BY wp.ordem, p.codigo`;
@@ -3038,6 +3045,31 @@ async function apiPerguntas(codigoPdv) {
       min: Number(p.min) || 0, max: Number(p.max) || 0, opcoes: ops });
   }
   return { ok: true, perguntas: out };
+}
+async function apiPerguntasRestr(pdv, r) {
+  const pode = await restrPermitidos(r);
+  const ps = await sql`SELECT p.codigo, p.texto, p.min, p.max, wp.ordem
+    FROM wizard_produto wp JOIN wizard_pergunta p ON p.codigo = wp.pergunta
+    WHERE wp.codigo_pdv = ${pdv} ORDER BY wp.ordem, p.codigo`;
+  const out = [];
+  let tiradas = 0, faltou = 0;
+  for (const p of ps) {
+    const todas = await sql`SELECT o.codigo, o.nome, o.preco, o.produto_pdv,
+        (SELECT pl.produto_codigo FROM produto_local pl WHERE pl.codigo_pdv = o.produto_pdv LIMIT 1) AS pc
+      FROM wizard_opcao o WHERE o.pergunta = ${p.codigo} ORDER BY o.preco, o.nome`;
+    if (!todas.length) continue;
+    const ops = todas.filter((o) => !(Number(o.produto_pdv) > 0) || pode.has(Number(o.pc)))
+      .map((o) => ({ codigo: o.codigo, nome: o.nome, preco: o.preco }));
+    tiradas += todas.length - ops.length;
+    const min = Number(p.min) || 0;
+    // pergunta obrigatória que ficou sem o mínimo de opções: pede o que sobrou
+    // e a tela avisa pra combinar o resto com o garçom
+    if (ops.length < min) faltou++;
+    if (!ops.length) continue;
+    out.push({ codigo: p.codigo, texto: p.texto || 'Escolha',
+      min: Math.min(min, ops.length), max: Number(p.max) || 0, opcoes: ops });
+  }
+  return { ok: true, perguntas: out, restr: true, tiradas, faltou };
 }
 async function espelhoCatalogo() {
   // No modo próprio o catálogo passa a vir da NUVEM (o cadastro já é nosso).
@@ -25582,6 +25614,7 @@ const I18N_UI = {
   'Adicionar ao pedido': ['Add to order', 'Ajouter à la commande', 'Añadir al pedido', 'Aggiungi all’ordine'],
   'Cancelar': ['Cancel', 'Annuler', 'Cancelar', 'Annulla'],
   'Escolha no máximo #.': ['Choose at most #.', 'Choisissez-en # au maximum.', 'Elige como máximo #.', 'Scegline al massimo #.'],
+  'Para a sua restrição, uma das escolhas deste prato ficou sem opção conferida pela cozinha. Combine com o garçom.': ['For your dietary restriction, one of the choices for this dish has no option checked by the kitchen. Please talk to the waiter.', 'Pour votre restriction, l’un des choix de ce plat n’a aucune option vérifiée par la cuisine. Voyez avec le serveur.', 'Para tu restricción, una de las elecciones de este plato no tiene opción verificada por la cocina. Coméntalo con el camarero.', 'Per la tua restrizione, una delle scelte di questo piatto non ha opzioni verificate dalla cucina. Parlane con il cameriere.'],
   'Escolha pelo menos #.': ['Choose at least #.', 'Choisissez-en au moins #.', 'Elige al menos #.', 'Scegline almeno #.'],
   'Quer pedir de algum jeito?': ['Any special request?', 'Une demande particulière ?', '¿Quieres pedirlo de alguna forma?', 'Qualche richiesta particolare?'],
   'ou escreva aqui (ex.: sem cebola)': ['or write here (e.g. no onion)', 'ou écrivez ici (ex. : sans oignon)', 'o escribe aquí (ej.: sin cebolla)', 'oppure scrivi qui (es.: senza cipolla)'],
@@ -27449,7 +27482,10 @@ var PERG=null, PERGIX=0, PERGRESP=null, PERGPROD=null;
 async function addCart(p){
   if(p.sem_estoque||p.disponivel===false)return;
   var w=null;
-  try{w=await (await fetch('/api/venda/perguntas?pdv='+p.codigo_pdv,{cache:'no-store'})).json()}catch(e){}
+  try{w=await (await fetch('/api/venda/perguntas?pdv='+p.codigo_pdv+restrQs(),{cache:'no-store'})).json()}catch(e){}
+  // com restrição marcada, a loja já tirou o acompanhamento que a pessoa não
+  // pode; se alguma escolha ficou sem opção conferida, avisa antes de seguir
+  if(w&&w.ok&&w.faltou>0)alert('Para a sua restrição, uma das escolhas deste prato ficou sem opção conferida pela cozinha. Combine com o garçom.');
   if(w&&w.ok&&w.perguntas&&w.perguntas.length){
     PERGPROD=p;PERG=w.perguntas;PERGIX=0;
     PERGRESP=w.perguntas.map(function(){return []});
@@ -35086,7 +35122,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && p === '/api/fotos/importar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiFotosImportar(body))); }
     if (req.method === 'POST' && p === '/api/fotos/limpar') { const body = await readBody(req); res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiFotosLimpar(body))); }
     if (p === '/produtos') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(PRODUTOS_HTML); }
-    if (p === '/api/venda/perguntas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPerguntas(u.searchParams.get('pdv') || 0))); }
+    if (p === '/api/venda/perguntas') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiPerguntas(u.searchParams.get('pdv') || 0, u.searchParams.get('restr')))); }
     if (p === '/api/venda/variantes') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaVariantes(u.searchParams.get('p') || 0, u.searchParams.get('cliente') === '1', u.searchParams.get('ticket') === '1'))); }
     if (p === '/api/venda/categoria') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiVendaCategoria(u.searchParams.get('c') || '', u.searchParams.get('cliente') === '1', u.searchParams.get('ticket') === '1'))); }
     if (p === '/api/grupos-ocultos') { res.writeHead(200, { 'content-type': 'application/json' }); return res.end(JSON.stringify(await apiGruposOcultos())); }

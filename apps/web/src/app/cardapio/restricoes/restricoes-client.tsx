@@ -18,6 +18,8 @@ export function RestricoesClient(props: { filialId: string; restricoes: Restrica
   const [busca, setBusca] = useState('');
   const [soFalta, setSoFalta] = useState(false);
   const [soMenu, setSoMenu] = useState(true);
+  // acompanhamentos, molhos e doses que entram como opção nas perguntas do prato
+  const [soPerg, setSoPerg] = useState(false);
   const [categoria, setCategoria] = useState('');
   const [ocupado, setOcupado] = useState<string | null>(null);
 
@@ -54,25 +56,25 @@ export function RestricoesClient(props: { filialId: string; restricoes: Restrica
   const pratos = useMemo(() => {
     if (!casa) return [];
     return casa.pratos.filter((p) => {
-      if (soMenu && !p.noMenu) return false;
+      if (soPerg ? !p.emPergunta : soMenu && !p.noMenu) return false;
       if (soFalta && p.revisado) return false;
       if (categoria && p.categoria !== categoria) return false;
       if (termo && !dobrar(p.nome + ' ' + p.insumos.join(' ')).includes(termo)) return false;
       return true;
     });
-  }, [casa, soMenu, soFalta, termo, categoria]);
+  }, [casa, soMenu, soPerg, soFalta, termo, categoria]);
   // Categorias do Consumer com quantos pratos faltam revisar em cada uma.
   const categorias = useMemo(() => {
     const m = new Map<string, { total: number; falta: number }>();
     for (const p of casa?.pratos ?? []) {
-      if (soMenu && !p.noMenu) continue;
+      if (soPerg ? !p.emPergunta : soMenu && !p.noMenu) continue;
       const c = m.get(p.categoria) ?? { total: 0, falta: 0 };
       c.total++;
       if (!p.revisado) c.falta++;
       m.set(p.categoria, c);
     }
     return [...m.entries()].sort((a, b) => b[1].total - a[1].total);
-  }, [casa, soMenu]);
+  }, [casa, soMenu, soPerg]);
   const insumos = useMemo(() => {
     if (!casa) return [];
     return casa.insumos.filter((i) => !termo || dobrar(i.nome).includes(termo));
@@ -189,6 +191,10 @@ export function RestricoesClient(props: { filialId: string; restricoes: Restrica
               <input type="checkbox" checked={soMenu} onChange={(e) => setSoMenu(e.target.checked)} /> só o que está
               no cardápio
             </label>
+            <label className="flex items-center gap-1 text-xs text-slate-600" title="Acompanhamentos, molhos e doses que o cliente escolhe nas perguntas do prato. No QR, quem marcou restrição só vê a opção depois de conferida aqui.">
+              <input type="checkbox" checked={soPerg} onChange={(e) => setSoPerg(e.target.checked)} /> só
+              acompanhamentos das perguntas ({casa.pratos.filter((p) => p.emPergunta && !p.revisado).length} a conferir)
+            </label>
           </>
         )}
         <span className="ml-auto text-xs text-slate-400">
@@ -246,6 +252,7 @@ export function RestricoesClient(props: { filialId: string; restricoes: Restrica
                   <div className={`text-sm font-medium ${p.noMenu ? 'text-slate-900' : 'text-slate-400'}`}>
                     {p.nome}
                     {!p.noMenu && <span className="ml-2 text-[10px] text-slate-400">fora do cardápio</span>}
+                    {p.emPergunta && <span className="ml-2 text-[10px] text-sky-600">opção de pergunta</span>}
                   </div>
                   <div className="text-[11px] text-slate-500">
                     {p.fichaFonte === null
