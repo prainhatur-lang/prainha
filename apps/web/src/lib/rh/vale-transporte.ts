@@ -335,6 +335,33 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
     return n;
   };
 
+  // Quem mudou de casa: a casa antiga fica com um item de 0 dia e a casa nova
+  // paga os dias. O ponto conta em qualquer casa, então sem isto a casa antiga
+  // lançava os mesmos dias como dívida dela (Antonio Ferreira, 16/11/2026:
+  // R$ 117 na Tabuará pelos dias que a Mar já tinha pago).
+  const idsZeroAqui = [
+    ...new Set([...itemAnt.values(), ...itemAnt2.values()].filter((i) => i.diasPrevistos === 0).map((i) => i.funcionarioId)),
+  ];
+  // chave: "início da quinzena|funcionário"
+  const pagosPorOutraCasa = new Set(
+    idsZeroAqui.length
+      ? (
+          await db
+            .select({ funcionarioId: schema.vtQuinzenaItem.funcionarioId, inicio: schema.vtQuinzena.dataInicio })
+            .from(schema.vtQuinzenaItem)
+            .innerJoin(schema.vtQuinzena, eq(schema.vtQuinzena.id, schema.vtQuinzenaItem.quinzenaId))
+            .where(
+              and(
+                inArray(schema.vtQuinzenaItem.funcionarioId, idsZeroAqui),
+                inArray(schema.vtQuinzena.dataInicio, [ant2.inicio, ant.inicio]),
+                sql`${schema.vtQuinzena.filialId} <> ${filialId}`,
+                sql`${schema.vtQuinzenaItem.diasPrevistos} > 0`,
+              ),
+            )
+        ).map((x) => `${x.inicio}|${x.funcionarioId}`)
+      : [],
+  );
+
   const vtPor = new Map(vts.map((v) => [v.funcionarioId, v]));
   const diasQ = diasDaQuinzena(q);
 
@@ -404,14 +431,19 @@ export async function montarQuinzenaVt(filialId: string, q: Quinzena): Promise<Q
     const anterior = ia
       ? (() => {
           const valorDia = Number(ia.valorDia);
-          const diasPonto = contar(f.id, ant);
+          // Dias que outra casa pagou não entram no acerto desta.
+          const outraCasaPagou = ia.diasPrevistos === 0 && pagosPorOutraCasa.has(`${ant.inicio}|${f.id}`);
+          const diasPonto = outraCasaPagou ? 0 : contar(f.id, ant);
           const acertoQueVinha = Number(ia.acertoAnterior);
           const valorPago = Number(ia.valorPago);
           // Quinzena anterior lançada no último dia da dela (antes do ponto fechar):
           // o que o ponto mostrou depois entra aqui.
           const i2 = itemAnt2.get(f.id);
+          // A correção do último dia segue a mesma regra: se outra casa pagou
+          // aquela quinzena, é ela que corrige.
+          const outraCasaPagou2 = !!i2 && i2.diasPrevistos === 0 && pagosPorOutraCasa.has(`${ant2.inicio}|${f.id}`);
           const correcaoDias =
-            ia.diasPontoAnterior != null && i2 ? contar(f.id, ant2) - ia.diasPontoAnterior : 0;
+            ia.diasPontoAnterior != null && i2 && !outraCasaPagou2 ? contar(f.id, ant2) - ia.diasPontoAnterior : 0;
           const correcao = i2 ? r2(correcaoDias * Number(i2.valorDia)) : 0;
           return {
             valorDia,
