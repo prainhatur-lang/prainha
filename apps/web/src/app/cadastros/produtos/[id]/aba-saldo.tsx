@@ -43,7 +43,10 @@ export function AbaSaldo({
   volumeMl = null,
   precoCusto,
   movimentos,
+  estoqueNoInsumo = [],
 }: {
+  /** produto de venda que baixa de insumo: o saldo fica no insumo (regra do dono, 16/11/2026) */
+  estoqueNoInsumo?: { id: string; nome: string; saldo: number; unidade: string }[];
   produtoId: string;
   produtoNome: string;
   unidadeEstoque: string;
@@ -182,6 +185,32 @@ export function AbaSaldo({
           </p>
         </div>
       </div>
+
+      {estoqueNoInsumo.length > 0 && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+          <p className="font-semibold">O estoque deste produto fica no insumo.</p>
+          <p className="mt-1 text-xs">
+            A venda baixa do insumo, então entrada, contagem e ajuste são feitos lá — o produto de
+            venda não guarda saldo (ou é o insumo, ou é o produto).
+            {saldoAtual > 0 && ' O saldo que sobrou aqui só pode sair (Ajuste − ou Perda).'}
+          </p>
+          <ul className="mt-2 space-y-1">
+            {estoqueNoInsumo.map((i) => (
+              <li key={i.id}>
+                <Link
+                  href={`/cadastros/produtos/${i.id}?aba=saldo`}
+                  className="font-medium underline underline-offset-2"
+                >
+                  {i.nome}
+                </Link>{' '}
+                <span className="font-mono text-xs">
+                  — saldo {i.saldo.toLocaleString('pt-BR', { maximumFractionDigits: 3 })} {i.unidade}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Botão ajustar */}
       <AjustarSaldoBtn

@@ -15,6 +15,7 @@ import { db, schema } from '@concilia/db';
 import { eq, sql } from 'drizzle-orm';
 import { dateToBrYmd } from '@/lib/datas';
 import { aplicarMpmEntrada, desfazerMpmEntrada } from '@/lib/custo-medio';
+import { produtoQueRecebeEntrada } from '@/lib/estoque-onde-fica';
 
 export class RecusaPedido extends Error {}
 
@@ -561,12 +562,17 @@ export async function receberPedidoLelis(opts: {
       if (qr > 0 && !c) throw new RecusaPedido(`"${it.descricao}": escolha o produto da casa`);
       novoTotal += r2(qr * it.preco_unit);
       let movId: string | null = null;
-      if (qr > 0 && prodCasa) {
+      // Regra do dono (16/11/2026): ou é insumo ou é o produto. Escolheu o
+      // produto de venda que é revenda 1:1 de um insumo → entra no INSUMO (é de
+      // lá que a venda baixa). O item guarda onde entrou, pro cancelar desfazer
+      // no mesmo lugar; a escolha de quem recebe segue lembrada como foi feita.
+      const prodEstoque = qr > 0 && prodCasa ? await produtoQueRecebeEntrada(prodCasa, tx) : prodCasa;
+      if (qr > 0 && prodCasa && prodEstoque) {
         const [mov] = await tx
           .insert(schema.movimentoEstoque)
           .values({
             filialId: opts.casaId,
-            produtoId: prodCasa,
+            produtoId: prodEstoque,
             tipo: 'ENTRADA_COMPRA',
             quantidade: qr.toFixed(4),
             precoUnitario: it.preco_unit.toFixed(6),
@@ -576,7 +582,7 @@ export async function receberPedidoLelis(opts: {
             criadoPor: opts.userId,
           })
           .returning({ id: schema.movimentoEstoque.id });
-        await aplicarMpmEntrada({ produtoId: prodCasa, qtdEntrada: qr, custoEntrada: it.preco_unit, exec: tx });
+        await aplicarMpmEntrada({ produtoId: prodEstoque, qtdEntrada: qr, custoEntrada: it.preco_unit, exec: tx });
         movId = mov?.id ?? null;
         await tx.execute(sql`
           INSERT INTO revenda_produto_casa (revenda_produto_id, casa_filial_id, produto_id, atualizado_em, atualizado_por)
@@ -596,7 +602,7 @@ export async function receberPedidoLelis(opts: {
       }
       await tx.execute(sql`
         UPDATE revenda_pedido_item
-           SET quantidade_recebida = ${qr.toFixed(4)}::numeric, produto_casa_id = ${prodCasa}::uuid, movimento_casa_id = ${movId}::uuid
+           SET quantidade_recebida = ${qr.toFixed(4)}::numeric, produto_casa_id = ${prodEstoque}::uuid, movimento_casa_id = ${movId}::uuid
          WHERE id = ${it.id}::uuid`);
     }
     novoTotal = r2(novoTotal);

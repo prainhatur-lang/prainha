@@ -13,6 +13,7 @@ import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
 import { aplicarMpmEntrada, aplicarSaida } from '@/lib/custo-medio';
+import { nomesDosInsumos, ondeFicaEstoque } from '@/lib/estoque-onde-fica';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -60,13 +61,6 @@ export async function POST(
     .limit(1);
   if (!prod) return NextResponse.json({ error: 'produto nao encontrado' }, { status: 404 });
 
-  if (!prod.controlaEstoque) {
-    return NextResponse.json(
-      { error: 'produto nao controla estoque — ative em Editar antes de ajustar' },
-      { status: 400 },
-    );
-  }
-
   const [link] = await db
     .select({ filialId: schema.usuarioFilial.filialId })
     .from(schema.usuarioFilial)
@@ -78,6 +72,31 @@ export async function POST(
     )
     .limit(1);
   if (!link) return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
+
+  // Regra do dono (16/11/2026): ou é insumo ou é o produto. Produto de venda
+  // que baixa de insumo não guarda saldo — o ajuste é no insumo. Só passa a
+  // saída que tira saldo que ainda sobrou no produto (pra zerar o que ficou).
+  if (tipo !== 'AJUSTE_CUSTO') {
+    const onde = await ondeFicaEstoque(prod.id);
+    const sobra = Number(prod.estoqueAtual ?? 0);
+    const tiraSobra = tipo !== 'ENTRADA_AJUSTE' && sobra > 0 && quantidade <= sobra + 1e-9;
+    if (onde.insumos.length > 0 && !tiraSobra) {
+      return NextResponse.json(
+        {
+          error: `O estoque deste produto fica no insumo: ${nomesDosInsumos(onde)}. Faça o ajuste no insumo — produto ligado a insumo não guarda saldo.`,
+          insumos: onde.insumos.map((i) => ({ id: i.insumoId, nome: i.nome, saldo: i.saldo })),
+        },
+        { status: 409 },
+      );
+    }
+  }
+
+  if (!prod.controlaEstoque) {
+    return NextResponse.json(
+      { error: 'produto nao controla estoque — ative em Editar antes de ajustar' },
+      { status: 400 },
+    );
+  }
 
   if (tipo === 'AJUSTE_CUSTO') {
     if (custoUnitario === undefined) {

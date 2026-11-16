@@ -88,6 +88,7 @@ export default async function ProdutoDetalhePage(props: {
       insumoTipo: schema.produto.tipo,
       insumoUnidade: schema.produto.unidadeEstoque,
       insumoControla: schema.produto.controlaEstoque,
+      insumoSaldo: schema.produto.estoqueAtual,
       // ficha por TAMANHO: sem o rótulo, duas linhas do mesmo insumo com
       // quantidades diferentes pareceriam erro de cadastro
       unidade: schema.fichaTecnica.unidade,
@@ -754,6 +755,18 @@ export default async function ProdutoDetalhePage(props: {
               estoqueMinimo={produto.estoqueMinimo}
               volumeMl={produto.volumeUnitarioMl ? Number(produto.volumeUnitarioMl) : null}
               precoCusto={produto.precoCusto}
+              estoqueNoInsumo={
+                produto.tipo === 'INSUMO'
+                  ? []
+                  : fichaRows
+                      .filter((r) => r.baixaEstoque && r.insumoControla && r.insumoId !== id)
+                      .map((r) => ({
+                        id: r.insumoId,
+                        nome: r.insumoNome ?? '',
+                        saldo: Number(r.insumoSaldo ?? 0),
+                        unidade: r.insumoUnidade ?? '',
+                      }))
+              }
               movimentos={movimentos.map((m) => ({
                 id: m.id,
                 tipo: m.tipo,

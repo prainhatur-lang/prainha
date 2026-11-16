@@ -33,6 +33,7 @@ import { db, schema } from '@concilia/db';
 import { contasDoPedidoPraNota, ligarDuplicatasAoPedido } from '@/lib/pedido-encomenda';
 import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { aplicarMpmEntrada, fatorRateioNfe } from '@/lib/custo-medio';
+import { produtoQueRecebeEntrada } from '@/lib/estoque-onde-fica';
 import { lerConferenciaNota } from '@/lib/nota-conferencia';
 import { fatorDoItemNota } from '@/lib/fator-nota-item';
 import { gravarCartaoDaNota } from '@/lib/nota-cartao';
@@ -245,9 +246,14 @@ export async function POST(
     const precoInternoSemRateio =
       fator > 0 ? precoFornecedorSemRateio / fator : precoFornecedorSemRateio;
 
+    // Regra do dono (16/11/2026): ou é insumo ou é o produto. Item mapeado no
+    // produto de venda que é revenda 1:1 de um insumo entra no INSUMO (é de lá
+    // que a venda baixa) — o produto de venda não guarda saldo.
+    const produtoEstoqueId = await produtoQueRecebeEntrada(item.produtoId);
+
     await db.insert(schema.movimentoEstoque).values({
       filialId: nota.filialId,
-      produtoId: item.produtoId,
+      produtoId: produtoEstoqueId,
       tipo: 'ENTRADA_COMPRA',
       quantidade: qtdInterna.toFixed(4),
       precoUnitario: precoInternoComRateio.toFixed(6),
@@ -268,7 +274,7 @@ export async function POST(
 
     // MPM: atualiza estoqueAtual + precoCusto via média ponderada
     await aplicarMpmEntrada({
-      produtoId: item.produtoId,
+      produtoId: produtoEstoqueId,
       qtdEntrada: qtdInterna,
       custoEntrada: precoInternoComRateio,
     });
