@@ -58,6 +58,7 @@ export default async function ComprovantesLotericaPage() {
           vencimento: schema.contaPagar.dataVencimento,
           liquido: sql<string>`(${schema.contaPagar.valor} - COALESCE(${schema.contaPagar.descontos}, 0))::numeric(14,2)`,
           pago: schema.contaPagar.dataPagamento,
+          borderoId: schema.contaPagar.borderoId,
         })
         .from(schema.contaPagar)
         .leftJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.contaPagar.fornecedorId))
@@ -73,6 +74,84 @@ export default async function ComprovantesLotericaPage() {
     ids,
   );
   const casados = lista.filter((c) => c.status === 'CASADO');
+
+  // O que ficou em aberto (pedido do dono 16/11/2026): dos borderôs que já
+  // receberam comprovante nos últimos 15 dias, quem ainda não tem o seu.
+  const desde = Date.now() - 15 * 24 * 60 * 60 * 1000;
+  const comFoto = new Set(
+    lista
+      .filter((c) => (c.status === 'CASADO' || c.status === 'BAIXADO') && c.enviadoEm.getTime() >= desde)
+      .flatMap((c) => c.contaPagarIds ?? [])
+      .map((id) => contaPorId.get(id)?.borderoId)
+      .filter((x): x is string => !!x),
+  );
+  // ...e os borderôs feitos nos últimos 15 dias que ainda não receberam nenhum
+  // (o do Bar de 16–30/11 não aparecia: nenhuma foto dele tinha chegado).
+  const recentes = ids.length
+    ? await db
+        .select({ id: schema.bordero.id })
+        .from(schema.bordero)
+        .where(
+          and(
+            inArray(schema.bordero.filialId, ids),
+            eq(schema.bordero.status, 'ATIVO'),
+            sql`${schema.bordero.criadoEm} >= now() - interval '15 days'`,
+          ),
+        )
+    : [];
+  const borderoIds = [...new Set([...comFoto, ...recentes.map((r) => r.id)])];
+  const faltandoTodas =
+    borderoIds.length && ids.length
+      ? await db
+          .select({
+            id: schema.contaPagar.id,
+            borderoId: schema.bordero.id,
+            filialId: schema.contaPagar.filialId,
+            fornecedorId: schema.contaPagar.fornecedorId,
+            pessoa: schema.fornecedor.nome,
+            descricao: schema.contaPagar.descricao,
+            liquido: sql<string>`(${schema.contaPagar.valor} - COALESCE(${schema.contaPagar.descontos}, 0))::numeric(14,2)`,
+            pago: schema.contaPagar.dataPagamento,
+            qtdBordero: schema.bordero.qtdContas,
+            vencBordero: schema.bordero.dataVencimento,
+          })
+          .from(schema.contaPagar)
+          .innerJoin(schema.bordero, eq(schema.bordero.id, schema.contaPagar.borderoId))
+          .leftJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.contaPagar.fornecedorId))
+          .where(
+            and(
+              inArray(schema.bordero.id, borderoIds),
+              eq(schema.bordero.status, 'ATIVO'),
+              inArray(schema.contaPagar.filialId, ids),
+              isNull(schema.contaPagar.dataDelete),
+              sql`NOT EXISTS (SELECT 1 FROM comprovante_loterica cl
+                    WHERE cl.excluido_em IS NULL AND cl.status IN ('CASADO','BAIXADO')
+                      AND cl.conta_pagar_ids @> to_jsonb(${schema.contaPagar.id}::text))`,
+            ),
+          )
+          .orderBy(schema.fornecedor.nome)
+      : [];
+  // sem foto e já baixada só entra se o borderô recebeu alguma foto (senão é
+  // borderô pago por outro caminho, não é pendência daqui)
+  const faltando = faltandoTodas.filter((f) => !f.pago || comFoto.has(f.borderoId));
+  const gruposAbertos = borderoIds
+    .map((bid) => {
+      const cs = faltando.filter((f) => f.borderoId === bid);
+      return {
+        id: bid,
+        casa: cs[0] ? (nomeCasa.get(cs[0].filialId) ?? '') : '',
+        // "Vale transporte 16/11 a 30/11 — FULANO" → "Vale transporte 16/11 a 30/11"
+        titulo: (cs[0]?.descricao ?? '').split(' — ')[0] || 'Borderô',
+        venc: cs[0]?.vencBordero ?? null,
+        qtd: cs[0]?.qtdBordero ?? 0,
+        contas: cs,
+        total: cs.reduce((s, c) => s + Number(c.liquido), 0),
+      };
+    })
+    .filter((g) => g.contas.length > 0)
+    .sort((a, b) => a.casa.localeCompare(b.casa) || a.titulo.localeCompare(b.titulo));
+  const totalAberto = gruposAbertos.reduce((s, g) => s + g.total, 0);
+  const qtdAberto = gruposAbertos.reduce((s, g) => s + g.contas.length, 0);
   const totalCasados = casados.reduce((s, c) => s + Number(c.valor ?? 0), 0);
 
   return (
@@ -93,6 +172,46 @@ export default async function ComprovantesLotericaPage() {
         </p>
 
         <EnviarComprovantes casas={casas} />
+
+        {gruposAbertos.length > 0 ? (
+          <div className="mt-6 rounded-lg border border-amber-300 bg-amber-50 p-4">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <h2 className="text-sm font-semibold text-amber-900">
+                Ficou em aberto — {qtdAberto} {qtdAberto === 1 ? 'pessoa' : 'pessoas'} sem comprovante
+              </h2>
+              <span className="text-sm font-semibold text-amber-900">{brl(totalAberto)}</span>
+            </div>
+            <p className="mt-0.5 text-xs text-amber-800">
+              Quem está no mesmo borderô dos comprovantes enviados e ainda não tem o seu.
+            </p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              {gruposAbertos.map((g) => (
+                <div key={g.id} className="rounded border border-amber-200 bg-white p-3 text-xs">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="font-semibold text-slate-900">
+                      {g.casa} · {g.titulo}
+                    </span>
+                    <span className="font-semibold text-slate-900">{brl(g.total)}</span>
+                  </div>
+                  <div className="text-slate-500">
+                    faltam {g.contas.length} de {g.qtd}
+                  </div>
+                  <ul className="mt-1.5 space-y-0.5 text-slate-700">
+                    {g.contas.map((k) => (
+                      <li key={k.id} className="flex justify-between gap-2">
+                        <span>
+                          {k.pessoa ?? '?'}
+                          {k.pago ? <span className="text-slate-500"> · baixada {dmy(k.pago)}, sem foto</span> : null}
+                        </span>
+                        <span className="whitespace-nowrap">{brl(Number(k.liquido))}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
 
         <div className="mt-8">
           <BaixarCasados ids={casados.map((c) => c.id)} total={totalCasados} />
