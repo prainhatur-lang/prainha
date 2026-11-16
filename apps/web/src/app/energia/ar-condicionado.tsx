@@ -6,6 +6,7 @@
 // ar — o estado mostrado é o último comando que a Tuya enviou.
 
 import { useCallback, useEffect, useState } from 'react';
+import { ArNovoControle } from './ar-novo-controle';
 
 interface Controle {
   remoteId: string;
@@ -27,7 +28,15 @@ interface Aparelho {
 const MODOS = ['❄️ Frio', '☀️ Quente', '🔄 Auto', '🌀 Ventilar', '💧 Seco'];
 const VENTOS = ['Auto', 'Baixo', 'Médio', 'Alto'];
 
-export function ArCondicionado({ filialId, podeControlar }: { filialId: string; podeControlar: boolean }) {
+export function ArCondicionado({
+  filialId,
+  podeControlar,
+  podeConfigurar = false,
+}: {
+  filialId: string;
+  podeControlar: boolean;
+  podeConfigurar?: boolean;
+}) {
   const [aparelhos, setAparelhos] = useState<Aparelho[] | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [enviando, setEnviando] = useState<string | null>(null);
@@ -223,6 +232,9 @@ export function ArCondicionado({ filialId, podeControlar }: { filialId: string; 
               })}
             </ul>
           )}
+          {!a.erro && podeControlar ? (
+            <ArNovoControle dispositivoId={a.dispositivoId} podeSalvar={podeConfigurar} aoSalvar={buscar} />
+          ) : null}
         </div>
       ))}
       <p className="mt-2 text-[11px] text-slate-400">

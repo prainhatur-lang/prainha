@@ -289,3 +289,68 @@ export async function comandoAr(irDeviceId: string, remoteId: string, code: ArCo
     token,
   );
 }
+
+// --- Criar controle pelo sistema (sem passar pelo Smart Life) ---------------
+// Marca → lista de códigos (remote_index) → testa no ar → salva com nome.
+
+export const IR_CATEGORIA_AR = 5;
+
+export interface TuyaIrMarca {
+  brand_id: number;
+  brand_name: string;
+}
+
+/** Marcas de ar-condicionado que o infravermelho conhece. */
+export async function listarMarcasIr(irDeviceId: string): Promise<TuyaIrMarca[]> {
+  const token = await getAccessToken();
+  const r = await tuyaFetch<TuyaIrMarca[] | null>(
+    'GET',
+    `/v2.0/infrareds/${irDeviceId}/categories/${IR_CATEGORIA_AR}/brands`,
+    undefined,
+    token,
+  );
+  return Array.isArray(r) ? r : [];
+}
+
+/** Códigos (remote_index) de uma marca — cada um é um "controle" diferente a testar. */
+export async function listarCodigosIr(irDeviceId: string, brandId: number): Promise<number[]> {
+  const token = await getAccessToken();
+  const r = await tuyaFetch<{ remote_index_list?: { remote_index: number }[] } | null>(
+    'GET',
+    `/v2.0/infrareds/${irDeviceId}/categories/${IR_CATEGORIA_AR}/brands/${brandId}/remote-indexs?page=1&size=200`,
+    undefined,
+    token,
+  );
+  return (r?.remote_index_list ?? []).map((x) => Number(x.remote_index)).filter((n) => Number.isFinite(n));
+}
+
+/** Dispara um comando de teste com um código ainda não salvo. */
+export async function testarCodigoAr(irDeviceId: string, remoteIndex: number, code: ArCodigo, value: number): Promise<void> {
+  const token = await getAccessToken();
+  await tuyaFetch<boolean>(
+    'POST',
+    `/v2.0/infrareds/${irDeviceId}/air-conditioners/testing/command`,
+    { remote_index: remoteIndex, category_id: IR_CATEGORIA_AR, code, value },
+    token,
+  );
+}
+
+/** Salva o controle no infravermelho; devolve o remote_id novo. */
+export async function criarControleAr(
+  irDeviceId: string,
+  dados: { brandId: number; brandName: string; remoteIndex: number; nome: string },
+): Promise<string> {
+  const token = await getAccessToken();
+  return tuyaFetch<string>(
+    'POST',
+    `/v2.0/infrareds/${irDeviceId}/remotes`,
+    {
+      category_id: IR_CATEGORIA_AR,
+      brand_id: dados.brandId,
+      brand_name: dados.brandName,
+      remote_index: dados.remoteIndex,
+      remote_name: dados.nome,
+    },
+    token,
+  );
+}

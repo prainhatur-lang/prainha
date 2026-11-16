@@ -79,7 +79,7 @@ export default async function EnergiaPage(props: { searchParams: Promise<{ filia
           protect: !!g.protectHost && !!g.protectApiKey,
         }))}
       />
-      <ArCondicionado filialId={filial.id} podeControlar={podeControlar} />
+      <ArCondicionado filialId={filial.id} podeControlar={podeControlar} podeConfigurar={podeConfigurar} />
       <HistoricoTemperatura filialId={filial.id} />
       <HistoricoConsumo filialId={filial.id} />
     </main>
