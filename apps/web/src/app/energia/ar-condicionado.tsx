@@ -99,7 +99,9 @@ export function ArCondicionado({ filialId, podeControlar }: { filialId: string; 
         <div key={a.dispositivoId} className="mt-2">
           {a.erro ? (
             <p className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs text-rose-700">
-              {a.nome}: a Tuya não respondeu ({a.erro}).
+              {/not subscribed|No permissions/i.test(a.erro)
+                ? `${a.nome}: falta liberar o serviço de infravermelho na Tuya. Em platform.tuya.com → Cloud → projeto → Service API → Go to Authorize → assine "IR Control Hub Open Service" (gratuito). Depois é só recarregar esta tela.`
+                : `${a.nome}: a Tuya não respondeu (${a.erro}).`}
             </p>
           ) : a.controles.length === 0 ? (
             <p className="rounded-xl border border-dashed border-slate-300 px-4 py-4 text-sm text-slate-500">
