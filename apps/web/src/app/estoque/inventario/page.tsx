@@ -38,7 +38,13 @@ export default async function InventarioPage(props: { searchParams: Promise<{ fi
 
   const produtos = (await db.execute(sql`
     SELECT p.id, p.nome, p.tipo, coalesce(p.unidade_estoque, '') AS unidade,
-           coalesce(p.estoque_atual, 0)::float AS saldo, coalesce(p.preco_custo, 0)::float AS custo
+           coalesce(p.estoque_atual, 0)::float AS saldo, coalesce(p.preco_custo, 0)::float AS custo,
+           (SELECT string_agg(v.nome || ' (' || v.estoque_atual::float || ')', ', ' ORDER BY v.nome)
+              FROM produto v
+             WHERE v.filial_id = p.filial_id AND v.tipo <> 'INSUMO' AND v.controla_estoque
+               AND coalesce(v.estoque_atual, 0) <> 0 AND v.id <> p.id
+               AND v.id IN (SELECT ft.produto_id FROM ficha_tecnica ft
+                             WHERE ft.insumo_id = p.id AND ft.baixa_estoque)) AS sobra
       FROM produto p
      WHERE p.filial_id = ${filial.id}::uuid
        AND p.controla_estoque
@@ -48,7 +54,7 @@ export default async function InventarioPage(props: { searchParams: Promise<{ fi
              SELECT 1 FROM ficha_tecnica ft JOIN produto i ON i.id = ft.insumo_id
               WHERE ft.produto_id = p.id AND ft.baixa_estoque AND i.controla_estoque AND i.id <> p.id))
      ORDER BY p.nome
-  `)) as unknown as Array<{ id: string; nome: string | null; tipo: string; unidade: string; saldo: number; custo: number }>;
+  `)) as unknown as Array<{ id: string; nome: string | null; tipo: string; unidade: string; saldo: number; custo: number; sobra: string | null }>;
 
   const ajustes = (await db.execute(sql`
     SELECT m.id, p.nome AS descricao, m.quantidade::float AS quantidade, m.observacao,
@@ -69,6 +75,7 @@ export default async function InventarioPage(props: { searchParams: Promise<{ fi
     unidade: p.unidade,
     custo: Number(p.custo),
     saldo: Number(p.saldo),
+    sobra: p.tipo === 'INSUMO' ? p.sobra : null,
   }));
 
   return (
@@ -80,7 +87,8 @@ export default async function InventarioPage(props: { searchParams: Promise<{ fi
             <h1 className="text-xl font-semibold text-slate-900">Inventário — {filial.nome}</h1>
             <p className="mt-1 text-sm text-slate-500">
               Digite o que foi contado em cada item. Ao gravar, o estoque do sistema passa a ser o contado e a diferença fica
-              registrada como ajuste. Produto que baixa de insumo não aparece: conta-se o insumo.
+              registrada como ajuste. Produto que baixa de insumo não aparece: conta-se o insumo — e a sobra que estiver no
+              produto de venda é zerada junto.
             </p>
           </div>
           <Link href="/relatorios/estoque" className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">

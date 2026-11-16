@@ -5,7 +5,10 @@
 // produto contado grava UM movimento de ajuste com a diferença (contado − saldo
 // do sistema na hora, calculada dentro da transação — mandar a mesma contagem
 // duas vezes não ajusta em dobro). Produto fora da lista não é tocado.
-// Produto de venda que baixa de insumo não entra: conta-se o insumo.
+// Produto de venda que baixa de insumo não entra: conta-se o insumo. E quando o
+// insumo é contado, a sobra que ainda estiver no produto de venda dele é zerada
+// na mesma gravação (dono, 16/11/2026: "fazer inventário para corrigir o
+// estoque") — o contado do insumo passa a ser o estoque inteiro do item.
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { and, eq, sql } from 'drizzle-orm';
@@ -99,7 +102,44 @@ export async function POST(req: Request) {
         else await aplicarSaida({ produtoId: l.id, qtdSaida: q, exec: tx });
         ajustados++;
       }
-      return { ajustados, iguais };
+      // sobra em produto de venda que baixa de um insumo contado agora: zera
+      const sobras = (await tx.execute(sql`
+        SELECT p.id, coalesce(p.estoque_atual, 0)::float AS saldo, coalesce(p.preco_custo, 0)::float AS custo,
+               (SELECT min(i.nome) FROM ficha_tecnica ft JOIN produto i ON i.id = ft.insumo_id
+                 WHERE ft.produto_id = p.id AND ft.baixa_estoque AND i.controla_estoque AND i.id <> p.id) AS insumo
+          FROM produto p
+         WHERE p.filial_id = ${filialId}::uuid
+           AND p.tipo <> 'INSUMO'
+           AND p.controla_estoque
+           AND coalesce(p.estoque_atual, 0) <> 0
+           AND p.id IN (
+             SELECT ft.produto_id FROM ficha_tecnica ft
+              WHERE ft.baixa_estoque AND ft.insumo_id <> ft.produto_id
+                AND ft.insumo_id IN (${sql.join(linhas.map((l) => sql`${l.id}::uuid`), sql`, `)}))
+         FOR UPDATE OF p
+      `)) as unknown as Array<{ id: string; saldo: number; custo: number; insumo: string | null }>;
+      let zerados = 0;
+      for (const s of sobras) {
+        const saldo = Number(s.saldo);
+        const q = Math.abs(saldo);
+        if (q < 0.00005) continue;
+        const custo = Number(s.custo);
+        await tx.insert(schema.movimentoEstoque).values({
+          filialId,
+          produtoId: s.id,
+          tipo: saldo > 0 ? 'SAIDA_AJUSTE' : 'ENTRADA_AJUSTE',
+          quantidade: (-saldo).toFixed(4),
+          precoUnitario: custo.toFixed(6),
+          valorTotal: (q * custo).toFixed(2),
+          dataHora: agora,
+          observacao: `Inventário ${dia}: sistema ${fmt(saldo)} no produto de venda, zerado — o estoque fica no insumo ${s.insumo ?? ''}${obs}`.slice(0, 500),
+          criadoPor: user.id,
+        });
+        if (saldo > 0) await aplicarSaida({ produtoId: s.id, qtdSaida: q, exec: tx });
+        else await aplicarMpmEntrada({ produtoId: s.id, qtdEntrada: q, custoEntrada: custo, exec: tx });
+        zerados++;
+      }
+      return { ajustados, iguais, zerados };
     });
     return NextResponse.json({ ok: true, ...r });
   } catch (e) {

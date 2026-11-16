@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
-export type ProdutoInventario = { id: string; descricao: string; insumo: boolean; unidade: string; custo: number; saldo: number };
+export type ProdutoInventario = { id: string; descricao: string; insumo: boolean; unidade: string; custo: number; saldo: number; sobra: string | null };
 export type AjusteFeito = { id: string; descricao: string; quantidade: number; observacao: string | null; quando: string };
 
 const brl = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -62,7 +62,7 @@ export function Inventario({
   const vistos = useMemo(() => {
     const termos = limpa(busca).split(/\s+/).filter(Boolean);
     return produtos.filter((p) => {
-      if (soComSaldo && p.saldo === 0 && !(p.id in contagem)) return false;
+      if (soComSaldo && p.saldo === 0 && !p.sobra && !(p.id in contagem)) return false;
       if (termos.length === 0) return true;
       const alvo = limpa(p.descricao);
       return termos.every((t) => alvo.includes(t));
@@ -102,7 +102,7 @@ export function Inventario({
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(j.error ?? 'Não gravou');
-      setMsg({ ok: true, texto: `Inventário gravado: ${j.ajustados} produto(s) ajustado(s), ${j.iguais} já batiam.` });
+      setMsg({ ok: true, texto: `Inventário gravado: ${j.ajustados} produto(s) ajustado(s), ${j.iguais} já batiam${j.zerados ? `, ${j.zerados} sobra(s) em produto de venda zerada(s)` : ''}.` });
       limpar();
       setZerarResto(false);
       setObs('');
@@ -155,6 +155,11 @@ export function Inventario({
                   <td className="px-3 py-2">
                     <div className="font-medium text-slate-900">{p.descricao}</div>
                     <div className="text-xs text-slate-500">{p.insumo ? 'Insumo' : 'Produto'}</div>
+                    {p.sobra && (
+                      <div className="text-xs text-amber-700">
+                        Saldo no produto de venda: {p.sobra} — ao contar este insumo, vai a zero. Conte tudo aqui.
+                      </div>
+                    )}
                     <a href={`/cadastros/produtos/${p.id}?aba=saldo`} target="_blank" rel="noreferrer" className="text-xs font-medium text-sky-700 hover:underline">
                       Ver extrato →
                     </a>
