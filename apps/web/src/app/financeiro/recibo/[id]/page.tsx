@@ -10,6 +10,8 @@ import { carregarRecibo, tokenRecibo } from '@/lib/recibo-avulso';
 import { brl } from '@/lib/format';
 import { ReciboDocumento } from '@/components/recibo-documento';
 import { AcoesRecibo } from './acoes';
+import { ReciboAssinadoBox } from './assinado';
+import { listarRecibosAssinados } from '@/lib/recibo-assinado';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,6 +28,7 @@ export default async function ReciboPage(props: { params: Promise<{ id: string }
   if (!filiais.some((f) => f.id === r.filialId)) notFound();
 
   const token = tokenRecibo(r.contaId);
+  const assinados = r.dataPagamento ? await listarRecibosAssinados(r.filialId, r.contaId) : [];
 
   return (
     <main className="min-h-screen bg-slate-50 print:bg-white">
@@ -55,6 +58,7 @@ export default async function ReciboPage(props: { params: Promise<{ id: string }
               telefone={r.recebedorFone}
               texto={`Recibo de ${brl(r.valor)} — ${r.pagadorNome}. Referente a ${r.descricao || 'serviço prestado'}.`}
             />
+            <ReciboAssinadoBox contaId={r.contaId} iniciais={assinados} />
             <ReciboDocumento r={r} />
           </>
         ) : (
