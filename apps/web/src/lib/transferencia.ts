@@ -13,6 +13,7 @@
 import { db, schema } from '@concilia/db';
 import { and, asc, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { aplicarMpmEntrada, aplicarSaida, desfazerMpmEntrada, type ExecDb } from '@/lib/custo-medio';
+import { produtoQueRecebeEntrada } from '@/lib/estoque-onde-fica';
 
 export class RecusaTransf extends Error {}
 
@@ -327,7 +328,16 @@ export async function criarTransferencia(opts: {
   const competencia = data.slice(0, 7);
 
   return emTransacao(opts.exec, async (tx) => {
-    const itens = await resolverDestinos(tx, opts.itens, filialOrigemId, filialDestinoId);
+    const escolhidos = await resolverDestinos(tx, opts.itens, filialOrigemId, filialDestinoId);
+    // Regra do dono (16/11/2026): o de/para pode ligar produto numa casa a
+    // insumo na outra. Se o produto escolhido no destino trabalha por insumo
+    // (revenda 1:1), a entrada vai pro insumo — ele não gera estoque no produto.
+    // O item da transferência guarda onde entrou (receber/cancelar seguem o
+    // mesmo lugar); o de/para continua com a escolha de quem lançou.
+    const itens: ItemResolvido[] = [];
+    for (const i of escolhidos) {
+      itens.push({ ...i, produtoDestinoId: await produtoQueRecebeEntrada(i.produtoDestinoId, tx) });
+    }
     const ids = [...new Set(itens.flatMap((i) => [i.produtoOrigemId, i.produtoDestinoId]))];
     const prods = await tx
       .select({
@@ -471,7 +481,7 @@ export async function criarTransferencia(opts: {
         .where(eq(schema.transferenciaFilial.id, transf.id));
     }
 
-    await gravarDepara(tx, itens, filialOrigemId, filialDestinoId, userId);
+    await gravarDepara(tx, escolhidos, filialOrigemId, filialDestinoId, userId);
 
     return {
       id: transf.id,

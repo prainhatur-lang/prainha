@@ -352,8 +352,10 @@ function AjustarSaldoBtn({
 }) {
   const router = useRouter();
   const [aberto, setAberto] = useState(false);
+  // Dono (16/11/2026): correção de saldo é só pelo inventário (/estoque/inventario).
+  // Aqui ficam a perda e o acerto de custo.
   const [tipo, setTipo] = useState<'ENTRADA_AJUSTE' | 'SAIDA_AJUSTE' | 'PERDA' | 'AJUSTE_CUSTO'>(
-    'ENTRADA_AJUSTE',
+    'PERDA',
   );
   const soCusto = tipo === 'AJUSTE_CUSTO';
   const [quantidade, setQuantidade] = useState('');
@@ -368,7 +370,7 @@ function AjustarSaldoBtn({
     setQuantidade('');
     setCustoUnit('');
     setMotivo('');
-    setTipo('ENTRADA_AJUSTE');
+    setTipo('PERDA');
     setErro(null);
   }
 
@@ -430,7 +432,7 @@ function AjustarSaldoBtn({
         onClick={() => setAberto(true)}
         className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
       >
-        ⚖ Ajustar saldo
+        ✕ Perda / R$ Custo
       </button>
 
       {aberto && (
@@ -444,20 +446,24 @@ function AjustarSaldoBtn({
             className="w-full max-w-lg space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-lg"
           >
             <div>
-              <h2 className="text-sm font-semibold text-slate-900">Ajustar saldo / custo</h2>
+              <h2 className="text-sm font-semibold text-slate-900">Perda / custo</h2>
               <p className="mt-0.5 text-xs text-slate-500">
-                Movimento manual em <strong>{produtoNome}</strong>. Use pra inventário,
-                quebras, ou reconciliar saldo divergente. Custo médio (MPM) é
-                recalculado automaticamente em entradas.
+                Lançamento em <strong>{produtoNome}</strong>: perda (quebra, vencimento,
+                descarte) ou acerto do custo. Corrigir o saldo é só pelo{' '}
+                <a
+                  href={`/estoque/inventario?busca=${encodeURIComponent(produtoNome)}`}
+                  className="font-medium text-sky-700 underline"
+                >
+                  inventário (contagem)
+                </a>
+                .
               </p>
             </div>
 
             {/* Tipo */}
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <div className="grid grid-cols-2 gap-2">
               {(
                 [
-                  { v: 'ENTRADA_AJUSTE', l: '+ Entrada', desc: 'Aumenta saldo' },
-                  { v: 'SAIDA_AJUSTE', l: '− Saída', desc: 'Inventário, quebra' },
                   { v: 'PERDA', l: '✕ Perda', desc: 'Vencimento, descarte' },
                   { v: 'AJUSTE_CUSTO', l: 'R$ Custo', desc: 'Define o custo, saldo igual' },
                 ] as const

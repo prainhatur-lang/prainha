@@ -34,6 +34,7 @@ import {
   type MovRecalc,
 } from '@/lib/refazer-custo-medio';
 import { hojeBr } from '@/lib/datas';
+import { produtoQueRecebeEntrada } from '@/lib/estoque-onde-fica';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -156,7 +157,19 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const qtdNova = qtdFornecedor * fator;
   const custoTotal = qtdAntiga * precoAntigo; // valor (com rateio) que entrou — não muda
   const precoNovo = qtdNova > 0 ? custoTotal / qtdNova : 0;
-  const mudaProduto = produtoAntigoId !== produtoNovoId;
+  // Regra do dono (16/11/2026): produto que trabalha por insumo não gera
+  // estoque nele — a entrada da nota fica no insumo (revenda 1:1). O item da
+  // nota e o vínculo do fornecedor seguem no produto escolhido.
+  const estoqueNovoId = await produtoQueRecebeEntrada(produtoNovoId);
+  const [prodEstoqueNovo] =
+    estoqueNovoId === produtoNovoId
+      ? [prodNovo]
+      : await db
+          .select({ nome: schema.produto.nome })
+          .from(schema.produto)
+          .where(eq(schema.produto.id, estoqueNovoId))
+          .limit(1);
+  const mudaProduto = produtoAntigoId !== estoqueNovoId;
   const mudaEstoque = mudaProduto || Math.abs(qtdNova - qtdAntiga) > EPS;
   const dataMov = nota.dataEntrada ?? nota.dataEmissao ?? new Date();
 
@@ -191,12 +204,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       });
 
       if (mudaProduto) {
-        const trB = await lerTrechoCusto(tx, produtoNovoId, mov.id);
+        const trB = await lerTrechoCusto(tx, estoqueNovoId, mov.id);
         const rB = refazerTrecho(trB, [corrigido(trA.movs[0]!), ...trB.movs]);
-        await gravarSaldoCusto(tx, produtoNovoId, rB);
+        await gravarSaldoCusto(tx, estoqueNovoId, rB);
         await regravarSaidas(tx, rB.saidas);
         resumo.push({
-          produto: prodNovo.nome ?? produtoNovoId,
+          produto: prodEstoqueNovo?.nome ?? estoqueNovoId,
           saldoAntes: trB.saldoAtual,
           custoAntes: trB.custoAtual,
           saldoDepois: rB.saldo,
@@ -212,7 +225,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       await tx
         .update(schema.movimentoEstoque)
         .set({
-          produtoId: produtoNovoId,
+          produtoId: estoqueNovoId,
           quantidade: qtdNova.toFixed(4),
           precoUnitario: precoNovo.toFixed(6),
           observacao: [mov.observacao, obs].filter(Boolean).join(' · '),
@@ -232,7 +245,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
           filialId: item.filialId,
           fornecedorId: nota.fornecedorId,
           produtoNovoId,
-          produtoAntigoId,
+          produtoAntigoId: item.produtoId ?? produtoAntigoId,
           codigo: item.codigo?.trim() || null,
           ean: item.ean?.trim() || null,
           descricao: item.descricao,

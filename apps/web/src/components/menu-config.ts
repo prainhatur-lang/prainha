@@ -309,6 +309,12 @@ export const MENU_AREAS: MenuArea[] = [
             perm: 'relatorio.read',
             aka: ['saldo', 'contagem', 'inventário', 'CMV'],
           },
+          {
+            label: 'Inventário (contagem)',
+            href: '/estoque/inventario',
+            perm: 'produto.read',
+            aka: ['contagem', 'ajuste de estoque', 'ajustar saldo', 'balanço'],
+          },
           { label: 'Estoque por setor', href: '/estoque/locais', perm: 'produto.read', aka: ['locais', 'bar', 'cozinha'] },
           {
             label: 'Transferência entre setores',

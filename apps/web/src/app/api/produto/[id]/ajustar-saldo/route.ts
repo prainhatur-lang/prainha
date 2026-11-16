@@ -73,13 +73,28 @@ export async function POST(
     .limit(1);
   if (!link) return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
 
+  // Dono (16/11/2026): "Ajuste manual (Saldo & Custo) deverá ser exclusivamente
+  // por inventário a partir de agora". Entrada e saída de ajuste só nascem da
+  // contagem em /estoque/inventario. Aqui ficam a perda (quebra, vencimento) e
+  // o acerto de custo, que não são correção de contagem.
+  if (tipo === 'ENTRADA_AJUSTE' || tipo === 'SAIDA_AJUSTE') {
+    return NextResponse.json(
+      {
+        error:
+          'Ajuste de saldo agora é só pelo inventário: Estoque → Inventário (contagem). Digite o que foi contado e o sistema lança a diferença.',
+        inventario: `/estoque/inventario?filialId=${prod.filialId}`,
+      },
+      { status: 409 },
+    );
+  }
+
   // Regra do dono (16/11/2026): ou é insumo ou é o produto. Produto de venda
   // que baixa de insumo não guarda saldo — o ajuste é no insumo. Só passa a
   // saída que tira saldo que ainda sobrou no produto (pra zerar o que ficou).
   if (tipo !== 'AJUSTE_CUSTO') {
     const onde = await ondeFicaEstoque(prod.id);
     const sobra = Number(prod.estoqueAtual ?? 0);
-    const tiraSobra = tipo !== 'ENTRADA_AJUSTE' && sobra > 0 && quantidade <= sobra + 1e-9;
+    const tiraSobra = sobra > 0 && quantidade <= sobra + 1e-9;
     if (onde.insumos.length > 0 && !tiraSobra) {
       return NextResponse.json(
         {
@@ -130,7 +145,7 @@ export async function POST(
     return NextResponse.json({ error: 'quantidade invalida' }, { status: 400 });
   }
 
-  const ehEntrada = tipo === 'ENTRADA_AJUSTE';
+  const ehEntrada = (tipo as string) === 'ENTRADA_AJUSTE'; // hoje só chega PERDA aqui
   const saldoAtual = Number(prod.estoqueAtual ?? 0);
 
   // Validações
