@@ -11,7 +11,7 @@ import { brl } from '@/lib/format';
 import { ReciboDocumento } from '@/components/recibo-documento';
 import { AcoesRecibo } from './acoes';
 import { ReciboAssinadoBox } from './assinado';
-import { listarRecibosAssinados } from '@/lib/recibo-assinado';
+import { listarRecibosAssinados, tokenFotoRecibo } from '@/lib/recibo-assinado';
 
 export const dynamic = 'force-dynamic';
 
@@ -58,7 +58,14 @@ export default async function ReciboPage(props: { params: Promise<{ id: string }
               telefone={r.recebedorFone}
               texto={`Recibo de ${brl(r.valor)} — ${r.pagadorNome}. Referente a ${r.descricao || 'serviço prestado'}.`}
             />
-            <ReciboAssinadoBox contaId={r.contaId} iniciais={assinados} />
+            <ReciboAssinadoBox
+              contaId={r.contaId}
+              iniciais={assinados}
+              linkCelular={(() => {
+                const t = tokenFotoRecibo(r.contaId);
+                return t ? `/recibo/foto/${t}` : null;
+              })()}
+            />
             <ReciboDocumento r={r} />
           </>
         ) : (
