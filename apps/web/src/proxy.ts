@@ -258,7 +258,9 @@ export async function proxy(request: NextRequest) {
     /^\/tiktok[A-Za-z0-9_-]*\.txt$/.test(path) ||
     // /convite/[token] é o link do botão do convite de campanha (zap): registra
     // o toque e redireciona pro site da casa. O painel é /campanha (protegido).
-    path.startsWith('/convite/');
+    path.startsWith('/convite/') ||
+    // recibo avulso enviado pelo celular (link assinado, sem login)
+    path.startsWith('/recibo/');
 
   if (!user && !isPublicRoute) {
     const url = request.nextUrl.clone();

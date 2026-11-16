@@ -415,6 +415,12 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
             Excluídas
           </Link>
           <Link
+            href={`/financeiro/recibo${filialSelecionada ? `?filialId=${filialSelecionada.id}` : ''}`}
+            className="shrink-0 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
+            🧾 Fazer recibo
+          </Link>
+          <Link
             href={`/financeiro/nova${filialSelecionada ? `?filialId=${filialSelecionada.id}` : ''}`}
             className="shrink-0 rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
           >

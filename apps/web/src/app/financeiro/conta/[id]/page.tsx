@@ -282,6 +282,14 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
             <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${status.cls}`}>
               {status.label}
             </span>
+            {quitada && conta.fornecedorNome && (
+              <Link
+                href={`/financeiro/recibo/${conta.id}`}
+                className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+              >
+                🧾 Recibo
+              </Link>
+            )}
             {conta.origem === 'MANUAL' ? (
               <AcoesConta contaId={conta.id} descricao={conta.descricao ?? 'sem histórico'} />
             ) : consumerAqui && !conta.dataPagamento && baixas.length === 0 ? (
