@@ -222,3 +222,70 @@ export function interpretarTemperatura(items: TuyaStatusItem[]): TuyaLeitura {
     online: null,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Infravermelho (IR) — ar-condicionado. Os controles ("remotes") são criados
+// no app Smart Life dentro do aparelho infravermelho; aqui só lista e comanda.
+// Precisa da API "IR Control Hub Open Service" liberada no projeto da Tuya.
+// ---------------------------------------------------------------------------
+
+export interface TuyaIrControle {
+  remote_id: string;
+  remote_name: string;
+  /** 5 = ar-condicionado */
+  category_id: number | string;
+  brand_name?: string;
+}
+
+/** Controles cadastrados num aparelho infravermelho. */
+export async function listarControlesIr(irDeviceId: string): Promise<TuyaIrControle[]> {
+  const token = await getAccessToken();
+  const r = await tuyaFetch<TuyaIrControle[] | null>('GET', `/v2.0/infrareds/${irDeviceId}/remotes`, undefined, token);
+  return Array.isArray(r) ? r : [];
+}
+
+export interface ArEstado {
+  ligado: boolean | null;
+  temperatura: number | null;
+  /** 0 frio · 1 quente · 2 automático · 3 ventilar · 4 desumidificar */
+  modo: number | null;
+  /** 0 automático · 1 baixo · 2 médio · 3 alto */
+  vento: number | null;
+}
+
+const numOuNull = (v: unknown): number | null => {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+/** Último estado que a Tuya mandou pro ar (o infravermelho não tem retorno do aparelho). */
+export async function estadoAr(irDeviceId: string, remoteId: string): Promise<ArEstado> {
+  const token = await getAccessToken();
+  const r = await tuyaFetch<Record<string, unknown>>(
+    'GET',
+    `/v2.0/infrareds/${irDeviceId}/remotes/${remoteId}/ac/status`,
+    undefined,
+    token,
+  );
+  const power = numOuNull(r?.power);
+  return {
+    ligado: power === null ? null : power === 1,
+    temperatura: numOuNull(r?.temp),
+    modo: numOuNull(r?.mode),
+    vento: numOuNull(r?.wind),
+  };
+}
+
+export type ArCodigo = 'power' | 'mode' | 'temp' | 'wind';
+
+/** Manda um comando pro ar-condicionado pelo infravermelho. */
+export async function comandoAr(irDeviceId: string, remoteId: string, code: ArCodigo, value: number): Promise<void> {
+  const token = await getAccessToken();
+  await tuyaFetch<boolean>(
+    'POST',
+    `/v2.0/infrareds/${irDeviceId}/air-conditioners/${remoteId}/command`,
+    { code, value },
+    token,
+  );
+}

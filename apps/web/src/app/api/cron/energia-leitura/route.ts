@@ -6,7 +6,7 @@
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, notInArray } from 'drizzle-orm';
-import { getDeviceStatus, interpretarStatus } from '@/lib/tuya';
+import { getDeviceStatus, interpretarStatus, interpretarTemperatura } from '@/lib/tuya';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -64,5 +64,35 @@ export async function GET(req: Request) {
     }),
   );
 
-  return NextResponse.json({ ok: true, feitos });
+  // Sensores de temperatura (aparelho infravermelho): grava temperatura e
+  // umidade do ambiente pra ter o histórico.
+  const sensores = await db
+    .select()
+    .from(schema.tuyaDispositivo)
+    .where(and(eq(schema.tuyaDispositivo.ativo, true), eq(schema.tuyaDispositivo.tipo, 'sensor_temperatura')));
+  const temperaturas = await Promise.all(
+    sensores.map(async (d) => {
+      try {
+        const l = interpretarTemperatura(await getDeviceStatus(d.tuyaDeviceId));
+        await db.insert(schema.tuyaLeitura).values({
+          filialId: d.filialId,
+          dispositivoId: d.id,
+          online: true,
+          temperaturaC: l.temperaturaC?.toFixed(1) ?? null,
+          umidadePct: l.umidadePct?.toFixed(1) ?? null,
+        });
+        return { id: d.id, nome: d.nome, temperaturaC: l.temperaturaC, umidadePct: l.umidadePct };
+      } catch (e) {
+        await db.insert(schema.tuyaLeitura).values({
+          filialId: d.filialId,
+          dispositivoId: d.id,
+          online: false,
+          erro: (e as Error).message.slice(0, 500),
+        });
+        return { id: d.id, nome: d.nome, erro: (e as Error).message };
+      }
+    }),
+  );
+
+  return NextResponse.json({ ok: true, feitos, temperaturas });
 }

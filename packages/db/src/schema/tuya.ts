@@ -96,6 +96,9 @@ export const tuyaLeitura = pgTable(
     consumoKwh: numeric('consumo_kwh', { precision: 10, scale: 3 }),
     /** contador menor que o anterior = aparelho zerou (queda de energia). */
     zerou: boolean('zerou').notNull().default(false),
+    /** sensor de temperatura/umidade do ambiente (aparelho infravermelho). */
+    temperaturaC: numeric('temperatura_c', { precision: 5, scale: 1 }),
+    umidadePct: numeric('umidade_pct', { precision: 5, scale: 1 }),
     erro: text('erro'),
   },
   (t) => ({

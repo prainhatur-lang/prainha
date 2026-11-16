@@ -12,6 +12,8 @@ import { escolherFilial } from '@/lib/filial-ativa';
 import { AppHeader } from '@/components/app-header';
 import { EnergiaDashboardClient } from './energia-dashboard-client';
 import { HistoricoConsumo } from './historico-consumo';
+import { ArCondicionado } from './ar-condicionado';
+import { HistoricoTemperatura } from './historico-temperatura';
 
 export const dynamic = 'force-dynamic';
 
@@ -77,6 +79,8 @@ export default async function EnergiaPage(props: { searchParams: Promise<{ filia
           protect: !!g.protectHost && !!g.protectApiKey,
         }))}
       />
+      <ArCondicionado filialId={filial.id} podeControlar={podeControlar} />
+      <HistoricoTemperatura filialId={filial.id} />
       <HistoricoConsumo filialId={filial.id} />
     </main>
   );
