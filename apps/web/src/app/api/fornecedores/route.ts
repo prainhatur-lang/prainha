@@ -55,7 +55,9 @@ export async function POST(req: Request) {
     if (c?.nivel === 'diverge') {
       return NextResponse.json(
         {
-          error: `${c.msg} Se o Pix cai mesmo nessa pessoa, preencha "quem recebe" com o nome dela; senão, corrija a chave.`,
+          error: c.tipo === 'DESCONHECIDA'
+            ? `${c.msg} Corrija a chave.`
+            : `${c.msg} Se o Pix cai mesmo nessa pessoa, preencha "quem recebe" com o nome dela; senão, corrija a chave.`,
         },
         { status: 400 },
       );

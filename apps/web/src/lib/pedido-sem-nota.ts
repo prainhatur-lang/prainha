@@ -11,6 +11,20 @@ import { createHash } from 'node:crypto';
 import { db, schema } from '@concilia/db';
 import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { hojeBr } from '@/lib/datas';
+import { tipoChavePix } from '@/lib/pix-titular';
+
+/**
+ * Chave Pix lida do papel (16/11/2026): se o que veio como chave não é chave
+ * (um nome) e o "titular" é que tem cara de chave, vieram trocados — destroca.
+ * Texto que não é chave de jeito nenhum não vai pro cadastro como chave.
+ */
+function pixLido(chave: string | null, favorecido: string | null): { chavePix: string | null; pixFavorecido: string | null } {
+  if (!chave || tipoChavePix(chave) !== 'DESCONHECIDA') return { chavePix: chave, pixFavorecido: favorecido };
+  if (favorecido && tipoChavePix(favorecido) !== 'DESCONHECIDA') {
+    return { chavePix: favorecido.slice(0, 100), pixFavorecido: chave };
+  }
+  return { chavePix: null, pixFavorecido: favorecido ?? chave };
+}
 import { resolverFornecedorParaNota } from '@/lib/match-fornecedor';
 import { validarDocumento } from '@/lib/nfce/documento';
 
@@ -226,9 +240,10 @@ function normalizarServico(o: Record<string, unknown>, qtdFornecedores: number, 
     descricao: typeof o.descricao === 'string' && o.descricao.trim() ? o.descricao.trim().slice(0, 120) : null,
     total: num(o.total),
     vencimentos,
-    chavePix: typeof o.chavePix === 'string' && o.chavePix.trim() ? o.chavePix.trim().slice(0, 100) : null,
-    pixFavorecido:
+    ...pixLido(
+      typeof o.chavePix === 'string' && o.chavePix.trim() ? o.chavePix.trim().slice(0, 100) : null,
       typeof o.pixFavorecido === 'string' && o.pixFavorecido.trim() ? o.pixFavorecido.trim().slice(0, 200) : null,
+    ),
     categoriaIdx: idx(o.categoria, 'C', qtdCategorias),
   };
 }

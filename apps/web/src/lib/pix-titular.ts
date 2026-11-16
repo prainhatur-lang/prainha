@@ -89,6 +89,21 @@ export function conferirChavePix(p: {
   const ehPF = doc.length === 11;
   const terceiro = !!p.favorecido?.trim();
 
+  // Texto que não é chave (16/11/2026): o Saracura estava com o NOME no campo da
+  // chave e o e-mail em "quem recebe" — o Inter recusou com "chave em formato
+  // inválido". Agora barra antes: no cadastro e antes de mandar o Pix.
+  if (tipo === 'DESCONHECIDA') {
+    const fav = p.favorecido?.trim() ?? '';
+    const trocado = fav && tipoChavePix(fav) !== 'DESCONHECIDA';
+    return {
+      tipo,
+      nivel: 'diverge',
+      msg: `🚫 "${chave}" não é chave Pix (tem que ser CPF, CNPJ, telefone, e-mail ou aleatória).${
+        trocado ? ` Parece trocado com "quem recebe": a chave seria ${fav} e este é o nome.` : ''
+      }`,
+    };
+  }
+
   if (tipo === 'CPF' || tipo === 'CNPJ') {
     const d = so(chave);
     if (!ehPJ && !ehPF) {

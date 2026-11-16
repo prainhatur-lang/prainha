@@ -109,7 +109,10 @@ export async function POST(req: Request) {
   if (conf?.nivel === 'diverge') {
     return NextResponse.json(
       {
-        error: `${conf.msg} O Pix NÃO foi enviado. Corrija a chave no cadastro do fornecedor, ou preencha "quem recebe" se o Pix cai mesmo nessa pessoa.`,
+        error:
+          conf.tipo === 'DESCONHECIDA'
+            ? `${conf.msg} O Pix NÃO foi enviado. Corrija a chave no cadastro do fornecedor.`
+            : `${conf.msg} O Pix NÃO foi enviado. Corrija a chave no cadastro do fornecedor, ou preencha "quem recebe" se o Pix cai mesmo nessa pessoa.`,
       },
       { status: 409 },
     );
