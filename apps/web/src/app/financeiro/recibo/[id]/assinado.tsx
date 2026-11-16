@@ -131,7 +131,7 @@ export function ReciboAssinadoBox({
           {arquivos.map((a) => (
             <li key={a.nome}>
               <a href={a.url} target="_blank" rel="noopener noreferrer" className="text-sky-700 hover:underline">
-                ✓ {a.nome.endsWith('.pdf') ? 'PDF' : 'Foto'} assinado
+                ✓ {a.nome.endsWith('.pdf') ? 'PDF' : 'Foto'} do recibo assinado
                 {a.em ? ` — enviado em ${new Date(a.em).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', dateStyle: 'short', timeStyle: 'short' })}` : ''}
               </a>
             </li>
