@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { PLANTA_MAR, PLANTA_MAR_MESAS, PLANTA_MAR_REDONDAS } from '@/lib/planta-mar';
+import { PLANTA_MAR, PLANTA_MAR_LADO_PEQUENA_PCT, PLANTA_MAR_MESAS, PLANTA_MAR_PEQUENAS, PLANTA_MAR_REDONDAS } from '@/lib/planta-mar';
 import type { FilialOpt, Mesa } from './reservas-client';
 
 // Mapa visual de mesas por espaco. 1a versao: colunas de 4 (rio na frente/topo),
@@ -248,12 +248,22 @@ const MAR_BLOCOS: { titulo: string; linhas: string[][] }[] = [
   { titulo: 'Salão · corredor (banco)', linhas: [['22', '23', '24', '25', '26', '27']] },
   { titulo: 'Varanda (50 a 53 na mureta da calçada)', linhas: [['58', '59', '60', '61'], ['55', '56', '57', '54'], ['50', '51', '52', '53']] },
 ];
+// Espaço reservado (área "Salão fechado"), mesas 101 a 120 — dono, 16/11/2026.
+const MAR_BLOCO_RESERVADO: { titulo: string; linhas: string[][] } = {
+  titulo: 'Espaço reservado (101 a 105 no sofá · 120 na porta)',
+  linhas: [
+    ['105', '104', '103', '102', '101'],
+    ['119', '118', '117', '116', '115', '114', '113', '112'],
+    ['106', '107', '108', '109', '110', '111', '120'],
+  ],
+};
 
-function PlantaMar({ salao, varanda, ocupadas, ocupadasConsumer, reservasPorMesa, filialId }: { salao: Mesa[]; varanda: Mesa[]; ocupadas: Set<string>; ocupadasConsumer: Set<string>; reservasPorMesa: Record<string, ReservaInfo>; filialId: string }) {
+function PlantaMar({ salao, varanda, reservado = [], ocupadas, ocupadasConsumer, reservasPorMesa, filialId }: { salao: Mesa[]; varanda: Mesa[]; reservado?: Mesa[]; ocupadas: Set<string>; ocupadasConsumer: Set<string>; reservasPorMesa: Record<string, ReservaInfo>; filialId: string }) {
   // 'planta' = a planta física (foto do dono); 'blocos' = a grade de antes.
   const [modo, setModo] = useState<'planta' | 'blocos'>('planta');
-  const todas = [...salao, ...varanda];
-  const naPlanta = new Set(MAR_BLOCOS.flatMap((b) => b.linhas.flat()));
+  const todas = [...salao, ...varanda, ...reservado];
+  const blocos = reservado.length > 0 ? [...MAR_BLOCOS, MAR_BLOCO_RESERVADO] : MAR_BLOCOS;
+  const naPlanta = new Set(blocos.flatMap((b) => b.linhas.flat()));
   const fora = todas.filter((m) => !naPlanta.has(m.numero));
   const card = (numero: string) => {
     const mesa = todas.find((x) => x.numero === numero);
@@ -280,7 +290,7 @@ function PlantaMar({ salao, varanda, ocupadas, ocupadasConsumer, reservasPorMesa
     const info = reservasPorMesa[`${filialId}:${mesa.numero}`];
     const walkIn = !info && ocupadasConsumer.has(`${filialId}:${mesa.numero}`);
     const redonda = PLANTA_MAR_REDONDAS.has(mesa.numero);
-    const lado = `${redonda ? PLANTA_MAR.ladoRedondaPct : PLANTA_MAR.ladoPct}cqw`;
+    const lado = `${redonda ? PLANTA_MAR.ladoRedondaPct : PLANTA_MAR_PEQUENAS.has(mesa.numero) ? PLANTA_MAR_LADO_PEQUENA_PCT : PLANTA_MAR.ladoPct}cqw`;
     return (
       <div
         key={mesa.numero}
@@ -312,11 +322,11 @@ function PlantaMar({ salao, varanda, ocupadas, ocupadasConsumer, reservasPorMesa
   return (
     <div className="mt-4">
       <div className="flex items-baseline justify-between">
-        <h4 className="text-sm font-semibold text-slate-800">Salão + Varanda</h4>
+        <h4 className="text-sm font-semibold text-slate-800">Salão + Varanda{reservado.length > 0 ? ' + Espaço reservado' : ''}</h4>
         <span className="text-xs text-slate-500">{livres}/{todas.length} livres</span>
       </div>
       <div className="mt-0.5 flex items-center justify-between gap-2">
-        <p className="text-[10px] text-slate-400">da entrada pro fundo · redondas: 6 e 20 (8 lugares), 19 e 54 (12 lugares)</p>
+        <p className="text-[10px] text-slate-400">da entrada pro fundo · redondas: 6 e 20 (8 lugares), 19 e 54 (12 lugares){reservado.length > 0 ? ' · espaço reservado: 101 a 120' : ''}</p>
         <button
           type="button"
           onClick={() => setModo(modo === 'planta' ? 'blocos' : 'planta')}
@@ -360,7 +370,7 @@ function PlantaMar({ salao, varanda, ocupadas, ocupadasConsumer, reservasPorMesa
         </div>
       )}
       <div className={`mt-1 flex flex-wrap gap-x-6 gap-y-3 rounded-lg bg-slate-50 p-2 ${modo === 'planta' ? 'hidden' : ''}`}>
-        {MAR_BLOCOS.map((b) => (
+        {blocos.map((b) => (
           <div key={b.titulo}>
             <div className="mb-1 text-[10px] font-medium text-slate-500">{b.titulo}</div>
             <div className="flex flex-col gap-1.5">
@@ -407,8 +417,12 @@ export function MapaMesas({ filiais, ocupadas, ocupadasConsumer, reservasPorMesa
         const marSalao = f.id === FILIAL_MAR ? areasComMesa.find((a) => a.nome === 'Salão') : undefined;
         const marVaranda = f.id === FILIAL_MAR ? areasComMesa.find((a) => a.nome === 'Varanda') : undefined;
         const plantaMar = !!(marSalao && marVaranda);
+        // Espaço reservado (área "Salão fechado"): entra na planta quando as
+        // mesas dele têm posição nela (101 a 120); senão segue em blocos, como antes.
+        const marFechado = plantaMar ? areasComMesa.find((a) => a.nome === 'Salão fechado') : undefined;
+        const marReservado = marFechado && (marFechado.mesas ?? []).every((m) => PLANTA_MAR_MESAS[m.numero]) ? marFechado : undefined;
         const outras = areasComMesa.filter(
-          (a) => a.nome !== 'Deck Superior' && a.nome !== 'Lounges' && a !== areiaArea && !(plantaMar && (a === marSalao || a === marVaranda)),
+          (a) => a.nome !== 'Deck Superior' && a.nome !== 'Lounges' && a !== areiaArea && !(plantaMar && (a === marSalao || a === marVaranda || a === marReservado)),
         );
         return (
           <div key={f.id} className="mt-3">
@@ -417,7 +431,7 @@ export function MapaMesas({ filiais, ocupadas, ocupadasConsumer, reservasPorMesa
               <AreiaGrid mesas={areiaArea.mesas!} ocupadas={ocupadas} ocupadasConsumer={ocupadasConsumer} reservasPorMesa={reservasPorMesa} filialId={f.id} />
             )}
             {plantaMar && (
-              <PlantaMar salao={marSalao!.mesas!} varanda={marVaranda!.mesas!} ocupadas={ocupadas} ocupadasConsumer={ocupadasConsumer} reservasPorMesa={reservasPorMesa} filialId={f.id} />
+              <PlantaMar salao={marSalao!.mesas!} varanda={marVaranda!.mesas!} reservado={marReservado?.mesas ?? []} ocupadas={ocupadas} ocupadasConsumer={ocupadasConsumer} reservasPorMesa={reservasPorMesa} filialId={f.id} />
             )}
             {outras.map((a) => (
               <Espaco key={a.nome} nome={a.nome} mesas={a.mesas!} ocupadas={ocupadas} ocupadasConsumer={ocupadasConsumer} reservasPorMesa={reservasPorMesa} filialId={f.id} />

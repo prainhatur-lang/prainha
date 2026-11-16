@@ -17,6 +17,12 @@ export const PLANTA_MAR = {
 
 export const PLANTA_MAR_REDONDAS = new Set(['6', '19', '20', '54']);
 
+/** Mesas pequenas (de 2 lugares, encostadas uma na outra) do espaço reservado. */
+export const PLANTA_MAR_LADO_PEQUENA_PCT = 2.1;
+export const PLANTA_MAR_PEQUENAS = new Set([
+  '106', '107', '108', '109', '110', '111', '112', '113', '114', '115', '116', '117', '118', '119',
+]);
+
 /** numero da mesa → [x%, y%] do centro na planta. */
 export const PLANTA_MAR_MESAS: Record<string, [number, number]> = {
   // salão · banco do fundo
@@ -66,6 +72,32 @@ export const PLANTA_MAR_MESAS: Record<string, [number, number]> = {
   '59': [84.24, 11.12],
   '60': [87.52, 7.16],
   '61': [90.22, 4.14],
+  // espaço reservado (área "Salão fechado") — disposição dita pelo dono em
+  // 16/11/2026; posição aproximada dentro da sala (a planta não traz essas mesas).
+  // sofá (banco da parede do fundo), da direita pra esquerda
+  '101': [21.67, 55.73],
+  '102': [17.5, 55.73],
+  '103': [13.33, 55.73],
+  '104': [9.17, 55.73],
+  '105': [5.0, 55.73],
+  // encostadas na frente (lado oposto ao sofá): 106-108 juntas, 109-111 juntas
+  '106': [3.54, 68.31],
+  '107': [5.71, 68.31],
+  '108': [7.88, 68.31],
+  '109': [11.25, 68.31],
+  '110': [13.42, 68.31],
+  '111': [15.58, 68.31],
+  // voltando pelo meio, em duplas
+  '112': [20.83, 61.94],
+  '113': [18.67, 61.94],
+  '114': [15.83, 61.94],
+  '115': [13.67, 61.94],
+  '116': [10.83, 61.94],
+  '117': [8.67, 61.94],
+  '118': [5.83, 61.94],
+  '119': [3.67, 61.94],
+  // na porta de entrada, do lado oposto ao sofá
+  '120': [21.04, 68.31],
 };
 
 /**
