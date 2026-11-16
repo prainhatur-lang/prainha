@@ -1,4 +1,4 @@
-// Histórico de temperatura do ambiente — leituras de hora em hora
+// Histórico de temperatura do ambiente — leituras de 15 em 15 minutos
 // (tuya_leitura.temperatura_c) dos sensores de temperatura da casa (aparelho
 // infravermelho). Gráfico dos últimos 7 dias + mínima/máxima/média por dia.
 
@@ -41,7 +41,7 @@ export async function HistoricoTemperatura({ filialId }: { filialId: string }) {
     <section className="mx-auto max-w-5xl px-4 pb-6">
       <div className="rounded-xl border border-slate-200 bg-white p-4">
         <h2 className="text-base font-semibold text-slate-800">Histórico de temperatura</h2>
-        <p className="mt-1 text-xs text-slate-500">Temperatura do ambiente gravada de hora em hora — últimos 7 dias.</p>
+        <p className="mt-1 text-xs text-slate-500">Temperatura do ambiente gravada de 15 em 15 minutos — últimos 7 dias.</p>
         {sensores.map((s) => {
           const serie = pontos
             .filter((p) => p.dispositivo_id === s.dispositivo_id)
@@ -49,7 +49,7 @@ export async function HistoricoTemperatura({ filialId }: { filialId: string }) {
           if (serie.length === 0) {
             return (
               <p key={s.dispositivo_id} className="mt-3 text-sm text-slate-500">
-                {s.nome}: ainda sem leituras — a primeira entra na próxima hora cheia.
+                {s.nome}: ainda sem leituras — a primeira entra no próximo quarto de hora.
               </p>
             );
           }
