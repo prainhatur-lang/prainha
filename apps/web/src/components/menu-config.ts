@@ -275,6 +275,12 @@ export const MENU_AREAS: MenuArea[] = [
             perm: 'pedido_compra.read',
             aka: ['Aguardando nota fiscal'],
           },
+          {
+            label: 'Antecipados: chegou ou não',
+            href: '/compras/antecipados',
+            perm: 'nota_compra.read',
+            aka: ['Pagamento antecipado', 'Pix antecipado', 'pago e não chegou', 'conferência de antecipados'],
+          },
         ],
       },
       {

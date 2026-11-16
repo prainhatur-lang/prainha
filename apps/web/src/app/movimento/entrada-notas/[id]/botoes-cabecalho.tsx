@@ -95,6 +95,8 @@ export function BotoesCabecalho({
   dataEmissao = null,
   cartoes = [],
   cartaoAtual = null,
+  canAntecipar = false,
+  valorAntecipar = null,
 }: {
   notaId: string;
   totalItens: number;
@@ -116,10 +118,17 @@ export function BotoesCabecalho({
   cartoes?: { banco: string; final: string }[];
   /** Cartão já informado nesta nota (pré-marca a opção). */
   cartaoAtual?: { banco: string; final: string; parcelas: number } | null;
+  /** Pagamento antecipado (16/11/2026): nota com fornecedor e ainda sem conta a
+   *  pagar pode lançar SÓ a conta, sem estoque — a mercadoria ainda não chegou. */
+  canAntecipar?: boolean;
+  /** Valor que vai virar conta a pagar no antecipado (parcelas ou total). */
+  valorAntecipar?: number | null;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
-  const [loading, setLoading] = useState<'match' | 'lancar' | 'excluir' | null>(null);
+  const [loading, setLoading] = useState<'match' | 'lancar' | 'excluir' | 'antecipar' | null>(null);
+  const [modalAntecipar, setModalAntecipar] = useState(false);
+  const [catAntecipar, setCatAntecipar] = useState<string>(categoriaSugerida?.id ?? '');
   const [msg, setMsg] = useState<{ tipo: 'ok' | 'erro'; texto: string } | null>(null);
   const [modalLancar, setModalLancar] = useState(false);
 
@@ -196,9 +205,38 @@ export function BotoesCabecalho({
     }
   }
 
+  async function antecipar() {
+    flushSync(() => {
+      setLoading('antecipar');
+      setMsg(null);
+    });
+    try {
+      const r = await fetch(`/api/nota-compra/${notaId}/pagar-antecipado`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ categoriaId: catAntecipar || null }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setMsg({ tipo: 'erro', texto: d.error ?? `HTTP ${r.status}` });
+      } else {
+        setModalAntecipar(false);
+        setMsg({
+          tipo: 'ok',
+          texto: `✓ Conta a pagar lançada (${d.contasCriadas}). Já aparece em Financeiro → Pagar por Pix.\nQuando a mercadoria chegar, marque em Compras → Antecipados.`,
+        });
+        start(() => router.refresh());
+      }
+    } catch (err) {
+      setMsg({ tipo: 'erro', texto: (err as Error).message });
+    } finally {
+      setLoading(null);
+    }
+  }
+
   return (
     <div className="flex flex-col items-end gap-2">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-end gap-2">
         <button
           type="button"
           onClick={excluir}
@@ -223,7 +261,75 @@ export function BotoesCabecalho({
         >
           {loading === 'lancar' ? 'Lançando...' : '✓ Lançar no estoque'}
         </button>
+        {canAntecipar && (
+          <button
+            type="button"
+            onClick={() => setModalAntecipar(true)}
+            disabled={loading !== null || pending}
+            title="Lança só a conta a pagar (sem estoque) pra pagar antes de a mercadoria chegar"
+            className="rounded-lg border border-amber-600 bg-amber-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {loading === 'antecipar' ? 'Lançando...' : '💸 Pagar antecipado'}
+          </button>
+        )}
       </div>
+      {modalAntecipar && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
+          onClick={() => setModalAntecipar(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md space-y-3 rounded-xl border border-slate-200 bg-white p-5 text-left shadow-lg"
+          >
+            <div>
+              <h2 className="text-sm font-semibold text-slate-900">💸 Pagar antecipado</h2>
+              <p className="mt-1 text-xs text-slate-600">
+                Lança só a <strong>conta a pagar</strong>
+                {valorAntecipar != null && valorAntecipar > 0 ? ` de ${brl(valorAntecipar)}` : ''}, sem dar
+                entrada no estoque — a mercadoria ainda não chegou. A conta aparece em{' '}
+                <strong>Financeiro → Pagar por Pix</strong> e a compra fica em{' '}
+                <strong>Compras → Antecipados</strong> até alguém marcar que chegou.
+              </p>
+              <p className="mt-1 text-[11px] text-slate-500">
+                Quando chegar, o “Lançar no estoque” continua igual e não cria conta de novo.
+              </p>
+            </div>
+            <label className="block text-xs font-medium text-slate-700">
+              Categoria da despesa
+              <select
+                value={catAntecipar}
+                onChange={(e) => setCatAntecipar(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-300 px-2 py-1.5 text-xs"
+              >
+                <option value="">(sem categoria)</option>
+                {categorias.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.descricao}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setModalAntecipar(false)}
+                className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={antecipar}
+                disabled={loading !== null}
+                className="rounded-lg border border-amber-600 bg-amber-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-600 disabled:opacity-50"
+              >
+                {loading === 'antecipar' ? 'Lançando...' : 'Lançar conta a pagar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {msg && (
         <div
           className={`max-w-md whitespace-pre-line rounded px-2 py-1 text-[11px] ${

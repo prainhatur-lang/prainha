@@ -621,6 +621,19 @@ export default async function NotaDetalhePage(props: {
               tipo: c.tipo,
             }))}
             temFornecedor={nota.fornecedorId != null}
+            canAntecipar={
+              nota.fornecedorId != null &&
+              contasPagar.length === 0 &&
+              !algumLancado &&
+              duplicatas.every((d) => d.contaPagarId == null) &&
+              nota.situacao !== 'CANCELADA' &&
+              nota.situacao !== 'DENEGADA'
+            }
+            valorAntecipar={
+              duplicatas.length
+                ? duplicatas.reduce((a, d) => a + Number(d.valor), 0)
+                : Number(nota.valorTotal ?? 0)
+            }
             categoriaSugerida={categoriaSugerida}
             pagamentoXml={(nota.pagamentoXml as PagamentoXml | null) ?? null}
             valorTotalNota={valorTotalNota > 0 ? valorTotalNota : null}
