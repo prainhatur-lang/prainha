@@ -8,6 +8,11 @@
 //
 //   cd packages/db && node scripts/carta-vinhos-mar.cjs [molde.html]
 //
+// 17/11/2026 (dono): "vinho de meia garrafa separado, num grupo novo, junto dos
+// espumantes; do lado direito cerveja, refrigerante, água de coco, água, os drinks,
+// Red Bull". Esquerda = espumantes, meia garrafa, brancos, rosés e destilados;
+// meio = tintos; direita = cervejas, águas/refrigerantes/energéticos e drinks.
+//
 // Sai em ~/Downloads/carta-vinhos-drinks-prainha-mar.html (+ .pdf pelo Chrome).
 const { readFileSync, writeFileSync, existsSync } = require('node:fs');
 const { execFileSync } = require('node:child_process');
@@ -63,7 +68,7 @@ function tipoDe(nome, etiqueta) {
 
 function nomeVinho(bruto) {
   let n = bruto.replace(/\s+/g, ' ').trim();
-  const meia = /375\s*ml/i.test(n);
+  const pequena = (n.match(/\b(187|375)\s*ml/i) || [])[1]; // 375 vira grupo próprio; 187 (baby) fica no nome
   n = n
     .replace(/^vinho\s+(tinto|branco|ros[eé]|verde)\s+/i, '')
     .replace(/\s+vinho\s+ros[eé]$/i, '')
@@ -76,7 +81,7 @@ function nomeVinho(bruto) {
     .trim();
   n = n.replace(/^do Chaves\b/i, 'Tapada do Chaves').replace(/\bChateau\b/g, 'Château').replace(/\breserva\b/g, 'Reserva');
   n = n.replace(/\bEvora\b/g, 'Évora').replace(/\bMoet\b/g, 'Moët').replace(/\bD Or\b/, "d'Or").replace(/\bDoc\b/, 'DOC').replace(/\bClassico\b/g, 'Clássico');
-  if (meia) n += ' (375 ml)';
+  if (pequena === '187') n += ' (187 ml)';
   return n.charAt(0).toUpperCase() + n.slice(1);
 }
 
@@ -94,7 +99,7 @@ function blocosPorPais(vinhos) {
       n: lista.length,
       html: `<div class="bloco">${pais ? `<div class="pais">${esc(pais)}</div>` : ''}${lista
         .sort((a, b) => a.preco - b.preco || a.nome.localeCompare(b.nome))
-        .map((v) => item(v.nome, v.preco))
+        .map((v) => item(v.nome, v.preco, v.desc))
         .join('')}</div>`,
     }));
 }
@@ -125,6 +130,67 @@ const NOME_DRINK = {
   'johnnie red label': 'Johnnie Walker Red Label',
 };
 
+// ---- cervejas e sem álcool: cabem em meia página juntando sabores/versões de mesmo
+// preço numa linha só. O que não casar com nenhum grupo sai sozinho (nada some). ----
+const GRUPOS_CERVEJA = [
+  ['Chope Brahma · Heineken (caneca 300 ml)', /^chopp/],
+  ['Heineken · Heineken Ultimate', /^heineken long neck/],
+  ['Corona Extra', /^corona extra long neck$/],
+  ['Stella Artois', /^stella artois long neck$/],
+  ['Heineken 0.0 · Corona Zero (sem álcool)', /heineken zero|corona.*zero/],
+  ['Stella Artois sem glúten', /stella.*gluten/],
+  ['Amstel Ultra sem glúten', /amstel/],
+  ['Baden Baden Cristal · Witbier', /baden/],
+];
+const GRUPOS_SEM_ALCOOL = [
+  ['Água mineral sem gás', /^agua mineral/],
+  ['Água mineral com gás', /^agua com gas/],
+  ['H2OH! Limoneto', /h2oh/],
+  ['Água de coco — copo', /agua de coco copo/],
+  ['Água de coco — jarra', /agua de coco jarra/],
+  ['Refrigerante lata', /coca|fanta|guarana|sprite|schweppes citrus/, ''],
+  ['Água tônica', /agua tonica/, 'agua tonica'],
+  ['Suco da fruta — copo', /^sucos? copo/],
+  ['Suco da fruta — jarra', /^sucos? jarra/],
+  ['Soda italiana', /soda italiana/, 'soda italiana'],
+  ['Red Bull', /red bull/, 'red bull'],
+];
+const grafia = (t) =>
+  t
+    .replace(/\blata\b/gi, '')
+    .replace(/coca[- ]cola/gi, 'Coca-Cola')
+    .replace(/guarana/gi, 'Guaraná')
+    .replace(/antartica/gi, 'Antarctica')
+    .replace(/zero acucar/gi, 'Zero')
+    .replace(/curacau/gi, 'Curaçau')
+    .replace(/limao/gi, 'limão')
+    .replace(/\s+/g, ' ')
+    .trim();
+/** linhas do banco → itens da carta, pelos grupos; [rótulo, regex, prefixo a tirar pra listar as versões, descrição fixa]. */
+function juntar(linhas, grupos) {
+  const usados = new Set();
+  const saida = [];
+  for (const [rotulo, re, prefixo, descFixa] of grupos) {
+    const meus = linhas.filter((l) => !usados.has(l) && re.test(semAcento(l.nome.replace(/\s+/g, ' ').trim())));
+    if (!meus.length) continue;
+    meus.forEach((l) => usados.add(l));
+    const precos = [...new Set(meus.map((l) => l.preco))].sort((a, b) => a - b);
+    const preco = precos.length === 1 ? precos[0] : `${brl(precos[0])} a ${precos[precos.length - 1]}`;
+    let desc = descFixa;
+    if (prefixo !== undefined && prefixo !== null) {
+      const versoes = [...new Set(meus.map((l) => {
+        const n = l.nome.replace(/\s+/g, ' ').trim();
+        const resto = prefixo && semAcento(n).startsWith(prefixo) ? n.slice(prefixo.length) : n;
+        return grafia(resto) || 'Tradicional';
+      }))];
+      desc = versoes.join(', ');
+    }
+    saida.push({ nome: rotulo, preco, desc });
+  }
+  for (const l of linhas) if (!usados.has(l)) saida.push({ nome: grafia(l.nome), preco: l.preco });
+  return saida;
+}
+
 (async () => {
   if (!existsSync(MOLDE)) throw new Error(`Molde não encontrado: ${MOLDE}`);
   const molde = readFileSync(MOLDE, 'utf8');
@@ -152,12 +218,13 @@ const NOME_DRINK = {
     WHERE p.filial_id = ${MAR}
       AND coalesce(p.descontinuado, false) = false
       AND v.cardapio_digital = true AND v.data_pausado IS NULL AND v.preco_venda > 0
-      AND e.nome IN ('Vinho', 'Espumante', 'Drink', 'Cachaça', 'Vodka', 'Whisky')
+      AND e.nome IN ('Vinho', 'Espumante', 'Drink', 'Cachaça', 'Vodka', 'Whisky', 'Cerveja', 'Bebida não alcoolica')
     ORDER BY p.nome, v.preco_venda`;
   await sql.end();
 
   // ---------- vinhos ----------
-  const porTipo = { espumante: [], branco: [], rose: [], verde: [], sobremesa: [], tinto: [] };
+  const porTipo = { espumante: [], meia: [], branco: [], rose: [], verde: [], sobremesa: [], tinto: [] };
+  const NOME_TIPO = { branco: 'Branco', rose: 'Rosé', verde: 'Verde', sobremesa: 'Sobremesa', tinto: 'Tinto' };
   const semPais = [];
   const deFora = []; // "Promo"/"PJ" é item interno de promoção, sem rótulo definido: não vai pro impresso
   for (const l of linhas.filter((x) => x.etiqueta === 'Vinho' || x.etiqueta === 'Espumante')) {
@@ -168,18 +235,23 @@ const NOME_DRINK = {
     const tipo = tipoDe(l.nome, l.etiqueta);
     const pais = paisDe(l.nome, l.nacionalidade);
     if (!pais) semPais.push(l.nome);
-    porTipo[tipo].push({ nome: nomeVinho(l.nome), preco: l.preco, pais });
+    // meia garrafa (375 ml) de vinho: grupo próprio, com o tipo embaixo do nome
+    if (tipo !== 'espumante' && /\b375\s*ml/i.test(l.nome)) porTipo.meia.push({ nome: nomeVinho(l.nome), preco: l.preco, pais, desc: NOME_TIPO[tipo] });
+    else porTipo[tipo].push({ nome: nomeVinho(l.nome), preco: l.preco, pais });
   }
   const secao = (titulo, vinhos) =>
     vinhos.length ? `<section><h2>${titulo}</h2>${blocosPorPais(vinhos).map((b) => b.html).join('')}</section>` : '';
 
   const esquerda = [
     secao('Espumantes &amp; Champagnes', porTipo.espumante),
+    secao('Vinhos — Meia Garrafa (375 ml)', porTipo.meia),
     secao('Vinhos Brancos', porTipo.branco),
-    secao('Vinho Verde', porTipo.verde),
-    secao('Vinhos Rosés', porTipo.rose),
     secao('Vinhos de Sobremesa', porTipo.sobremesa),
   ].join('\n  ');
+  // rosés e verde descem pro pé da 2ª coluna do meio (sobra espaço lá; a esquerda ficou com os destilados)
+  const verde = secao('Vinho Verde', porTipo.verde); // pé da 1ª coluna
+  const roses = secao('Vinhos Rosés', porTipo.rose); // pé da 2ª coluna
+  const rosesEVerde = verde + roses;
 
   // tintos em 2 colunas: países inteiros, equilibrando a altura (itens + título)
   const blocos = blocosPorPais(porTipo.tinto);
@@ -193,7 +265,9 @@ const NOME_DRINK = {
   }
 
   // ---------- drinks ----------
-  const bar = linhas.filter((x) => !['Vinho', 'Espumante'].includes(x.etiqueta));
+  const bar = linhas.filter((x) => !['Vinho', 'Espumante', 'Cerveja', 'Bebida não alcoolica'].includes(x.etiqueta));
+  const cervejas = juntar(linhas.filter((x) => x.etiqueta === 'Cerveja'), GRUPOS_CERVEJA);
+  const semAlcool = juntar(linhas.filter((x) => x.etiqueta === 'Bebida não alcoolica'), GRUPOS_SEM_ALCOOL);
   const grupos = { casa: [], classicos: [], caipis: [], zero: [], doses: [], garrafas: [] };
   const cachacas = [];
   for (const l of bar) {
@@ -215,13 +289,13 @@ const NOME_DRINK = {
           .join('')}</section>`
       : '';
   const direita = [
+    sec('Cervejas &amp; Chopes', cervejas, false),
+    sec('Águas, Refrigerantes &amp; Energéticos', semAlcool, false),
     sec('Drinks da Casa', grupos.casa),
     sec('Clássicos', grupos.classicos),
-    sec('Caipirinhas &amp; Coquetéis', grupos.caipis),
-    sec('Sem Álcool', grupos.zero),
-    sec('Doses', grupos.doses),
-    sec('Garrafas', grupos.garrafas),
+    sec('Caipirinhas &amp; Coquetéis', [...grupos.caipis, ...grupos.zero]),
   ].join('\n  ');
+  const destilados = [sec('Destilados — Dose', grupos.doses), sec('Destilados — Garrafa', grupos.garrafas)].join('\n  ');
 
   const css = `
 /* carta de vinhos e drinks (15/11/2026) — mesmo molde, miolo de bebida */
@@ -245,6 +319,21 @@ h1.center{margin:1.5mm 0 0}
 #right .it{margin-bottom:.9mm}
 #right h2{margin-top:2mm;margin-bottom:.8mm;font-size:10pt}
 #right .qrbox{margin-top:auto}
+/* 17/11: destilados foram pra esquerda; direita ganhou cerveja e sem álcool */
+#left .nm,#left .pr{font-size:10.2pt}
+#left .desc{font-size:8.2pt;line-height:1.15;margin-top:0}
+#left h2{margin-bottom:1mm}
+#left .pais{font-size:10pt;margin:1.4mm 0 .8mm}
+#right .nm,#right .pr{font-size:8.5pt;line-height:1.12}
+#right .desc{font-size:7pt;line-height:1.1}
+#right .it{margin-bottom:.3mm}
+#right h2{margin-top:1.1mm;margin-bottom:.5mm;font-size:9.2pt}
+#left .it{margin-bottom:2mm}
+#left h2{margin-top:4.5mm}
+#center h2{margin-top:5mm;margin-bottom:1mm}
+#center .it{margin-bottom:1.9mm}
+#center .nm,#center .pr{font-size:11.8pt}
+#center .pais{margin:3mm 0 1.4mm}
 `;
 
   const painel = (id, classe, miolo) =>
@@ -254,21 +343,21 @@ h1.center{margin:1.5mm 0 0}
     head.replace(/<title>[\s\S]*?<\/title>/, '<title>Carta de Vinhos &amp; Drinks — Prainha Mar</title>') +
     css +
     '</style></head><body>\n' +
-    painel('left', 'half', `  ${topoLado}\n  <h1>Espumantes,<br>Brancos &amp; Rosés</h1>\n  ${esquerda}`) +
+    painel('left', 'half', `  ${topoLado}\n  <h1>Espumantes,<br>Brancos &amp; Destilados</h1>\n  ${esquerda}\n  ${destilados}`) +
     '\n' +
     painel(
       'center',
       'full',
-      `  ${topoCentro}\n  <h1 class="center">Carta de Vinhos</h1>\n  <div class="subcentro">Tintos</div>\n  <div class="cols"><div class="col">${colunas[0].join('')}</div><div class="col">${colunas[1].join('')}</div></div>\n  <p class="nota-rodape center">Garrafas de 750 ml, salvo indicação. &nbsp;·&nbsp; Pergunte ao garçom sobre safras e disponibilidade.</p>`,
+      `  ${topoCentro}\n  <h1 class="center">Carta de Vinhos</h1>\n  <div class="subcentro">${rosesEVerde ? 'Tintos, Rosés &amp; Verde' : 'Tintos'}</div>\n  <div class="cols"><div class="col">${colunas[0].join('')}${verde}</div><div class="col">${colunas[1].join('')}${roses}</div></div>\n  <p class="nota-rodape center">Garrafas de 750 ml, salvo indicação. &nbsp;·&nbsp; Pergunte ao garçom sobre safras e disponibilidade.</p>`,
     ) +
     '\n' +
-    painel('right', 'half', `  ${topoLado}\n  <h1>Drinks</h1>\n  ${direita}\n  ${qr}`) +
+    painel('right', 'half', `  ${topoLado}\n  <h1>Bebidas &amp; Drinks</h1>\n  ${direita}\n  ${qr}`) +
     '\n</body></html>';
 
   writeFileSync(`${SAIDA}.html`, html);
   console.log(`[ok] ${SAIDA}.html`);
   console.log(
-    `vinhos: ${Object.entries(porTipo).map(([k, v]) => `${k} ${v.length}`).join(' · ')} | bar: ${bar.length} linhas`,
+    `vinhos: ${Object.entries(porTipo).map(([k, v]) => `${k} ${v.length}`).join(' · ')} | bar: ${bar.length} linhas · cervejas ${cervejas.length} · sem álcool ${semAlcool.length}`,
   );
   if (deFora.length) console.log(`FORA DO IMPRESSO (promoção sem rótulo): ${deFora.join('; ')}`);
   if (cachacas.length) console.log(`FORA DO IMPRESSO: ${cachacas.length} itens chamados só "cachaça" (R$ ${Math.min(...cachacas)} a ${Math.max(...cachacas)})`);
