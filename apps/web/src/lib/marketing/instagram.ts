@@ -353,6 +353,18 @@ export async function criarContainerInstagram(
   return String(j.id ?? '');
 }
 
+/** Stories (pedido do dono 17/11/2026: "é para publicar no Story"). Cada foto ou
+ *  vídeo é um Story próprio — a Meta não aceita legenda nem carrossel em Story.
+ *  Mesma permissão do feed (instagram_business_content_publish). Vídeo de Story
+ *  vai até 60 s; foto fica 24 h no ar como qualquer Story. */
+export async function criarContainerStoryInstagram(token: string, midia: MidiaParaPublicar): Promise<string> {
+  const j =
+    midia.tipo === 'video'
+      ? await postar('me/media', token, { media_type: 'STORIES', video_url: midia.url })
+      : await postar('me/media', token, { media_type: 'STORIES', image_url: midia.url });
+  return String(j.id ?? '');
+}
+
 /** Situação do container: FINISHED · IN_PROGRESS · ERROR · EXPIRED · PUBLISHED */
 export async function situacaoContainerInstagram(token: string, id: string): Promise<{ status: string; detalhe: string }> {
   const j = await chamar(id, token, { fields: 'status_code,status' });

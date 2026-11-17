@@ -109,7 +109,7 @@ export async function PATCH(req: Request) {
   }
   if (b.redes !== undefined) {
     const redes = [...new Set((Array.isArray(b.redes) ? b.redes : []).map(String))].filter(
-      (r) => r === 'instagram' || r === 'tiktok',
+      (r) => r === 'instagram' || r === 'tiktok' || r === 'instagram_story',
     );
     if (!redes.length) return erro('Escolha Instagram, TikTok ou os dois.');
     mudar.redes = redes;

@@ -31,7 +31,7 @@ export interface PostFila {
 }
 
 const MAX = 50 * 1024 * 1024;
-const NOME_REDE: Record<string, string> = { instagram: 'Instagram', tiktok: 'TikTok' };
+const NOME_REDE: Record<string, string> = { instagram: 'Instagram', tiktok: 'TikTok', instagram_story: 'Stories' };
 /** Instagram mostra a foto em 1080 px: abaixo disso ela é esticada e borra. */
 const FOTO_MIN_PX = 1080;
 
@@ -465,7 +465,7 @@ function Card({ filialId, p, casas }: { filialId: string; p: PostFila; casas: Ar
                 className="rounded border border-slate-300 px-1 py-0.5 text-sm text-slate-900"
               />
             </label>
-            {['instagram', 'tiktok'].map((r) => (
+            {['instagram', 'tiktok', 'instagram_story'].map((r) => (
               <label key={r} className="flex items-center gap-1">
                 <input type="checkbox" checked={redes.includes(r)} onChange={() => alternar(r)} /> {NOME_REDE[r]}
               </label>

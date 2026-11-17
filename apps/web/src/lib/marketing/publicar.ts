@@ -14,6 +14,7 @@ import { chaveValida } from './chave';
 import {
   ErroInstagram,
   criarContainerInstagram,
+  criarContainerStoryInstagram,
   esperarContainerInstagram,
   publicarContainerInstagram,
   situacaoContainerInstagram,
@@ -43,6 +44,8 @@ export interface ResultadoRede {
   erro?: string;
   obs?: string;
   quando?: string;
+  /** Stories: quantas mídias do post já saíram (cada uma é um Story). */
+  feitos?: number;
 }
 
 /** Quanto tempo um PUBLICANDO fica "preso" a quem pegou antes de outro poder pegar. */
@@ -106,6 +109,64 @@ async function noInstagram(p: PostMarketing, ant: ResultadoRede | undefined, ate
   }
   const det = (await situacaoContainerInstagram(ig.accessToken, container).catch(() => ({ detalhe: '' }))).detalhe;
   return { estado: 'erro', erro: `O Instagram recusou o arquivo (${s}${det ? `: ${det}` : ''}).` };
+}
+
+/** Nome da rede pra mensagem. */
+const nomeRede = (r: string) => (r === 'instagram' ? 'Instagram' : r === 'instagram_story' ? 'Stories' : 'TikTok');
+
+/** Stories do Instagram: rede 'instagram_story' (17/11/2026). Cada mídia do post
+ *  sai como um Story, na ordem, sem legenda. `feitos` guarda quantas já saíram,
+ *  pra rodada seguinte do cron continuar de onde parou sem repetir. */
+async function noInstagramStory(p: PostMarketing, ant: ResultadoRede | undefined, ate: number): Promise<ResultadoRede> {
+  const ig = await chaveValida(p.filialId, 'instagram');
+  if (!ig) return { estado: 'erro', erro: 'O Instagram desta casa não está conectado.' };
+  if (!temPublicarInstagram(ig.escopos)) {
+    return {
+      estado: 'erro',
+      erro: 'A ligação do Instagram ainda não tem a permissão de publicar (instagram_business_content_publish).',
+    };
+  }
+  let feitos = ant?.feitos ?? 0;
+  let container = ant?.estado === 'aguardando' ? ant.container : undefined;
+  let ultimo: { id: string; link: string } = { id: ant?.id ?? '', link: ant?.link ?? '' };
+  while (feitos < p.midias.length) {
+    if (container) {
+      const s0 = (await situacaoContainerInstagram(ig.accessToken, container)).status;
+      if (s0 === 'EXPIRED' || s0 === 'ERROR') container = undefined;
+    }
+    if (!container) {
+      const m = p.midias[feitos]!;
+      const [url] = await linksAssinados([m.path]);
+      container = await criarContainerStoryInstagram(ig.accessToken, { tipo: m.tipo, url: url! });
+      if (!container) return { estado: 'erro', feitos, erro: 'O Instagram não devolveu o número do Story.' };
+    }
+    const s = await esperarContainerInstagram(ig.accessToken, container, Math.max(5000, ate - Date.now()));
+    if (s === 'IN_PROGRESS') {
+      return {
+        estado: 'aguardando',
+        container,
+        feitos,
+        id: ultimo.id || undefined,
+        link: ultimo.link || undefined,
+        obs: 'O Instagram ainda está processando o Story; sai sozinho em alguns minutos.',
+      };
+    }
+    if (s !== 'FINISHED') {
+      const det = (await situacaoContainerInstagram(ig.accessToken, container).catch(() => ({ detalhe: '' }))).detalhe;
+      return { estado: 'erro', feitos, erro: `O Instagram recusou o arquivo do Story (${s}${det ? `: ${det}` : ''}).` };
+    }
+    ultimo = await publicarContainerInstagram(ig.accessToken, ig.contaId, container);
+    container = undefined;
+    feitos++;
+  }
+  return {
+    estado: 'ok',
+    id: ultimo.id,
+    link: ultimo.link,
+    feitos,
+    obs: `${feitos === 1 ? 'Story publicado' : `${feitos} Stories publicados`} (fica 24 h no ar; Story não leva legenda).`,
+    quando: new Date().toISOString(),
+  };
 }
 
 async function noTiktok(p: PostMarketing, base: string): Promise<ResultadoRede> {
@@ -201,7 +262,12 @@ export async function processarPost(
     const ant = resultado[rede];
     if (ant?.estado === 'ok') continue;
     try {
-      resultado[rede] = rede === 'instagram' ? await noInstagram(p, ant, ate) : await noTiktok(p, base);
+      resultado[rede] =
+        rede === 'instagram'
+          ? await noInstagram(p, ant, ate)
+          : rede === 'instagram_story'
+            ? await noInstagramStory(p, ant, ate)
+            : await noTiktok(p, base);
     } catch (e) {
       console.error(`[marketing/publicar] ${rede} ${p.id}:`, msgErro(e));
       resultado[rede] = { estado: 'erro', erro: msgErro(e) };
@@ -221,7 +287,7 @@ export async function processarPost(
   const erro =
     p.redes
       .filter((r) => resultado[r]?.estado === 'erro')
-      .map((r) => `${r === 'instagram' ? 'Instagram' : 'TikTok'}: ${resultado[r]?.erro ?? ''}`)
+      .map((r) => `${nomeRede(r)}: ${resultado[r]?.erro ?? ''}`)
       .join(' · ') || null;
   const [fim] = await db
     .update(T)

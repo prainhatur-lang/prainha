@@ -44,7 +44,7 @@ interface Arquivo {
 }
 
 const MAX = 50 * 1024 * 1024;
-const NOME_REDE: Record<string, string> = { instagram: 'Instagram', tiktok: 'TikTok' };
+const NOME_REDE: Record<string, string> = { instagram: 'Instagram', tiktok: 'TikTok', instagram_story: 'Stories' };
 const STATUS: Record<string, { txt: string; cor: string }> = {
   RASCUNHO: { txt: 'Rascunho', cor: 'bg-slate-100 text-slate-700' },
   AGENDADO: { txt: 'Agendado', cor: 'bg-sky-100 text-sky-800' },
@@ -498,6 +498,23 @@ export function Publicar({
                     falta liberar a permissão de publicar no app da Meta — por enquanto dá pra salvar e agendar, mas não sai
                   </span>
                 ) : null}
+              </span>
+            </label>
+            <label className={`flex items-start gap-2 ${redes.igLigado ? '' : 'opacity-50'}`}>
+              <input
+                type="checkbox"
+                checked={escolhidas.includes('instagram_story')}
+                disabled={!redes.igLigado}
+                onChange={() => alternar('instagram_story')}
+                className="mt-1"
+              />
+              <span>
+                Stories do Instagram
+                <span className="block text-[11px] text-slate-500">
+                  {!redes.igLigado
+                    ? 'não conectado'
+                    : 'cada foto ou vídeo vira um Story (24 h no ar, sem legenda; vídeo de até 60 s, de preferência em pé)'}
+                </span>
               </span>
             </label>
             <label className={`flex items-start gap-2 ${redes.ttLigado ? '' : 'opacity-50'}`}>

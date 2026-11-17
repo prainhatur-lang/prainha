@@ -50,7 +50,7 @@ export async function POST(req: Request) {
   if (videos && midias.length > 1) return erro('Vídeo vai sozinho: um vídeo por post (ou até 10 fotos).');
   if (midias.length > 10) return erro('No máximo 10 fotos por post.');
   const redes = [...new Set((Array.isArray(b.redes) ? b.redes : []).map(String))].filter(
-    (r) => r === 'instagram' || r === 'tiktok',
+    (r) => r === 'instagram' || r === 'tiktok' || r === 'instagram_story',
   );
   if (!redes.length) return erro('Escolha Instagram, TikTok ou os dois.');
   const legenda = String(b.legenda ?? '').trim();
