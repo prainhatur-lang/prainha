@@ -45,7 +45,7 @@ const PAIS_DO_PRODUTOR = [
   [/condor|paya/, 'Chile'],
   [/chandon|casa perini/, 'Brasil'],
 ];
-const ORDEM_PAIS = ['Portugal', 'Espanha', 'França', 'Itália', 'Argentina', 'Chile', 'Brasil', 'Uruguai'];
+const ORDEM_PAIS = ['Portugal', 'Espanha', 'França', 'Itália', 'Chile', 'Argentina', 'Brasil', 'Uruguai'];
 const pesoPais = (p) => (ORDEM_PAIS.indexOf(p) === -1 ? 50 : ORDEM_PAIS.indexOf(p));
 
 function paisDe(nome, nacionalidade) {
@@ -259,13 +259,17 @@ function juntar(linhas, grupos) {
     secao('Vinhos de Sobremesa', porTipo.sobremesa),
   ].join('\n  ');
   // rosés e verde descem pro pé da 2ª coluna do meio (sobra espaço lá; a esquerda ficou com os destilados)
-  const verde = secao('Vinho Verde', porTipo.verde); // pé da 1ª coluna
+  const verde = secao('Vinho Verde', porTipo.verde); // 2ª coluna, logo abaixo dos tintos (dono 18/11/2026), antes dos rosés
   const roses = secao('Vinhos Rosés', porTipo.rose); // pé da 2ª coluna
   const rosesEVerde = verde + roses;
 
   // tintos em 2 colunas: países inteiros, equilibrando a altura (itens + título)
   const blocos = blocosPorPais(porTipo.tinto);
-  const total = blocos.reduce((s, b) => s + b.n + 1.6, 0);
+  // a 2ª coluna ainda leva verde e rosés embaixo dos tintos (a Argentina fecha os tintos: dono 18/11/2026,
+  // "o vinho verde deveria ficar embaixo dos tintos da argentina"), então o peso deles entra na conta
+  const pesoSecao = (l) => (l.length ? l.length + 4.2 : 0);
+  const extra = pesoSecao(porTipo.verde) + pesoSecao(porTipo.rose);
+  const total = blocos.reduce((s, b) => s + b.n + 1.6, 0) + extra;
   const colunas = [[], []];
   let acc = 0;
   for (const b of blocos) {
@@ -341,9 +345,9 @@ h1.center{margin:1.5mm 0 0}
 #left .it{margin-bottom:1.55mm}
 #left h2{margin-top:3.6mm}
 #center h2{margin-top:5mm;margin-bottom:1mm}
-#center .it{margin-bottom:1.9mm}
+#center .it{margin-bottom:1.45mm}
 #center .nm,#center .pr{font-size:11.8pt}
-#center .pais{margin:3mm 0 1.4mm}
+#center .pais{margin:2.4mm 0 1.2mm}
 `;
 
   const painel = (id, classe, miolo) =>
@@ -358,7 +362,7 @@ h1.center{margin:1.5mm 0 0}
     painel(
       'center',
       'full',
-      `  ${topoCentro}\n  <h1 class="center">Carta de Vinhos</h1>\n  <div class="subcentro">${rosesEVerde ? 'Tintos, Rosés &amp; Verde' : 'Tintos'}</div>\n  <div class="cols"><div class="col">${colunas[0].join('')}${verde}</div><div class="col">${colunas[1].join('')}${roses}</div></div>\n  <p class="nota-rodape center">Garrafas de 750 ml, salvo indicação. &nbsp;·&nbsp; Pergunte ao garçom sobre safras e disponibilidade.</p>`,
+      `  ${topoCentro}\n  <h1 class="center">Carta de Vinhos</h1>\n  <div class="subcentro">${rosesEVerde ? 'Tintos, Rosés &amp; Verde' : 'Tintos'}</div>\n  <div class="cols"><div class="col">${colunas[0].join('')}</div><div class="col">${colunas[1].join('')}${verde}${roses}</div></div>\n  <p class="nota-rodape center">Garrafas de 750 ml, salvo indicação. &nbsp;·&nbsp; Pergunte ao garçom sobre safras e disponibilidade.</p>`,
     ) +
     '\n' +
     painel('right', 'half', `  ${topoLado}\n  <h1>Bebidas &amp; Drinks</h1>\n  ${direita}\n  ${qr}`) +
