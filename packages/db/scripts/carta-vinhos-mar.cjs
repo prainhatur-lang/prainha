@@ -43,7 +43,7 @@ const PAIS_DO_PRODUTOR = [
   [/barolo|puglia|chianti|primitivo/, 'Itália'],
   [/amadeo/, 'Argentina'],
   [/condor|paya/, 'Chile'],
-  [/chandon/, 'Brasil'],
+  [/chandon|casa perini/, 'Brasil'],
 ];
 const ORDEM_PAIS = ['Portugal', 'Espanha', 'França', 'Itália', 'Argentina', 'Chile', 'Brasil', 'Uruguai'];
 const pesoPais = (p) => (ORDEM_PAIS.indexOf(p) === -1 ? 50 : ORDEM_PAIS.indexOf(p));
@@ -71,6 +71,8 @@ function nomeVinho(bruto) {
   const pequena = (n.match(/\b(187|375)\s*ml/i) || [])[1]; // 375 vira grupo próprio; 187 (baby) fica no nome
   n = n
     .replace(/^vinho\s+(tinto|branco|ros[eé]|verde)\s+/i, '')
+    .replace(/^espumante\s+/i, '')
+    .replace(/\bBrut Rose\b/i, 'Brut Rosé')
     .replace(/\s+vinho\s+ros[eé]$/i, '')
     .replace(/\s*-?\s*(tinto\s+)?\d{3}\s*ml/gi, '')
     .replace(/\s+tinto\b/gi, '')
@@ -211,13 +213,14 @@ function juntar(linhas, grupos) {
 
   const sql = postgres(process.env.DATABASE_URL_DIRECT || process.env.DATABASE_URL, { ssl: 'require' });
   const linhas = await sql`
-    SELECT e.nome AS etiqueta, p.nome, p.nacionalidade, v.preco_venda::float AS preco
+    SELECT e.nome AS etiqueta, p.nome, p.nacionalidade, v.preco_venda::float AS preco, v.cardapio_digital AS digital
     FROM produto p
     JOIN produto_variante v ON v.produto_id = p.id AND v.data_delete IS NULL
     JOIN produto_etiqueta e ON e.filial_id = p.filial_id AND p.codigo_etiqueta = e.codigo_externo::text
     WHERE p.filial_id = ${MAR}
       AND coalesce(p.descontinuado, false) = false
-      AND v.cardapio_digital = true AND v.data_pausado IS NULL AND v.preco_venda > 0
+      -- espumante entra mesmo fora do cardápio digital (dono 17/11/2026: "Sim, incluir os 4"); pausado segue fora
+      AND (v.cardapio_digital = true OR e.nome = 'Espumante') AND v.data_pausado IS NULL AND v.preco_venda > 0
       AND e.nome IN ('Vinho', 'Espumante', 'Drink', 'Cachaça', 'Vodka', 'Whisky', 'Cerveja', 'Bebida não alcoolica')
     ORDER BY p.nome, v.preco_venda`;
   await sql.end();
@@ -226,10 +229,17 @@ function juntar(linhas, grupos) {
   const porTipo = { espumante: [], meia: [], branco: [], rose: [], verde: [], sobremesa: [], tinto: [] };
   const NOME_TIPO = { branco: 'Branco', rose: 'Rosé', verde: 'Verde', sobremesa: 'Sobremesa', tinto: 'Tinto' };
   const semPais = [];
+  // fora do cardápio digital só entram os 4 espumantes que o dono aprovou (17/11/2026); outro que aparecer é avisado
+  const ESPUMANTE_APROVADO = /casa perini (brut|aquarela)|chandon brut/;
+  const foraDoDigital = [];
   const deFora = []; // "Promo"/"PJ" é item interno de promoção, sem rótulo definido: não vai pro impresso
   for (const l of linhas.filter((x) => x.etiqueta === 'Vinho' || x.etiqueta === 'Espumante')) {
     if (/\b(promo|pj)\b/i.test(l.nome)) {
       deFora.push(`${l.nome} (${brl(l.preco)})`);
+      continue;
+    }
+    if (!l.digital && !ESPUMANTE_APROVADO.test(semAcento(l.nome))) {
+      foraDoDigital.push(`${l.nome} (${brl(l.preco)})`);
       continue;
     }
     const tipo = tipoDe(l.nome, l.etiqueta);
@@ -328,8 +338,8 @@ h1.center{margin:1.5mm 0 0}
 #right .desc{font-size:7pt;line-height:1.1}
 #right .it{margin-bottom:.3mm}
 #right h2{margin-top:1.1mm;margin-bottom:.5mm;font-size:9.2pt}
-#left .it{margin-bottom:2mm}
-#left h2{margin-top:4.5mm}
+#left .it{margin-bottom:1.55mm}
+#left h2{margin-top:3.6mm}
 #center h2{margin-top:5mm;margin-bottom:1mm}
 #center .it{margin-bottom:1.9mm}
 #center .nm,#center .pr{font-size:11.8pt}
@@ -359,6 +369,7 @@ h1.center{margin:1.5mm 0 0}
   console.log(
     `vinhos: ${Object.entries(porTipo).map(([k, v]) => `${k} ${v.length}`).join(' · ')} | bar: ${bar.length} linhas · cervejas ${cervejas.length} · sem álcool ${semAlcool.length}`,
   );
+  if (foraDoDigital.length) console.log(`FORA DO IMPRESSO (espumante fora do cardápio digital, sem aprovação): ${foraDoDigital.join('; ')}`);
   if (deFora.length) console.log(`FORA DO IMPRESSO (promoção sem rótulo): ${deFora.join('; ')}`);
   if (cachacas.length) console.log(`FORA DO IMPRESSO: ${cachacas.length} itens chamados só "cachaça" (R$ ${Math.min(...cachacas)} a ${Math.max(...cachacas)})`);
   if (semPais.length) console.log(`SEM PAÍS (preencha a Nacionalidade no cadastro): ${semPais.join('; ')}`);
