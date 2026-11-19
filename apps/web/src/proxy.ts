@@ -144,7 +144,11 @@ export async function proxy(request: NextRequest) {
   if (
     user?.app_metadata?.somente_leitura === true &&
     !['GET', 'HEAD', 'OPTIONS'].includes(request.method) &&
-    path !== '/api/filial-ativa'
+    path !== '/api/filial-ativa' &&
+    // Guias de imposto pelo link do contador (INSS, FGTS, DARF…): a rota vale
+    // pelo token assinado do link (?t=), sem login — o contador logado no RH
+    // com o usuário de consulta tomava 403 ao subir a guia (dono 19/11/2026).
+    !path.startsWith('/api/contador/impostos/')
   ) {
     return NextResponse.json(
       { error: 'Usuário só de consulta: não pode alterar informações.' },

@@ -51,11 +51,12 @@ export default async function ContadorImpostosPage(props: { searchParams: Promis
       <section className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
         <h1 className="text-2xl font-bold text-slate-900">Prainha — guias de imposto</h1>
         <p className="mt-1 text-sm text-slate-600">
-          Suba as guias do mês (DARF, DAE, FGTS, INSS, ISS…) e, quando houver, o PDF de <b>RATEIO</b> por
+          Suba as guias do mês (DARF, DAE, FGTS, GRRF de rescisão, INSS, ISS…) e, quando houver, o PDF de <b>RATEIO</b> por
           departamento. Pode selecionar vários arquivos de uma vez. Cada guia é lida automaticamente: confira
           vencimento, valor e a divisão entre as casas e clique em lançar — ela entra nas contas a pagar.
           Guia da E.B. ou da Lelis: cada casa lança a sua parte como repasse e a E.B./Lelis paga a guia inteira.
           Mande o RATEIO antes (ou junto) das guias de INSS/FGTS para a divisão já sair pelo valor de cada casa.
+          GRRF é de uma pessoa só: ajuste a divisão para a casa onde ela trabalhava.
         </p>
 
         <GuiaImpostoForm
