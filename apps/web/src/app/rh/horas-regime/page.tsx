@@ -12,6 +12,7 @@ import { hojeBr } from '@/lib/datas';
 import { montarHorasRegime, diasNaSemanaAtual, semanaDoPontoAgora, type PessoaHoras } from '@/lib/rh/horas-regime';
 import { podeUsuario } from '@/lib/permissoes-runtime';
 import { TravarTodos, TravaPessoa } from './limite-semana';
+import { BotaoImprimir } from '../ponto/relatorio/imprimir';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,6 +24,17 @@ interface SP {
 const h = (min: number) => (min ? (min / 60).toLocaleString('pt-BR', { maximumFractionDigits: 0 }) : '—');
 const brl = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 });
 const ddmm = (ymd: string) => `${ymd.slice(8, 10)}/${ymd.slice(5, 7)}`;
+
+// Exportar (pedido do dono 19/11/2026): mesma planilha CSV do relatório de ponto
+// (ponto e vírgula + BOM, abre direto no Excel). Horas em decimal com 1 casa.
+const csvCampo = (v: string | number) => {
+  const t = String(v);
+  return /[";\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+};
+const csvHref = (linhas: (string | number)[][]) =>
+  `data:text/csv;charset=utf-8,${encodeURIComponent('\uFEFF' + linhas.map((l) => l.map(csvCampo).join(';')).join('\n'))}`;
+const hCsv = (min: number) => (min / 60).toFixed(1).replace('.', ',');
+const numCsv = (v: number, casas = 2) => v.toFixed(casas).replace('.', ',');
 
 const REGIME_LABEL: Record<PessoaHoras['regime'], string> = {
   clt: 'CLT',
@@ -101,11 +113,55 @@ export default async function HorasRegimePage(props: { searchParams: Promise<SP>
     { regime: 'sem_registro', titulo: 'Sem folha do contador', nota: 'bateram ponto aqui e não estão no último contracheque importado' },
   ];
 
-  return (
-    <main className="min-h-screen bg-slate-50">
-      <AppHeader userEmail={user.email} />
+  const csv = csvHref([
+    [`Horas por regime — CLT × intermitente — ${filial.nome}`],
+    [],
+    ['Semana', 'Parcial', 'Venda', 'Horas na casa', 'Venda / hora', 'CLT previsto (h)', 'CLT trabalhou (h)', 'CLT faltou (h)', 'Intermitente (h)', 'Custo intermitente', 'Interm. como fixo', 'Sem folha (h)'],
+    ...semanas.map((s, i) => {
+      const r = resumo[i];
+      return [
+        `${ddmm(s.inicio)}–${ddmm(s.fim)}`,
+        s.parcial ? 'sim' : '',
+        numCsv(r.venda),
+        hCsv(r.minTotalCasa),
+        r.minTotalCasa ? numCsv(r.venda / (r.minTotalCasa / 60)) : '',
+        hCsv(r.cltPrevistoMin),
+        hCsv(r.cltTrabMin),
+        hCsv(r.cltFaltaMin),
+        hCsv(r.intMin),
+        numCsv(r.intCusto),
+        s.parcial ? '' : r.intComoFixo,
+        hCsv(r.semRegMin),
+      ];
+    }),
+    [],
+    ['Regime', 'Pessoa', 'Cargo', 'Valor/hora', ...semanas.map((s) => `${ddmm(s.inicio)}${s.parcial ? '*' : ''}`), 'Média h/sem', 'Dias/sem', 'Situação'],
+    ...grupos.flatMap((g) =>
+      pessoas
+        .filter((p) => p.regime === g.regime)
+        .map((p) => {
+          const campo = g.regime === 'clt' && p.daCasa ? 'minTotal' : 'minCasa';
+          return [
+            REGIME_LABEL[p.regime],
+            p.nome,
+            `${p.cargo ?? ''}${!p.daCasa ? ' (cadastro de outra casa)' : ''}`,
+            p.regime === 'intermitente' && p.valor ? numCsv(p.valor) : '',
+            ...semanas.map((_, i) => hCsv(p.semanas[i][campo])),
+            hCsv(media(p, campo)),
+            numCsv(media(p, 'dias'), 1),
+            alerta(p) ?? '',
+          ];
+        }),
+    ),
+  ]);
 
-      <section className="mx-auto max-w-[1600px] px-4 py-8">
+  return (
+    <main className="min-h-screen bg-slate-50 print:bg-white">
+      <div className="print:hidden">
+        <AppHeader userEmail={user.email} />
+      </div>
+
+      <section className="mx-auto max-w-[1600px] px-4 py-8 print:px-0 print:py-0 print:text-xs">
         <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Horas por regime — CLT × intermitente</h1>
@@ -115,7 +171,16 @@ export default async function HorasRegimePage(props: { searchParams: Promise<SP>
               ponto (Stelanto antes da virada)
             </p>
           </div>
-          <div className="flex items-center gap-2 text-sm">
+          <div className="flex flex-wrap items-center gap-2 text-sm print:hidden">
+            <a
+              href={csv}
+              download={`horas-regime-${filial.nome.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${hoje}.csv`}
+              className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
+            >
+              ⬇ Exportar (CSV)
+            </a>
+            <BotaoImprimir />
+            <span className="mx-1 h-5 w-px bg-slate-200" />
             {[4, 8, 12].map((k) => (
               <a
                 key={k}
@@ -131,7 +196,7 @@ export default async function HorasRegimePage(props: { searchParams: Promise<SP>
         </div>
 
         {filiais.length > 1 && (
-          <div className="mb-4 flex flex-wrap gap-2">
+          <div className="mb-4 flex flex-wrap gap-2 print:hidden">
             {filiais.map((f) => (
               <a
                 key={f.id}
@@ -148,7 +213,7 @@ export default async function HorasRegimePage(props: { searchParams: Promise<SP>
           </div>
         )}
 
-        <div className="mb-8 overflow-x-auto rounded-lg border border-slate-200 bg-white">
+        <div className="mb-8 overflow-x-auto rounded-lg border border-slate-200 bg-white print:overflow-visible">
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
               <tr>
@@ -208,7 +273,7 @@ export default async function HorasRegimePage(props: { searchParams: Promise<SP>
               </h2>
               <p className="mb-2 text-xs text-slate-500">{g.nota}</p>
               {g.regime === 'sem_registro' && (
-                <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-rose-100 bg-rose-50/50 px-3 py-2 text-xs text-slate-600">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-rose-100 bg-rose-50/50 px-3 py-2 text-xs text-slate-600 print:hidden">
                   <span>
                     Trava no ponto facial: com limite, o tablet recusa a entrada de um dia novo quando a pessoa já bateu
                     ponto nesse número de dias da semana (seg a dom, somando as casas). O gerente libera um dia por vez em
@@ -224,7 +289,7 @@ export default async function HorasRegimePage(props: { searchParams: Promise<SP>
                   )}
                 </div>
               )}
-              <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+              <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white print:overflow-visible">
                 <table className="w-full text-sm">
                   <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
                     <tr>
@@ -238,7 +303,7 @@ export default async function HorasRegimePage(props: { searchParams: Promise<SP>
                       <th className="px-3 py-2 text-right">Média h/sem</th>
                       <th className="px-3 py-2 text-right">Dias/sem</th>
                       <th className="px-3 py-2">Situação</th>
-                      {g.regime === 'sem_registro' && <th className="px-3 py-2">Trava</th>}
+                      {g.regime === 'sem_registro' && <th className="px-3 py-2 print:hidden">Trava</th>}
                     </tr>
                   </thead>
                   <tbody>
@@ -286,7 +351,7 @@ export default async function HorasRegimePage(props: { searchParams: Promise<SP>
                             )}
                           </td>
                           {g.regime === 'sem_registro' && (
-                            <td className="px-3 py-2">
+                            <td className="px-3 py-2 print:hidden">
                               <TravaPessoa
                                 id={p.id}
                                 limite={p.limiteDiasSemana}
