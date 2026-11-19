@@ -12,6 +12,8 @@ interface Linha {
   chavePix: string | null;
   /** Conta/PIX veio do cadastro da pessoa em outra casa (o daqui estava vazio). */
   contaDeOutraCasa?: string | null;
+  /** Tem PIX nesta casa; a conta bancária veio do cadastro de outra casa. */
+  bancoDeOutraCasa?: string | null;
   bruto: number;
   acrescimos: number;
   descontos: number;
@@ -140,6 +142,14 @@ export function ExportarClient({ folhaId, filialNome, labelSemana, linhas }: Pro
                       <>
                         {l.bancoNome ?? '—'} · ag {l.bancoAgencia ?? '—'} · cc{' '}
                         {l.bancoConta ?? '—'}
+                        {l.bancoDeOutraCasa && (
+                          <span
+                            className="block text-[10px] text-indigo-600"
+                            title="Nesta casa só havia o PIX — a conta bancária veio do cadastro da pessoa na outra casa"
+                          >
+                            conta do cadastro: {l.bancoDeOutraCasa}
+                          </span>
+                        )}
                       </>
                     ) : (
                       <span className="text-rose-600">⚠ sem conta cadastrada</span>

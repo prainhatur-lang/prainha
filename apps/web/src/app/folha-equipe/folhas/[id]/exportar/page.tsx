@@ -10,6 +10,7 @@ import { calcularFolha } from '@/lib/folha/calcular';
 import { snapshotFolha } from '@/lib/folha/snapshot';
 import { labelSemana } from '@/lib/folha/semana';
 import { montarInputsFolha } from '@/lib/folha/montar-inputs';
+import { contasPorCpf } from '@/lib/rh/conta-da-pessoa';
 import { ExportarClient } from './client';
 
 export const dynamic = 'force-dynamic';
@@ -83,6 +84,8 @@ export default async function ExportarFolhaPage(props: {
     bancoConta: string | null;
     chavePix: string | null;
     contaDeOutraCasa: string | null;
+    /** Tem PIX nesta casa, mas a conta bancária veio do cadastro de outra casa. */
+    bancoDeOutraCasa: string | null;
     bruto: number;
     acrescimos: number;
     descontos: number;
@@ -103,6 +106,7 @@ export default async function ExportarFolhaPage(props: {
         bancoConta: p?.bancoConta ?? null,
         chavePix: p?.chavePix ?? null,
         contaDeOutraCasa: p?.contaDeOutraCasa ?? null,
+        bancoDeOutraCasa: null,
         bruto: 0,
         acrescimos: 0,
         descontos: 0,
@@ -114,6 +118,25 @@ export default async function ExportarFolhaPage(props: {
     cur.liquido += l.valorLiquido;
     porPessoa.set(l.fornecedorId, cur);
   }
+  // Quem tem só o PIX nesta casa e a conta bancária digitada em outra (mesmo
+  // CPF): mostra a conta de lá em vez de "sem conta cadastrada". O PIX daqui fica.
+  const soPix = Array.from(porPessoa.values()).filter(
+    (l) => l.cpf && !l.bancoNome && !l.bancoAgencia && !l.bancoConta,
+  );
+  if (soPix.length > 0) {
+    const bancos = await contasPorCpf(soPix.map((l) => l.cpf as string), folha.filialId, {
+      soComBanco: true,
+    }).catch(() => null);
+    for (const l of soPix) {
+      const c = bancos?.get((l.cpf as string).replace(/\D/g, ''));
+      if (!c) continue;
+      l.bancoNome = c.bancoNome;
+      l.bancoAgencia = c.bancoAgencia;
+      l.bancoConta = c.bancoConta;
+      l.bancoDeOutraCasa = c.filialNome;
+    }
+  }
+
   const linhas = Array.from(porPessoa.values())
     .filter((l) => l.liquido > 0)
     .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));

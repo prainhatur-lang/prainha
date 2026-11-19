@@ -25,8 +25,14 @@ const cpfDoFornecedor = sql<string>`regexp_replace(coalesce(${schema.fornecedor.
 
 /** Conta/PIX que cada CPF já tem cadastrada em OUTRA casa (fora `excetoFilialId`).
  *  A da lotação principal (funcionario.fornecedor_id) ganha; senão qualquer
- *  casa onde a pessoa está na folha. */
-export async function contasPorCpf(cpfs: string[], excetoFilialId: string): Promise<Map<string, ContaPessoa>> {
+ *  casa onde a pessoa está na folha.
+ *  `soComBanco`: só vale cadastro com CONTA BANCÁRIA (ignora o que só tem PIX) —
+ *  pra quem tem PIX nesta casa mas a conta digitada só em outra. */
+export async function contasPorCpf(
+  cpfs: string[],
+  excetoFilialId: string,
+  opts?: { soComBanco?: boolean },
+): Promise<Map<string, ContaPessoa>> {
   const lista = [...new Set(cpfs.map((c) => c.replace(/\D/g, '')).filter((c) => c.length === 11))];
   const out = new Map<string, ContaPessoa>();
   if (lista.length === 0) return out;
@@ -43,14 +49,18 @@ export async function contasPorCpf(cpfs: string[], excetoFilialId: string): Prom
       principal: sql<boolean>`exists (select 1 from funcionario fu where fu.fornecedor_id = ${schema.fornecedor.id})`,
     })
     .from(schema.fornecedor)
-    .innerJoin(schema.fornecedorFolha, eq(schema.fornecedorFolha.fornecedorId, schema.fornecedor.id))
+    .leftJoin(schema.fornecedorFolha, eq(schema.fornecedorFolha.fornecedorId, schema.fornecedor.id))
     .innerJoin(schema.filial, eq(schema.filial.id, schema.fornecedor.filialId))
     .where(
       and(
         sql`${schema.fornecedor.filialId} <> ${excetoFilialId}`,
         isNull(schema.fornecedor.dataDelete),
         inArray(cpfDoFornecedor, lista),
-        sql`(nullif(trim(${schema.fornecedor.chavePix}), '') is not null or nullif(trim(${schema.fornecedor.bancoConta}), '') is not null)`,
+        // soComBanco vale também o cadastro da empresa que registra (E.B.), que
+        // não tem linha em fornecedor_folha; o jeito antigo segue exigindo a folha.
+        opts?.soComBanco
+          ? sql`nullif(trim(${schema.fornecedor.bancoConta}), '') is not null`
+          : sql`${schema.fornecedorFolha.fornecedorId} is not null and (nullif(trim(${schema.fornecedor.chavePix}), '') is not null or nullif(trim(${schema.fornecedor.bancoConta}), '') is not null)`,
       ),
     );
 
