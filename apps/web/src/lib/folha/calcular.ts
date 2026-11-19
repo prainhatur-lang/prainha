@@ -237,7 +237,11 @@ export function calcularFolha(args: {
       // Senão fica EM ABERTO (não desconta nada, paga a comissão cheia) e a
       // baixa no Consumer NÃO acontece — o saldo carrega pro fechamento
       // seguinte. Evita comissão líquida negativa + vazamento de fiado.
-      const cobre = com >= descontoComissao;
+      // Compara em centavos: a comissão vem do rateio com fração de centavo
+      // (ex.: 42,1187 aparece na tela como 42,12) e o desconto do valor
+      // inteiro mostrado era recusado como "não cobre" (Roberto Fagner,
+      // Tabuará, 19/11/2026).
+      const cobre = round2(com) >= round2(descontoComissao);
       const descAplicado = cobre ? descontoComissao : 0;
       if (descontoComissao > 0 && !cobre) {
         avisos.push(
@@ -252,7 +256,7 @@ export function calcularFolha(args: {
         tipo: 'comissao',
         valorBruto: round2(com),
         desconto: round2(descAplicado),
-        valorLiquido: round2(com - descAplicado),
+        valorLiquido: round2(Math.max(0, com - descAplicado)),
         descricao: `Comissão semana — ${p.nome}`,
         detalhe: `${minutosToHM(minTotal)} de horas; rateio do ${
           config.ppFuncionarios
