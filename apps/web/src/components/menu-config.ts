@@ -763,6 +763,13 @@ export const MENU_AREAS: MenuArea[] = [
         links: [
           { label: 'Funcionários', href: '/rh/funcionarios', perm: 'funcionario.read', aka: ['colaboradores', 'RH'] },
           {
+            // contabilidade (login de consulta): sobe INSS, FGTS, GRRF, DARF… sem ter o Financeiro
+            label: 'Guias de imposto (enviar)',
+            href: '/contador/impostos',
+            perm: 'imposto.enviar',
+            aka: ['INSS', 'FGTS', 'GRRF', 'DARF', 'DAS', 'guia'],
+          },
+          {
             label: 'Admissão pelo WhatsApp',
             href: '/rh/admissao', soNaBusca: true,
             perm: 'funcionario.create',

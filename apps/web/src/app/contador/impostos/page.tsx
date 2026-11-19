@@ -6,7 +6,7 @@
 import { db, schema } from '@concilia/db';
 import { and, desc, eq } from 'drizzle-orm';
 import { brl } from '@/lib/format';
-import { acessoContador } from '@/lib/impostos/contador-acesso';
+import { acessoContadorOuLogado } from '@/lib/impostos/contador-acesso';
 import { NOME_TIPO, type TipoImposto } from '@/lib/impostos/guia';
 import { GuiaImpostoForm } from '@/app/financeiro/impostos/guia-form';
 
@@ -15,8 +15,9 @@ export const runtime = 'nodejs';
 
 export default async function ContadorImpostosPage(props: { searchParams: Promise<{ t?: string }> }) {
   const sp = await props.searchParams;
-  const acesso = await acessoContador(sp.t);
-  if (!acesso || !sp.t) {
+  // link assinado (?t=) ou, sem ele, a contabilidade logada com 'imposto.enviar'
+  const acesso = await acessoContadorOuLogado(sp.t);
+  if (!acesso) {
     return (
       <main className="min-h-screen bg-slate-50 p-4">
         <div className="mx-auto max-w-md rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -49,6 +50,11 @@ export default async function ContadorImpostosPage(props: { searchParams: Promis
   return (
     <main className="min-h-screen bg-slate-50">
       <section className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
+        {!sp.t && (
+          <a href="/rh/funcionarios" className="text-sm text-slate-500 hover:text-slate-800">
+            ◂ voltar ao sistema
+          </a>
+        )}
         <h1 className="text-2xl font-bold text-slate-900">Prainha — guias de imposto</h1>
         <p className="mt-1 text-sm text-slate-600">
           Suba as guias do mês (DARF, DAE, FGTS, GRRF de rescisão, INSS, ISS…) e, quando houver, o PDF de <b>RATEIO</b> por
