@@ -29173,6 +29173,7 @@ input.kalvo{border-color:var(--gold2)}
   .wrap.home{max-width:1400px;grid-template-columns:minmax(0,1fr) 300px}
   .wrap.home #hside{position:sticky;top:66px}
   .wrap.solo{display:block;max-width:560px}
+  .wrap.solo.bk{max-width:760px}
   #lado{position:sticky;top:66px;max-height:calc(100vh - 80px);overflow:auto}
   .lst{grid-template-columns:repeat(auto-fill,minmax(96px,1fr))}
 }
@@ -29268,6 +29269,8 @@ function render(){
       '<button class="big" onclick="carregar()">Abrir</button><div id="aerr" class="err"></div>'+
       '<div style="margin-top:10px;text-align:right"><a class="sair" onclick="irTela(\\'cancrel\\')">🗒 cancelamentos</a></div></div></div>';
     FLASH=null;return}
+  /* Backup: tela só dos backups, sem a coluna das mesas (dono, 19/11/2026) */
+  if(TELA==='backup'){app.className='wrap solo bk';app.innerHTML='<div id="main"></div>';pintaMain();return}
   app.className='wrap';
   if(!document.getElementById('lado')||!document.getElementById('main'))
     app.innerHTML='<div id="lado"></div><div id="main"></div>';
