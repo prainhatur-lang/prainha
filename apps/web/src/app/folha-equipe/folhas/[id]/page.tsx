@@ -76,6 +76,7 @@ export default async function FolhaDetalhePage(props: {
       ativo: schema.fornecedorFolha.ativo,
       clienteId: schema.fornecedorFolha.clienteId,
       bonusFixoSemanal: schema.fornecedorFolha.bonusFixoSemanal,
+      dezPctCasas: schema.fornecedorFolha.dezPctCasas,
       nome: schema.fornecedor.nome,
       cpf: schema.fornecedor.cnpjOuCpf,
       saldoFiado: schema.cliente.saldoAtualContaCorrente,
@@ -114,6 +115,21 @@ export default async function FolhaDetalhePage(props: {
     .sort((a, b) =>
       (a.nome ?? '').localeCompare(b.nome ?? '', 'pt-BR', { sensitivity: 'base' }),
     );
+
+  // Seletor de desconto/acréscimo: além de quem aparece acima, entra quem
+  // divide o 10% entre casas (dezPctCasas > 1). Essa pessoa bate o ponto numa
+  // casa só, mas recebe comissão nesta folha também — sem isto não dava pra
+  // lançar desconto pra ela aqui (caso Roberto Fagner, 19/11/2026). A lista
+  // "Pessoas e horas" segue igual.
+  const idsNaLista = new Set(pessoas.map((p) => p.fornecedorId));
+  const pessoasAjuste = [
+    ...pessoas,
+    ...pessoasRows.filter(
+      (p) => (p.dezPctCasas ?? 1) > 1 && !idsNaLista.has(p.fornecedorId),
+    ),
+  ].sort((a, b) =>
+    (a.nome ?? '').localeCompare(b.nome ?? '', 'pt-BR', { sensitivity: 'base' }),
+  );
 
   // Ajustes (descontos/acréscimos) já lançados nessa folha
   const ajustes = await db
@@ -518,7 +534,7 @@ export default async function FolhaDetalhePage(props: {
         <CalculoFechar
           folhaId={folha.id}
           status={folha.status}
-          pessoas={pessoas.map((p) => ({
+          pessoas={pessoasAjuste.map((p) => ({
             fornecedorId: p.fornecedorId,
             nome: p.nome ?? '(sem nome)',
             papel: p.papel,
