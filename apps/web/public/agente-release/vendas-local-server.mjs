@@ -763,6 +763,12 @@ async function initSchema() {
   await sql`CREATE TABLE IF NOT EXISTS servico_ajuste (id bigserial PRIMARY KEY,
     quando timestamptz DEFAULT now(), login text, numero integer, pedido_fb integer,
     acao text, valor numeric, motivo text)`;
+  // DESCONTO / ACRÉSCIMO NO CAIXA: quem deu, de quanto e por quê (dono,
+  // 19/11/2026 — a mesa 3 da Mar saiu zerada com 100% de desconto e ninguém
+  // sabia de quem). Antes o desconto só mudava o total, sem deixar rastro.
+  await sql`CREATE TABLE IF NOT EXISTS desconto_ajuste (id bigserial PRIMARY KEY,
+    quando timestamptz DEFAULT now(), login text, nome text, numero integer, pedido_fb integer,
+    acao text, valor numeric, total_antes numeric, total_depois numeric, motivo text)`;
   await sql`CREATE TABLE IF NOT EXISTS caixa_fechamento (id bigserial PRIMARY KEY,
     caixa_codigo integer, quando timestamptz DEFAULT now(), login text,
     informado jsonb, esperado jsonb, dif_dinheiro numeric, obs text)`;
@@ -10143,6 +10149,15 @@ async function apiCaixaReabrir(body, quem) {
 // TOTALDESCONTO/TOTALACRESCIMO. Fica consistente com o total do Consumer sem
 // depender de recalcular a fórmula inteira (que não é limpa — serviço/entrega
 // interagem de formas diferentes por pedido). Só mexe nos campos do delta.
+// Rastro do desconto/acréscimo. Nunca derruba o ajuste: se o registro falhar,
+// o desconto já gravado continua valendo e o erro vai pro log.
+async function descontoRegistrar(quem, n, ped, acao, valor, antes, depois, motivo) {
+  try {
+    await sql`INSERT INTO desconto_ajuste (login, nome, numero, pedido_fb, acao, valor, total_antes, total_depois, motivo)
+      VALUES (${(quem && quem.login) || null}, ${(quem && quem.nome) || null}, ${Number(n) || null}, ${Number(ped) || null},
+        ${acao}, ${valor}, ${antes}, ${depois}, ${String(motivo || '').trim().slice(0, 200) || null})`;
+  } catch (e) { console.error('[caixa] registro do desconto falhou:', e.message); }
+}
 async function apiCaixaAjuste(body, quem) {
   const n = Number(body.numero);
   const tipo = String(body.tipo || '');
@@ -10166,6 +10181,7 @@ async function apiCaixaAjuste(body, quem) {
     const pct = itens > 0 ? +(novoDesc / itens * 100).toFixed(2) : 0;
     const ok = await pedGravarTotais(ped, { desconto: novoDesc, pctDesconto: pct, total: novoTot });
     if (!ok) return { ok: false, erro: 'não deu pra gravar o desconto' };
+    await descontoRegistrar(quem, n, ped, 'desconto', delta, total, novoTot, body.motivo);
     espelho().catch(() => {});
     return { ok: true, tipo, delta, novo_total: novoTot };
   }
@@ -10176,6 +10192,7 @@ async function apiCaixaAjuste(body, quem) {
     const novoTot = +(total + delta).toFixed(2);
     const ok = await pedGravarTotais(ped, { acrescimo: novoAcr, total: novoTot });
     if (!ok) return { ok: false, erro: 'não deu pra gravar o acréscimo' };
+    await descontoRegistrar(quem, n, ped, 'acrescimo', delta, total, novoTot, body.motivo);
     espelho().catch(() => {});
     return { ok: true, tipo, delta, novo_total: novoTot };
   }
@@ -10188,6 +10205,7 @@ async function apiCaixaAjuste(body, quem) {
     const novoTot = +(total + delta).toFixed(2);
     const ok = await pedGravarTotais(ped, { desconto: 0, pctDesconto: 0, total: novoTot });
     if (!ok) return { ok: false, erro: 'não deu pra tirar o desconto' };
+    await descontoRegistrar(quem, n, ped, 'tirou_desconto', delta, total, novoTot, body.motivo);
     console.log(`[caixa] desconto de R$ ${delta.toFixed(2)} retirado do pedido ${ped} (${n}) por ${quem.nome || quem.login || '?'}`);
     espelho().catch(() => {});
     return { ok: true, tipo, delta, novo_total: novoTot };
@@ -30366,6 +30384,9 @@ function telaDesc(el){
     '<div class="row" style="margin-bottom:8px"><button class="seg on" id="dmv" onclick="setDM(\\'valor\\')">R$</button><button class="seg" id="dmp" onclick="setDM(\\'pct\\')">%</button></div>'+
     '<input id="dv" class="num" inputmode="decimal" placeholder="quanto?" readonly onclick="kpAlvo(this)">'+kpHtml('dv')+
     '<div class="mut" id="dprev" style="margin-top:6px"></div>'+
+    '<div class="mut" style="margin-top:10px">Motivo (fica registrado com o seu nome)</div>'+
+    '<div class="row" style="margin:6px 0;flex-wrap:wrap">'+['Cortesia','Permuta','Reclamação','Erro de lançamento','Funcionário'].map(function(m){return '<button class="seg" onclick="document.getElementById(\\'dmot\\').value=\\''+m+'\\'">'+m+'</button>'}).join('')+'</div>'+
+    '<input id="dmot" maxlength="200" placeholder="motivo do desconto" style="width:100%;box-sizing:border-box;padding:10px;font-size:16px">'+
     '<button class="big o" onclick="aplicaDesc()">Aplicar desconto</button>'+
     '<div id="derr" class="err"></div></div>';
   var e=document.getElementById('dv');if(e){e.focus();e.addEventListener('input',prevDesc)}
@@ -30380,7 +30401,7 @@ function prevDesc(){
 async function aplicaDesc(){
   var v=numBr((document.getElementById('dv')||{}).value);
   if(!(v>0)){document.getElementById('derr').textContent='digite o valor';return}
-  var r=await jpost('/api/caixa/ajuste',alvo({numero:MESA,tipo:'desconto',modo:DMODO,valor:v}));
+  var r=await jpost('/api/caixa/ajuste',alvo({numero:MESA,tipo:'desconto',modo:DMODO,valor:v,motivo:((document.getElementById('dmot')||{}).value||'')}));
   if(!r.ok){document.getElementById('derr').textContent=r.erro||'não deu';return}
   await carregar(MESA);
 }
@@ -33445,8 +33466,10 @@ async function gerenteLiberacoes() {
   const est = await sql`SELECT id, quando, login, numero, forma, valor, motivo FROM pagamento_estorno WHERE quando > now() - interval '24 hours' ORDER BY quando DESC LIMIT 30`;
   const reab = await sql`SELECT id, quando, login, numero, fechada_em FROM conta_reabertura WHERE quando > now() - interval '24 hours' ORDER BY quando DESC LIMIT 30`;
   const serv = await sql`SELECT id, quando, login, numero, acao, valor, motivo FROM servico_ajuste WHERE quando > now() - interval '24 hours' ORDER BY quando DESC LIMIT 30`;
+  const desc = await sql`SELECT id, quando, login, nome, numero, acao, valor, total_antes, total_depois, motivo FROM desconto_ajuste WHERE quando > now() - interval '24 hours' ORDER BY quando DESC LIMIT 60`;
   const num = (r) => ({ ...r, valor: r.valor == null ? null : Number(r.valor) });
-  return { pendentes: pendentes.map(num), decididas: decididas.map(num), cancelamentos: canc.map(num), estornos: est.map(num), reaberturas: reab, servico: serv.map(num),
+  return { descontos: desc.map((r) => ({ ...num(r), total_antes: r.total_antes == null ? null : Number(r.total_antes), total_depois: r.total_depois == null ? null : Number(r.total_depois) })),
+    pendentes: pendentes.map(num), decididas: decididas.map(num), cancelamentos: canc.map(num), estornos: est.map(num), reaberturas: reab, servico: serv.map(num),
     cancelamentos_nao_vistos: canc.filter((c) => !c.visto_em).length,
     cancelado_hoje: canc.filter((c) => new Date(c.quando).getTime() >= new Date().setHours(0, 0, 0, 0)).reduce((s, c) => s + (Number(c.valor) || 0), 0) };
 }
@@ -34066,6 +34089,7 @@ function secHist(L){
   L.cancelamentos.forEach(function(c){itens.push({q:c.quando,t:'cancelamento',h:'<b>'+(c.numero||'')+'</b> '+esc(c.nome||'')+' <b>'+brl(c.valor)+'</b> <span class="tag '+(c.status_item==='a_produzir'?'':'amb')+'">'+esc(c.status_item||'')+'</span><small>por '+esc(c.login)+(c.gerente&&c.gerente!==c.login?' · autorizou '+esc(c.gerente):'')+(c.motivo?' · '+esc(c.motivo):'')+'</small>',b:!c.visto_em?'<button class="b" onclick="visto('+c.id+',this)">Vi</button>':'<span class="tag green">visto '+esc(c.visto_por||'')+'</span>'})});
   L.estornos.forEach(function(c){itens.push({q:c.quando,t:'estorno',h:'<b>'+(c.numero||'')+'</b> estorno '+esc(c.forma||'')+' <b>'+brl(c.valor)+'</b><small>por '+esc(c.login)+(c.motivo?' · '+esc(c.motivo):'')+'</small>',b:''})});
   L.reaberturas.forEach(function(c){itens.push({q:c.quando,t:'reabertura',h:'<b>'+(c.numero||'')+'</b> conta reaberta<small>por '+esc(c.login)+(c.fechada_em?' · fechada às '+hm(c.fechada_em):'')+'</small>',b:''})});
+  (L.descontos||[]).forEach(function(c){var nm={desconto:'desconto',acrescimo:'acréscimo',tirou_desconto:'desconto retirado'}[c.acao]||c.acao;itens.push({q:c.quando,t:'desconto',h:'<b>'+(c.numero||'')+'</b> '+esc(nm)+(c.valor!=null?' '+brl(c.valor):'')+(c.total_depois!=null?' (conta ficou '+brl(c.total_depois)+')':'')+'<small>por '+esc(c.nome||c.login||'?')+(c.motivo?' · '+esc(c.motivo):' · sem motivo')+'</small>',b:''})});
   L.servico.forEach(function(c){itens.push({q:c.quando,t:'serviço',h:'<b>'+(c.numero||'')+'</b> serviço: '+esc(c.acao||'')+(c.valor!=null?' '+brl(c.valor):'')+'<small>por '+esc(c.login)+(c.motivo?' · '+esc(c.motivo):'')+'</small>',b:''})});
   L.decididas.forEach(function(c){itens.push({q:c.decidido_em||c.quando,t:'liberação',h:'<b>'+(c.numero||'')+'</b> liberação '+esc(c.tipo)+(c.nome?' — '+esc(c.nome):'')+' <span class="tag '+(c.status==='aprovada'?'green':'red')+'">'+esc(c.status)+'</span><small>pedida por '+esc(c.login)+' · decidiu '+esc(c.decidido_por||'')+(c.resposta?' · '+esc(c.resposta):'')+'</small>',b:''})});
   itens.sort(function(a,b){return new Date(b.q)-new Date(a.q)});
