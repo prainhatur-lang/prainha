@@ -43,6 +43,8 @@ export interface PessoaEscala {
   foraDaCasa: string[];
   /** Trava de ponto antes da hora (24/10/2026): "HH:MM" ou null = sem trava. */
   horaEntrada: string | null;
+  /** Hora de saída combinada (19/11/2026): "HH:MM" ou null. Só informa, não trava. */
+  horaSaida: string | null;
   /** Gerente autorizou bater mais cedo hoje (dia operacional). */
   cedoLiberadoHoje: boolean;
 }
@@ -72,6 +74,7 @@ export async function montarEscalaMes(filialId: string, mes: string, hoje: strin
       dataAdmissao: schema.funcionario.dataAdmissao,
       dataDesligamento: schema.funcionario.dataDesligamento,
       pontoHoraEntrada: schema.funcionario.pontoHoraEntrada,
+      pontoHoraSaida: schema.funcionario.pontoHoraSaida,
       pontoCedoLiberadoDia: schema.funcionario.pontoCedoLiberadoDia,
     })
     .from(schema.funcionario)
@@ -224,6 +227,7 @@ export async function montarEscalaMes(filialId: string, mes: string, hoje: strin
       ponto: dias.filter((d) => ponto.has(d)),
       foraDaCasa: dias.filter((d) => !naCasa(d)),
       horaEntrada: f.pontoHoraEntrada ?? null,
+      horaSaida: f.pontoHoraSaida ?? null,
       cedoLiberadoHoje: f.pontoCedoLiberadoDia != null && String(f.pontoCedoLiberadoDia) === diaOpHoje,
     };
   });

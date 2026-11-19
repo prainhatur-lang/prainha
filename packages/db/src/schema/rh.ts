@@ -97,6 +97,9 @@ export const funcionario = pgTable(
      *  o tablet recusa a primeira entrada do dia antes dela − 10 min. Nulo =
      *  sem trava. Marcada em /rh/escala-mensal; a loja recebe no roster. */
     pontoHoraEntrada: varchar('ponto_hora_entrada', { length: 5 }),
+    /** Hora de saída ("HH:MM") combinada na escala (19/11/2026). Só informa:
+     *  não trava o ponto. Marcada em /rh/escala-mensal, ao lado da entrada. */
+    pontoHoraSaida: varchar('ponto_hora_saida', { length: 5 }),
     /** Dia que o gerente autorizou bater antes da hora (só aquele dia). */
     pontoCedoLiberadoDia: date('ponto_cedo_liberado_dia'),
     /** Ponto pelo celular (24/10/2026): token do link pessoal

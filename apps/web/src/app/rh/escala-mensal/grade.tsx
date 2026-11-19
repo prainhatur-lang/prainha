@@ -30,6 +30,10 @@ export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar, at
   const [horaEnt, setHoraEnt] = useState<Record<string, string>>(() =>
     Object.fromEntries(pessoas.map((p) => [p.funcionarioId, p.horaEntrada ?? ''])),
   );
+  // Hora de saída combinada (19/11/2026): só informa, não trava o ponto.
+  const [horaSai, setHoraSai] = useState<Record<string, string>>(() =>
+    Object.fromEntries(pessoas.map((p) => [p.funcionarioId, p.horaSaida ?? ''])),
+  );
   const [cedoLib, setCedoLib] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(pessoas.map((p) => [p.funcionarioId, p.cedoLiberadoHoje])),
   );
@@ -52,6 +56,18 @@ export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar, at
       setMsg({ tipo: 'ok', texto: hora ? `${nome}: ponto abre às ${hora} − 10 min.` : `${nome}: sem trava de hora.` });
     } catch (e) {
       setHoraEnt((x) => ({ ...x, [fid]: antes }));
+      setMsg({ tipo: 'erro', texto: `${nome}: ${(e as Error).message}` });
+    }
+  }
+  async function salvarSaida(fid: string, nome: string, hora: string) {
+    const antes = horaSai[fid] ?? '';
+    if (hora === antes) return;
+    setHoraSai((x) => ({ ...x, [fid]: hora }));
+    try {
+      await postHora({ funcionarioIds: [fid], horaSaida: hora || null });
+      setMsg({ tipo: 'ok', texto: hora ? `${nome}: saída às ${hora}.` : `${nome}: sem hora de saída.` });
+    } catch (e) {
+      setHoraSai((x) => ({ ...x, [fid]: antes }));
       setMsg({ tipo: 'erro', texto: `${nome}: ${(e as Error).message}` });
     }
   }
@@ -212,6 +228,7 @@ export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar, at
         <span className="text-xs text-slate-500">
           Clique no dia pra trocar trabalho ⇄ folga. Clarinho = sugestão (ainda não salvo). • = bateu ponto.
           Entrada: o ponto só abre 10 min antes (salva ao sair do campo); &quot;Liberar hoje&quot; autoriza chegar antes.
+          Saída: hora combinada, só informa (não trava o ponto).
         </span>
       </div>
       {msg && (
@@ -232,6 +249,12 @@ export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar, at
                 title="Hora da entrada: o ponto só abre 10 min antes. Vale só pra primeira entrada do dia (intervalo e saída passam). Vazio = sem trava."
               >
                 Entrada
+              </th>
+              <th
+                className="px-1 py-1 font-medium print:hidden"
+                title="Hora de saída combinada. Só informa: não trava o ponto. Vazio = sem hora marcada."
+              >
+                Saída
               </th>
               {dias.map((d) => {
                 const w = diaDaSemana(d);
@@ -259,6 +282,13 @@ export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar, at
                   <td className="sticky left-0 z-10 bg-white px-2 py-1">
                     <div className="font-medium text-slate-800">{l.p.nome}</div>
                     {l.p.cargo && <div className="text-[10px] text-slate-400">{l.p.cargo}</div>}
+                    {(horaEnt[fid] || horaSai[fid]) && (
+                      <div className="hidden text-[10px] font-medium text-slate-700 print:block">
+                        {horaEnt[fid] ? `Entrada ${horaEnt[fid]}` : ''}
+                        {horaEnt[fid] && horaSai[fid] ? ' · ' : ''}
+                        {horaSai[fid] ? `Saída ${horaSai[fid]}` : ''}
+                      </div>
+                    )}
                     {l.avisos.length > 0 && (
                       <ul className="mt-0.5 text-[10px] text-red-600">
                         {l.avisos.map((a) => (
@@ -318,6 +348,17 @@ export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar, at
                       </button>
                     )}
                   </td>
+                  <td className="px-1 py-1 text-center align-top print:hidden">
+                    <input
+                      type="time"
+                      key={horaSai[fid] ?? ''}
+                      defaultValue={horaSai[fid] ?? ''}
+                      disabled={!podeEditar}
+                      onBlur={(e) => salvarSaida(fid, l.p.nome, e.target.value)}
+                      className="w-[76px] rounded border border-slate-200 bg-white px-1 py-0.5 text-xs"
+                      title="Hora de saída combinada. Só informa, não trava o ponto."
+                    />
+                  </td>
                   {dias.map((d) => {
                     const f = l.folga[d];
                     const o = l.origem[d];
@@ -370,7 +411,7 @@ export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar, at
           <tfoot>
             <tr className="border-t-2 border-slate-200 bg-slate-50 font-medium text-slate-700">
               <td className="sticky left-0 bg-slate-50 px-2 py-1">Total VT</td>
-              <td colSpan={dias.length + 5} />
+              <td colSpan={dias.length + 6} />
               <td className="whitespace-nowrap px-1 py-1 text-right">
                 {moeda(totalVt.q1)} / {moeda(totalVt.q2)}
               </td>

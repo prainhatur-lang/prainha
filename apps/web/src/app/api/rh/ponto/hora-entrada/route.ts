@@ -6,6 +6,8 @@
 //  - { funcionarioIds, hora }        → marca ("HH:MM") ou tira (null) a hora;
 //  - { funcionarioId, liberarHoje }  → o gerente autoriza (ou desfaz) bater
 //    antes da hora só no dia de hoje.
+//  - { funcionarioIds, horaSaida }   → hora de saída combinada (19/11/2026).
+//    Só informa na escala: não trava nada e a loja não precisa ser avisada.
 // Depois avisa as lojas dessas pessoas pra puxarem o roster na hora (mesmo
 // empurrão da trava da semana); loja que não responde pega no pull de 3 em 3 min.
 import { NextResponse } from 'next/server';
@@ -32,6 +34,10 @@ const Body = z.union([
   z.object({
     funcionarioId: z.string().uuid(),
     liberarHoje: z.boolean(),
+  }),
+  z.object({
+    funcionarioIds: z.array(z.string().uuid()).min(1).max(200),
+    horaSaida: Hora.nullable(),
   }),
 ]);
 
@@ -77,6 +83,13 @@ export async function POST(req: Request) {
     }
   }
 
+  if ('horaSaida' in corpo) {
+    await db
+      .update(schema.funcionario)
+      .set({ pontoHoraSaida: corpo.horaSaida, atualizadoEm: new Date() })
+      .where(inArray(schema.funcionario.id, ids));
+    return NextResponse.json({ ok: true, lojas: [] });
+  }
   if ('funcionarioIds' in corpo) {
     await db
       .update(schema.funcionario)
