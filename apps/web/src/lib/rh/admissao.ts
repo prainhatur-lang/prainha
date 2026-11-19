@@ -107,6 +107,12 @@ export interface TermosConvite {
   /** Já trabalha antes do registro: até a véspera de `admissao` recebe por diária
    *  na folha semanal (fornecedor_folha.diarista_ate). 05/11/2026. */
   diariaAntes?: boolean;
+  /** Data que sai impressa no contrato (AAAA-MM-DD). Vazio = o dia em que a pessoa assina.
+   *  Serve pra reemitir um contrato com a data do primeiro (19/11/2026); a prova
+   *  eletrônica do aceite (dia, hora, IP) continua sendo a real. */
+  dataContrato?: string;
+  /** Convite que este substitui (contrato reemitido pra corrigir, ex.: o empregador). */
+  reemissaoDe?: string;
 }
 
 /** Véspera do registro (último dia pago como diária). */
@@ -207,6 +213,8 @@ export interface DocSubido {
   path: string;
   nome: string;
   em: string;
+  /** Já está na ficha (veio de um convite anterior, na reemissão): não entra de novo. */
+  jaNaFicha?: boolean;
 }
 
 /** Conta do Inter digitada no link → "12345678-9" (como o Inter escreve); null = não deu. */
@@ -244,6 +252,11 @@ export function faltandoNoLink(p: Partial<PessoaisAdmissao>, docs: DocSubido[]):
     if (!docs.some((s) => s.chave === d.chave)) f.push(d.rotulo);
   }
   return f;
+}
+
+/** Data impressa no contrato: a fixada no convite (reemissão) ou o dia da assinatura. */
+export function dataDoContrato(t: TermosConvite, ymdAssinatura: string): string {
+  return t.dataContrato && /^\d{4}-\d{2}-\d{2}$/.test(t.dataContrato) ? t.dataContrato : ymdAssinatura;
 }
 
 export function termosParaContrato(t: TermosConvite, p: Partial<PessoaisAdmissao>, dataAssinatura: string): TermosContrato {
@@ -349,7 +362,8 @@ export function contratoHtml(o: {
 }): string {
   const { nome, cpf, pessoais: p, termos: t, empregador: emp } = o;
   const dataAss = o.assinatura ? o.assinatura.em : new Date();
-  const ymd = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Maceio' }).format(dataAss);
+  const ymdReal = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Maceio' }).format(dataAss);
+  const ymd = dataDoContrato(t, ymdReal);
   const tc = termosParaContrato(t, p, ymd);
   const cls = clausulas(tc, emp);
   const v = numero(t.valor);

@@ -45,6 +45,7 @@ import {
   regimeDoModelo,
   resumoCombinado,
   termosParaContrato,
+  dataDoContrato,
   textoAceiteAdmissao,
   tituloContrato,
   vesperaDoRegistro,
@@ -357,7 +358,7 @@ async function assinar(req: Request, c: Convite, body: Record<string, unknown>) 
   const dadosRegistro = {
     ...((existente?.dadosRegistro as Record<string, unknown> | null) ?? {}),
     pessoais: p,
-    contrato: termosParaContrato(termos, p, ymdHoje),
+    contrato: termosParaContrato(termos, p, dataDoContrato(termos, ymdHoje)),
     conviteId: c.id,
     atualizadoEm: agora.toISOString(),
   };
@@ -407,13 +408,14 @@ async function assinar(req: Request, c: Convite, body: Record<string, unknown>) 
         filialId: c.filialId,
         momento: 'admissao',
         tipo: 'contrato_trabalho',
-        descricao: `${tituloContrato(termos.modelo)} — assinado pelo link do WhatsApp`,
+        descricao: `${tituloContrato(termos.modelo)} — ${termos.reemissaoDe ? 'reemitido (substitui o anterior), ' : ''}assinado pelo link do WhatsApp`,
         arquivoPath: contratoPath,
         arquivoNome: `contrato-${soDig(c.cpf)}.html`,
         usuarioId: c.criadoPor,
         dados: { origem: 'sistema', conviteId: c.id, hash },
       });
       for (const d of docs) {
+        if (d.jaNaFicha) continue; // reemissão: o arquivo já está na ficha desde o 1º convite
         const tipo = DOCS_PEDIDOS.find((x) => x.chave === d.chave);
         await tx.insert(schema.funcionarioDocumento).values({
           funcionarioId,

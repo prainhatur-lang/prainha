@@ -144,6 +144,8 @@ const Termos = z.object({
   jornadaId: z.string().uuid().optional(),
   aso: Aso.optional(),
   diariaAntes: z.boolean().optional(),
+  dataContrato: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  reemissaoDe: z.string().uuid().optional(),
 });
 
 const Body = z.discriminatedUnion('acao', [
