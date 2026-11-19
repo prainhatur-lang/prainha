@@ -121,6 +121,8 @@ export function TrctForm(props: {
     admissao: string;
     afastamento: string;
     noturno: number;
+    /** O mesmo noturno aberto em adicional (25), hora reduzida (219) e reflexos no DSR (250+854). */
+    noturnoPartes?: { adicional: number; reduzida: number; dsr: number } | null;
     salFamilia: { cotas: number; valorCota: number } | null;
     faltasPonto: FaltasDoPonto | null;
     /** Carta de pedido de demissão subida na ficha. */
@@ -226,7 +228,15 @@ export function TrctForm(props: {
   }, [afastamento, props.funcionarioId, inicial.afastamento, inicial.faltasPonto]);
   const [faltasFerias, setFaltasFerias] = useState('');
   const [extras, setExtras] = useState<{ descricao: string; valor: string; tipo: 'P' | 'D'; tributavel: boolean; codigo?: string }[]>(
-    inicial.noturno > 0
+    inicial.noturnoPartes && inicial.noturno > 0
+      ? [
+          { descricao: 'Adicional noturno 20% do mês (ponto)', valor: inicial.noturnoPartes.adicional, codigo: '55' as string | undefined },
+          { descricao: 'Hora noturna reduzida — 7min30 por hora (ponto)', valor: inicial.noturnoPartes.reduzida, codigo: undefined },
+          { descricao: 'Reflexo do noturno no DSR (ponto)', valor: inicial.noturnoPartes.dsr, codigo: '59' },
+        ]
+          .filter((x) => x.valor > 0)
+          .map((x) => ({ descricao: x.descricao, valor: x.valor.toFixed(2).replace('.', ','), tipo: 'P' as const, tributavel: true, codigo: x.codigo }))
+      : inicial.noturno > 0
       ? [{ descricao: 'Adicional noturno e reflexos do mês (ponto)', valor: inicial.noturno.toFixed(2).replace('.', ','), tipo: 'P', tributavel: true, codigo: '55' }]
       : [],
   );
@@ -570,6 +580,7 @@ export function TrctForm(props: {
                     <option value="56.1">56.1 Horas extras</option>
                     <option value="57">57 Gorjetas</option>
                     <option value="58">58 DSR</option>
+                    <option value="59">59 Reflexo DSR</option>
                   </select>
                 )}
                 {e.tipo === 'D' && (

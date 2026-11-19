@@ -39,6 +39,7 @@ export default async function RescisaoPage(props: { params: Promise<{ id: string
 
   // Adicional noturno do mês da saída, pelo ponto (mesma conta da folha calculada).
   let noturno = 0;
+  let noturnoPartes: { adicional: number; reduzida: number; dsr: number } | null = null;
   if (f.cpf && f.regimeSalarial === 'clt_mensal' && Number(f.salarioBase) > 0) {
     const comp = afastamento.slice(0, 7);
     const ini = `${comp}-01`;
@@ -57,8 +58,13 @@ export default async function RescisaoPage(props: { params: Promise<{ id: string
         feriados,
       });
       noturno = calc.rubricas.filter((r) => NOTURNO.has(r.codigo)).reduce((s, r) => s + r.valor, 0);
+      // Dono 19/11/2026: a hora noturna reduzida (os 7min30 por hora) aparece
+      // em linha própria, separada do adicional de 20% e dos reflexos no DSR.
+      const soma = (cods: string[]) => Math.round(calc.rubricas.filter((r) => cods.includes(r.codigo)).reduce((s, r) => s + r.valor, 0) * 100) / 100;
+      noturnoPartes = { adicional: soma(['25']), reduzida: soma(['219']), dsr: soma(['250', '854']) };
     } catch {
       noturno = 0;
+      noturnoPartes = null;
     }
   }
 
@@ -163,6 +169,7 @@ export default async function RescisaoPage(props: { params: Promise<{ id: string
             admissao: f.dataAdmissao ?? '',
             afastamento,
             noturno: Math.round(noturno * 100) / 100,
+            noturnoPartes,
             salFamilia,
             faltasPonto,
             cartaPedido: carta ? { nome: carta.nome ?? 'arquivo' } : null,
