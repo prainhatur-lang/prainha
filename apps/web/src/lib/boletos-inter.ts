@@ -146,6 +146,7 @@ export function casarBoletos(
   const regras = pagamentos.map((p) => {
     const valores = new Set([centavos(p.valorNominal), centavos(p.valorPago)]);
     const cnpj = soDigitos(p.cpfCnpjBeneficiario);
+    const nome = nomeChave(p.nomeBeneficiario);
     return {
       livres: () => contas.filter((c) => !usadas.has(c.id) && valores.has(centavos(c.valor))),
       mesmoCnpj: (c: ContaJanela) => !!cnpj && soDigitos(c.fornecedorCnpj) === cnpj,
@@ -155,6 +156,11 @@ export function casarBoletos(
         cnpj.length === 14 && soDigitos(c.fornecedorCnpj).slice(0, 8) === cnpj.slice(0, 8),
       mesmoVenc: (c: ContaJanela) =>
         c.dataVencimento === p.dataVencimentoTitulo || c.dataVencimento === p.dataVencimentoDigitada,
+      // cadastro da casa SEM CNPJ mas com o mesmo nome do beneficiário do boleto
+      // (fornecedor que veio do Consumer). Só vale pra conta da casa pagadora,
+      // nas passadas de valor aproximado — ver `daCasaDoFornecedor`.
+      mesmoNomeSemCnpj: (c: ContaJanela) =>
+        !soDigitos(c.fornecedorCnpj) && !!nome && nomeChave(c.fornecedorNome) === nome,
     };
   });
   const usar = (i: number, c: ContaJanela | null | undefined) => {
@@ -162,6 +168,31 @@ export function casarBoletos(
     res[i] = c;
     usadas.add(c.id);
   };
+  // Fornecedor que atende duas casas (Preshh: Bar e Tabuará, 11/2026): o
+  // boleto pago pelo Bar casava com a conta da Tabuará — já paga pelo boleto
+  // dela — porque só o cadastro da Tabuará tinha CNPJ e o valor da conta do
+  // Bar era um pouco diferente; a conta do Bar ficava aberta. Nas passadas de
+  // valor aproximado: (a) a conta da casa pagadora vale também pelo NOME quando
+  // o cadastro dela não tem CNPJ; (b) se a casa tem conta ABERTA desse
+  // fornecedor com vencimento perto, a conta JÁ PAGA de outra casa não ganha —
+  // o boleto fica sem conta pra alguém conferir, em vez de ligar errado.
+  const daCasaDoFornecedor = (i: number, c: ContaJanela) => {
+    const r = regras[i]!;
+    return c.filialId === filialId && (r.mesmoCnpj(c) || r.mesmaRaiz(c) || r.mesmoNomeSemCnpj(c));
+  };
+  const casaTemAbertaPerto = (i: number) => {
+    const p = pagamentos[i]!;
+    const venc = p.dataVencimentoTitulo || p.dataVencimentoDigitada;
+    return contas.some(
+      (c) =>
+        !usadas.has(c.id) &&
+        !c.dataPagamento &&
+        daCasaDoFornecedor(i, c) &&
+        (!venc || !c.dataVencimento || Math.abs(diasEntre(c.dataVencimento, venc)) <= 10),
+    );
+  };
+  const semPagaDeFora = (i: number, lista: ContaJanela[]) =>
+    casaTemAbertaPerto(i) ? lista.filter((c) => c.filialId === filialId || !c.dataPagamento) : lista;
 
   // passada 0: a conta que este boleto já baixou (da casa primeiro). Sem
   // isso, a conta de outra casa com o mesmo valor ganhava a da própria casa e
@@ -212,12 +243,12 @@ export function casarBoletos(
     const perto = contas.filter(
       (c) =>
         !usadas.has(c.id) &&
-        (r.mesmoCnpj(c) || r.mesmaRaiz(c)) &&
+        (r.mesmoCnpj(c) || r.mesmaRaiz(c) || daCasaDoFornecedor(i, c)) &&
         r.mesmoVenc(c) &&
         Math.abs(centavos(c.valor) - alvo) <= Math.round(alvo * 0.05),
     );
     const daCasa = perto.filter((c) => c.filialId === filialId);
-    const lista = daCasa.length ? daCasa : perto;
+    const lista = daCasa.length ? daCasa : semPagaDeFora(i, perto);
     if (lista.length === 1) usar(i, lista[0]);
   });
   // 4ª passada: mesmo CNPJ (ou raiz), valor até R$ 10 diferente e vencimento
@@ -235,15 +266,24 @@ export function casarBoletos(
     const perto = contas.filter(
       (c) =>
         !usadas.has(c.id) &&
-        (r.mesmoCnpj(c) || r.mesmaRaiz(c)) &&
+        (r.mesmoCnpj(c) || r.mesmaRaiz(c) || daCasaDoFornecedor(i, c)) &&
         Math.abs(centavos(c.valor) - alvo) <= 1000 &&
         (!venc || !c.dataVencimento || Math.abs(diasEntre(c.dataVencimento, venc)) <= 10),
     );
     const daCasa = perto.filter((c) => c.filialId === filialId);
-    const lista = daCasa.length ? daCasa : perto;
+    const lista = daCasa.length ? daCasa : semPagaDeFora(i, perto);
     if (lista.length === 1) usar(i, lista[0]);
   });
   return res;
+}
+
+/** Nome do fornecedor pra comparar: sem acento, maiúsculo, só letra e número. */
+function nomeChave(v: string | null | undefined): string {
+  return (v ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
 }
 
 function diasEntre(a: string, b: string): number {
