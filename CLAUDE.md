@@ -81,6 +81,20 @@ GOTCHA: ao imprimir `date`/`timestamp` com `String(x)`/JS Date, mostra -1 dia (B
 - **Reservas:** a **mesa é a unidade** — reservar aloca a mesa inteira; lotação por nº de mesas. `reserva_config` (jsonb na filial) tem `areas[{nome, mesas[{numero,lugares}], horaLimite, ...}]`, `semOtp`, `valorCheio/valorAtual`.
 - **CONTACORRENTE Consumer:** pagamento = CREDITO+IMPORTADO=S; saldo = sum(DEBITO) - sum(CREDITO).
 
+## Normas trabalhistas (o que a folha do sistema segue)
+- **Salário-família tem teto:** remuneração do mês acima de **R$ 1.980,38** NÃO recebe
+  salário-família (dono 19/11/2026; valor do contador, 10/11/2026). Vale a soma dos
+  proventos do mês, sem o 13º do intermitente. Constante `TETO_SALARIO_FAMILIA` em
+  `apps/web/src/lib/rh/folha-mensal.ts` — cálculo novo que pague salário-família
+  (folha, rescisão, conferência) usa essa constante, nunca o valor solto. Mudou o
+  teto no ano → troca só ali.
+- **Hora noturna NÃO tem 60 minutos:** entre 22:00 e 05:00 a hora vale **52min30s**
+  (CLT art. 73) — 7h de relógio = 8h noturnas. Minutos de relógio × 60/52,5.
+  `minutosNoturnos()` em `lib/rh/calcular-ponto.ts` devolve `reais` (relógio) e
+  `fictos` (reduzida); o que se paga é a reduzida. Na folha mensal: rubrica 25
+  (20% sobre a hora de relógio) + 219 (a diferença da hora reduzida). Nunca
+  calcular noturno dividindo minuto de relógio por 60 e parando aí.
+
 ## Memória detalhada
 Há memória do projeto com detalhes por feature/episódio (folha, reservas, WhatsApp,
 CDC v2, Consumer, etc.) — consulte quando precisar de contexto histórico.
