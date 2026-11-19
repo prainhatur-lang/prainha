@@ -19,7 +19,7 @@ import { db, schema } from '@concilia/db';
 import { createClient } from '@/lib/supabase/server';
 import { negarSemPerm } from '@/lib/exigir-perm';
 import { garantirPapeisDaPessoa } from '@/lib/rh/pessoa-unica';
-import { temConta } from '@/lib/rh/conta-da-pessoa';
+import { repassarContaDaPessoa } from '@/lib/rh/conta-da-pessoa';
 
 export const dynamic = 'force-dynamic';
 
@@ -212,53 +212,29 @@ export async function PUT(req: Request, ctx: { params: Promise<{ id: string }> }
 
   // Dados bancários/PIX moram no fornecedor (são da pessoa — mas o fornecedor
   // é por filial, então cada casa guarda a própria cópia).
-  const contaNova =
-    b.formaPagamento === 'banco'
-      ? {
-          chavePix: null,
-          bancoNome: b.bancoNome?.trim() || null,
-          bancoAgencia: b.bancoAgencia?.trim() || null,
-          bancoConta: b.bancoConta?.trim() || null,
-        }
-      : b.formaPagamento === 'pix'
-        ? { chavePix: b.chavePix?.trim() || null, bancoNome: null, bancoAgencia: null, bancoConta: null }
-        : {
-            chavePix: b.chavePix?.trim() || null,
-            bancoNome: b.bancoNome?.trim() || null,
-            bancoAgencia: b.bancoAgencia?.trim() || null,
-            bancoConta: b.bancoConta?.trim() || null,
-          };
+  // Salvar um lado NÃO apaga o outro (dono 19/11/2026: "pq vive perdendo essas
+  // informações" — escolher PIX zerava a conta bancária e vice-versa). Grava o
+  // que veio; o que não veio no body fica como estava. A tela manda os dois.
+  const veio = (campo: 'chavePix' | 'bancoNome' | 'bancoAgencia' | 'bancoConta') =>
+    b[campo] !== undefined ? b[campo]?.trim() || null : (contaAntes?.[campo] ?? null);
+  const contaNova = {
+    chavePix: veio('chavePix'),
+    bancoNome: veio('bancoNome'),
+    bancoAgencia: veio('bancoAgencia'),
+    bancoConta: veio('bancoConta'),
+  };
   await db.update(schema.fornecedor).set(contaNova).where(eq(schema.fornecedor.id, fornecedorId));
 
-  // A conta é da PESSOA: repassa pras outras casas onde ela está na folha (mesmo
-  // CPF) e a conta está vazia ou é a mesma cópia antiga daqui. Conta diferente
-  // digitada de propósito na outra casa fica como está.
-  let contaRepassada = 0;
+  // A conta é da PESSOA: repassa pros outros cadastros dela (mesmo CPF), conta
+  // e Pix cada um por si — onde está vazio ou é a cópia antiga daqui. Conta
+  // diferente digitada de propósito na outra casa fica como está.
   const cpfDigitos = (func.cpf ?? '').replace(/\D/g, '');
-  if (temConta(contaNova) && cpfDigitos.length === 11) {
-    const igualAntes = (campo: 'chavePix' | 'bancoNome' | 'bancoAgencia' | 'bancoConta') => {
-      const coluna = schema.fornecedor[campo];
-      const v = contaAntes?.[campo]?.trim() || null;
-      return v == null ? sql`nullif(trim(${coluna}), '') is null` : sql`trim(${coluna}) = ${v}`;
-    };
-    const repassados = await db
-      .update(schema.fornecedor)
-      .set(contaNova)
-      .where(
-        and(
-          sql`${schema.fornecedor.filialId} <> ${filialId}`,
-          isNull(schema.fornecedor.dataDelete),
-          sql`regexp_replace(coalesce(${schema.fornecedor.cnpjOuCpf}, ''), '[^0-9]', '', 'g') = ${cpfDigitos}`,
-          sql`exists (select 1 from fornecedor_folha ff where ff.fornecedor_id = ${schema.fornecedor.id})`,
-          sql`(
-            (nullif(trim(${schema.fornecedor.chavePix}), '') is null and nullif(trim(${schema.fornecedor.bancoConta}), '') is null)
-            or (${igualAntes('chavePix')} and ${igualAntes('bancoNome')} and ${igualAntes('bancoAgencia')} and ${igualAntes('bancoConta')})
-          )`,
-        ),
-      )
-      .returning({ id: schema.fornecedor.id });
-    contaRepassada = repassados.length;
-  }
+  const contaRepassada = await repassarContaDaPessoa({
+    cpf: cpfDigitos,
+    fornecedorId,
+    antes: contaAntes,
+    nova: contaNova,
+  });
 
   // Registro no meio da semana vale pra pessoa, não pra casa: quem circula
   // pelas casas (Roberto, 05/11/2026) recebe a mesma data em todas de uma vez.

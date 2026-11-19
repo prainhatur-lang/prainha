@@ -78,3 +78,67 @@ export async function contasPorCpf(
   }
   return out;
 }
+
+type ContaCampos = {
+  chavePix: string | null;
+  bancoNome: string | null;
+  bancoAgencia: string | null;
+  bancoConta: string | null;
+};
+
+/**
+ * A conta é da PESSOA, mas cada casa guarda a própria cópia (fornecedor é por
+ * filial) — e as cópias divergiam: a conta ficava numa casa e a outra saía
+ * "⚠ sem conta cadastrada" (dono, 19/11/2026: "pq vive perdendo essas
+ * informações"). Ao salvar numa casa, repassa pros outros cadastros do mesmo
+ * CPF, cada lado por si:
+ *  - CONTA BANCÁRIA vai pra onde a conta está vazia ou é a cópia antiga daqui;
+ *  - PIX vai pra onde o Pix está vazio ou é a cópia antiga daqui.
+ * Conta ou Pix DIFERENTE digitado de propósito em outra casa fica como está, e
+ * apagar aqui não apaga nas outras. Devolve quantos cadastros mudaram.
+ */
+export async function repassarContaDaPessoa(p: {
+  cpf: string | null | undefined;
+  /** Cadastro que acabou de ser salvo (fica de fora). */
+  fornecedorId: string;
+  antes: Partial<ContaCampos> | null | undefined;
+  nova: ContaCampos;
+}): Promise<number> {
+  const cpf = (p.cpf ?? '').replace(/\D/g, '');
+  if (cpf.length !== 11) return 0;
+  const t = (v: string | null | undefined) => v?.trim() || null;
+  const outros = and(
+    sql`${schema.fornecedor.id} <> ${p.fornecedorId}`,
+    isNull(schema.fornecedor.dataDelete),
+    sql`${cpfDoFornecedor} = ${cpf}`,
+  );
+  const mudou = new Set<string>();
+
+  const conta = t(p.nova.bancoConta);
+  if (conta) {
+    const contaAntes = t(p.antes?.bancoConta);
+    const agAntes = t(p.antes?.bancoAgencia);
+    const copiaAntiga = contaAntes
+      ? sql`(trim(${schema.fornecedor.bancoConta}) = ${contaAntes} and coalesce(trim(${schema.fornecedor.bancoAgencia}), '') = ${agAntes ?? ''})`
+      : sql`false`;
+    const r = await db
+      .update(schema.fornecedor)
+      .set({ bancoNome: t(p.nova.bancoNome), bancoAgencia: t(p.nova.bancoAgencia), bancoConta: conta })
+      .where(and(outros, sql`(nullif(trim(${schema.fornecedor.bancoConta}), '') is null or ${copiaAntiga})`))
+      .returning({ id: schema.fornecedor.id });
+    for (const x of r) mudou.add(x.id);
+  }
+
+  const pix = t(p.nova.chavePix);
+  if (pix) {
+    const pixAntes = t(p.antes?.chavePix);
+    const copiaAntiga = pixAntes ? sql`trim(${schema.fornecedor.chavePix}) = ${pixAntes}` : sql`false`;
+    const r = await db
+      .update(schema.fornecedor)
+      .set({ chavePix: pix })
+      .where(and(outros, sql`(nullif(trim(${schema.fornecedor.chavePix}), '') is null or ${copiaAntiga})`))
+      .returning({ id: schema.fornecedor.id });
+    for (const x of r) mudou.add(x.id);
+  }
+  return mudou.size;
+}

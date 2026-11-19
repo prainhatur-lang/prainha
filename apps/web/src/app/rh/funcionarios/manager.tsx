@@ -657,10 +657,12 @@ function FuncionarioForm({
                 : {}),
               tambemCliente,
               formaPagamento,
-              chavePix: formaPagamento === 'pix' ? chavePix.trim() || null : null,
-              bancoNome: formaPagamento === 'banco' ? bancoNome.trim() || null : null,
-              bancoAgencia: formaPagamento === 'banco' ? bancoAgencia.trim() || null : null,
-              bancoConta: formaPagamento === 'banco' ? bancoConta.trim() || null : null,
+              // Manda os dois lados: escolher PIX não apaga a conta bancária
+              // (nem o contrário) — dono 19/11/2026.
+              chavePix: chavePix.trim() || null,
+              bancoNome: bancoNome.trim() || null,
+              bancoAgencia: bancoAgencia.trim() || null,
+              bancoConta: bancoConta.trim() || null,
             }),
           });
           if (!rp.ok) {
@@ -1115,6 +1117,18 @@ function FuncionarioForm({
                 <p className="col-span-2 rounded-md bg-indigo-50 px-2 py-1 text-[11px] text-indigo-700 sm:col-span-3">
                   Conta trazida do cadastro em {contaDeFora.filialNome} (aqui estava vazia) — ao salvar, fica
                   gravada nesta loja também.
+                </p>
+              )}
+              {formaPagamento === 'pix' && bancoConta.trim() && (
+                <p className="col-span-2 rounded-md bg-slate-50 px-2 py-1 text-[11px] text-slate-600 sm:col-span-3">
+                  Também tem conta bancária no cadastro: {bancoNome} ag {bancoAgencia} conta {bancoConta} — continua
+                  guardada (pra trocar ou apagar, escolha &quot;Depósito em conta&quot;).
+                </p>
+              )}
+              {formaPagamento === 'banco' && chavePix.trim() && (
+                <p className="col-span-2 rounded-md bg-slate-50 px-2 py-1 text-[11px] text-slate-600 sm:col-span-3">
+                  Também tem Pix no cadastro: {chavePix} — continua guardado (pra trocar ou apagar, escolha
+                  &quot;PIX&quot;).
                 </p>
               )}
               {formaPagamento === 'pix' ? (

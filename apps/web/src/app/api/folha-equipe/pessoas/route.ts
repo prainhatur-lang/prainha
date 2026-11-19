@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { repassarContaDaPessoa } from '@/lib/rh/conta-da-pessoa';
 import { db, schema } from '@concilia/db';
 import { and, eq, inArray } from 'drizzle-orm';
 import { z } from 'zod';
@@ -164,15 +165,26 @@ export async function PUT(req: NextRequest) {
     'bancoConta' in body ||
     'chavePix' in body;
   if (temBancarios) {
-    await db
-      .update(schema.fornecedor)
-      .set({
-        bancoNome: body.bancoNome?.trim() || null,
-        bancoAgencia: body.bancoAgencia?.trim() || null,
-        bancoConta: body.bancoConta?.trim() || null,
-        chavePix: body.chavePix?.trim() || null,
+    const [antes] = await db
+      .select({
+        cpf: schema.fornecedor.cnpjOuCpf,
+        chavePix: schema.fornecedor.chavePix,
+        bancoNome: schema.fornecedor.bancoNome,
+        bancoAgencia: schema.fornecedor.bancoAgencia,
+        bancoConta: schema.fornecedor.bancoConta,
       })
-      .where(eq(schema.fornecedor.id, body.fornecedorId));
+      .from(schema.fornecedor)
+      .where(eq(schema.fornecedor.id, body.fornecedorId))
+      .limit(1);
+    const nova = {
+      bancoNome: body.bancoNome?.trim() || null,
+      bancoAgencia: body.bancoAgencia?.trim() || null,
+      bancoConta: body.bancoConta?.trim() || null,
+      chavePix: body.chavePix?.trim() || null,
+    };
+    await db.update(schema.fornecedor).set(nova).where(eq(schema.fornecedor.id, body.fornecedorId));
+    // A conta é da pessoa: os outros cadastros dela (mesmo CPF) acompanham.
+    await repassarContaDaPessoa({ cpf: antes?.cpf, fornecedorId: body.fornecedorId, antes, nova }).catch(() => 0);
   }
 
   return NextResponse.json({ ok: true });
