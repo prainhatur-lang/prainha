@@ -15,6 +15,7 @@ import {
   type TipoRescisao,
 } from '@/lib/rh/trct';
 import type { FaltasDoPonto } from '@/lib/rh/trct-faltas';
+import { TETO_SALARIO_FAMILIA } from '@/lib/rh/folha-mensal';
 
 interface Pessoa {
   nascimento: string | null;
@@ -240,7 +241,14 @@ export function TrctForm(props: {
     if (de === ini && d === ultimo) return 30;
     return Math.max(0, Math.min(30, diasEntre(de, afastamento) + 1));
   }, [admissao, afastamento]);
-  const salFamiliaAuto = inicial.salFamilia
+  // Teto do salário-família (norma trabalhista, dono 19/11/2026): remuneração
+  // mensal acima de TETO_SALARIO_FAMILIA não recebe. Aqui a remuneração é o
+  // salário do mês cheio + os proventos tributáveis lançados (noturno etc.).
+  // Só zera o valor AUTOMÁTICO; o que for digitado no campo 62 continua valendo.
+  const remuneracaoSalFamilia =
+    num(salario) + extras.reduce((t, e) => t + (e.tipo === 'P' && e.tributavel ? num(e.valor) || 0 : 0), 0);
+  const salFamiliaPassaTeto = remuneracaoSalFamilia > TETO_SALARIO_FAMILIA;
+  const salFamiliaAuto = inicial.salFamilia && !salFamiliaPassaTeto
     ? Math.round(inicial.salFamilia.cotas * inicial.salFamilia.valorCota * (diasMesSaida / 30) * 100) / 100
     : 0;
   const salFamiliaValor = dados.salFamilia.trim() ? num(dados.salFamilia) : salFamiliaAuto;
@@ -636,6 +644,12 @@ export function TrctForm(props: {
                 inputMode="decimal"
                 placeholder={inicial.salFamilia ? `${fmtValor(salFamiliaAuto)} (${inicial.salFamilia.cotas} cota(s))` : '0,00'}
               />
+              {salFamiliaPassaTeto && (inicial.salFamilia || dados.salFamilia.trim()) && (
+                <span className="mt-0.5 block text-[10px] font-normal normal-case text-amber-700">
+                  Sem salário-família: remuneração de R$ {fmtValor(remuneracaoSalFamilia)} passa do teto de R$ {fmtValor(TETO_SALARIO_FAMILIA)}.
+                  {dados.salFamilia.trim() ? ' O valor digitado está entrando mesmo assim.' : ''}
+                </span>
+              )}
             </label>
             <label className={rotulo}>Data do pagamento (quitação)
               <input type="date" className={input} value={dados.pagamento || (calc?.dataLimite ?? '')} onChange={setD('pagamento')} />
