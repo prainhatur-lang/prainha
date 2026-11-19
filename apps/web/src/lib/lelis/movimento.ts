@@ -7,6 +7,7 @@
 import { db, schema } from '@concilia/db';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import { dateToBrYmd, diasAtrasBr, hojeBr } from '@/lib/datas';
+import { resolverFornecedorParaNota } from '@/lib/match-fornecedor';
 import { chaveProduto, sincronizarProdutosDasNotas } from './sincronizar';
 
 export interface EntradaResultado {
@@ -24,6 +25,19 @@ export async function darEntradaNotaLelis(filialId: string, notaId: string, usua
     .where(and(eq(schema.notaCompra.id, notaId), eq(schema.notaCompra.filialId, filialId)))
     .limit(1);
   if (!nota) return { erro: 'nota não encontrada' };
+
+  // Nota que subiu por upload vem sem fornecedor: acha (ou cria) o cadastro da
+  // Lelis pelo CNPJ do emitente, pra conta a pagar sair com o fornecedor.
+  if (!nota.fornecedorId && nota.emitCnpj) {
+    const fid = await resolverFornecedorParaNota({
+      filialId, emitCnpj: nota.emitCnpj, emitNome: nota.emitNome, emitFantasia: nota.emitFantasia,
+      emitIe: nota.emitIe, emitUf: nota.emitUf, emitCidade: nota.emitCidade,
+    }).catch(() => null);
+    if (fid) {
+      await db.update(schema.notaCompra).set({ fornecedorId: fid }).where(eq(schema.notaCompra.id, notaId));
+      nota.fornecedorId = fid;
+    }
+  }
 
   // produtos e tributação da saída a partir dessa nota (e das outras)
   await sincronizarProdutosDasNotas(filialId, usuario);

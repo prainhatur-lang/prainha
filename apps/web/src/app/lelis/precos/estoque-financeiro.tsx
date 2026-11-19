@@ -81,6 +81,16 @@ export function EstoqueFinanceiroLelis() {
     await carregar();
   }
 
+  // Nota com o estoque já lançado e nenhuma conta a pagar: lança só as contas
+  // (a entrada é idempotente — o estoque não entra de novo).
+  async function lancarContas(n: Nota) {
+    if (!window.confirm(
+      `Lançar no a pagar da Lelis as parcelas da NF-e ${n.numero} (${n.emit_nome}, ${brl(n.valor_total)})?\n\n` +
+      'O estoque não muda. Se essa nota já foi paga (por outra casa, por exemplo), não lance.',
+    )) return;
+    await darEntrada(n);
+  }
+
   async function mudarTrib(p: Estoque, campo: 'tribIcms' | 'cstPisSaida', valor: string) {
     setOcupado(p.id);
     const body: Record<string, unknown> = { id: p.id, [campo]: valor === 'AUTO' ? null : valor };
@@ -171,7 +181,16 @@ export function EstoqueFinanceiroLelis() {
                   <td className="text-right">{n.contas}</td>
                   <td className="text-right">
                     {n.itens_entrada >= n.itens && n.itens > 0 ? (
-                      <span className="text-xs text-emerald-700">✓ entrada feita</span>
+                      <span className="text-xs text-emerald-700">
+                        ✓ entrada feita
+                        {/* estoque entrou (importação só de estoque) e a nota ficou sem contas a pagar */}
+                        {n.contas === 0 && (n.valor_total ?? 0) > 0 && (
+                          <button disabled={ocupado === n.id} onClick={() => lancarContas(n)}
+                            className="ml-2 rounded bg-amber-600 px-2 py-1 text-xs font-medium text-white hover:bg-amber-700 disabled:opacity-50">
+                            {ocupado === n.id ? '…' : 'Lançar contas a pagar'}
+                          </button>
+                        )}
+                      </span>
                     ) : (
                       <button disabled={ocupado === n.id} onClick={() => darEntrada(n)}
                         className="rounded bg-emerald-600 px-2 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50">
