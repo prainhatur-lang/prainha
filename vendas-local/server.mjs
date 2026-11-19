@@ -17,7 +17,7 @@ import net from 'node:net';
 import dgram from 'node:dgram';
 import { createHmac, createHash, generateKeyPairSync, sign, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { readFileSync, mkdirSync, writeFileSync, existsSync, createReadStream, statSync,
-  readdirSync, rmSync, openSync, renameSync } from 'node:fs';
+  readdirSync, rmSync, openSync, renameSync, copyFileSync, appendFileSync } from 'node:fs';
 import path from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import os from 'node:os';
@@ -1529,6 +1529,200 @@ async function apiCaixaAtualizarAgora(quem) {
   if (!AUTO_UPDATE) return { ok: false, erro: 'auto-update desligado nesta loja (AUTO_UPDATE=off no start.bat)' };
   const e = await autoUpdateCiclo(true);
   return { ok: true, versao: VERSAO, disponivel: e.disponivel || null, motivo: e.motivo || '', erro: e.erro || null };
+}
+
+// ==================== BACKUP DO BANCO DA LOJA ====================
+// Pedido do dono (19/11/2026): backup manual, automático e restauração, só
+// pro Administrador, numa tela do tablet (Caixa → 💾 backup).
+//   hora.dump ............ de HORA EM HORA, sempre cobrindo o anterior
+//   diario-seg..dom.dump . um por dia da semana (o último da hora daquele dia;
+//                          o dia vira às 05:00, como no ponto: o backup da
+//                          1h da manhã ainda é da noite anterior). Cobre o da
+//                          semana passada → sempre 7 dias pra trás.
+//   manual-<data>.dump ... o que o Administrador pediu na tela (ficam os 10 últimos)
+//   antes-de-restaurar ... feito sozinho antes de TODA restauração (dá pra desfazer)
+// É o pg_dump do Postgres local, formato próprio (-Fc, já compactado). Grava
+// num .tmp e só troca o arquivo bom se o dump terminou certo — backup que
+// falhou no meio nunca cobre o anterior.
+// BACKUP_DIR no start.bat aponta pra OUTRO disco/pendrive (a pasta padrão fica
+// no mesmo disco do banco: salva de erro de gente e de banco, não de disco
+// morto). BACKUP_AUTO=off desliga só o automático.
+const BACKUP_DIR = process.env.BACKUP_DIR || path.join(process.cwd(), 'backups');
+const BACKUP_AUTO = !/^(off|0|false|nao|não)$/i.test(String(process.env.BACKUP_AUTO || 'on').trim());
+const BACKUP_MANUAIS = 10;
+const BACKUP_DIAS = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sab'];
+const BACKUP_DIA_NOME = { dom: 'Domingo', seg: 'Segunda', ter: 'Terça', qua: 'Quarta', qui: 'Quinta', sex: 'Sexta', sab: 'Sábado' };
+let backupOcupado = null;      // 'backup' | 'restauração' — um de cada vez
+let backupUltimoErro = null;   // { quando, erro } do último automático que falhou
+let backupSemPrograma = false; // pg_dump não existe nesta máquina: não insiste
+let backupProximaTentativa = 0;
+/** Dia da semana do "dia da casa" (vira 05:00, horário de Aracaju). */
+function backupDiaDaCasa() {
+  const d = new Date(Date.now() - 5 * 3600 * 1000);
+  const w = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Maceio', weekday: 'short' }).format(d).toLowerCase();
+  return { sun: 'dom', mon: 'seg', tue: 'ter', wed: 'qua', thu: 'qui', fri: 'sex', sat: 'sab' }[w] || 'dom';
+}
+function backupCarimbo() {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Maceio', year: 'numeric', month: '2-digit',
+    day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).formatToParts(new Date()).map((x) => [x.type, x.value]));
+  return `${p.year}${p.month}${p.day}-${p.hour === '24' ? '00' : p.hour}${p.minute}${p.second}`;
+}
+/** Como o pg_dump/pg_restore chegam no MESMO banco do servidor. A senha vai
+ *  por variável de ambiente, nunca na linha de comando. */
+function backupConexao() {
+  if (!process.env.PG_URL) return { args: ['-h', '/tmp', '-p', '5432', '-d', 'vendas_local'], env: {} };
+  const u = new URL(process.env.PG_URL);
+  const args = ['-h', u.hostname || '127.0.0.1', '-p', u.port || '5432', '-d', decodeURIComponent(u.pathname.replace(/^\//, ''))];
+  if (u.username) args.push('-U', decodeURIComponent(u.username));
+  const env = {};
+  if (u.password) env.PGPASSWORD = decodeURIComponent(u.password);
+  const ssl = u.searchParams.get('sslmode'); if (ssl) env.PGSSLMODE = ssl;
+  return { args, env };
+}
+/** Acha o pg_dump/pg_restore. Windows: a pasta do Postgres instalado, de
+ *  preferência a MESMA versão do banco (pg_dump mais velho que o servidor se
+ *  recusa a rodar). Fora do Windows: o do PATH. PG_BIN força a pasta. */
+async function backupPrograma(nome) {
+  const exe = process.platform === 'win32' ? nome + '.exe' : nome;
+  if (process.env.PG_BIN) return path.join(process.env.PG_BIN, exe);
+  if (process.platform !== 'win32') return exe;
+  let maior = 0;
+  try { maior = Math.floor(Number((await sql`SHOW server_version_num`)[0].server_version_num) / 10000); } catch {}
+  const achados = [];
+  for (const raiz of ['C:\\Program Files\\PostgreSQL', 'C:\\Program Files (x86)\\PostgreSQL']) {
+    let dirs = []; try { dirs = readdirSync(raiz); } catch {}
+    for (const d of dirs) {
+      const arq = path.join(raiz, d, 'bin', exe);
+      if (existsSync(arq)) achados.push({ v: parseFloat(d) || 0, arq });
+    }
+  }
+  if (!achados.length) return exe;
+  achados.sort((a, b) => b.v - a.v);
+  return (achados.find((x) => Math.floor(x.v) === maior) || achados.find((x) => x.v >= maior) || achados[0]).arq;
+}
+function backupExec(bin, args, env) {
+  return new Promise((resolve) => {
+    execFile(bin, args, { env: { ...process.env, ...env }, timeout: 20 * 60 * 1000, maxBuffer: 8 * 1024 * 1024, windowsHide: true },
+      (err, _out, stderr) => {
+        if (!err) return resolve({ ok: true });
+        if (err.code === 'ENOENT') return resolve({ ok: false, semPrograma: true,
+          erro: 'não achei o programa de backup do Postgres (' + path.basename(bin) + ') nesta máquina — defina PG_BIN no start.bat' });
+        resolve({ ok: false, erro: (String(stderr || '').trim().split('\n').slice(-3).join(' | ') || err.message).slice(0, 400) });
+      });
+  });
+}
+function backupRotulo(arq) {
+  if (arq === 'hora.dump') return { tipo: 'hora', rotulo: 'De hora em hora' };
+  if (arq === 'antes-de-restaurar.dump') return { tipo: 'antes', rotulo: 'Antes da última restauração' };
+  let m = arq.match(/^diario-(dom|seg|ter|qua|qui|sex|sab)\.dump$/);
+  if (m) return { tipo: 'diario', dia: m[1], rotulo: BACKUP_DIA_NOME[m[1]] };
+  m = arq.match(/^manual-\d{8}-\d{6}\.dump$/);
+  if (m) return { tipo: 'manual', rotulo: 'Manual' };
+  return null;
+}
+function backupLista() {
+  let nomes = []; try { nomes = readdirSync(BACKUP_DIR); } catch {}
+  const l = [];
+  for (const arq of nomes) {
+    const r = backupRotulo(arq); if (!r) continue;
+    try { const st = statSync(path.join(BACKUP_DIR, arq)); l.push({ arquivo: arq, ...r, tamanho: st.size, quando: new Date(st.mtimeMs).toISOString() }); } catch {}
+  }
+  return l.sort((a, b) => (a.quando < b.quando ? 1 : -1));
+}
+function backupHistorico(linha) {
+  try { mkdirSync(BACKUP_DIR, { recursive: true }); appendFileSync(path.join(BACKUP_DIR, 'historico.log'), new Date().toISOString() + ' ' + linha + '\n'); } catch {}
+}
+/** Faz UM backup. tipo: 'hora' (automático; também atualiza o do dia da
+ *  semana), 'manual' ou 'antes' (rede de segurança da restauração). */
+async function backupFazer(tipo, por) {
+  if (backupOcupado) return { ok: false, erro: 'já tem ' + (backupOcupado === 'backup' ? 'um backup' : 'uma restauração') + ' em andamento — espere terminar' };
+  backupOcupado = 'backup';
+  const nome = tipo === 'manual' ? 'manual-' + backupCarimbo() + '.dump' : tipo === 'antes' ? 'antes-de-restaurar.dump' : 'hora.dump';
+  const destino = path.join(BACKUP_DIR, nome), tmp = destino + '.tmp';
+  try {
+    mkdirSync(BACKUP_DIR, { recursive: true });
+    const c = backupConexao();
+    const r = await backupExec(await backupPrograma('pg_dump'), ['-Fc', '--no-owner', '--no-privileges', '-f', tmp, ...c.args], c.env);
+    if (r.semPrograma) backupSemPrograma = true;
+    if (!r.ok) throw new Error(r.erro);
+    const tam = existsSync(tmp) ? statSync(tmp).size : 0;
+    if (tam < 1000) throw new Error('o backup saiu vazio — o anterior foi mantido');
+    renameSync(tmp, destino);
+    if (tipo === 'hora') {
+      const dia = path.join(BACKUP_DIR, 'diario-' + backupDiaDaCasa() + '.dump');
+      copyFileSync(destino, dia + '.tmp'); renameSync(dia + '.tmp', dia);
+      backupUltimoErro = null;
+    }
+    if (tipo === 'manual') {
+      const velhos = backupLista().filter((x) => x.tipo === 'manual').slice(BACKUP_MANUAIS);
+      for (const v of velhos) rmSync(path.join(BACKUP_DIR, v.arquivo), { force: true });
+      backupHistorico('backup manual ' + nome + ' por ' + (por || '?'));
+    }
+    return { ok: true, arquivo: nome, tamanho: tam };
+  } catch (e) {
+    try { rmSync(tmp, { force: true }); } catch {}
+    const erro = String(e.message || e).slice(0, 400);
+    if (tipo === 'hora') backupUltimoErro = { quando: new Date().toISOString(), erro };
+    return { ok: false, erro };
+  } finally { backupOcupado = null; }
+}
+/** De minuto em minuto olha a idade do hora.dump; passou de 1h, faz outro.
+ *  Olhar o arquivo (e não um relógio na memória) faz o ritmo sobreviver a
+ *  reinício e a update. Falhou: tenta de novo em 10 min, sem encher o log. */
+async function loopBackup() {
+  try {
+    if (BACKUP_AUTO && !backupSemPrograma && !backupOcupado && Date.now() >= backupProximaTentativa) {
+      const arq = path.join(BACKUP_DIR, 'hora.dump');
+      const idade = existsSync(arq) ? Date.now() - statSync(arq).mtimeMs : Infinity;
+      if (idade >= 3600 * 1000 - 30 * 1000) {
+        const r = await backupFazer('hora');
+        if (r.ok) console.log('[backup] de hora em hora ok — ' + Math.round(r.tamanho / 1024) + ' KB em ' + BACKUP_DIR);
+        else { backupProximaTentativa = Date.now() + 10 * 60 * 1000; console.error('[backup] FALHOU: ' + r.erro); }
+      }
+    }
+  } catch (e) { console.error('[backup] ' + e.message); }
+  finally { setTimeout(loopBackup, 60 * 1000); }
+}
+async function apiBackupEstado(quem) {
+  if (!quem?.admin) return { ok: false, erro: 'só Administrador' };
+  return { ok: true, auto: BACKUP_AUTO && !backupSemPrograma, pasta: BACKUP_DIR, ocupado: backupOcupado,
+    erro: backupUltimoErro, sem_programa: backupSemPrograma, manuais_max: BACKUP_MANUAIS, dia_hoje: backupDiaDaCasa(), lista: backupLista() };
+}
+async function apiBackupAgora(quem) {
+  if (!quem?.admin) return { ok: false, erro: 'só Administrador faz backup na mão' };
+  return backupFazer('manual', quem.login);
+}
+/** RESTAURAR (Administrador + PIN + a palavra RESTAURAR). Antes de mexer,
+ *  guarda o banco de agora em antes-de-restaurar.dump — se nem isso der, não
+ *  restaura. A volta é numa transação só: ou entra o backup inteiro, ou o
+ *  banco fica exatamente como estava. Depois o servidor se reinicia (o
+ *  start.bat sobe de novo em ~5s) pra não ficar com nada velho na memória. */
+async function apiBackupRestaurar(body, quem) {
+  if (!quem?.admin) return { ok: false, erro: 'só Administrador restaura backup' };
+  const arq = String(body?.arquivo || '');
+  if (!backupRotulo(arq) || !existsSync(path.join(BACKUP_DIR, arq))) return { ok: false, erro: 'backup não encontrado' };
+  if (String(body?.confirma || '').trim().toUpperCase() !== 'RESTAURAR') return { ok: false, erro: 'digite RESTAURAR pra confirmar' };
+  const pin = String(body?.pin || '').replace(/\D/g, '');
+  const reg = (await sql`SELECT pin_hash, salt FROM garcom_pin WHERE login=${String(quem.login).toLowerCase()}`)[0];
+  if (!reg || !pinConfere(pin, reg.salt, reg.pin_hash)) return { ok: false, erro: 'PIN do administrador não confere' };
+  if (arq !== 'antes-de-restaurar.dump') {
+    const antes = await backupFazer('antes', quem.login);
+    if (!antes.ok) return { ok: false, erro: 'não consegui guardar o banco de agora antes de restaurar (' + antes.erro + ') — nada foi mexido' };
+  } else if (backupOcupado) return { ok: false, erro: 'tem um backup em andamento — espere terminar' };
+  backupOcupado = 'restauração';
+  try {
+    const c = backupConexao();
+    const r = await backupExec(await backupPrograma('pg_restore'),
+      ['--clean', '--if-exists', '--no-owner', '--no-privileges', '--single-transaction', ...c.args, path.join(BACKUP_DIR, arq)], c.env);
+    if (!r.ok) {
+      backupHistorico('RESTAURAÇÃO FALHOU ' + arq + ' por ' + quem.login + ': ' + r.erro);
+      return { ok: false, erro: 'a restauração não entrou — o banco ficou como estava. ' + r.erro };
+    }
+    backupHistorico('RESTAURADO ' + arq + ' por ' + quem.login);
+    console.log('[backup] RESTAURADO ' + arq + ' por ' + quem.login + ' — reiniciando o servidor');
+    setTimeout(() => process.exit(0), 1500);
+    return { ok: true, reiniciando: true, arquivo: arq };
+  } finally { backupOcupado = null; }
 }
 
 async function loopEspelho() {
@@ -17694,6 +17888,7 @@ h1{font-size:18px;margin:0}h1 b{color:var(--gold2)}
 <a href="/reservas"><i>📅</i><span>Reservas<small>quem reservou pra hoje — pede login da recepção</small></span></a>
 <button onclick="abrirPontoFacial()"><i>🕐</i><span>Ponto</span></button>
 <a href="/gerente"><i>👔</i><span>Gerente</span></a>
+<a href="/caixa#backup"><i>💾</i><span>Backup<small>fazer, baixar e restaurar — só Administrador</small></span></a>
 <hr><a href="/tablet"><i>⚙</i><span>Configurar<small>tela cheia / atualizar</small></span></a>
 </div></div>
 <script>
@@ -29090,7 +29285,7 @@ function bannerCx(){
       (PODE.mov?'<button class="seg" onclick="irTela(\\'mov\\')">↕ Gaveta</button>':'')+
       '<button class="seg" onclick="irTela(\\'rel\\')">📊 Movimento</button>'+
       '<button class="seg" onclick="irTela(\\'fechacx\\')">Fechar caixa</button></div>'+
-      (PODE.admin?'<div style="margin-top:8px;text-align:right"><a class="sair" onclick="irTela(\\'usu\\')">👤 usuários do sistema</a></div>':'');}
+      (PODE.admin?'<div style="margin-top:8px;text-align:right"><a class="sair" onclick="irTela(\\'usu\\')">👤 usuários do sistema</a> · <a class="sair" onclick="irTela(\\'backup\\')">💾 backup</a></div>':'');}
   return '<div class="tit" style="margin-top:0">🧰 Seu caixa · fechado</div>'+
     (PODE.abrir
       ?'<button class="big o" style="margin-top:6px" onclick="irTela(\\'abrircx\\')">Abrir caixa</button>'
@@ -29098,6 +29293,7 @@ function bannerCx(){
     '<div style="margin-top:8px;text-align:right">'+
       '<a class="sair" onclick="irTela(\\'rel\\')">📊 Movimento do caixa</a>'+
       (PODE.admin?' · <a class="sair" onclick="irTela(\\'usu\\')">👤 usuários do sistema</a>':'')+
+      (PODE.admin?' · <a class="sair" onclick="irTela(\\'backup\\')">💾 backup</a>':'')+
     '</div>';
 }
 /* FECHADAS HOJE: a conta quitada some da grade de mesas — e antes sumia do
@@ -29291,6 +29487,7 @@ function pintaMain(){
   if(TELA==='rel')return telaRel(el);
   if(TELA==='mov')return telaMov(el);
   if(TELA==='usu')return telaUsu(el);
+  if(TELA==='backup')return telaBackup(el);
   if(TELA==='canc')return telaCancItem(el);
   if(TELA==='libcanc')return telaLibCanc(el);
   if(TELA==='cancrel')return telaCancRel(el);
@@ -29299,7 +29496,7 @@ async function inicio(){
   var s=null; if(TOK){try{s=await jget('/api/caixa/sessao')}catch(e){}}
   if(s&&s.ok){NOME=s.nome||s.login;PODE={admin:!!s.admin,desconto:!!s.pode_desconto,fiado:!!s.pode_fiado,abrir:!!s.pode_abrir,divergente:!!s.pode_divergente,mov:!!s.pode_mov,transf:!!s.pode_transf,lancar:!!s.pode_lancar,cancItem:!!s.pode_canc_item,cancPed:!!s.pode_canc_pedido,reabrir:!!s.pode_reabrir,estorno:!!s.pode_estorno};
     try{localStorage.setItem('garcom_tok',TOK)}catch(e){} // mesmo token: /venda abre logado pro caixa lançar
-    TELA='home';setHdr();render();listar();cxEstado();fechadasCx()}
+    TELA='home';setHdr();render();listar();cxEstado();fechadasCx();bkAtalho()}
   else {TOK=null;TELA='login';render()}
 }
 function telaLogin(el){
@@ -29328,7 +29525,7 @@ async function entrar(){
   if(!r.ok){er.textContent=r.erro||'não entrou';return}
   TOK=r.token;try{localStorage.setItem('caixa_tok',TOK);localStorage.setItem('garcom_tok',TOK)}catch(e){}
   NOME=r.nome||login;PODE={admin:!!r.admin,desconto:!!r.pode_desconto,fiado:!!r.pode_fiado,abrir:!!r.pode_abrir,divergente:!!r.pode_divergente,mov:!!r.pode_mov,transf:!!r.pode_transf,lancar:!!r.pode_lancar,cancItem:!!r.pode_canc_item,cancPed:!!r.pode_canc_pedido,reabrir:!!r.pode_reabrir,estorno:!!r.pode_estorno};
-  setHdr();TELA='home';MESAS=null;render();listar();cxEstado();fechadasCx();
+  setHdr();TELA='home';MESAS=null;render();listar();cxEstado();fechadasCx();bkAtalho();
 }
 var HOME_Y=0;
 /* ALVO da conta aberta: null = mesa comum (o servidor acha pelo número);
@@ -30595,6 +30792,92 @@ async function acaoFechaCx(){
    Login que existe só aqui, sem passar pelo cadastro do Consumer. Usa os
    MESMOS códigos de permissão do PDV, então a regra do caixa é uma só. */
 var USU=null,USU_ED=null;
+/* ---- BACKUP (só Administrador): manual, automático e restauração ---- */
+var BK=null,BK_REST=null,BK_MSG=null;
+function bkAtalho(){if(location.hash==='#backup'){try{history.replaceState(null,'',location.pathname)}catch(e){}
+  if(PODE.admin)irTela('backup');else{FLASH='Backup é só pro Administrador.';render()}}}
+function bkTam(n){n=Number(n||0);return n>=1048576?(n/1048576).toFixed(1).replace('.',',')+' MB':Math.max(1,Math.round(n/1024))+' KB'}
+function bkQuando(iso){var d=new Date(iso),h=new Date();
+  var hm=d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'});
+  var dia=d.toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'});
+  var min=Math.round((h-d)/60000);
+  var ha=min<1?'agora':min<60?'há '+min+' min':min<1440?'há '+Math.floor(min/60)+' h':'há '+Math.floor(min/1440)+' dia'+(min>=2880?'s':'');
+  return dia+' às '+hm+' · '+ha}
+function bkLinha(b,titulo){
+  return '<div class="it"><span><b>'+esc(titulo)+'</b><br><span class="mut" style="font-size:12.5px">'+esc(bkQuando(b.quando))+' · '+bkTam(b.tamanho)+'</span></span>'+
+    '<span style="white-space:nowrap"><a class="sair" href="/api/caixa/backup/baixar?arq='+encodeURIComponent(b.arquivo)+'&t='+encodeURIComponent(TOK||'')+'">⬇ baixar</a> · '+
+    '<a class="sair" style="color:var(--red)" onclick="bkPedeRest(\\''+esc(b.arquivo)+'\\')">↩ restaurar</a></span></div>'}
+async function telaBackup(el){
+  if(!BK)el.innerHTML='<div class="mut" style="padding:16px">carregando…</div>';
+  var d;try{d=await jget('/api/caixa/backup')}catch(e){d=null}
+  if(TELA!=='backup')return;
+  if(!d||!d.ok){el.innerHTML='<div class="card"><div class="err">'+esc((d&&d.erro)||'sem resposta do servidor da loja')+'</div>'+
+    '<button class="big g" onclick="voltarMesas()">Voltar</button></div>';return}
+  BK=d;
+  if(BK_REST)return bkFormRest(el);
+  var L=d.lista||[],hora=L.filter(function(x){return x.tipo==='hora'})[0],antes=L.filter(function(x){return x.tipo==='antes'})[0];
+  var man=L.filter(function(x){return x.tipo==='manual'});
+  var h='<button class="seg" style="margin-bottom:10px" onclick="voltarMesas()">◂ voltar</button>'+
+    (BK_MSG?'<div class="card" style="border-color:var(--green);color:var(--green2);font-weight:700">'+esc(BK_MSG)+'</div>':'');
+  BK_MSG=null;
+  h+='<div class="card"><div class="tit" style="margin-top:0">💾 Backup do sistema</div>'+
+    (d.auto?'<div class="mut">Automático <b style="color:var(--green2)">ligado</b>: um de hora em hora (cobre o anterior) e um por dia da semana.</div>'
+      :'<div class="err">Backup automático DESLIGADO nesta loja'+(d.sem_programa?' — o programa de backup do Postgres não foi achado nesta máquina':'')+'.</div>')+
+    (d.erro?'<div class="err">O último automático falhou ('+esc(bkQuando(d.erro.quando))+'): '+esc(d.erro.erro)+'</div>':'')+
+    (!hora&&d.auto?'<div class="mut">O primeiro automático sai em até 2 minutos depois que o servidor liga.</div>':'')+
+    '<button class="big" id="bk_b" style="margin-top:10px" onclick="bkAgora(this)">💾 Fazer backup agora</button>'+
+    '<div class="mut" style="font-size:12.5px;margin-top:6px">Guardado em '+esc(d.pasta)+'. Use ⬇ baixar pra levar uma cópia pra fora do servidor.</div></div>';
+  h+='<div class="card"><div class="tit" style="margin-top:0">🕐 De hora em hora</div>'+
+    (hora?bkLinha(hora,'Último backup'):'<div class="mut">nenhum ainda</div>')+'</div>';
+  h+='<div class="card"><div class="tit" style="margin-top:0">📅 Diário — um por dia da semana</div>'+
+    '<div class="mut">Cada dia guarda o fechamento daquele dia (o dia vira às 5h) e é coberto na semana seguinte.</div>';
+  var ordem=['seg','ter','qua','qui','sex','sab','dom'],nomes={seg:'Segunda',ter:'Terça',qua:'Quarta',qui:'Quinta',sex:'Sexta',sab:'Sábado',dom:'Domingo'};
+  h+=ordem.map(function(k){var b=L.filter(function(x){return x.tipo==='diario'&&x.dia===k})[0];
+    var t=nomes[k]+(k===d.dia_hoje?' (hoje)':'');
+    return b?bkLinha(b,t):'<div class="it" style="opacity:.55"><span><b>'+t+'</b><br><span class="mut" style="font-size:12.5px">ainda não tem</span></span></div>'}).join('')+'</div>';
+  h+='<div class="card"><div class="tit" style="margin-top:0">✋ Manuais</div>'+
+    '<div class="mut">Ficam os '+d.manuais_max+' últimos.</div>'+
+    (man.map(function(b){return bkLinha(b,'Manual')}).join('')||'<div class="mut" style="margin-top:6px">nenhum ainda</div>')+'</div>';
+  if(antes)h+='<div class="card"><div class="tit" style="margin-top:0">🛟 Antes da última restauração</div>'+
+    '<div class="mut">Como o sistema estava logo antes de restaurar — serve pra desfazer uma restauração.</div>'+bkLinha(antes,'Banco de antes')+'</div>';
+  el.innerHTML=h;
+}
+async function bkAgora(b){
+  b.disabled=true;b.textContent='fazendo backup…';
+  var r;try{r=await jpost('/api/caixa/backup/agora',{})}catch(e){r={ok:false,erro:'sem resposta do servidor da loja'}}
+  BK_MSG=r.ok?'Backup feito ('+bkTam(r.tamanho)+').':null;
+  if(!r.ok)alert('Não deu: '+(r.erro||'erro'));
+  pintaMain();
+}
+function bkPedeRest(arq){BK_REST=arq;pintaMain()}
+function bkFormRest(el){
+  var b=(BK.lista||[]).filter(function(x){return x.arquivo===BK_REST})[0];
+  if(!b){BK_REST=null;return telaBackup(el)}
+  var nome=b.tipo==='diario'?'Diário de '+b.rotulo:b.rotulo;
+  el.innerHTML='<button class="seg" style="margin-bottom:10px" onclick="BK_REST=null;pintaMain()">◂ voltar</button>'+
+    '<div class="card" style="border-color:var(--red)"><div class="tit" style="margin-top:0;color:var(--red)">↩ Restaurar backup</div>'+
+    '<div><b>'+esc(nome)+'</b> — '+esc(bkQuando(b.quando))+'</div>'+
+    '<div class="err" style="margin-top:8px">O sistema inteiro volta a ser como era nesse backup. Tudo o que foi lançado, recebido ou cadastrado DEPOIS dele some: mesas, pagamentos, caixa, ponto.</div>'+
+    '<div class="mut" style="margin-top:6px">Antes de restaurar, o sistema guarda sozinho como está agora (dá pra desfazer). O servidor reinicia e todas as telas ficam uns 15 segundos fora.</div>'+
+    '<input id="bk_pin" type="password" inputmode="numeric" maxlength="8" placeholder="seu PIN de administrador" style="margin-top:10px">'+
+    '<input id="bk_conf" placeholder="digite RESTAURAR" autocapitalize="characters" autocomplete="off" style="margin-top:8px">'+
+    '<div id="bk_err" class="err"></div>'+
+    '<button class="big" style="background:var(--red);margin-top:10px" onclick="bkRestaurar(this)">↩ Restaurar agora</button>'+
+    '<button class="big g" onclick="BK_REST=null;pintaMain()">Cancelar</button></div>';
+}
+async function bkRestaurar(bt){
+  var pin=document.getElementById('bk_pin').value,conf=document.getElementById('bk_conf').value,er=document.getElementById('bk_err');
+  if(conf.trim().toUpperCase()!=='RESTAURAR'){er.textContent='Digite RESTAURAR pra confirmar.';return}
+  bt.disabled=true;bt.textContent='restaurando… não feche esta tela';er.textContent='';
+  var r;try{r=await jpost('/api/caixa/backup/restaurar',{arquivo:BK_REST,pin:pin,confirma:conf})}catch(e){r={ok:false,erro:'sem resposta do servidor da loja'}}
+  if(!r.ok){bt.disabled=false;bt.textContent='↩ Restaurar agora';er.textContent=r.erro||'não deu';return}
+  BK_REST=null;
+  document.getElementById('main').innerHTML='<div class="card"><div class="tit" style="margin-top:0">✅ Backup restaurado</div>'+
+    '<div class="mut">Reiniciando o sistema… esta tela volta sozinha.</div></div>';
+  var n=0,t=setInterval(async function(){n++;
+    try{var v=await (await fetch('/api/versao',{cache:'no-store'})).json();if(v&&v.versao&&n>3){clearInterval(t);location.reload()}}catch(e){}
+    if(n>90)clearInterval(t)},2000);
+}
 async function telaUsu(el){
   el.innerHTML='<div class="mut" style="padding:16px">carregando…</div>';
   var d;try{d=await jget('/api/caixa/usuarios')}catch(e){d=null}
@@ -34416,6 +34699,20 @@ const server = http.createServer(async (req, res) => {
       }
       return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
     }
+    // BAIXAR um backup (Administrador): leva o arquivo pra fora do servidor
+    // (pendrive, nuvem). Fica antes do bloco do caixa porque responde arquivo, não JSON.
+    if (p === '/api/caixa/backup/baixar') {
+      const quem = await caixaDaRequisicao(req, u);
+      const arq = String(u.searchParams.get('arq') || '');
+      const cam = path.join(BACKUP_DIR, arq);
+      if (!quem?.admin || !backupRotulo(arq) || !existsSync(cam)) {
+        res.writeHead(quem?.admin ? 404 : 403, { 'content-type': 'text/plain; charset=utf-8' });
+        return res.end(quem?.admin ? 'backup não encontrado' : 'só Administrador');
+      }
+      res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': statSync(cam).size,
+        'content-disposition': 'attachment; filename="' + LOJA_NOME.replace(/[^A-Za-z0-9]+/g, '-').toLowerCase() + '-' + arq + '"' });
+      return createReadStream(cam).pipe(res);
+    }
     // ---- CAIXA (Bloco 1): login próprio + ações que exigem sessão de caixa ----
     if (p.startsWith('/api/caixa/')) {
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -34457,6 +34754,9 @@ const server = http.createServer(async (req, res) => {
       }
       if (p === '/api/caixa/fechadas') return res.end(JSON.stringify(await apiCaixaFechadas()));
       if (req.method === 'POST' && p === '/api/caixa/atualizar-agora') return res.end(JSON.stringify(await apiCaixaAtualizarAgora(quem)));
+      if (p === '/api/caixa/backup' && req.method !== 'POST') return res.end(JSON.stringify(await apiBackupEstado(quem)));
+      if (req.method === 'POST' && p === '/api/caixa/backup/agora') return res.end(JSON.stringify(await apiBackupAgora(quem)));
+      if (req.method === 'POST' && p === '/api/caixa/backup/restaurar') return res.end(JSON.stringify(await apiBackupRestaurar(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/reabrir') return res.end(JSON.stringify(await apiCaixaReabrir(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/estornar') return res.end(JSON.stringify(await apiCaixaEstornarPagamento(await readBody(req), quem)));
       if (req.method === 'POST' && p === '/api/caixa/conta-errada') return res.end(JSON.stringify(await apiCaixaContaErrada(await readBody(req), quem)));
@@ -35399,6 +35699,7 @@ async function main() {
   setTimeout(loopLioFidelidade, 95_000);
   setTimeout(loopFecharQuitadas, 30000);
   loopAutoUpdate();
+  setTimeout(loopBackup, 90_000); // backup de hora em hora + diário (ver BACKUP_DIR)
   // polling do iFood: só sai da toca quando a loja estiver pareada E ligada.
   // Desligado (o padrão), o loop apenas acorda e volta a dormir.
   loopIfood();
