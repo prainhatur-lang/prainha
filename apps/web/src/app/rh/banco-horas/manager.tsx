@@ -2,7 +2,7 @@
 
 import { Fragment, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { fmtHoras, fmtSaldo, folgasDaJornada, lerHoras, minutosSemana } from '@/lib/rh/banco-horas';
+import { fmtHoras, fmtSaldo, folgasDaJornada, lerHoras, minutosSemana, type PrazoBanco } from '@/lib/rh/banco-horas';
 import { createClient } from '@/lib/supabase/client';
 import { AtestadoCelularPainel } from './atestado-celular-painel';
 
@@ -44,6 +44,8 @@ export interface LinhaPessoa {
   semIntervaloDias?: number;
   movimentoMin: number;
   saldoMin: number;
+  /** Norma dos 4 meses (19/11/2026): horas vencidas e a vencer; null = sem banco. */
+  prazo?: PrazoBanco | null;
   /** Mês escolhido no seletor (05/11/2026): saldo no começo, o que mexeu no mês e saldo no fim. */
   mes?: LinhaMes | null;
   /** Atestado (21/10/2026): minutos abonados no banco e dias cobertos desde a virada. */
@@ -207,6 +209,10 @@ export function BancoHorasManager({ filialId, hoje, podeLancar, podeAtestado: po
     setTiposSel((at) => (at.includes(t) ? at.filter((x) => x !== t) : [...at, t]));
   const somaSaldo = mensalistas.reduce((s, l) => s + l.saldoMin, 0);
   const somaMes = mensalistas.reduce((s, l) => s + (l.mes?.saldoFimMin ?? 0), 0);
+  // Norma dos 4 meses (19/11/2026): quem já passou e quem vence em 30 dias.
+  const vencidos = mensalistas.filter((l) => (l.prazo?.vencidoMin ?? 0) > 0);
+  const aVencer = mensalistas.filter((l) => (l.prazo?.vencidoMin ?? 0) === 0 && (l.prazo?.aVencerMin ?? 0) > 0);
+  const dm = (ymd: string | null | undefined) => (ymd ? ymd.split('-').reverse().slice(0, 2).join('/') : '');
   const [exportando, setExportando] = useState(false);
 
   function trocarMes(ym: string) {
@@ -533,6 +539,26 @@ export function BancoHorasManager({ filialId, hoje, podeLancar, podeAtestado: po
             <span className="ml-2">positivo = a casa deve hora · negativo = a pessoa deve</span>
           </p>
         </div>
+        {(vencidos.length > 0 || aVencer.length > 0) && (
+          <div className="space-y-1 border-b border-slate-100 px-4 py-3 text-xs">
+            {vencidos.length > 0 && (
+              <p className="rounded-md bg-red-50 px-3 py-2 text-red-800">
+                <span className="font-semibold">⚠ Banco de horas com mais de 4 meses ({vencidos.length}):</span>{' '}
+                {vencidos.map((l) => `${l.nome} ${fmtHoras(l.prazo?.vencidoMin ?? 0)}`).join(' · ')}. Passou do prazo: dar
+                a folga agora ou pagar como hora extra.
+              </p>
+            )}
+            {aVencer.length > 0 && (
+              <p className="rounded-md bg-amber-50 px-3 py-2 text-amber-800">
+                <span className="font-semibold">Vence nos próximos 30 dias ({aVencer.length}):</span>{' '}
+                {aVencer
+                  .map((l) => `${l.nome} ${fmtHoras(l.prazo?.aVencerMin ?? 0)} (a partir de ${dm(l.prazo?.venceEm)})`)
+                  .join(' · ')}
+                . Marcar a folga antes de vencer.
+              </p>
+            )}
+          </div>
+        )}
         {mensalistas.length === 0 ? (
           <p className="px-4 py-6 text-sm text-slate-500">Ninguém com escala fixa nesta casa ainda.</p>
         ) : (
@@ -623,6 +649,21 @@ export function BancoHorasManager({ filialId, hoje, podeLancar, podeAtestado: po
                         </td>
                         <td className={`px-3 py-2 text-right text-base font-semibold tabular-nums ${corSaldo(l.saldoMin)}`}>
                           {fmtSaldo(l.saldoMin)}
+                          {(l.prazo?.vencidoMin ?? 0) > 0 && (
+                            <div className="text-[11px] font-medium text-red-700">
+                              ⚠ {fmtHoras(l.prazo?.vencidoMin ?? 0)} com mais de 4 meses
+                            </div>
+                          )}
+                          {(l.prazo?.aVencerMin ?? 0) > 0 && (
+                            <div className="text-[11px] font-medium text-amber-700">
+                              {fmtHoras(l.prazo?.aVencerMin ?? 0)} vence em 30 dias
+                            </div>
+                          )}
+                          {l.saldoMin > 0 && l.prazo?.maisAntigoDia && (
+                            <div className="text-[11px] font-normal text-slate-400">
+                              mais antiga: {dm(l.prazo.maisAntigoDia)} · vence {dm(l.prazo.venceEm)}
+                            </div>
+                          )}
                         </td>
                         <td className="whitespace-nowrap px-3 py-2 text-right">
                           {podeLancar && (

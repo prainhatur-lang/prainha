@@ -20,6 +20,8 @@ import { credencialSicredi } from './sicredi-pix';
 import { contarEvento } from './evento-ticket';
 import { pendenciasEscala, totalPendencias, type PendenciasEscala } from './rh/escala-pendencias';
 import { calcularDia, faltaIntervalo } from './rh/calcular-ponto';
+import { fmtHoras } from './rh/banco-horas';
+import { montarBancoHoras } from './rh/banco-horas-linhas';
 import { googleDoDia, tripadvisorDoDia, type GoogleDia, type TripadvisorDia } from './avaliacoes-publicas-dia';
 import { eventosNoPeriodo, fraseEvento, type EventoCalendario } from './eventos-calendario';
 
@@ -292,6 +294,8 @@ export interface RelatorioCasa {
   eventos?: EventoDia[];
   /** pontos incompletos da casa nos últimos dias, ainda sem correção (entrada sem saída / saída sem entrada) */
   pontoEmAberto?: PontoAberto[];
+  /** banco de horas com mais de 4 meses ou vencendo em 30 dias (norma do dono, 19/11/2026) */
+  bancoHorasPrazo?: BancoHorasPrazo[];
   /** registrados (CLT/intermitente) que bateram a saída depois das 22h no dia — escala até 22h (05/11/2026) */
   saidasDepoisDas22?: SaidaDepoisDas22[];
   /** vendas na maquininha (Cielo) dos últimos dias sem pagamento no nosso sistema e sem exceção aceita (05/11/2026) */
@@ -339,6 +343,16 @@ export interface SaidaDepoisDas22 {
   /** minutos de relógio depois das 22:00 */
   minutos: number;
   regime: string | null;
+}
+
+export interface BancoHorasPrazo {
+  nome: string;
+  /** minutos que já passaram dos 4 meses */
+  vencidoMin: number;
+  /** minutos que vencem nos próximos 30 dias */
+  aVencerMin: number;
+  /** dia em que a hora mais antiga vence (AAAA-MM-DD) */
+  venceEm: string | null;
 }
 
 export interface PontoAberto {
@@ -1730,6 +1744,11 @@ export async function montarRelatorioFiliais(
         console.error('[relatorio-diario] ponto em aberto:', e);
         return [] as PontoAberto[];
       });
+      // Banco de horas perto ou depois dos 4 meses (19/11/2026, dono) — extra: falhou, sai sem.
+      casa.bancoHorasPrazo = await bancoHorasPrazoDaCasa(f.id).catch((e) => {
+        console.error('[relatorio-diario] banco de horas (4 meses):', e);
+        return [] as BancoHorasPrazo[];
+      });
       // Saída depois das 22h (05/11/2026). Desligado no mesmo dia (dono: "não avisa nada") — AVISAR_SAIDA_DEPOIS_22.
       casa.saidasDepoisDas22 = !AVISAR_SAIDA_DEPOIS_22 ? [] : await saidasDepoisDas22DaCasa(f.id, dia).catch((e) => {
         console.error('[relatorio-diario] saída depois das 22h:', e);
@@ -1882,10 +1901,11 @@ export function resumoUmaLinha(casas: RelatorioCasa[]): string {
   );
   const abertos = casas.reduce((s, c) => s + (c.pontoEmAberto?.length ?? 0), 0);
   const docs = casas.reduce((s, c) => s + (c.documentosVencendo?.length ?? 0), 0);
+  const banco = casas.reduce((s, c) => s + (c.bancoHorasPrazo?.filter((p) => p.vencidoMin > 0).length ?? 0), 0);
   const cartoes = casas.reduce((s, c) => s + (c.cartoesForaDoSistema?.length ?? 0), 0);
   const escala = casas.reduce((s, c) => s + totalPendencias(c.pendenciasEscala), 0);
   const depois22 = casas.reduce((s, c) => s + (c.saidasDepoisDas22?.length ?? 0), 0);
-  return `${partes.join(' · ')} · Total ${reais(total, false)}${abertos ? ` · Ponto em aberto: ${abertos}` : ''}${
+  return `${partes.join(' · ')} · Total ${reais(total, false)}${abertos ? ` · Ponto em aberto: ${abertos}` : ''}${banco ? ` · Banco de horas vencido: ${banco}` : ''}${
     docs ? ` · Documentos vencendo: ${docs}` : ''
   }${escala ? ` · Escala: ${escala} ${escala === 1 ? "pendência" : "pendências"}` : ''}${
     cartoes ? ` · Cartões fora do sistema: ${cartoes}` : ''
@@ -1990,6 +2010,47 @@ function linhasEscala(c: RelatorioCasa): string[] {
   }
   if (p.entradas.length > MAX) L.push(`• e mais ${p.entradas.length - MAX} pessoas novas`);
   L.push(`Resolver: https://app.prainhabar.com/rh/escala-mensal?${new URLSearchParams({ filialId: c.filialId }).toString()}`);
+  return L;
+}
+
+/** Quem tem hora de banco vencida (mais de 4 meses) ou vencendo em 30 dias — mesma conta da tela /rh/banco-horas. */
+async function bancoHorasPrazoDaCasa(filialId: string): Promise<BancoHorasPrazo[]> {
+  const { linhas } = await montarBancoHoras(filialId, hojeBr());
+  return linhas
+    .filter((l) => l.jornadaTipo === 'fixa' && ((l.prazo?.vencidoMin ?? 0) > 0 || (l.prazo?.aVencerMin ?? 0) > 0))
+    .map((l) => ({
+      nome: l.nome,
+      vencidoMin: l.prazo?.vencidoMin ?? 0,
+      aVencerMin: l.prazo?.aVencerMin ?? 0,
+      venceEm: l.prazo?.venceEm ?? null,
+    }))
+    .sort((a, b) => b.vencidoMin - a.vencidoMin || b.aVencerMin - a.aVencerMin);
+}
+
+/** Banco de horas no prazo dos 4 meses, pro texto do WhatsApp (vazio = ninguém). */
+function linhasBancoHoras(c: RelatorioCasa): string[] {
+  const lista = c.bancoHorasPrazo ?? [];
+  if (!lista.length) return [];
+  const MAX = 15;
+  const vencidos = lista.filter((p) => p.vencidoMin > 0);
+  const L: string[] = [];
+  if (vencidos.length) {
+    L.push(`⏳ Banco de horas com mais de 4 meses (${vencidos.length}) — passou do prazo, dar a folga ou pagar como extra:`);
+    for (const p of vencidos.slice(0, MAX)) {
+      L.push(`• ${p.nome} — ${fmtHoras(p.vencidoMin)}${p.aVencerMin > 0 ? ` (e mais ${fmtHoras(p.aVencerMin)} vencendo em 30 dias)` : ''}`);
+    }
+    if (vencidos.length > MAX) L.push(`• e mais ${vencidos.length - MAX}`);
+  }
+  const perto = lista.filter((p) => p.vencidoMin === 0);
+  if (perto.length) {
+    L.push(`⏳ Banco de horas vencendo em 30 dias (${perto.length}) — marcar a folga antes:`);
+    for (const p of perto.slice(0, MAX)) {
+      const [, mm, dd] = (p.venceEm ?? '').split('-');
+      L.push(`• ${p.nome} — ${fmtHoras(p.aVencerMin)}${dd ? ` (a partir de ${dd}/${mm})` : ''}`);
+    }
+    if (perto.length > MAX) L.push(`• e mais ${perto.length - MAX}`);
+  }
+  L.push(`Ver: https://app.prainhabar.com/rh/banco-horas?${new URLSearchParams({ filialId: c.filialId }).toString()}`);
   return L;
 }
 
@@ -2118,6 +2179,7 @@ function textoCasa(c: RelatorioCasa): string {
     }
     L.push(...linhasCartoesForaDoSistema(c));
     L.push(...linhasPontoAberto(c));
+    L.push(...linhasBancoHoras(c));
     L.push(...linhasSaidaDepoisDas22(c));
     L.push(...linhasEscala(c));
     L.push(...linhasDocumentos(c));
@@ -2183,6 +2245,7 @@ function textoCasa(c: RelatorioCasa): string {
   L.push(...linhasCaixa(c));
   L.push(...linhasCartoesForaDoSistema(c));
   L.push(...linhasPontoAberto(c));
+  L.push(...linhasBancoHoras(c));
   L.push(...linhasSaidaDepoisDas22(c));
   L.push(...linhasEscala(c));
   L.push(...linhasDocumentos(c));
