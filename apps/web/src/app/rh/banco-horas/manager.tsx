@@ -44,7 +44,7 @@ export interface LinhaPessoa {
   semIntervaloDias?: number;
   movimentoMin: number;
   saldoMin: number;
-  /** Norma dos 4 meses (19/11/2026): horas vencidas e a vencer; null = sem banco. */
+  /** Norma do banco (19/11/2026): horas vencidas (6 meses) e em alerta (4 meses); null = sem banco. */
   prazo?: PrazoBanco | null;
   /** Mês escolhido no seletor (05/11/2026): saldo no começo, o que mexeu no mês e saldo no fim. */
   mes?: LinhaMes | null;
@@ -209,7 +209,7 @@ export function BancoHorasManager({ filialId, hoje, podeLancar, podeAtestado: po
     setTiposSel((at) => (at.includes(t) ? at.filter((x) => x !== t) : [...at, t]));
   const somaSaldo = mensalistas.reduce((s, l) => s + l.saldoMin, 0);
   const somaMes = mensalistas.reduce((s, l) => s + (l.mes?.saldoFimMin ?? 0), 0);
-  // Norma dos 4 meses (19/11/2026): quem já passou e quem vence em 30 dias.
+  // Norma do banco (19/11/2026): limite de 6 meses, alerta a partir dos 4.
   const vencidos = mensalistas.filter((l) => (l.prazo?.vencidoMin ?? 0) > 0);
   const aVencer = mensalistas.filter((l) => (l.prazo?.vencidoMin ?? 0) === 0 && (l.prazo?.aVencerMin ?? 0) > 0);
   const dm = (ymd: string | null | undefined) => (ymd ? ymd.split('-').reverse().slice(0, 2).join('/') : '');
@@ -543,18 +543,18 @@ export function BancoHorasManager({ filialId, hoje, podeLancar, podeAtestado: po
           <div className="space-y-1 border-b border-slate-100 px-4 py-3 text-xs">
             {vencidos.length > 0 && (
               <p className="rounded-md bg-red-50 px-3 py-2 text-red-800">
-                <span className="font-semibold">⚠ Banco de horas com mais de 4 meses ({vencidos.length}):</span>{' '}
-                {vencidos.map((l) => `${l.nome} ${fmtHoras(l.prazo?.vencidoMin ?? 0)}`).join(' · ')}. Passou do prazo: dar
+                <span className="font-semibold">⚠ Banco de horas com mais de 6 meses ({vencidos.length}):</span>{' '}
+                {vencidos.map((l) => `${l.nome} ${fmtHoras(l.prazo?.vencidoMin ?? 0)}`).join(' · ')}. Passou do limite: dar
                 a folga agora ou pagar como hora extra.
               </p>
             )}
             {aVencer.length > 0 && (
               <p className="rounded-md bg-amber-50 px-3 py-2 text-amber-800">
-                <span className="font-semibold">Vence nos próximos 30 dias ({aVencer.length}):</span>{' '}
+                <span className="font-semibold">Alerta: horas com mais de 4 meses ({aVencer.length}):</span>{' '}
                 {aVencer
-                  .map((l) => `${l.nome} ${fmtHoras(l.prazo?.aVencerMin ?? 0)} (a partir de ${dm(l.prazo?.venceEm)})`)
+                  .map((l) => `${l.nome} ${fmtHoras(l.prazo?.aVencerMin ?? 0)} (vence a partir de ${dm(l.prazo?.venceEm)})`)
                   .join(' · ')}
-                . Marcar a folga antes de vencer.
+                . O limite é 6 meses: marcar a folga antes de vencer.
               </p>
             )}
           </div>
@@ -651,12 +651,12 @@ export function BancoHorasManager({ filialId, hoje, podeLancar, podeAtestado: po
                           {fmtSaldo(l.saldoMin)}
                           {(l.prazo?.vencidoMin ?? 0) > 0 && (
                             <div className="text-[11px] font-medium text-red-700">
-                              ⚠ {fmtHoras(l.prazo?.vencidoMin ?? 0)} com mais de 4 meses
+                              ⚠ {fmtHoras(l.prazo?.vencidoMin ?? 0)} com mais de 6 meses
                             </div>
                           )}
                           {(l.prazo?.aVencerMin ?? 0) > 0 && (
                             <div className="text-[11px] font-medium text-amber-700">
-                              {fmtHoras(l.prazo?.aVencerMin ?? 0)} vence em 30 dias
+                              {fmtHoras(l.prazo?.aVencerMin ?? 0)} com mais de 4 meses
                             </div>
                           )}
                           {l.saldoMin > 0 && l.prazo?.maisAntigoDia && (

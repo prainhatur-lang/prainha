@@ -94,10 +94,13 @@ GOTCHA: ao imprimir `date`/`timestamp` com `String(x)`/JS Date, mostra -1 dia (B
   `fictos` (reduzida); o que se paga é a reduzida. Na folha mensal: rubrica 25
   (20% sobre a hora de relógio) + 219 (a diferença da hora reduzida). Nunca
   calcular noturno dividindo minuto de relógio por 60 e parando aí.
-- **Banco de horas vence em 4 meses:** hora de banco não pode passar de **4 meses**
-  sem ser compensada (dono 19/11/2026). Saldo positivo com mais de 4 meses tem que
-  virar folga antes de vencer; passou do prazo, é hora extra a pagar. Tela ou cálculo
-  novo de banco de horas (`lib/rh/banco-horas.ts`, /rh/banco-horas) respeita esse prazo.
+- **Banco de horas: limite de 6 meses, alerta aos 4:** hora de banco não pode passar
+  de **6 meses** sem ser compensada; com **4 meses** já entra em alerta (dono
+  19/11/2026). Saldo positivo em alerta tem que virar folga antes de vencer; passou
+  dos 6 meses, é hora extra a pagar. A hora mais antiga sai primeiro. Constantes
+  `BANCO_HORAS_PRAZO_MESES` e `BANCO_HORAS_ALERTA_MESES` em `lib/rh/banco-horas.ts`
+  (`idadeDoBanco`); a tela /rh/banco-horas e o relatório diário avisam. Tela ou
+  cálculo novo de banco de horas usa essas constantes.
 
 ## Memória detalhada
 Há memória do projeto com detalhes por feature/episódio (folha, reservas, WhatsApp,

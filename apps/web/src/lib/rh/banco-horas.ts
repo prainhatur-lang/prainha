@@ -88,10 +88,10 @@ export function folgasDaJornada(j: JornadaSemana): string {
   return `folga ${folgas.join(' e ')}`;
 }
 
-/** Norma do dono (19/11/2026): hora de banco não passa de 4 meses sem compensar. */
-export const BANCO_HORAS_PRAZO_MESES = 4;
-/** Quantos dias antes de vencer a tela e o relatório diário começam a avisar. */
-export const BANCO_HORAS_AVISO_DIAS = 30;
+/** Norma do dono (19/11/2026): o limite do banco de horas é 6 meses sem compensar. */
+export const BANCO_HORAS_PRAZO_MESES = 6;
+/** Com 4 meses a hora já entra em alerta na tela e no relatório diário. */
+export const BANCO_HORAS_ALERTA_MESES = 4;
 
 export interface EventoBanco {
   dia: string;
@@ -99,9 +99,9 @@ export interface EventoBanco {
   min: number;
 }
 export interface PrazoBanco {
-  /** minutos positivos que já passaram dos 4 meses */
+  /** minutos positivos que já passaram do limite de 6 meses */
   vencidoMin: number;
-  /** minutos que vencem nos próximos 30 dias */
+  /** minutos em alerta: já passaram de 4 meses e ainda não chegaram aos 6 */
   aVencerMin: number;
   /** dia da hora mais antiga ainda no banco, e quando ela vence */
   maisAntigoDia: string | null;
@@ -121,7 +121,8 @@ export function somarMesesYmd(ymd: string, n: number): string {
 /**
  * Idade das horas do banco: o que sai (folga, falta, acerto negativo) abate
  * primeiro a hora mais antiga; banco negativo é quitado pelas horas seguintes.
- * O que sobra positivo tem a data em que entrou e vence 4 meses depois.
+ * O que sobra positivo tem a data em que entrou: entra em alerta com 4 meses
+ * e vence com 6.
  */
 export function idadeDoBanco(eventos: EventoBanco[], hoje: string): PrazoBanco {
   const ordem = eventos
@@ -147,12 +148,12 @@ export function idadeDoBanco(eventos: EventoBanco[], hoje: string): PrazoBanco {
     }
   }
   const limiteVencido = somarMesesYmd(hoje, -BANCO_HORAS_PRAZO_MESES);
+  const limiteAlerta = somarMesesYmd(hoje, -BANCO_HORAS_ALERTA_MESES);
   let vencidoMin = 0;
   let aVencerMin = 0;
   for (const c of fila) {
-    const vence = somarMesesYmd(c.dia, BANCO_HORAS_PRAZO_MESES);
     if (c.dia <= limiteVencido) vencidoMin += c.min;
-    else if (diasEntre(hoje, vence) <= BANCO_HORAS_AVISO_DIAS) aVencerMin += c.min;
+    else if (c.dia <= limiteAlerta) aVencerMin += c.min;
   }
   const maisAntigoDia = fila[0]?.dia ?? null;
   return {
@@ -161,8 +162,4 @@ export function idadeDoBanco(eventos: EventoBanco[], hoje: string): PrazoBanco {
     maisAntigoDia,
     venceEm: maisAntigoDia ? somarMesesYmd(maisAntigoDia, BANCO_HORAS_PRAZO_MESES) : null,
   };
-}
-
-function diasEntre(de: string, ate: string): number {
-  return Math.round((Date.parse(`${ate}T00:00:00Z`) - Date.parse(`${de}T00:00:00Z`)) / 86400000);
 }

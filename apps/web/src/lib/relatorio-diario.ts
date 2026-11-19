@@ -294,7 +294,7 @@ export interface RelatorioCasa {
   eventos?: EventoDia[];
   /** pontos incompletos da casa nos últimos dias, ainda sem correção (entrada sem saída / saída sem entrada) */
   pontoEmAberto?: PontoAberto[];
-  /** banco de horas com mais de 4 meses ou vencendo em 30 dias (norma do dono, 19/11/2026) */
+  /** banco de horas vencido (mais de 6 meses) ou em alerta (mais de 4) — norma do dono, 19/11/2026 */
   bancoHorasPrazo?: BancoHorasPrazo[];
   /** registrados (CLT/intermitente) que bateram a saída depois das 22h no dia — escala até 22h (05/11/2026) */
   saidasDepoisDas22?: SaidaDepoisDas22[];
@@ -347,9 +347,9 @@ export interface SaidaDepoisDas22 {
 
 export interface BancoHorasPrazo {
   nome: string;
-  /** minutos que já passaram dos 4 meses */
+  /** minutos que já passaram do limite de 6 meses */
   vencidoMin: number;
-  /** minutos que vencem nos próximos 30 dias */
+  /** minutos em alerta: mais de 4 meses, ainda dentro dos 6 */
   aVencerMin: number;
   /** dia em que a hora mais antiga vence (AAAA-MM-DD) */
   venceEm: string | null;
@@ -1744,9 +1744,9 @@ export async function montarRelatorioFiliais(
         console.error('[relatorio-diario] ponto em aberto:', e);
         return [] as PontoAberto[];
       });
-      // Banco de horas perto ou depois dos 4 meses (19/11/2026, dono) — extra: falhou, sai sem.
+      // Banco de horas em alerta (4 meses) ou vencido (6 meses) (19/11/2026, dono) — extra: falhou, sai sem.
       casa.bancoHorasPrazo = await bancoHorasPrazoDaCasa(f.id).catch((e) => {
-        console.error('[relatorio-diario] banco de horas (4 meses):', e);
+        console.error('[relatorio-diario] banco de horas (prazo):', e);
         return [] as BancoHorasPrazo[];
       });
       // Saída depois das 22h (05/11/2026). Desligado no mesmo dia (dono: "não avisa nada") — AVISAR_SAIDA_DEPOIS_22.
@@ -2013,7 +2013,7 @@ function linhasEscala(c: RelatorioCasa): string[] {
   return L;
 }
 
-/** Quem tem hora de banco vencida (mais de 4 meses) ou vencendo em 30 dias — mesma conta da tela /rh/banco-horas. */
+/** Quem tem hora de banco vencida (mais de 6 meses) ou em alerta (mais de 4) — mesma conta da tela /rh/banco-horas. */
 async function bancoHorasPrazoDaCasa(filialId: string): Promise<BancoHorasPrazo[]> {
   const { linhas } = await montarBancoHoras(filialId, hojeBr());
   return linhas
@@ -2027,7 +2027,7 @@ async function bancoHorasPrazoDaCasa(filialId: string): Promise<BancoHorasPrazo[
     .sort((a, b) => b.vencidoMin - a.vencidoMin || b.aVencerMin - a.aVencerMin);
 }
 
-/** Banco de horas no prazo dos 4 meses, pro texto do WhatsApp (vazio = ninguém). */
+/** Banco de horas vencido ou em alerta, pro texto do WhatsApp (vazio = ninguém). */
 function linhasBancoHoras(c: RelatorioCasa): string[] {
   const lista = c.bancoHorasPrazo ?? [];
   if (!lista.length) return [];
@@ -2035,18 +2035,18 @@ function linhasBancoHoras(c: RelatorioCasa): string[] {
   const vencidos = lista.filter((p) => p.vencidoMin > 0);
   const L: string[] = [];
   if (vencidos.length) {
-    L.push(`⏳ Banco de horas com mais de 4 meses (${vencidos.length}) — passou do prazo, dar a folga ou pagar como extra:`);
+    L.push(`⏳ Banco de horas com mais de 6 meses (${vencidos.length}) — passou do limite, dar a folga ou pagar como extra:`);
     for (const p of vencidos.slice(0, MAX)) {
-      L.push(`• ${p.nome} — ${fmtHoras(p.vencidoMin)}${p.aVencerMin > 0 ? ` (e mais ${fmtHoras(p.aVencerMin)} vencendo em 30 dias)` : ''}`);
+      L.push(`• ${p.nome} — ${fmtHoras(p.vencidoMin)}${p.aVencerMin > 0 ? ` (e mais ${fmtHoras(p.aVencerMin)} com mais de 4 meses)` : ''}`);
     }
     if (vencidos.length > MAX) L.push(`• e mais ${vencidos.length - MAX}`);
   }
   const perto = lista.filter((p) => p.vencidoMin === 0);
   if (perto.length) {
-    L.push(`⏳ Banco de horas vencendo em 30 dias (${perto.length}) — marcar a folga antes:`);
+    L.push(`⏳ Alerta: banco de horas com mais de 4 meses (${perto.length}) — o limite é 6, marcar a folga antes:`);
     for (const p of perto.slice(0, MAX)) {
       const [, mm, dd] = (p.venceEm ?? '').split('-');
-      L.push(`• ${p.nome} — ${fmtHoras(p.aVencerMin)}${dd ? ` (a partir de ${dd}/${mm})` : ''}`);
+      L.push(`• ${p.nome} — ${fmtHoras(p.aVencerMin)}${dd ? ` (vence a partir de ${dd}/${mm})` : ''}`);
     }
     if (perto.length > MAX) L.push(`• e mais ${perto.length - MAX}`);
   }

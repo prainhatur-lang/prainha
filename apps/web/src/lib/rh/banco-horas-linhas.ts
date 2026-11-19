@@ -1,6 +1,6 @@
 // Conta do banco de horas de uma casa (linhas da tela /rh/banco-horas).
 // Saiu de dentro da página em 19/11/2026, sem mudar a conta, pra tela e o
-// relatório diário usarem a mesma (aviso da norma dos 4 meses).
+// relatório diário usarem a mesma (aviso do prazo do banco: alerta aos 4 meses, limite 6).
 import { db, schema } from '@concilia/db';
 import { and, asc, eq, gte, inArray, isNull, lt, sql } from 'drizzle-orm';
 import { calcularDia, faltaIntervalo, minutosDoDia } from '@/lib/rh/calcular-ponto';
@@ -252,7 +252,7 @@ export async function montarBancoHoras(filialId: string, hoje: string, mesPedido
     // Mês escolhido: o que mexeu no banco antes do mês e dentro dele.
     const m = { antes: 0, prev: 0, trab: 0, trabTotal: 0, abon: 0, semBatidaDias: 0, semBatidaMin: 0 };
     const noMes = (dia: string) => mesIni != null && dia >= mesIni && dia <= mesFim!;
-    // Norma dos 4 meses (19/11/2026): o que cada dia somou ou tirou do banco.
+    // Norma do banco (19/11/2026, limite 6 meses, alerta aos 4): o que cada dia somou ou tirou.
     const eventos: EventoBanco[] = [];
     for (let dia = virada; dia <= ontem; dia = somarDias(dia, 1)) {
       const t = trabalhado.get(`${f.id}|${dia}`);
