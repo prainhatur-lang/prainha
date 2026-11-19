@@ -97,6 +97,10 @@ export const funcionario = pgTable(
      *  o tablet recusa a primeira entrada do dia antes dela − 10 min. Nulo =
      *  sem trava. Marcada em /rh/escala-mensal; a loja recebe no roster. */
     pontoHoraEntrada: varchar('ponto_hora_entrada', { length: 5 }),
+    /** Entrada flexível (19/11/2026): a hora de entrada acima é só a PREVISTA.
+     *  A pessoa pode chegar antes ou depois e a diferença vai pro banco de
+     *  horas: não trava o ponto e não conta atraso. Falso = trava de sempre. */
+    pontoHoraFlexivel: boolean('ponto_hora_flexivel').notNull().default(false),
     /** Hora de saída ("HH:MM") combinada na escala (19/11/2026). Só informa:
      *  não trava o ponto. Marcada em /rh/escala-mensal, ao lado da entrada. */
     pontoHoraSaida: varchar('ponto_hora_saida', { length: 5 }),

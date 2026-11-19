@@ -152,6 +152,7 @@ export async function pessoaDoToken(token: string) {
       limiteDiasSemana: schema.funcionario.limiteDiasSemana,
       limiteLiberadoDia: schema.funcionario.limiteLiberadoDia,
       pontoHoraEntrada: schema.funcionario.pontoHoraEntrada,
+      pontoHoraFlexivel: schema.funcionario.pontoHoraFlexivel,
       pontoCedoLiberadoDia: schema.funcionario.pontoCedoLiberadoDia,
     })
     .from(schema.funcionario)
@@ -496,7 +497,8 @@ export async function baterPontoCelular(p: PessoaToken, req: PedidoBatida): Prom
     }
     // Trava antes da hora (pontoTravaCedo).
     const h = /^(\d{2}):(\d{2})$/.exec(String(p.pontoHoraEntrada ?? ''));
-    if (h && String(p.pontoCedoLiberadoDia ?? '') !== dia) {
+    // Entrada flexível (19/11/2026): hora só prevista, não trava.
+    if (h && !p.pontoHoraFlexivel && String(p.pontoCedoLiberadoDia ?? '') !== dia) {
       const [hh, mm] = horaMinutoBr(agora).split(':').map(Number);
       if (hh >= PONTO_VIRADA_HORA) {
         const abreMin = Number(h[1]) * 60 + Number(h[2]) - TOLERANCIA_CEDO_MIN;

@@ -56,6 +56,7 @@ export async function GET(request: Request) {
       limiteLiberadoDia: schema.funcionario.limiteLiberadoDia,
       // trava de ponto antes da hora (24/10/2026; loja antiga ignora)
       pontoHoraEntrada: schema.funcionario.pontoHoraEntrada,
+      pontoHoraFlexivel: schema.funcionario.pontoHoraFlexivel,
       pontoCedoLiberadoDia: schema.funcionario.pontoCedoLiberadoDia,
     })
     .from(schema.funcionario)
@@ -186,7 +187,8 @@ export async function GET(request: Request) {
       limite_dias_semana: sem.has(p.funcionarioId) ? null : (p.limiteDiasSemana ?? null),
       limite_liberado_dia: liberaHoje.has(p.funcionarioId) ? diaPonto : (p.limiteLiberadoDia ?? null),
       dias_semana: diasPorPessoa.get(p.funcionarioId) ?? [],
-      hora_entrada: p.pontoHoraEntrada ?? null,
+      // entrada flexível (19/11/2026): a hora é só a prevista — a loja não trava
+      hora_entrada: p.pontoHoraFlexivel ? null : (p.pontoHoraEntrada ?? null),
       cedo_liberado_dia: p.pontoCedoLiberadoDia ?? null,
     })),
   });

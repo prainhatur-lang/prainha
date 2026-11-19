@@ -88,6 +88,8 @@ interface Resumo {
   tipo: TipoPessoa;
   temBanco: boolean;
   horaEntrada: string | null;
+  /** Entrada flexível (19/11/2026): hora só prevista, não conta atraso. */
+  horaFlexivel: boolean;
   diasTrabalhados: number;
   trabalhadoMin: number;
   noturnoMin: number;
@@ -199,6 +201,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
       dataDesligamento: schema.funcionario.dataDesligamento,
       ativo: schema.funcionario.ativo,
       horaEntrada: schema.funcionario.pontoHoraEntrada,
+      horaFlexivel: schema.funcionario.pontoHoraFlexivel,
       intervaloPre: schema.funcionario.intervaloPreAssinalado,
       regimeSalarial: schema.funcionario.regimeSalarial,
       empresaRegistro: schema.funcionario.empresaRegistro,
@@ -414,6 +417,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
       tipo,
       temBanco: jAtual?.tipo === 'fixa',
       horaEntrada: f.horaEntrada,
+      horaFlexivel: !!f.horaFlexivel,
       diasTrabalhados: 0,
       trabalhadoMin: 0,
       noturnoMin: 0,
@@ -517,7 +521,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
           situacoes.push('sem_intervalo');
         }
         const primeiraEntrada = lista.find((b) => b.tipo === 'entrada');
-        if (f.horaEntrada && primeiraEntrada && diaDeTrabalho) {
+        if (f.horaEntrada && !f.horaFlexivel && primeiraEntrada && diaDeTrabalho) {
           const atraso = hmParaMin(horaMinutoBr(primeiraEntrada.quando)) - hmParaMin(f.horaEntrada);
           // Atraso de mais de 6 h é outro turno, não atraso.
           if (atraso > TOLERANCIA_ATRASO_MIN && atraso < 360) {
@@ -942,7 +946,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
                         {r.nome}
                       </a>
                       <div className="text-xs text-slate-400">
-                        {[r.cargo, r.jornada ?? 'sem jornada', r.horaEntrada ? `entra ${r.horaEntrada}` : null].filter(Boolean).join(' · ')}
+                        {[r.cargo, r.jornada ?? 'sem jornada', r.horaEntrada ? `entra ${r.horaEntrada}${r.horaFlexivel ? ' (flexível)' : ''}` : null].filter(Boolean).join(' · ')}
                       </div>
                     </td>
                     <td className="px-2 py-2 text-right">{r.diasTrabalhados}</td>
@@ -991,7 +995,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
                       )}
                     </td>
                     <td className={`px-2 py-2 text-right ${r.atrasos ? 'text-amber-700' : 'text-slate-300'}`}>
-                      {r.atrasos ? `${r.atrasos} (${fmtHoras(r.atrasoMin)})` : r.horaEntrada ? '0' : '—'}
+                      {r.atrasos ? `${r.atrasos} (${fmtHoras(r.atrasoMin)})` : r.horaEntrada && !r.horaFlexivel ? '0' : '—'}
                     </td>
                     <td className={`px-2 py-2 text-right ${r.atestadoDias ? 'text-violet-700' : 'text-slate-300'}`}>{r.atestadoDias || '0'}</td>
                     <td className="px-2 py-2 text-right text-slate-500">{r.porCelular || ''}</td>
@@ -1022,7 +1026,7 @@ export default async function RelatorioPontoPage(props: { searchParams: Promise<
                 <div>
                   <span className="font-semibold text-slate-900">{r.nome}</span>
                   <span className="ml-2 text-xs text-slate-500">
-                    {[r.cargo, r.jornada ?? 'sem jornada', r.horaEntrada ? `entra ${r.horaEntrada}` : null].filter(Boolean).join(' · ')}
+                    {[r.cargo, r.jornada ?? 'sem jornada', r.horaEntrada ? `entra ${r.horaEntrada}${r.horaFlexivel ? ' (flexível)' : ''}` : null].filter(Boolean).join(' · ')}
                   </span>
                 </div>
                 <div className="text-xs text-slate-600">

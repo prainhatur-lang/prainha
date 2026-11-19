@@ -37,6 +37,25 @@ export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar, at
   const [cedoLib, setCedoLib] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(pessoas.map((p) => [p.funcionarioId, p.cedoLiberadoHoje])),
   );
+  // Entrada flexível (19/11/2026): a hora é só a prevista; não trava o ponto.
+  const [flex, setFlex] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(pessoas.map((p) => [p.funcionarioId, p.horaFlexivel])),
+  );
+  async function salvarFlex(fid: string, nome: string, flexivel: boolean) {
+    setFlex((x) => ({ ...x, [fid]: flexivel }));
+    try {
+      await postHora({ funcionarioIds: [fid], flexivel });
+      setMsg({
+        tipo: 'ok',
+        texto: flexivel
+          ? `${nome}: entrada flexível — a hora é só a prevista, o ponto não trava e a diferença vai pro banco de horas.`
+          : `${nome}: entrada com trava (o ponto abre 10 min antes da hora).`,
+      });
+    } catch (e) {
+      setFlex((x) => ({ ...x, [fid]: !flexivel }));
+      setMsg({ tipo: 'erro', texto: `${nome}: ${(e as Error).message}` });
+    }
+  }
   async function postHora(body: unknown) {
     const r = await fetch('/api/rh/ponto/hora-entrada', {
       method: 'POST',
@@ -53,7 +72,14 @@ export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar, at
     setHoraEnt((x) => ({ ...x, [fid]: hora }));
     try {
       await postHora({ funcionarioIds: [fid], hora: hora || null });
-      setMsg({ tipo: 'ok', texto: hora ? `${nome}: ponto abre às ${hora} − 10 min.` : `${nome}: sem trava de hora.` });
+      setMsg({
+        tipo: 'ok',
+        texto: !hora
+          ? `${nome}: sem trava de hora.`
+          : flex[fid]
+            ? `${nome}: entrada prevista às ${hora} (flexível, sem trava).`
+            : `${nome}: ponto abre às ${hora} − 10 min.`,
+      });
     } catch (e) {
       setHoraEnt((x) => ({ ...x, [fid]: antes }));
       setMsg({ tipo: 'erro', texto: `${nome}: ${(e as Error).message}` });
@@ -229,6 +255,7 @@ export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar, at
           Clique no dia pra trocar trabalho ⇄ folga. Clarinho = sugestão (ainda não salvo). • = bateu ponto.
           Entrada: o ponto só abre 10 min antes (salva ao sair do campo); &quot;Liberar hoje&quot; autoriza chegar antes.
           Saída: hora combinada, só informa (não trava o ponto).
+          Flexível: a entrada é só a prevista — pode chegar antes ou depois, a diferença vai pro banco de horas.
         </span>
       </div>
       {msg && (
@@ -284,7 +311,7 @@ export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar, at
                     {l.p.cargo && <div className="text-[10px] text-slate-400">{l.p.cargo}</div>}
                     {(horaEnt[fid] || horaSai[fid]) && (
                       <div className="hidden text-[10px] font-medium text-slate-700 print:block">
-                        {horaEnt[fid] ? `Entrada ${horaEnt[fid]}` : ''}
+                        {horaEnt[fid] ? `Entrada ${horaEnt[fid]}${flex[fid] ? ' (flexível)' : ''}` : ''}
                         {horaEnt[fid] && horaSai[fid] ? ' · ' : ''}
                         {horaSai[fid] ? `Saída ${horaSai[fid]}` : ''}
                       </div>
@@ -338,7 +365,21 @@ export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar, at
                       className="w-[76px] rounded border border-slate-200 bg-white px-1 py-0.5 text-xs"
                       title="Ponto abre 10 min antes dessa hora (só a 1ª entrada do dia). Vazio = sem trava."
                     />
-                    {podeEditar && horaEnt[fid] && (
+                    {horaEnt[fid] && (
+                      <label
+                        className="mt-0.5 flex items-center justify-center gap-1 text-[10px] text-slate-500"
+                        title="Entrada flexível: a hora é só a prevista. O ponto não trava e não conta atraso; chegar antes ou depois vai pro banco de horas."
+                      >
+                        <input
+                          type="checkbox"
+                          checked={!!flex[fid]}
+                          disabled={!podeEditar}
+                          onChange={(e) => salvarFlex(fid, l.p.nome, e.target.checked)}
+                        />
+                        flexível
+                      </label>
+                    )}
+                    {podeEditar && horaEnt[fid] && !flex[fid] && (
                       <button
                         onClick={() => liberarCedo(fid, l.p.nome, !cedoLib[fid])}
                         className={`mt-0.5 block w-full rounded px-1 py-0.5 text-[10px] ${cedoLib[fid] ? 'bg-emerald-100 text-emerald-700' : 'border border-slate-200 text-slate-500 hover:bg-slate-50'}`}

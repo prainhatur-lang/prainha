@@ -8,6 +8,8 @@
 //    antes da hora só no dia de hoje.
 //  - { funcionarioIds, horaSaida }   → hora de saída combinada (19/11/2026).
 //    Só informa na escala: não trava nada e a loja não precisa ser avisada.
+//  - { funcionarioIds, flexivel }    → entrada flexível (19/11/2026): a hora
+//    vira só a prevista; sem trava e sem atraso, a diferença vai pro banco.
 // Depois avisa as lojas dessas pessoas pra puxarem o roster na hora (mesmo
 // empurrão da trava da semana); loja que não responde pega no pull de 3 em 3 min.
 import { NextResponse } from 'next/server';
@@ -38,6 +40,10 @@ const Body = z.union([
   z.object({
     funcionarioIds: z.array(z.string().uuid()).min(1).max(200),
     horaSaida: Hora.nullable(),
+  }),
+  z.object({
+    funcionarioIds: z.array(z.string().uuid()).min(1).max(200),
+    flexivel: z.boolean(),
   }),
 ]);
 
@@ -90,7 +96,12 @@ export async function POST(req: Request) {
       .where(inArray(schema.funcionario.id, ids));
     return NextResponse.json({ ok: true, lojas: [] });
   }
-  if ('funcionarioIds' in corpo) {
+  if ('flexivel' in corpo) {
+    await db
+      .update(schema.funcionario)
+      .set({ pontoHoraFlexivel: corpo.flexivel, atualizadoEm: new Date() })
+      .where(inArray(schema.funcionario.id, ids));
+  } else if ('funcionarioIds' in corpo) {
     await db
       .update(schema.funcionario)
       .set({ pontoHoraEntrada: corpo.hora, atualizadoEm: new Date() })
