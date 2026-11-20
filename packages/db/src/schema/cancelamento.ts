@@ -42,6 +42,9 @@ export const cancelamentoItem = pgTable(
     login: varchar('login', { length: 60 }),
     /** quem autorizou (gerente) — igual ao login quando ele mesmo é gerente */
     gerente: varchar('gerente', { length: 60 }),
+    /** quem PEDIU pra cancelar: 'Cliente' ou 'Garçom <nome>' (dono, 20/11/2026).
+     *  Nulo = cancelado antes de a tela do caixa perguntar. */
+    pediu: varchar('pediu', { length: 80 }),
     /** mesa/comanda */
     numero: integer('numero'),
     pedidoFb: integer('pedido_fb'),

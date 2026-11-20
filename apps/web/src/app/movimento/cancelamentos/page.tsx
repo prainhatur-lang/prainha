@@ -102,6 +102,7 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
       tipo: c.tipo,
       login: c.login,
       gerente: c.gerente,
+      pediu: c.pediu,
       numero: c.numero,
       nome: c.nome,
       valor: c.valor,
@@ -156,6 +157,12 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
   const devolucoesSemFoto = devolucoes.filter((l) => !l.temFoto).length;
   const porMotivo = agrupar(linhas, (l) => l.motivo || '(sem motivo)', valorDe);
   const porQuem = agrupar(linhas, (l) => l.login || '?', valorDe);
+  // quem PEDIU pra cancelar (cliente ou garçom) — a loja pergunta desde 20/11/2026
+  const porPediu = agrupar(
+    linhas.filter((l) => l.pediu),
+    (l) => l.pediu || '—',
+    valorDe,
+  );
   const porGerente = agrupar(
     linhas.filter((l) => l.gerente && l.gerente !== l.login),
     (l) => l.gerente || '—',
@@ -307,6 +314,7 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
           <div className="mt-4 grid gap-3 lg:grid-cols-2 xl:grid-cols-4">
             <Resumo titulo="Por motivo" grupos={porMotivo} linkDe={(g) => href({ motivo: g.chave === '(sem motivo)' ? '' : g.chave })} />
             <Resumo titulo="Por quem cancelou" grupos={porQuem} linkDe={(g) => href({ quem: g.chave === '?' ? '' : g.chave })} />
+            <Resumo titulo="Quem pediu pra cancelar" grupos={porPediu} vazio="Ainda sem registro — o caixa passou a perguntar em 20/11/2026." />
             <Resumo titulo="Por praça (cozinha × bar)" grupos={porPraca} vazio="Só pedidos inteiros no período." />
             <Resumo titulo="Autorizado por (gerente)" grupos={porGerente} vazio="Ninguém precisou de autorização — quem cancelou era gerente." />
           </div>
@@ -323,6 +331,7 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
                 <th className="px-4 py-2">Item</th>
                 <th className="px-4 py-2 text-right">Valor</th>
                 <th className="px-4 py-2">Situação do item</th>
+                <th className="px-4 py-2">Quem pediu</th>
                 <th className="px-4 py-2">Quem cancelou</th>
                 <th className="px-4 py-2">Autorizou</th>
                 <th className="px-4 py-2">Motivo</th>
@@ -331,7 +340,7 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
             <tbody>
               {linhas.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-6 text-center text-xs text-slate-500">
+                  <td colSpan={10} className="px-4 py-6 text-center text-xs text-slate-500">
                     {Number(totalFilial) === 0
                       ? 'A loja ainda não enviou nenhum cancelamento pra nuvem — isso depende do vendas-local atualizado rodando lá.'
                       : 'Nenhum cancelamento nesse filtro.'}
@@ -359,6 +368,7 @@ export default async function CancelamentosPage(props: { searchParams: Promise<S
                       <td className={`px-4 py-2 text-xs ${prod ? 'font-medium text-amber-700' : 'text-slate-600'}`}>
                         {estorno ? 'voltou pro bar' : rotuloStatus(statusDoCancelado(l.statusItem, l.nome))}
                       </td>
+                      <td className="px-4 py-2 text-xs text-slate-800">{l.pediu ?? <span className="text-slate-400">—</span>}</td>
                       <td className="px-4 py-2 text-xs text-slate-800">{l.login ?? '—'}</td>
                       <td className="px-4 py-2 text-xs text-slate-600">
                         {l.gerente && l.gerente !== l.login ? l.gerente : l.gerente ? 'ele mesmo' : '—'}

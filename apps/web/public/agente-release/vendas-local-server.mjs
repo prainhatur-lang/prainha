@@ -926,6 +926,10 @@ async function initSchema() {
   // "lançado 14:43 · cancelado 15:48" — quanto tempo o item ficou na conta.
   // Item = comanda_item.criado; pedido inteiro = o primeiro item da conta.
   await addCol('cancelamento', 'lancado_em timestamptz');
+  // QUEM PEDIU pra cancelar (dono, 20/11/2026): "quem pede pra cancelar ou é o
+  // cliente, ou é um garçom". `login` é quem APERTOU no caixa; aqui fica quem
+  // pediu: 'Cliente' ou 'Garçom <nome>'. Nulo = cancelado antes desta versão.
+  await addCol('cancelamento', 'pediu text');
   // CONSERTO RETROATIVO das cascas que a transferência cancelou antes de existir
   // o estado "esvaziada". Cancelar conta SEMPRE deixa linha em `cancelamento`
   // ("PEDIDO INTEIRO", item_codigo nulo) — sem essa linha, com transferência
@@ -10385,8 +10389,8 @@ async function apiCaixaCancelarItem(body, quem) {
   // baixados (somem do KDS), e o cancelamento gravava "entregue" → "JÁ
   // PRODUZIDO" no balanço. Grava 'servico'. A dupla senha acima segue igual.
   const statusGravado = status !== 'a_produzir' && await ehItemDeServico(principal.nome) ? 'servico' : status;
-  await sql`INSERT INTO cancelamento (login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo, area_codigo, foto, lancado_em)
-    VALUES (${quem.login}, ${gerente}, ${numero}, ${ped}, ${item}, ${nomeLog}, ${valor}, ${statusGravado}, ${T(body.motivo)}, ${areaCanc == null ? null : Number(areaCanc)}, ${foto}, ${lancadoEm})`;
+  await sql`INSERT INTO cancelamento (login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo, area_codigo, foto, lancado_em, pediu)
+    VALUES (${quem.login}, ${gerente}, ${numero}, ${ped}, ${item}, ${nomeLog}, ${valor}, ${statusGravado}, ${T(body.motivo)}, ${areaCanc == null ? null : Number(areaCanc)}, ${foto}, ${lancadoEm}, ${pediuDoBody(body)})`;
   cupomCancelado(parcial
     ? areaRows.filter((a) => Number(a.item_codigo) === item).map((a) => ({ ...a, nome: a.nome, quantidade: qtdCanc }))
     : areaRows, numero).catch(() => {});
@@ -10439,15 +10443,34 @@ async function apiCaixaCancelarPedido(body, quem) {
   const lancadoEm = (await sql`SELECT MIN(criado) AS lancado FROM comanda_item WHERE comanda_codigo=${Number(ped)}`.catch(() => []))[0]?.lancado ?? null;
   const rd = await pedApagar(ped);
   if (!rd) return { ok: false, erro: 'não deu pra excluir o pedido' };
-  await sql`INSERT INTO cancelamento (login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo, lancado_em)
-    VALUES (${quem.login}, ${quem.login}, ${numero}, ${ped}, ${null}, ${'PEDIDO INTEIRO'}, ${tot}, ${'pedido'}, ${T(body.motivo)}, ${lancadoEm})`;
+  await sql`INSERT INTO cancelamento (login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo, lancado_em, pediu)
+    VALUES (${quem.login}, ${quem.login}, ${numero}, ${ped}, ${null}, ${'PEDIDO INTEIRO'}, ${tot}, ${'pedido'}, ${T(body.motivo)}, ${lancadoEm}, ${pediuDoBody(body)})`;
   cupomCancelado(vivos, numero).catch(() => {});
   espelho().catch(() => {});
   return { ok: true, valor: tot };
 }
 /** Relatório de controle: o que foi cancelado, por quem, autorizado por quem. */
+/** Quem PEDIU o cancelamento, como a tela manda: 'Cliente' ou 'Garçom <nome>'.
+ *  Tela antiga (sem o campo) segue cancelando igual — grava nulo. */
+function pediuDoBody(body) {
+  const t = String(body?.pediu ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  return t || null;
+}
+/** Nomes pra tela do caixa escolher "qual garçom pediu": todo mundo que entra
+ *  nas telas da loja (PIN) + os usuários locais ativos. Só nome, sem permissão. */
+async function apiCaixaGarcons() {
+  try {
+    const rows = await sql`SELECT DISTINCT ON (lower(n)) n FROM (
+        SELECT COALESCE(NULLIF(trim(gp.nome), ''), gp.login) AS n FROM garcom_pin gp
+          WHERE NOT EXISTS (SELECT 1 FROM usuario_local u WHERE u.login = gp.login AND NOT u.ativo)
+        UNION ALL
+        SELECT COALESCE(NULLIF(trim(nome), ''), login) FROM usuario_local WHERE ativo
+      ) x WHERE COALESCE(n, '') <> '' ORDER BY lower(n), n`;
+    return { ok: true, garcons: rows.map((r) => String(r.n)) };
+  } catch (e) { return { ok: false, erro: e.message, garcons: [] }; }
+}
 async function apiCaixaCancelamentos() {
-  const rows = await sql`SELECT quando, login, gerente, numero, nome, valor, status_item, motivo
+  const rows = await sql`SELECT quando, login, gerente, numero, nome, valor, status_item, motivo, pediu
     FROM cancelamento WHERE quando > now() - interval '30 days' ORDER BY quando DESC LIMIT 200`;
   return { ok: true, cancelamentos: rows };
 }
@@ -13051,7 +13074,7 @@ async function loopCancelNuvem() {
   try {
     await cancelLancadoRetro().catch((err) => console.error('[cancel] hora do lançamento (retro):', err.message));
     const desde = Number(await cfgGet('cancel_nuvem_ate', '0')) || 0;
-    const rows = await sql`SELECT id, quando, login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo, area_codigo, foto, lancado_em
+    const rows = await sql`SELECT id, quando, login, gerente, numero, pedido_fb, item_codigo, nome, valor, status_item, motivo, area_codigo, foto, lancado_em, pediu
       FROM cancelamento WHERE id > ${desde} ORDER BY id LIMIT 200`;
     if (!rows.length) return;
     // A foto da devolução vai junto (base64). A Vercel aceita ~4,5 MB por
@@ -13072,6 +13095,7 @@ async function loopCancelNuvem() {
         pedido_fb: x.pedido_fb, item_codigo: x.item_codigo == null ? null : Number(x.item_codigo),
         nome: x.nome, valor: x.valor == null ? null : Number(x.valor), status_item: x.status_item,
         motivo: x.motivo, area_codigo: x.area_codigo, lancado_em: x.lancado_em ?? null,
+        pediu: x.pediu ?? null,
         foto_b64, foto_mime: foto_b64 ? 'image/jpeg' : null });
       if (foto_b64) bytes += foto_b64.length;
     }
@@ -31377,6 +31401,48 @@ function motivoDe(sel){
   return MOTIVOS_CANC[sel];
 }
 function selMotivoItem(v){MOTSEL=v;pintaMain()}
+/* ---- QUEM PEDIU PRA CANCELAR (dono, 20/11/2026) ----
+   "Quem pede pra cancelar ou é o cliente, ou é um garçom": a tela pergunta e o
+   relatório mostra. Garçom = escolhe o nome (quem lançou o item vem primeiro).
+   t: 'cliente' | 'garcom' · n: nome escolhido ('' = Outro…, digita) */
+var PEDIU={t:null,n:null,sug:null,lista:[]},GARCONS=null;
+function pediuReset(sug){
+  var s=String(sug||'').trim();
+  if(s.toUpperCase().indexOf('CLIENTE')===0||s==='Site'||s==='iFood')s='';
+  PEDIU={t:null,n:null,sug:s||null,lista:[]};GARCONS=null;
+}
+// re-pinta sem perder o "Outro…" do motivo que já estava digitado
+function pediuPinta(fn){var c=document.getElementById('cmot'),t=c?c.value:'';fn();c=document.getElementById('cmot');if(c&&t)c.value=t}
+async function selPediu(t,fn){
+  PEDIU.t=t;PEDIU.n=null;
+  if(t==='garcom'&&!GARCONS){try{var r=await jget('/api/caixa/garcons');if(r&&r.ok)GARCONS=r.garcons||[]}catch(e){}}
+  pediuPinta(fn);
+}
+function selPediuNome(ix,fn){PEDIU.n=ix<0?'':(PEDIU.lista[ix]||null);pediuPinta(fn);if(ix<0){var c=document.getElementById('cpnome');if(c)c.focus()}}
+function pediuHtml(fn){
+  var h='<div class="mut" style="margin-top:10px">Quem pediu pra cancelar? (obrigatório):</div>'+
+    '<div style="display:flex;gap:6px;margin-top:6px">'+
+    '<button type="button" class="seg'+(PEDIU.t==='cliente'?' on':'')+'" style="flex:1" onclick="selPediu(\\'cliente\\','+fn+')">🧑 Cliente</button>'+
+    '<button type="button" class="seg'+(PEDIU.t==='garcom'?' on':'')+'" style="flex:1" onclick="selPediu(\\'garcom\\','+fn+')">🤵 Garçom</button></div>';
+  if(PEDIU.t==='garcom'){
+    var ns=[],visto={};
+    (PEDIU.sug?[PEDIU.sug]:[]).concat(GARCONS||[]).forEach(function(n){var k=String(n).toLowerCase();if(!visto[k]){visto[k]=1;ns.push(n)}});
+    PEDIU.lista=ns;
+    h+='<div class="mut" style="margin-top:8px">Qual garçom?</div>'+
+      '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">'+
+      ns.map(function(n,ix){return '<button type="button" class="seg'+(PEDIU.n===n?' on':'')+'" style="flex:1 1 30%" onclick="selPediuNome('+ix+','+fn+')">'+esc(n)+(PEDIU.sug&&n===PEDIU.sug?' <small>(lançou)</small>':'')+'</button>'}).join('')+
+      '<button type="button" class="seg'+(PEDIU.n===''?' on':'')+'" style="flex:1 1 30%" onclick="selPediuNome(-1,'+fn+')">Outro…</button></div>'+
+      (PEDIU.n===''?'<input id="cpnome" placeholder="nome do garçom" style="margin-top:8px">':'');
+  }
+  return h;
+}
+function pediuDe(){
+  if(PEDIU.t==='cliente')return 'Cliente';
+  if(PEDIU.t!=='garcom')return null;
+  var n=PEDIU.n;
+  if(n==='')n=((document.getElementById('cpnome')||{}).value||'').trim();
+  return n?('Garçom '+n):null;
+}
 /* ---- FOTO DA DEVOLUÇÃO: mesmo caminho do comprovante (QR → celular → foto),
    ou a câmera do tablet. Sem foto o servidor recusa cancelar como devolução. */
 var CFOTO={token:null,arquivo:null,foto:null,poll:null,stream:null,t0:0};
@@ -31442,6 +31508,7 @@ function cancItem(ix){
   CANCIT={codigo:i.item_codigo,nome:i.nome,qtd:q,valor:i.valor_total,status:i.status||'a_produzir',
     resta:(q>1?q-1:null)}; // lançou 5, quer cancelar 2: ajusta o que FICA (3)
   MOTSEL=null;
+  pediuReset(i.quem);
   irTela('canc');
 }
 function cancMenos(){if(CANCIT&&CANCIT.resta>0){CANCIT.resta--;pintaMain()}}
@@ -31461,6 +31528,7 @@ function telaCancItem(el){
       '</div>':'')+
     (precisa?'<div class="err" style="margin-top:8px">Este item já está <b>'+(i.status==='entregue'?'ENTREGUE':'PRONTO')+'</b>. '+
       'Precisa de DUAS senhas: o seu PIN e a autorização do gerente.</div>':'')+
+    pediuHtml('pintaMain')+
     chipsMotivoHtml(MOTSEL,'selMotivoItem')+(MOTSEL===MOTIVO_DEV?devFotoHtml():'');
   if(precisa){
     h+='<input id="cpin" class="num" type="password" inputmode="numeric" maxlength="8" placeholder="SEU PIN ('+esc(NOME||'')+')" style="margin-top:8px">';
@@ -31475,8 +31543,10 @@ function telaCancItem(el){
 }
 async function doCancItem(btn){
   var mot=motivoDe(MOTSEL);
+  var ped=pediuDe();
+  if(!ped){var e9=document.getElementById('cierr');if(e9)e9.textContent=PEDIU.t==='garcom'?'escolha qual garçom pediu pra cancelar':'diga quem pediu pra cancelar: o cliente ou um garçom';return}
   if(!mot){var e0=document.getElementById('cierr');if(e0)e0.textContent='escolha o motivo do cancelamento';return}
-  var b={numero:MESA,item_codigo:CANCIT.codigo,motivo:mot};
+  var b={numero:MESA,item_codigo:CANCIT.codigo,motivo:mot,pediu:ped};
   if(MOTSEL===MOTIVO_DEV){
     if(CFOTO.arquivo)b.token=CFOTO.token; else if(CFOTO.foto)b.foto=CFOTO.foto;
     else{var e1=document.getElementById('cierr');if(e1)e1.textContent='devolução precisa da foto do produto devolvido';return}
@@ -31496,7 +31566,7 @@ async function doCancItem(btn){
   }
   CANCIT=null;devReset();await carregar(MESA);
 }
-function cancPedido(){MOTPED=null;pintaMotivoPedido()}
+function cancPedido(){MOTPED=null;pediuReset(null);pintaMotivoPedido()}
 function selMotivoPed(v){MOTPED=v;pintaMotivoPedido()}
 function fechaMotivoPed(){var o=document.getElementById('mcov');if(o)o.remove()}
 function pintaMotivoPedido(){
@@ -31509,6 +31579,7 @@ function pintaMotivoPedido(){
   ov.innerHTML='<div class="card" style="max-width:430px;width:100%;margin:0;max-height:88vh;overflow:auto">'+
     '<div class="tit" style="margin-top:0">🗑 Cancelar o pedido INTEIRO — mesa/comanda '+MESA+'</div>'+
     '<div class="mut">A conta inteira some e cai no relatório de cancelamentos.</div>'+
+    pediuHtml('pintaMotivoPedido')+
     chipsMotivoHtml(MOTPED,'selMotivoPed',true)+
     '<button class="big" style="background:var(--red)" onclick="doCancPedido(this)">Confirmar cancelamento</button>'+
     '<button class="big" style="background:#eef2f7;color:#0f172a" onclick="fechaMotivoPed()">Voltar</button>'+
@@ -31517,9 +31588,11 @@ function pintaMotivoPedido(){
 async function doCancPedido(btn){
   var mot=motivoDe(MOTPED);
   var er=document.getElementById('cperr');
+  var ped=pediuDe();
+  if(!ped){if(er)er.textContent=PEDIU.t==='garcom'?'escolha qual garçom pediu pra cancelar':'diga quem pediu pra cancelar: o cliente ou um garçom';return}
   if(!mot){if(er)er.textContent='escolha o motivo do cancelamento';return}
   btn.disabled=true;
-  var r=await jpost('/api/caixa/cancelar-pedido',alvo({numero:MESA,motivo:mot}));
+  var r=await jpost('/api/caixa/cancelar-pedido',alvo({numero:MESA,motivo:mot,pediu:ped}));
   btn.disabled=false;
   if(!r.ok){if(er)er.textContent=r.erro||'não cancelou';return}
   fechaMotivoPed();
@@ -31538,6 +31611,7 @@ async function telaCancRel(el){
     var quando=('0'+q.getDate()).slice(-2)+'/'+('0'+(q.getMonth()+1)).slice(-2)+' '+('0'+q.getHours()).slice(-2)+':'+('0'+q.getMinutes()).slice(-2);
     h+='<div class="it"><span>'+quando+' · '+(x.numero||'—')+' · '+esc(x.nome||'')+
       '<small class="mut" style="display:block">por '+esc(x.login||'?')+
+      (x.pediu?' · pediu: '+esc(x.pediu):'')+
       (x.gerente&&x.gerente!==x.login?' · autorizou: '+esc(x.gerente):'')+
       (x.status_item&&x.status_item!=='a_produzir'&&x.status_item!=='pedido'&&x.status_item!=='servico'?' · estava '+esc(x.status_item):'')+
       (x.motivo?' · "'+esc(x.motivo)+'"':'')+'</small></span>'+
@@ -33461,7 +33535,7 @@ async function gerenteLiberacoes() {
     FROM liberacao WHERE status='pendente' AND quando > now() - interval '30 minutes' ORDER BY quando`;
   const decididas = await sql`SELECT id, quando, login, numero, tipo, nome, valor, motivo, status, decidido_em, decidido_por, resposta
     FROM liberacao WHERE status <> 'pendente' AND quando > now() - interval '24 hours' ORDER BY decidido_em DESC LIMIT 30`;
-  const canc = await sql`SELECT id, quando, login, gerente, numero, nome, valor, status_item, motivo, visto_em, visto_por
+  const canc = await sql`SELECT id, quando, login, gerente, numero, nome, valor, status_item, motivo, visto_em, visto_por, pediu
     FROM cancelamento WHERE quando > now() - interval '24 hours' ORDER BY quando DESC LIMIT 60`;
   const est = await sql`SELECT id, quando, login, numero, forma, valor, motivo FROM pagamento_estorno WHERE quando > now() - interval '24 hours' ORDER BY quando DESC LIMIT 30`;
   const reab = await sql`SELECT id, quando, login, numero, fechada_em FROM conta_reabertura WHERE quando > now() - interval '24 hours' ORDER BY quando DESC LIMIT 30`;
@@ -33518,7 +33592,7 @@ async function montarBalanco() {
       COALESCE(SUM(valor) FILTER (WHERE status_item IS NOT NULL AND status_item NOT IN ('a_produzir','pedido','servico') AND nome !~* 'couvert|lounge taxa|espa.o kids'),0)::float valor_produzidos,
       COUNT(*) FILTER (WHERE motivo ILIKE 'devolu%')::int devolucoes
     FROM cancelamento WHERE quando >= ${dia}::date`);
-  const cancLista = await many(sql`SELECT id, quando, login, gerente, numero, nome, valor, status_item, motivo
+  const cancLista = await many(sql`SELECT id, quando, login, gerente, numero, nome, valor, status_item, motivo, pediu
     FROM cancelamento WHERE quando >= ${dia}::date ORDER BY quando DESC LIMIT 40`);
   const est = await one(sql`SELECT COUNT(*)::int n, COALESCE(SUM(valor),0)::float valor FROM pagamento_estorno WHERE quando >= ${dia}::date`);
   const estLista = await many(sql`SELECT id, quando, login, numero, forma, valor, motivo FROM pagamento_estorno WHERE quando >= ${dia}::date ORDER BY quando DESC LIMIT 30`);
@@ -34484,7 +34558,7 @@ function secSetores(S){
 function secHist(L){
   var h='<h2 id="hist">🧾 Últimas 24h '+(L.cancelamentos_nao_vistos?'<span class="n amb">'+L.cancelamentos_nao_vistos+' cancel. sem "vi"</span>':'')+'<span class="pill">cancelado hoje: '+brl(L.cancelado_hoje)+'</span></h2>';
   var itens=[];
-  L.cancelamentos.forEach(function(c){itens.push({q:c.quando,t:'cancelamento',h:'<b>'+(c.numero||'')+'</b> '+esc(c.nome||'')+' <b>'+brl(c.valor)+'</b> <span class="tag '+(c.status_item==='a_produzir'?'':'amb')+'">'+esc(c.status_item||'')+'</span><small>por '+esc(c.login)+(c.gerente&&c.gerente!==c.login?' · autorizou '+esc(c.gerente):'')+(c.motivo?' · '+esc(c.motivo):'')+'</small>',b:!c.visto_em?'<button class="b" onclick="visto('+c.id+',this)">Vi</button>':'<span class="tag green">visto '+esc(c.visto_por||'')+'</span>'})});
+  L.cancelamentos.forEach(function(c){itens.push({q:c.quando,t:'cancelamento',h:'<b>'+(c.numero||'')+'</b> '+esc(c.nome||'')+' <b>'+brl(c.valor)+'</b> <span class="tag '+(c.status_item==='a_produzir'?'':'amb')+'">'+esc(c.status_item||'')+'</span><small>por '+esc(c.login)+(c.pediu?' · pediu: '+esc(c.pediu):'')+(c.gerente&&c.gerente!==c.login?' · autorizou '+esc(c.gerente):'')+(c.motivo?' · '+esc(c.motivo):'')+'</small>',b:!c.visto_em?'<button class="b" onclick="visto('+c.id+',this)">Vi</button>':'<span class="tag green">visto '+esc(c.visto_por||'')+'</span>'})});
   L.estornos.forEach(function(c){itens.push({q:c.quando,t:'estorno',h:'<b>'+(c.numero||'')+'</b> estorno '+esc(c.forma||'')+' <b>'+brl(c.valor)+'</b><small>por '+esc(c.login)+(c.motivo?' · '+esc(c.motivo):'')+'</small>',b:''})});
   L.reaberturas.forEach(function(c){itens.push({q:c.quando,t:'reabertura',h:'<b>'+(c.numero||'')+'</b> conta reaberta<small>por '+esc(c.login)+(c.fechada_em?' · fechada às '+hm(c.fechada_em):'')+'</small>',b:''})});
   (L.descontos||[]).forEach(function(c){var nm={desconto:'desconto',acrescimo:'acréscimo',tirou_desconto:'desconto retirado'}[c.acao]||c.acao;itens.push({q:c.quando,t:'desconto',h:'<b>'+(c.numero||'')+'</b> '+esc(nm)+(c.valor!=null?' '+brl(c.valor):'')+(c.total_depois!=null?' (conta ficou '+brl(c.total_depois)+')':'')+'<small>por '+esc(c.nome||c.login||'?')+(c.motivo?' · '+esc(c.motivo):' · sem motivo')+'</small>',b:''})});
@@ -35289,6 +35363,7 @@ const server = http.createServer(async (req, res) => {
       if (req.method === 'POST' && p === '/api/caixa/cancelar-item') { const b = await readBody(req); return res.end(JSON.stringify(await apiCaixaCancelarItem(b, quem))); }
       if (req.method === 'POST' && p === '/api/caixa/cancelar-pedido') { const b = await readBody(req); return res.end(JSON.stringify(await apiCaixaCancelarPedido(b, quem))); }
       if (p === '/api/caixa/cancelamentos') return res.end(JSON.stringify(await apiCaixaCancelamentos()));
+      if (p === '/api/caixa/garcons') return res.end(JSON.stringify(await apiCaixaGarcons()));
       return res.end(JSON.stringify({ ok: false, erro: 'rota inválida' }));
     }
     // ---- NFC-e: oferecida ao fechar a conta (caixa E maquininha) ----

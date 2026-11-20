@@ -33,6 +33,8 @@ const Linha = z.object({
   lancado_em: z.string().nullable().optional(),
   login: z.string().max(60).nullable().optional(),
   gerente: z.string().max(60).nullable().optional(),
+  /** quem pediu pra cancelar: 'Cliente' ou 'Garçom <nome>' (loja a partir de 20/11/2026) */
+  pediu: z.string().max(200).nullable().optional(),
   numero: z.coerce.number().int().nullable().optional(),
   pedido_fb: z.coerce.number().int().nullable().optional(),
   item_codigo: z.coerce.number().int().nullable().optional(),
@@ -74,6 +76,7 @@ export async function POST(request: Request) {
       tipo: c.item_codigo == null || c.status_item === 'pedido' ? 'pedido' : 'item',
       login: c.login ?? null,
       gerente: c.gerente ?? null,
+      pediu: c.pediu ? c.pediu.trim().slice(0, 80) || null : null,
       numero: c.numero ?? null,
       pedidoFb: c.pedido_fb ?? null,
       itemCodigo: c.item_codigo ?? null,
@@ -99,6 +102,8 @@ export async function POST(request: Request) {
           tipo: sql`excluded.tipo`,
           login: sql`excluded.login`,
           gerente: sql`excluded.gerente`,
+          // reenvio de loja antiga (sem o campo) não apaga o que já chegou
+          pediu: sql`COALESCE(excluded.pediu, cancelamento_item.pediu)`,
           numero: sql`excluded.numero`,
           pedidoFb: sql`excluded.pedido_fb`,
           itemCodigo: sql`excluded.item_codigo`,
