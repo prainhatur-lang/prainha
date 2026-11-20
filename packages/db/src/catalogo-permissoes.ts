@@ -245,6 +245,10 @@ export const PERMISSOES: PermissaoDef[] = [
   { codigo: 'tuya.control', modulo: 'tuya', acao: 'control', descricao: 'Ligar/desligar luzes, bombas e motores pelo painel de energia' },
   { codigo: 'tuya.configurar', modulo: 'tuya', acao: 'configurar', descricao: 'Cadastrar/editar dispositivos Tuya por filial' },
 
+  // === Água (caixas, bombas dos poços e de recalque, avisos) ===
+  { codigo: 'agua.read', modulo: 'agua', acao: 'read', descricao: 'Ver a tela Água (caixas, bombas e avisos) e receber o aviso em tela cheia' },
+  { codigo: 'agua.control', modulo: 'agua', acao: 'control', descricao: 'Comandar as bombas e válvulas da água (liberar, bloquear, rearmar, retrolavar)' },
+
   // === Usuarios/grupos (admin) ===
   ...crud('usuario', 'usuários', []).map((p) => ({ ...p, escopo: 'organizacao' as const })),
   ...crud('grupo_usuario', 'grupos de usuário', []).map((p) => ({

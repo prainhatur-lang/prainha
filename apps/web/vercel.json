@@ -57,6 +57,10 @@
       "schedule": "* * * * *"
     },
     {
+      "path": "/api/cron/agua-alarmes",
+      "schedule": "* * * * *"
+    },
+    {
       "path": "/api/cron/relatorio-diario",
       "schedule": "0 10 * * *"
     },

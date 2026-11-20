@@ -10,6 +10,7 @@
 import { useCallback, useState } from 'react';
 import { AppSidebar } from './app-sidebar';
 import { AvisoNina } from './aviso-nina';
+import { AlertaAguaGlobal } from './alerta-agua-global';
 import { LogoutButton } from '../app/dashboard/logout-button';
 
 interface Props {
@@ -32,6 +33,7 @@ export function AppHeader({ userEmail }: Props) {
     <>
       <AppSidebar mobileOpen={mobileOpen} onMobileOpenChange={handleMobileOpenChange} />
       <AvisoNina />
+      <AlertaAguaGlobal />
 
       <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur">
         <div className="flex h-14 items-center gap-3 px-4 sm:px-6">

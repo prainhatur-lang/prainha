@@ -972,6 +972,13 @@ export const MENU_AREAS: MenuArea[] = [
             aka: ['energia', 'disjuntor', 'luzes'],
           },
           {
+            label: 'Água',
+            href: '/agua',
+            perm: 'agua.read',
+            interno: true,
+            aka: ['caixa d\'água', 'bomba', 'poço', 'caixas', 'abastecimento'],
+          },
+          {
             label: 'Dispositivos (Tuya)',
             href: '/configuracoes/energia',
             perm: 'tuya.configurar',

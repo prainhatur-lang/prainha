@@ -33774,6 +33774,404 @@ function listaHtml(){
 iniciar();
 </script></body></html>`;
 
+// ============================================================================
+// ÁGUA DO PRAINHA — caixas, bombas dos poços e de recalque (dono, 20/11/2026:
+// "o banco fique na filial, no servidor interno, e que replique para a nuvem,
+// mas que ele consiga operar completamente sem a internet").
+//
+// O BANCO DA ÁGUA MORA AQUI, no Postgres da loja. A placa do quadro grava as
+// leituras pela rede interna (POST /api/agua/leitura), as regras de alarme
+// rodam aqui a cada minuto e a tela /agua lê daqui — nada disso depende de
+// internet. A nuvem é só cópia: loopAguaNuvem manda leituras, bombas, limites
+// e avisos abertos pro Concilia online quando tem internet, e retoma de onde
+// parou (cursor agua_nuvem_ate) quando ela volta.
+//
+// Tudo com prefixo agua_; nenhuma tabela, rota ou loop existente muda.
+// Postgres 9.5 na 0001: bigserial, sem GENERATED ... AS IDENTITY.
+// ============================================================================
+let aguaPronta = false;
+async function initAgua() {
+  await sql`CREATE TABLE IF NOT EXISTS agua_bombas (id smallint PRIMARY KEY, nome text NOT NULL, fases text,
+    corrente_nominal numeric(5,2), limite_corrente_baixa numeric(5,2), tuya_device_id text,
+    liberada boolean NOT NULL DEFAULT true, modo text NOT NULL DEFAULT 'auto', falha text,
+    tentativas smallint NOT NULL DEFAULT 0, proxima_tentativa timestamptz,
+    atualizado_em timestamptz NOT NULL DEFAULT now())`;
+  await sql`INSERT INTO agua_bombas (id, nome, fases) VALUES
+    (1, 'Poço 1', 'R-S'), (2, 'Poço 2', 'S-T'), (3, 'Poço 3', 'T-R'), (4, 'Bomba 4', 'a definir')
+    ON CONFLICT (id) DO NOTHING`;
+  await sql`CREATE TABLE IF NOT EXISTS agua_leituras (id bigserial PRIMARY KEY,
+    criado_em timestamptz NOT NULL DEFAULT now(),
+    nivel_terrea numeric(5,1), nivel_intermediaria numeric(5,1), nivel_superior numeric(5,1),
+    pressao_1 numeric(5,2), pressao_2 numeric(5,2), pressao_3 numeric(5,2),
+    corrente_1 numeric(5,2), corrente_2 numeric(5,2), corrente_3 numeric(5,2), corrente_4 numeric(5,2),
+    v1_aberta boolean, v2_aberta boolean)`;
+  await sql`CREATE INDEX IF NOT EXISTS agua_leituras_criado_em ON agua_leituras (criado_em DESC)`;
+  await sql`CREATE TABLE IF NOT EXISTS agua_config (chave text PRIMARY KEY, valor numeric NOT NULL, descricao text)`;
+  await sql`INSERT INTO agua_config (chave, valor, descricao) VALUES
+    ('superior_critico', 20, 'Percentual da caixa superior que dispara aviso em tela cheia'),
+    ('superior_liga', 50, 'Percentual em que a boia da superior deveria ligar a bomba 4'),
+    ('terrea_minimo', 15, 'Percentual mínimo da térrea para a bomba 4 poder rodar'),
+    ('corrente_zero', 0.3, 'Abaixo disso a bomba é considerada parada (A)'),
+    ('minutos_boia', 5, 'Minutos de nível baixo com bomba parada para acusar boia com defeito'),
+    ('minutos_sem_comunicacao', 10, 'Minutos sem leitura para acusar quadro sem comunicação'),
+    ('espera_poco_seco_min', 30, 'Espera antes do rearme automático por poço seco'),
+    ('max_tentativas', 3, 'Tentativas seguidas antes de travar a bomba'),
+    ('reaviso_min', 30, 'Minutos para o aviso em tela cheia voltar depois de confirmado')
+    ON CONFLICT (chave) DO NOTHING`;
+  await sql`CREATE TABLE IF NOT EXISTS agua_alarmes (id bigserial PRIMARY KEY, codigo text NOT NULL,
+    gravidade text NOT NULL, titulo text NOT NULL, detalhe text, bomba_id smallint,
+    aberto_em timestamptz NOT NULL DEFAULT now(), visto_em timestamptz, visto_por text,
+    resolvido_em timestamptz)`;
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS agua_alarmes_aberto
+    ON agua_alarmes (codigo, coalesce(bomba_id, 0)) WHERE resolvido_em IS NULL`;
+  // senha que a placa do quadro manda junto com a leitura (rede interna)
+  if (!(await cfgGet('agua_token', ''))) await cfgSet('agua_token', randomBytes(12).toString('hex'));
+  aguaPronta = true;
+}
+
+async function aguaCfg() {
+  const o = {};
+  for (const r of await sql`SELECT chave, valor FROM agua_config`) o[r.chave] = Number(r.valor);
+  return o;
+}
+async function aguaAbrir(codigo, gravidade, titulo, detalhe, bomba = 0) {
+  const b = Number(bomba) || 0;
+  await sql`INSERT INTO agua_alarmes (codigo, gravidade, titulo, detalhe, bomba_id)
+    SELECT ${codigo}, ${gravidade}, ${titulo}, ${detalhe}, NULLIF(${b}::int, 0)
+    WHERE NOT EXISTS (SELECT 1 FROM agua_alarmes
+      WHERE codigo=${codigo} AND coalesce(bomba_id, 0)=${b}::int AND resolvido_em IS NULL)`;
+}
+async function aguaFechar(codigo, bomba = 0) {
+  const b = Number(bomba) || 0;
+  await sql`UPDATE agua_alarmes SET resolvido_em=now()
+    WHERE codigo=${codigo} AND coalesce(bomba_id, 0)=${b}::int AND resolvido_em IS NULL`;
+}
+
+// Regras de alarme, a cada minuto, AQUI na loja (as mesmas que a nuvem tinha).
+// Sem nenhuma leitura na vida (quadro ainda não instalado) não abre nada —
+// senão o aviso em tela cheia piscaria antes de a placa existir.
+async function aguaAvaliar() {
+  if (!aguaPronta) return;
+  const u = (await sql`SELECT *, extract(epoch FROM now() - criado_em) / 60 AS idade_min
+    FROM agua_leituras ORDER BY id DESC LIMIT 1`)[0];
+  if (!u) return;
+  const c = await aguaCfg();
+  const cfg = (k, d) => (Number.isFinite(c[k]) ? c[k] : d);
+  if (Number(u.idade_min) > cfg('minutos_sem_comunicacao', 10)) {
+    await aguaAbrir('sem_comunicacao', 'critico', 'Quadro da água sem comunicação',
+      'Nenhuma leitura recebida. Nesse período não há corte por poço seco nem por tubo fechado. Verifique a energia e a rede do quadro.');
+    return;
+  }
+  await aguaFechar('sem_comunicacao');
+
+  if (u.nivel_superior != null && Number(u.nivel_superior) < cfg('superior_critico', 20)) {
+    await aguaAbrir('superior_baixa', 'critico', 'Caixa superior quase vazia',
+      'O restaurante pode ficar sem água. Verifique a bomba 4 no quadro.');
+  } else await aguaFechar('superior_baixa');
+
+  const bombas = await sql`SELECT * FROM agua_bombas ORDER BY id`;
+  const b4 = bombas.find((b) => b.id === 4);
+  const cont = (await sql`SELECT count(*)::int AS total,
+      count(*) FILTER (WHERE nivel_superior < ${cfg('superior_liga', 50) - 5}
+        AND coalesce(corrente_4, 0) < ${cfg('corrente_zero', 0.3)}
+        AND nivel_terrea > ${cfg('terrea_minimo', 15)})::int AS ruins
+    FROM agua_leituras
+    WHERE criado_em > now() - (${Math.round(cfg('minutos_boia', 5))}::int * interval '1 minute')`)[0];
+  if (b4 && cont.total >= 3 && cont.total === cont.ruins && b4.liberada && b4.modo === 'auto' && !b4.falha) {
+    await aguaAbrir('boia_superior', 'critico', 'Caixa superior baixa e a bomba 4 não ligou',
+      'Provável defeito na boia de comando da caixa superior. Passe a chave da bomba 4 para Manual e chame a manutenção. A boia de caixa cheia continua protegendo.', 4);
+  } else await aguaFechar('boia_superior', 4);
+
+  for (const b of bombas) {
+    const falha = b.falha ? String(b.falha).replace(/_/g, ' ') : '';
+    if (b.falha && b.tentativas >= cfg('max_tentativas', 3)) {
+      await aguaAbrir('bomba_travada', 'critico', b.nome + ' travada',
+        'Desarmou ' + b.tentativas + ' vezes seguidas (' + falha + '). Verifique antes de rearmar.', b.id);
+      await aguaFechar('bomba_em_espera', b.id);
+    } else if (b.falha) {
+      await aguaAbrir('bomba_em_espera', 'aviso', b.nome + ' em espera',
+        'Desarmou por ' + falha + '. O sistema tenta de novo sozinho.', b.id);
+      await aguaFechar('bomba_travada', b.id);
+    } else {
+      await aguaFechar('bomba_travada', b.id);
+      await aguaFechar('bomba_em_espera', b.id);
+    }
+    if (b.modo !== 'auto') {
+      await aguaAbrir('bomba_fora_auto', 'aviso', b.nome + ' fora do automático',
+        'Chave do quadro em ' + (b.modo === 'manual' ? 'Manual' : '0') + '.', b.id);
+    } else await aguaFechar('bomba_fora_auto', b.id);
+    if (!b.liberada && !b.falha) {
+      await aguaAbrir('bomba_bloqueada', 'aviso', b.nome + ' bloqueada pelo sistema', 'Alguém bloqueou esta bomba no aplicativo.', b.id);
+    } else await aguaFechar('bomba_bloqueada', b.id);
+  }
+}
+
+const aguaNum = (v, min, max) => {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(String(v).replace(',', '.'));
+  return Number.isFinite(n) && n >= min && n <= max ? n : null;
+};
+const aguaBool = (v) => {
+  if (v === null || v === undefined || v === '') return null;
+  if (v === true || v === 1) return true;
+  if (v === false || v === 0) return false;
+  const s = String(v).trim().toLowerCase();
+  if (['1', 'true', 's', 'sim', 'aberta', 'on'].includes(s)) return true;
+  if (['0', 'false', 'n', 'nao', 'não', 'fechada', 'off'].includes(s)) return false;
+  return null;
+};
+// POST (ou GET) /api/agua/leitura — a placa do quadro grava uma leitura pela
+// rede interna. Senha em x-agua-token ou ?k=. Campos: nivel_terrea,
+// nivel_intermediaria, nivel_superior (%), pressao_1..3 (bar), corrente_1..4
+// (A), v1_aberta, v2_aberta. Opcional: bombas:[{id, modo, falha, tentativas,
+// liberada}] — o estado que o quadro conhece de cada bomba.
+async function apiAguaLeitura(d, token) {
+  if (!aguaPronta) return { ok: false, erro: 'água ainda não iniciada' };
+  const certo = await cfgGet('agua_token', '');
+  if (!certo || String(token || '') !== certo) return { ok: false, erro: 'senha inválida' };
+  const l = {
+    nt: aguaNum(d.nivel_terrea, -5, 150), ni: aguaNum(d.nivel_intermediaria, -5, 150), ns: aguaNum(d.nivel_superior, -5, 150),
+    p1: aguaNum(d.pressao_1, -1, 99), p2: aguaNum(d.pressao_2, -1, 99), p3: aguaNum(d.pressao_3, -1, 99),
+    c1: aguaNum(d.corrente_1, 0, 999), c2: aguaNum(d.corrente_2, 0, 999), c3: aguaNum(d.corrente_3, 0, 999), c4: aguaNum(d.corrente_4, 0, 999),
+    v1: aguaBool(d.v1_aberta), v2: aguaBool(d.v2_aberta),
+  };
+  if (Object.values(l).every((v) => v === null) && !Array.isArray(d.bombas)) return { ok: false, erro: 'leitura vazia' };
+  let id = null;
+  if (!Object.values(l).every((v) => v === null)) {
+    id = (await sql`INSERT INTO agua_leituras (nivel_terrea, nivel_intermediaria, nivel_superior,
+        pressao_1, pressao_2, pressao_3, corrente_1, corrente_2, corrente_3, corrente_4, v1_aberta, v2_aberta)
+      VALUES (${l.nt}, ${l.ni}, ${l.ns}, ${l.p1}, ${l.p2}, ${l.p3}, ${l.c1}, ${l.c2}, ${l.c3}, ${l.c4}, ${l.v1}, ${l.v2})
+      RETURNING id`)[0].id;
+  }
+  if (Array.isArray(d.bombas)) {
+    for (const b of d.bombas.slice(0, 8)) {
+      const bid = Number(b && b.id);
+      if (!(bid >= 1 && bid <= 4)) continue;
+      const modo = ['auto', 'manual', 'off'].includes(b.modo) ? b.modo : null;
+      const temFalha = Object.prototype.hasOwnProperty.call(b, 'falha');
+      const falha = ['poco_seco', 'tubo_fechado', 'sobrecarga'].includes(b.falha) ? b.falha : null;
+      const tent = aguaNum(b.tentativas, 0, 99);
+      const lib = aguaBool(b.liberada);
+      if (modo) await sql`UPDATE agua_bombas SET modo=${modo}, atualizado_em=now() WHERE id=${bid}`;
+      if (temFalha) await sql`UPDATE agua_bombas SET falha=${falha}, atualizado_em=now() WHERE id=${bid}`;
+      if (tent !== null) await sql`UPDATE agua_bombas SET tentativas=${Math.round(tent)}, atualizado_em=now() WHERE id=${bid}`;
+      if (lib !== null) await sql`UPDATE agua_bombas SET liberada=${lib}, atualizado_em=now() WHERE id=${bid}`;
+    }
+  }
+  // avalia os alarmes na hora (além da volta de 1 em 1 minuto)
+  aguaAvaliar().catch(() => {});
+  return { ok: true, id: id === null ? null : Number(id) };
+}
+
+const aguaN = (v) => (v === null || v === undefined ? null : Number(v));
+// GET /api/agua/estado — tudo que a tela /agua mostra, lido do banco da loja.
+async function apiAguaEstado() {
+  if (!aguaPronta) return { ok: false, erro: 'água ainda não iniciada' };
+  const l = (await sql`SELECT * FROM agua_leituras ORDER BY id DESC LIMIT 1`)[0];
+  const bombas = await sql`SELECT * FROM agua_bombas ORDER BY id`;
+  const config = await aguaCfg();
+  const reaviso = Number.isFinite(config.reaviso_min) ? config.reaviso_min : 30;
+  const alarmes = await sql`SELECT id, codigo, gravidade, titulo, detalhe, aberto_em, visto_em,
+      (gravidade='critico' AND (visto_em IS NULL OR visto_em < now() - (${Math.round(reaviso)}::int * interval '1 minute'))) AS avisar
+    FROM agua_alarmes WHERE resolvido_em IS NULL ORDER BY aberto_em`;
+  const pend = (await sql`SELECT count(*)::int AS n FROM agua_leituras WHERE id > ${Number(await cfgGet('agua_nuvem_ate', '0')) || 0}`)[0].n;
+  return {
+    ok: true,
+    agora: new Date().toISOString(),
+    leitura: l ? {
+      criadoEm: new Date(l.criado_em).toISOString(),
+      nivelTerrea: aguaN(l.nivel_terrea), nivelIntermediaria: aguaN(l.nivel_intermediaria), nivelSuperior: aguaN(l.nivel_superior),
+      pressao1: aguaN(l.pressao_1), pressao2: aguaN(l.pressao_2), pressao3: aguaN(l.pressao_3),
+      correntes: { 1: aguaN(l.corrente_1), 2: aguaN(l.corrente_2), 3: aguaN(l.corrente_3), 4: aguaN(l.corrente_4) },
+      v1Aberta: l.v1_aberta, v2Aberta: l.v2_aberta,
+    } : null,
+    bombas: bombas.map((b) => ({ id: b.id, nome: b.nome, fases: b.fases, liberada: b.liberada, modo: b.modo,
+      falha: b.falha, tentativas: b.tentativas, temDisjuntor: !!b.tuya_device_id })),
+    alarmes: alarmes.map((a) => ({ id: Number(a.id), codigo: a.codigo, gravidade: a.gravidade, titulo: a.titulo,
+      detalhe: a.detalhe, abertoEm: new Date(a.aberto_em).toISOString(), avisar: !!a.avisar })),
+    config,
+    nuvem: { ligada: !!(FILIAL_ID && PAGAR_MESA_SECRET), ultimoEnvio: (await cfgGet('agua_nuvem_em', '')) || null, pendentes: pend },
+    placa: { token: await cfgGet('agua_token', '') },
+  };
+}
+// POST /api/agua/ciente {ids} — "Estou ciente" na loja. O aviso volta depois
+// do reaviso (30 min) se o problema continuar.
+async function apiAguaCiente(b, quem) {
+  const ids = (Array.isArray(b.ids) ? b.ids : []).map((x) => Number(x)).filter((n) => Number.isInteger(n) && n > 0).slice(0, 50);
+  let n = 0;
+  for (const id of ids) {
+    n += (await sql`UPDATE agua_alarmes SET visto_em=now(), visto_por=${String(quem).slice(0, 60)}
+      WHERE id=${id} AND resolvido_em IS NULL RETURNING id`).length;
+  }
+  return { ok: true, confirmados: n };
+}
+
+// CÓPIA PRA NUVEM. A cada minuto, se tem internet: manda as leituras novas (em
+// lotes, a partir do cursor), o estado das bombas, os limites e os avisos
+// abertos. Sem internet não faz nada e não perde nada: o cursor só anda quando
+// a nuvem confirma. Loja que nunca recebeu leitura não manda nada (as outras
+// casas rodam este mesmo servidor e não têm quadro de água).
+let aguaNuvemRodando = false;
+async function loopAguaNuvem() {
+  if (!aguaPronta || aguaNuvemRodando) return;
+  if (!FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  aguaNuvemRodando = true;
+  try {
+    if (!(await sql`SELECT 1 FROM agua_leituras LIMIT 1`).length) return;
+    for (let volta = 0; volta < 10; volta++) {
+      const ate = Number(await cfgGet('agua_nuvem_ate', '0')) || 0;
+      const leituras = await sql`SELECT id, criado_em, nivel_terrea, nivel_intermediaria, nivel_superior,
+          pressao_1, pressao_2, pressao_3, corrente_1, corrente_2, corrente_3, corrente_4, v1_aberta, v2_aberta
+        FROM agua_leituras WHERE id > ${ate} ORDER BY id LIMIT 300`;
+      const bombas = await sql`SELECT id, nome, fases, corrente_nominal, limite_corrente_baixa, tuya_device_id,
+          liberada, modo, falha, tentativas, proxima_tentativa FROM agua_bombas ORDER BY id`;
+      const config = await sql`SELECT chave, valor, descricao FROM agua_config`;
+      const alarmes = await sql`SELECT codigo, gravidade, titulo, detalhe, bomba_id, aberto_em, visto_em
+        FROM agua_alarmes WHERE resolvido_em IS NULL ORDER BY aberto_em`;
+      const e = Math.floor(Date.now() / 1000) + 120;
+      const r = await fetch(`${PAGAR_MESA_URL}/api/loja/agua`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          f: FILIAL_ID, e, s: nfceAssina('agua', e),
+          leituras: leituras.map((l) => ({
+            id: Number(l.id), criado_em: new Date(l.criado_em).toISOString(),
+            nivel_terrea: aguaN(l.nivel_terrea), nivel_intermediaria: aguaN(l.nivel_intermediaria), nivel_superior: aguaN(l.nivel_superior),
+            pressao_1: aguaN(l.pressao_1), pressao_2: aguaN(l.pressao_2), pressao_3: aguaN(l.pressao_3),
+            corrente_1: aguaN(l.corrente_1), corrente_2: aguaN(l.corrente_2), corrente_3: aguaN(l.corrente_3), corrente_4: aguaN(l.corrente_4),
+            v1_aberta: l.v1_aberta, v2_aberta: l.v2_aberta,
+          })),
+          bombas: bombas.map((b) => ({
+            id: b.id, nome: b.nome, fases: b.fases, corrente_nominal: aguaN(b.corrente_nominal),
+            limite_corrente_baixa: aguaN(b.limite_corrente_baixa), tuya_device_id: b.tuya_device_id,
+            liberada: b.liberada, modo: b.modo, falha: b.falha, tentativas: b.tentativas,
+            proxima_tentativa: b.proxima_tentativa ? new Date(b.proxima_tentativa).toISOString() : null,
+          })),
+          config: config.map((c) => ({ chave: c.chave, valor: Number(c.valor), descricao: c.descricao })),
+          alarmes: alarmes.map((a) => ({
+            codigo: a.codigo, gravidade: a.gravidade, titulo: a.titulo, detalhe: a.detalhe, bomba_id: a.bomba_id,
+            aberto_em: new Date(a.aberto_em).toISOString(), visto_em: a.visto_em ? new Date(a.visto_em).toISOString() : null,
+          })),
+        }),
+        signal: AbortSignal.timeout(25000),
+      });
+      const d = await r.json().catch(() => null);
+      if (!r.ok || !d || !d.ok) { console.error('[agua] nuvem recusou:', r.status, d && d.erro); return; }
+      if (leituras.length) await cfgSet('agua_nuvem_ate', String(leituras[leituras.length - 1].id));
+      await cfgSet('agua_nuvem_em', new Date().toISOString());
+      if (leituras.length < 300) return;
+    }
+  } catch { /* sem internet: tenta no próximo minuto, sem perder nada */ }
+  finally { aguaNuvemRodando = false; }
+}
+// guarda 90 dias de leitura na loja; só apaga o que a nuvem já recebeu (ou
+// tudo que passou do prazo, se a loja não fala com a nuvem)
+async function aguaPoda() {
+  if (!aguaPronta) return;
+  const ate = (FILIAL_ID && PAGAR_MESA_SECRET) ? (Number(await cfgGet('agua_nuvem_ate', '0')) || 0) : Number.MAX_SAFE_INTEGER;
+  await sql`DELETE FROM agua_leituras WHERE criado_em < now() - interval '90 days' AND id <= ${ate}`;
+}
+
+// Tela /agua da loja: lê só o servidor interno. Entra com o login de gerente
+// (o mesmo do /gerente — a sessão fica no aparelho).
+const AGUA_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Água do Prainha</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:#f1f5f9;color:#0f172a}
+.wrap{max-width:980px;margin:0 auto;padding:14px}
+h1{font-size:22px;margin:0}h2{font-size:17px;margin:0 0 10px}
+.sub{color:#64748b;font-size:13px;margin-top:2px}
+.card{background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:14px;margin-top:12px}
+.topo{display:flex;justify-content:space-between;align-items:flex-start;gap:10px}
+.topo a{color:#0369a1;font-size:14px;text-decoration:none;white-space:nowrap}
+.ok{color:#047857}.aviso{color:#b45309}.critico{color:#b91c1c}.fraco{color:#64748b}
+.b-ok{border-color:#059669}.b-aviso{border-color:#f59e0b}.b-critico{border-color:#dc2626}
+.geral{font-size:20px;font-weight:600}
+.caixas{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.tanque{position:relative;height:140px;margin-top:6px;border:2px solid #64748b;border-top:0;border-radius:0 0 12px 12px;background:#e0f2fe;overflow:hidden}
+.agua{position:absolute;left:0;right:0;bottom:0;background:#0ea5e9}
+.pct{position:absolute;left:0;right:0;top:8px;text-align:center;font-size:24px;font-weight:600}
+.peq{font-size:12px;color:#64748b;margin-top:4px}
+.bombas{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+.bomba{border:1px solid #e2e8f0;border-left:4px solid #cbd5e1;border-radius:8px;padding:10px}
+.bomba.l-ok{border-left-color:#059669}.bomba.l-aviso{border-left-color:#f59e0b}.bomba.l-critico{border-left-color:#dc2626}
+.bomba .linha{display:flex;justify-content:space-between;gap:8px;align-items:baseline}
+.amp{font-size:24px;font-weight:600}
+.chk{display:flex;gap:10px;padding:6px 0;border-bottom:1px solid #f1f5f9;font-size:14px}
+.chk b{width:88px;flex:none}
+#alerta{display:none;position:fixed;inset:0;z-index:99999;align-items:center;justify-content:center;padding:14px;background:rgba(170,20,20,.94)}
+#alerta .cx{background:#fff;border:4px solid #b91c1c;border-radius:12px;padding:20px;max-width:640px;width:100%;max-height:100%;overflow:auto}
+#alerta .tt{font-size:26px;font-weight:700;color:#b91c1c;margin-bottom:8px}
+#alerta .it{border-top:1px solid #e2e8f0;padding:10px 0}
+#alerta .it b{font-size:19px;display:block}
+#alerta button{margin-top:12px;width:100%;border:0;border-radius:8px;background:#b91c1c;color:#fff;font-size:18px;font-weight:600;padding:14px}
+.entrar{max-width:420px;margin:60px auto;text-align:center}
+.entrar a{display:inline-block;margin-top:14px;background:#0f172a;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none}
+code{background:#f1f5f9;padding:1px 5px;border-radius:4px;font-size:12px;word-break:break-all}
+@media(max-width:560px){.pct{font-size:19px}.tanque{height:110px}}
+</style></head><body>
+<div id="alerta"><div class="cx"><div class="tt">Atenção: problema na água do Prainha</div><div id="alerta-itens"></div>
+<button id="ciente" type="button">Estou ciente</button><div class="peq">O aviso volta em <span id="reaviso">30</span> minutos se o problema continuar.</div></div></div>
+<div class="wrap" id="app"><div class="card">Carregando…</div></div>
+<script>
+(function(){
+ var TOK=null;try{TOK=localStorage.getItem('gerente_tok')||null}catch(e){}
+ var APP=document.getElementById('app'),AL=document.getElementById('alerta'),ULT=null,PISCA=true,FALHAS=0;
+ var CAIXAS=[['nivelTerrea','Térrea',5000,'recebe dos poços e decanta'],['nivelIntermediaria','Intermediária',10000,'irrigação'],['nivelSuperior','Superior',10000,'consumo do restaurante']];
+ function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+ function n1(v){return v==null?'—':Number(v).toLocaleString('pt-BR',{minimumFractionDigits:1,maximumFractionDigits:1})}
+ function hora(s){if(!s)return '—';var d=new Date(s);return d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}
+ function telaEntrar(){APP.innerHTML='<div class="card entrar"><h1>Água do Prainha</h1><div class="sub">Entre como gerente para ver as caixas e as bombas.</div><a href="/gerente">Entrar como gerente</a><div class="peq" style="margin-top:14px">Depois de entrar, volte para esta tela.</div></div>'}
+ function valv(v){return v==null?'—':(v?'aberta':'fechada')}
+ function desenhar(d){
+  var l=d.leitura,c=d.config||{},cz=c.corrente_zero==null?0.3:c.corrente_zero,sc=c.superior_critico==null?20:c.superior_critico,mt=c.max_tentativas==null?3:c.max_tentativas;
+  var crit=d.alarmes.some(function(a){return a.gravidade==='critico'});
+  var tom=!l?'fraco':(d.alarmes.length?(crit?'critico':'aviso'):'ok');
+  var tit=!l?'Aguardando a instalação do quadro':(d.alarmes.length?(crit?'Atenção: há problema no sistema':'Avisos'):'Tudo funcionando');
+  var idade=l?(new Date(d.agora).getTime()-new Date(l.criadoEm).getTime())/60000:null;
+  var h='<div class="topo"><div><h1>Água do Prainha</h1><div class="sub">Caixas, bombas dos poços e de recalque. Lido do servidor da loja — funciona sem internet.</div></div><a href="/gerente">Painel do gerente</a></div>';
+  h+='<div class="card b-'+tom+'"><div class="geral '+tom+'">'+tit+'</div>';
+  if(!l)h+='<div class="sub" style="font-size:14px;margin-top:6px">Nenhuma leitura chegou ainda. Os níveis, as pressões e a corrente das bombas aparecem aqui quando a placa do quadro estiver ligada na rede da loja. Até lá nenhum aviso é disparado.</div>';
+  d.alarmes.forEach(function(a){h+='<div style="margin-top:8px;font-size:14px"><b class="'+(a.gravidade==='critico'?'critico':'aviso')+'">'+esc(a.titulo)+'.</b> '+esc(a.detalhe)+'</div>'});
+  h+='</div><div class="card"><h2>Caixas</h2><div class="caixas">';
+  CAIXAS.forEach(function(k){var p=l?l[k[0]]:null,alt=Math.max(0,Math.min(100,p==null?0:p));
+   h+='<div><b>'+k[1]+'</b><div class="tanque"><div class="agua" style="height:'+alt+'%"></div><div class="pct">'+(p==null?'—':Math.round(p)+'%')+'</div></div><div class="peq">'+(p==null?'—':Math.round(p*k[2]/100).toLocaleString('pt-BR'))+' de '+k[2].toLocaleString('pt-BR')+' L</div><div class="peq">'+k[3]+'</div></div>'});
+  h+='</div><div class="sub" style="margin-top:10px">V1 térrea '+valv(l&&l.v1Aberta)+' · V2 irrigação '+valv(l&&l.v2Aberta)+' · Pressão nos filtros: '+(l&&l.pressao1!=null?n1(l.pressao1):'—')+' / '+(l&&l.pressao2!=null?n1(l.pressao2):'—')+' / '+(l&&l.pressao3!=null?n1(l.pressao3):'—')+' bar</div></div>';
+  h+='<div class="card"><h2>Bombas</h2><div class="bombas">';
+  d.bombas.forEach(function(b){var amp=l?l.correntes[b.id]:null,t='fraco',r='Parada';
+   if(!l){r='Sem leitura'}else if(b.falha){t='critico';r='Desarmada'}else if((amp||0)>cz){t='ok';r='Ligada'}else if(!b.liberada){t='aviso';r='Bloqueada'}
+   h+='<div class="bomba l-'+t+'"><div class="linha"><b>'+esc(b.nome)+'</b><span class="'+t+'" style="font-weight:600;font-size:14px">'+r+'</span></div><div class="amp">'+n1(amp)+' A</div><div class="peq">Fases '+esc(b.fases||'—')+' · chave em '+(b.modo==='auto'?'Automático':(b.modo==='manual'?'Manual':'0'))+(b.falha?' · '+esc(String(b.falha).replace(/_/g,' '))+', tentativa '+b.tentativas+' de '+mt:'')+'</div></div>'});
+  h+='</div></div><div class="card"><h2>Checklist do sistema</h2>';
+  var chk=[['Leituras chegando (menos de 5 min)',!l?null:idade<5],['Caixa superior acima de '+sc+'%',!l||l.nivelSuperior==null?null:l.nivelSuperior>=sc],
+   ['Válvulas V1 e V2 (pelo menos uma aberta)',!l||(l.v1Aberta==null&&l.v2Aberta==null)?null:!!(l.v1Aberta||l.v2Aberta)],
+   ['Bombas sem falha',d.bombas.every(function(b){return !b.falha})],['Todas as bombas em automático e liberadas',d.bombas.every(function(b){return b.modo==='auto'&&b.liberada})]];
+  chk.forEach(function(k){h+='<div class="chk"><b class="'+(k[1]==null?'fraco':(k[1]?'ok':'critico'))+'">'+(k[1]==null?'Sem leitura':(k[1]?'OK':'Problema'))+'</b>'+k[0]+'</div>'});
+  h+='<div class="peq" style="margin-top:8px">Última leitura: '+(l?hora(l.criadoEm):'nenhuma ainda')+'</div></div>';
+  var nv=d.nuvem||{};
+  h+='<div class="card"><h2>Cópia na nuvem</h2><div class="sub" style="font-size:14px">'+(!nv.ligada?'Este servidor não está ligado ao Concilia online.':(!l?'Começa a enviar quando chegar a primeira leitura.':('Último envio: '+hora(nv.ultimoEnvio)+(nv.pendentes?' · <b class="aviso">'+nv.pendentes+' leitura(s) esperando a internet voltar</b>':' · tudo enviado'))))+'</div>';
+  h+='<div class="peq" style="margin-top:10px">Para a placa do quadro gravar a leitura (rede interna): POST <code>'+esc(location.origin)+'/api/agua/leitura</code> com a senha <code>'+esc(d.placa&&d.placa.token)+'</code> no cabeçalho <code>x-agua-token</code>.</div></div>';
+  APP.innerHTML=h;
+  var av=d.alarmes.filter(function(a){return a.avisar});
+  document.getElementById('reaviso').textContent=c.reaviso_min==null?30:c.reaviso_min;
+  if(av.length){document.getElementById('alerta-itens').innerHTML=av.map(function(a){return '<div class="it"><b>'+esc(a.titulo)+'</b>'+esc(a.detalhe)+'<div class="peq">Desde '+hora(a.abertoEm)+'</div></div>'}).join('');AL.style.display='flex';AL.setAttribute('data-ids',av.map(function(a){return a.id}).join(','))}
+  else AL.style.display='none';
+ }
+ function carregar(){
+  if(!TOK){telaEntrar();return}
+  fetch('/api/agua/estado',{headers:{'x-garcom':TOK},cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
+   if(d&&d.sem_sessao){telaEntrar();return}
+   if(!d||!d.ok){if(!ULT)APP.innerHTML='<div class="card">'+esc((d&&d.erro)||'Não foi possível ler a água.')+'</div>';return}
+   FALHAS=0;ULT=d;desenhar(d)
+  }).catch(function(){FALHAS++;if(!ULT)APP.innerHTML='<div class="card">Sem resposta do servidor da loja. Tentando de novo…</div>'})
+ }
+ document.getElementById('ciente').onclick=function(){
+  var ids=(AL.getAttribute('data-ids')||'').split(',').map(Number).filter(Boolean);
+  fetch('/api/agua/ciente',{method:'POST',headers:{'content-type':'application/json','x-garcom':TOK||''},body:JSON.stringify({ids:ids})}).then(function(r){return r.json()}).then(function(d){if(d&&d.ok){AL.style.display='none';carregar()}}).catch(function(){})
+ };
+ setInterval(function(){PISCA=!PISCA;AL.style.background=PISCA?'rgba(170,20,20,.94)':'rgba(110,10,10,.94)'},700);
+ carregar();setInterval(carregar,15000);
+})();
+</script></body></html>`;
+
 const GERENTE_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>${LOJA_NOME} — Gerente</title><style>
 :root{--bg:#f2f2f5;--card:#fff;--line:#e3e3e9;--ink:#1b1b20;--mut:#6e6e78;--gold2:#e0651a;--green:#15a34a;--red:#dc2626;--amber:#d97706;--blue:#2563eb}
@@ -34604,6 +35002,24 @@ const server = http.createServer(async (req, res) => {
         })));
       }
       return res.end(JSON.stringify({ ok: false, erro: 'rota desconhecida' }));
+    }
+    // ---- ÁGUA (/agua): caixas e bombas, banco na loja, funciona sem internet ----
+    if (p === '/agua') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(AGUA_HTML); }
+    if (p === '/api/agua/leitura') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      let d = {};
+      if (req.method === 'POST') d = await readBody(req);
+      else for (const [k, v] of u.searchParams) d[k] = v;
+      const tk = req.headers['x-agua-token'] || u.searchParams.get('k') || (d && d.k) || '';
+      return res.end(JSON.stringify(await apiAguaLeitura(d || {}, tk)));
+    }
+    if (p === '/api/agua/estado' || p === '/api/agua/ciente') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      const g = await gerenteDaRequisicao(req, u);
+      if (!g) return res.end(JSON.stringify({ ok: false, sem_sessao: true, erro: 'entre como gerente' }));
+      if (p === '/api/agua/estado') return res.end(JSON.stringify(await apiAguaEstado()));
+      if (req.method !== 'POST') return res.end(JSON.stringify({ ok: false, erro: 'use POST' }));
+      return res.end(JSON.stringify(await apiAguaCiente(await readBody(req), g.nome || g.login)));
     }
     // ---- PAINEL DO GERENTE (/gerente): entrar, resumo ao vivo e ações ----
     if (p === '/gerente') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(GERENTE_HTML); }
@@ -35737,6 +36153,13 @@ async function main() {
   setInterval(() => loopFiadoFila().catch(() => {}), 60 * 1000);
   setTimeout(() => loopCancelNuvem().catch(() => {}), 50 * 1000);
   setInterval(() => loopCancelNuvem().catch(() => {}), 60 * 1000);
+  // ÁGUA: banco na loja (tabelas agua_*), alarmes a cada minuto e cópia pra nuvem.
+  // Não segura o boot: se falhar, o resto do servidor segue igual.
+  initAgua().catch((e) => console.error('[agua] não iniciou:', e && e.message));
+  setInterval(() => aguaAvaliar().catch((e) => console.error('[agua] alarmes:', e && e.message)), 60 * 1000);
+  setTimeout(() => loopAguaNuvem().catch(() => {}), 55 * 1000);
+  setInterval(() => loopAguaNuvem().catch(() => {}), 60 * 1000);
+  setInterval(() => aguaPoda().catch(() => {}), 6 * 60 * 60 * 1000);
   // log do Windows (por que o servidor desliga) pro Concilia: ~2 min após subir, depois de hora em hora
   setTimeout(() => loopDiagNuvem().catch(() => {}), 120 * 1000);
   setInterval(() => loopDiagNuvem().catch(() => {}), 60 * 60 * 1000);

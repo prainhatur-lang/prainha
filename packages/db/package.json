@@ -158,6 +158,8 @@
     "migrate:alarme-armado": "tsx scripts/migrate-alarme-armado.ts",
     "migrate:alarme-protect": "tsx scripts/migrate-alarme-protect.ts",
     "migrate:alarme-aviso": "tsx scripts/migrate-alarme-aviso.ts",
+    "migrate:agua": "tsx scripts/migrate-agua.ts",
+    "migrate:agua-replica": "tsx scripts/migrate-agua-replica.ts",
     "migrate:loja-saude": "tsx scripts/migrate-loja-saude.ts",
     "migrate:fidelidade": "tsx scripts/migrate-fidelidade.ts",
     "migrate:fidelidade-convite": "tsx scripts/migrate-fidelidade-convite.ts",
