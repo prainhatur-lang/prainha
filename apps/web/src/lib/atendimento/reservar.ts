@@ -189,6 +189,12 @@ export async function consultarDisponibilidade(filialId: string, data: string, t
   // Feriado pela MESMA fonte da cobrança (lib/reservas/feriados) — o valor
   // que a Nina fala tem que ser o que o Pix cobra.
   const feriadoDia = await ehFeriadoOuProlongado(data).catch(() => false);
+  // Até que hora ESSE dia aceita reserva (sáb/dom/feriado e alta estação fecham
+  // mais cedo). Calculado antes das áreas: a linha de cada área comum precisa
+  // mostrar o corte do dia, não o horaLimite dela (caso Jefferson, abaixo).
+  const maxDoDia = await horaMaximaDoDia(cfg, data);
+  const corteCurtoDoDia =
+    data !== hojeBr() && cfg.atendimento && maxDoDia && maxDoDia !== cfg.atendimento.fim ? maxDoDia : null;
   for (const area of cfg.areas) {
     if (!area.ativo || area.somenteEventos) continue;
     if (soLounge && !area.taxaReserva) continue;
@@ -235,13 +241,26 @@ export async function consultarDisponibilidade(filialId: string, data: string, t
         ` — TEM TAXA (R$ ${t.diasUteis} dia útil / R$ ${t.sabDom} sáb, dom e feriado; no PRÓPRIO dia, depois das 15h, lounge que ainda está vazio sai com R$ 100 de desconto): dá pra fechar AQUI com criar_reserva (o sistema gera o Pix e manda na conversa; vale também depois do corte do dia, pra quem quer chegar mais tarde) ou o cliente faz pelo site reservas.prainhabar.com` +
         `. VALOR NESSA DATA (${diaDaSemana(data)}${feriadoDia ? ', feriado' : ''}): ${valorDia} — é o que o site cobra; informe ESSE valor, não o outro`;
     }
-    const limiteHora = area.horaLimite ? ` (reserva só até ${area.horaLimite})` : '';
+    // Caso Jefferson (20/11/2026): a consulta de SÁBADO dizia "(reserva só até
+    // 18:00)" na Areia e no Deck e a Nina escreveu "Reservas até 18h" — a
+    // criação recusa depois das 11:30. Em dia FUTURO com corte curto, a área
+    // comum mostra o corte do dia. Hoje segue igual (o corte dinâmico vem na
+    // linha OCUPAÇÃO AGORA), dia útil segue igual e área com taxa também (o
+    // Lounge não tem esse corte).
+    const corteNaArea =
+      corteCurtoDoDia && !area.taxaReserva && (!area.horaLimite || corteCurtoDoDia < area.horaLimite)
+        ? corteCurtoDoDia
+        : null;
+    const limiteHora = corteNaArea
+      ? ` (reserva NESSE DIA só até ${corteNaArea})`
+      : area.horaLimite
+        ? ` (reserva só até ${area.horaLimite})`
+        : '';
     linhas.push(`- ${area.nome}: ${livres}${limiteHora}${taxa}`);
   }
   // A janela do dia muda em sáb/dom/feriado (fecha mais cedo) — o modelo
   // precisa saber ANTES de sugerir horário, senão oferece tarde de sábado que
   // a criação vai recusar.
-  const maxDoDia = await horaMaximaDoDia(cfg, data);
   let jan = '';
   if (cfg.atendimento && maxDoDia) {
     jan = `Horários aceitos NESSE DIA: ${cfg.atendimento.inicio} às ${maxDoDia}. `;
@@ -901,11 +920,24 @@ async function validarSlotEAlocarMesa(p: {
     }
     if (!liberadoPorOcupacao) {
       const antecipada = p.data !== hojeBr();
+      // Caso Jussara (20/11/2026): pediu sábado às 16h pra 8–10, a Nina ofereceu
+      // o Lounge e ela respondeu "Sim", "Pode", "Pode sim" — a cada sim a Nina
+      // chamava criar_reserva com a área COMUM, levava este bloqueio (que só
+      // falava em manhã) e repetia ao cliente a regra das 11h30. Quatro voltas
+      // em 20 minutos até o Pix sair. O bloqueio agora diz a saída: fechar na
+      // área com taxa, que não tem esse corte. Casa sem Lounge e remarcação
+      // (permitirTaxa falso): texto igual ao de antes.
+      const lounge = p.permitirTaxa
+        ? p.cfg.areas.find((a) => a.ativo && !a.somenteEventos && a.taxaReserva)
+        : undefined;
+      const saidaLounge = lounge
+        ? ` ATENÇÃO: a área que você mandou ("${p.area}") é comum e tem esse corte; ${lounge.nome} (com taxa) NÃO tem. Se o cliente JÁ ACEITOU ${lounge.nome} nesta conversa ("sim", "pode", "quero"), NÃO repita a regra do corte pra ele: chame criar_reserva de novo AGORA com area="${lounge.nome}", a mesma data e a mesma hora — o sistema gera o Pix. Se você ainda não ofereceu, ofereça ${lounge.nome} com a taxa desse dia a quem quer chegar depois do corte.`
+        : '';
       if (antecipada) {
-        return `Bloqueado: ${janela.motivo} Reserva antecipada nesse dia é só pela manhã — a tarde abre no PRÓPRIO dia conforme o movimento da casa (explique isso e ofereça a manhã, ou que a pessoa chame aqui no dia).`;
+        return `Bloqueado: ${janela.motivo} Reserva antecipada nesse dia é só pela manhã — a tarde abre no PRÓPRIO dia conforme o movimento da casa (explique isso e ofereça a manhã, ou que a pessoa chame aqui no dia).${saidaLounge}`;
       }
       const oc = await medirOcupacaoHoje(p.filialId, p.cfg);
-      return `Bloqueado: ${janela.motivo} ${convite(oc)}`;
+      return `Bloqueado: ${janela.motivo} ${convite(oc)}${saidaLounge}`;
     }
   }
 

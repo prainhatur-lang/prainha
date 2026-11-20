@@ -96,6 +96,85 @@ export function soCortesia(textos: string[]): boolean {
     .every((p) => CORTESIA_PALAVRAS.has(p));
 }
 
+// AVISO DE CHEGADA (dono, 20/11/2026: "observe como ela vem repetindo algumas
+// coisas sem nexo"). Relendo as 30 conversas inteiras: o cliente avisava que
+// estava vindo e ela devolvia de novo o estado da casa que tinha acabado de dar.
+//   - "Ok" / "Estamos a caminho" → "A casa está com mesas livres agora, então é
+//     só chegar e procurar a recepção…" (dito 1 minuto antes)
+//   - "15 min" / "Obg" / "Bom dia" → "Bom dia! Hoje, a casa está com mesas
+//     livres, então é só chegar que a recepção acomoda vocês." (idem)
+// Não é cortesia (soCortesia não pega), mas também não pergunta nem pede nada.
+// Palavra fora destas listas ("segura a mesa", "tenho reserva", "quantas
+// pessoas") = NÃO é só aviso, segue o caminho normal.
+const CHEGADA_NUCLEO = new Set([
+  'caminho', 'chegando', 'chegandoo', 'indo', 'saindo', 'chego', 'chegamos', 'chegaremos', 'chegarei',
+]);
+const CHEGADA_MINUTOS = new Set(['min', 'mins', 'minuto', 'minutos', 'minutinho', 'minutinhos']);
+const CHEGADA_LIGA = new Set([
+  'estou', 'estamos', 'to', 'tou', 'tamo', 'tamos', 'ja', 'a', 'ai', 'la', 'em', 'uns', 'umas', 'daqui', 'pouco',
+  'logo', 'agora', 'de', 'casa', 'mais', 'so', 'pra', 'para', 'e', 'eu', 'nos', 'ate', 'no', 'maximo', 'cerca',
+]);
+
+/** A leva do cliente é SÓ aviso de que está vindo ("estamos a caminho",
+ *  "chegando", "15 min"), com ou sem cortesia junto, e sem pergunta nem pedido?
+ *  Conservador: basta uma palavra fora das listas pra dar falso. */
+export function soAvisoDeChegada(textos: string[]): boolean {
+  if (textos.some((x) => x.includes('?'))) return false;
+  let t = normalizarFrase(textos.join(' '));
+  if (!t || t.length > 80) return false;
+  for (const e of CORTESIA_EXPRESSOES) t = t.split(e).join(' ');
+  const palavras = t.split(' ').filter(Boolean);
+  let nucleo = false;
+  let numero = false;
+  let minutos = false;
+  for (const p of palavras) {
+    if (CHEGADA_NUCLEO.has(p)) nucleo = true;
+    else if (CHEGADA_MINUTOS.has(p)) minutos = true;
+    else if (/^\d{1,3}$/.test(p)) numero = true;
+    else if (/^\d{1,3}(min|mins|minutos)$/.test(p)) {
+      numero = true;
+      minutos = true;
+    } else if (!CHEGADA_LIGA.has(p) && !CORTESIA_PALAVRAS.has(p)) return false;
+  }
+  // Número solto ("15") ou "minutos" solto não é aviso: precisa do par, ou de
+  // um verbo de chegada.
+  if (numero !== minutos) return false;
+  return nucleo || (numero && minutos);
+}
+
+// O que a Nina JÁ disse sobre o movimento da casa. "sem espera"/"sem fila" não
+// conta como casa cheia; "esperamos você" também não (só a palavra inteira).
+const DISSE_CHEIA_RE = /\bmovimentad|\bcasa cheia\b|\blotad|\bespera\b|\bfila\b/;
+// "tranquila"/"calma" só conta quando é da CASA ("a casa está tranquila",
+// "hoje está calmo"): "pode ficar tranquila, Zaira" e "venha tranquilo" são
+// pra pessoa, não dizem nada do movimento.
+const DISSE_LIVRE_RE =
+  /\bmesas? (?:livres?|sobrando|disponivel|disponiveis|vagas?)\b|\btem mesa\b|\bcom espaco\b|\b(?:casa|movimento|dia|hoje|agora|aqui)(?: \w+){0,3} (?:tranquil|calm)|\b(?:esta|ta|estamos|segue) (?:\w+ )?(?:tranquil|calm)/;
+// "sem fila", "não temos mais fila", "acabou a fila": é o CONTRÁRIO de casa
+// cheia (a equipe escreveu "nao temos mais fila" e era lido como fila).
+const SEM_FILA_RE =
+  /\b(?:sem|nao tem|nao temos|nao ha|nao esta com|nao estamos com|acabou a|acabou)(?: mais)?(?: nenhuma)? (?:fila de espera|lista de espera|fila|espera)\b/;
+const SEM_FILA_TODAS_RE = new RegExp(SEM_FILA_RE.source, 'g');
+// "a equipe espera vocês", "estamos à espera de vocês": verbo, não fila.
+const ESPERA_VERBO_RE = /\b(?:te|os|as|lhe|lhes|nos) espera\b|\bespera (?:por )?(?:voce|voces|todos)\b|\ba espera de (?:voce|voces)\b/g;
+
+/** Olha as falas da Nina, da mais nova pra mais antiga, e devolve o que a
+ *  ÚLTIMA que falou do movimento disse: casa com mesa ('livre') ou com
+ *  movimento/espera ('cheia'). null = não falou do movimento.
+ *  Usado com o aviso de chegada: só vale deixar o estado da casa fora da
+ *  resposta se ele JÁ foi dito e continua o mesmo — senão o "estamos a
+ *  caminho" é a chance de avisar que a casa encheu. */
+export function estadoDaCasaDito(saidas: string[]): 'livre' | 'cheia' | null {
+  for (let i = saidas.length - 1; i >= 0; i--) {
+    const bruto = normalizarFrase(saidas[i]);
+    const disseSemFila = SEM_FILA_RE.test(bruto);
+    const t = bruto.replace(SEM_FILA_TODAS_RE, ' ').replace(ESPERA_VERBO_RE, ' ');
+    if (DISSE_CHEIA_RE.test(t)) return 'cheia';
+    if (disseSemFila || DISSE_LIVRE_RE.test(t)) return 'livre';
+  }
+  return null;
+}
+
 // Palavra que não distingue assunto: se o cliente só falou destas, não "tocou"
 // em assunto nenhum (não reabre uma frase já dita).
 const GENERICAS = new Set([

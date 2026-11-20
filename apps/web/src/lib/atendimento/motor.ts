@@ -17,6 +17,8 @@ import { avisarEquipe } from './avisos';
 import { hojeBr, dateToBrYmd } from '@/lib/datas';
 import {
   soCortesia,
+  soAvisoDeChegada,
+  estadoDaCasaDito,
   tirarFrasesJaDitas,
   quantoJaFoiDito,
   clienteDizQueJaTemReserva,
@@ -468,10 +470,14 @@ export async function processarEntrada(params: {
     // Agora o estado real da casa entra em TODA resposta ao cliente, e ela
     // não precisa lembrar de chamar ferramenta pra saber que tem mesa vazia.
     let ocupacaoAgora: string | null = null;
+    // A medição inteira (não só o texto): o aviso de chegada, mais abaixo,
+    // precisa saber se a casa segue como a Nina já disse.
+    let ocupacaoMedida: Awaited<ReturnType<typeof medirOcupacaoHoje>> = null;
     if (modo === 'cliente') {
       try {
         const oc = await medirOcupacaoHoje(entrada.filialId, fil?.reservaConfig);
         ocupacaoAgora = oc?.resumo ?? null;
+        ocupacaoMedida = oc;
       } catch (e) {
         console.error('[nina] ocupacao ao vivo falhou:', e instanceof Error ? e.message : e);
       }
@@ -565,6 +571,50 @@ export async function processarEntrada(params: {
       levaSoCortesia && (!ultimaSaida || !(ultimaSaida.corpo ?? '').includes('?') || ultimaSaidaDeOutroDia);
     if (cortesiaSemPergunta && ocupacaoAgora) {
       console.log('[nina] leva só de cortesia — respondo sem o estado da casa', registro.conversaId);
+      ocupacaoAgora = null;
+    }
+
+    // AVISO DE CHEGADA (dono 20/11/2026, relendo 30 conversas inteiras: "observe
+    // como ela vem repetindo algumas coisas sem nexo"). "Ok / Estamos a caminho"
+    // e "15 min / Obg / Bom dia" não são só cortesia, então o estado da casa
+    // seguia entrando e ela devolvia a mesma frase dita 1 minuto antes ("A casa
+    // está com mesas livres agora, então é só chegar e procurar a recepção…").
+    // Mesmo remédio da cortesia — que zerou a paráfrase: 13 levas depois do
+    // conserto de hoje, nenhuma repetida —, só que bem mais estreito. Vale só
+    // quando TUDO isto é verdade:
+    //   - a leva é SÓ aviso de que está vindo (sem pergunta, sem pedido);
+    //   - a nossa última fala não tem pergunta esperando resposta;
+    //   - a Nina JÁ falou do movimento pra esse cliente na última hora;
+    //   - e a casa CONTINUA como ela disse: disse "mesa livre" e segue com
+    //     espaço, ou disse "movimentada" e segue movimentada sem fila.
+    // Casa fechada, ainda não aberta, fechando em menos de 1 h, fila na
+    // recepção ou movimento que MUDOU = novidade: o estado entra como antes e
+    // ela avisa. Primeira mensagem do dia e pedido junto do aviso ("segura a
+    // mesa") também seguem iguais.
+    const saidasDaUltimaHora = historico
+      .filter((m) => m.direcao === 'saida' && !!m.criadoEm && Date.now() - m.criadoEm.getTime() < 60 * 60_000)
+      .map((m) => m.corpo ?? '');
+    const ditoDaCasa = estadoDaCasaDito(saidasDaUltimaHora);
+    // Os avisos que valem mais que o movimento saem no texto do resumo
+    // (lib/atendimento/ocupacao.ts): casa fechada, por abrir, perto de fechar, fila.
+    const casaComoJaDito =
+      !!ocupacaoMedida &&
+      !ocupacaoMedida.antesDeAbrir &&
+      !(ocupacaoMedida.esperaRecepcao ?? 0) &&
+      !/FECHADA|AINDA NÃO ABRIU|FECHA às|FILA NA RECEPÇÃO|fila na recepção/.test(ocupacaoMedida.resumo) &&
+      (ocupacaoMedida.casaTranquila ? ditoDaCasa === 'livre' : ditoDaCasa === 'cheia');
+    const avisoDeChegadaJaRespondido =
+      modo === 'cliente' &&
+      !levaSoCortesia &&
+      leva.length > 0 &&
+      !levaTemMidia &&
+      levaCorpos.length > 0 &&
+      !!ultimaSaida &&
+      !(ultimaSaida.corpo ?? '').includes('?') &&
+      soAvisoDeChegada(levaCorpos) &&
+      casaComoJaDito;
+    if (avisoDeChegadaJaRespondido && ocupacaoAgora) {
+      console.log('[nina] leva só de aviso de chegada — respondo sem repetir o estado da casa', registro.conversaId);
       ocupacaoAgora = null;
     }
 
@@ -1037,6 +1087,7 @@ export async function processarEntrada(params: {
           modo,
           ocupacaoAgora,
           levaSoCortesia: cortesiaSemPergunta,
+          levaSoAvisoDeChegada: avisoDeChegadaJaRespondido,
           reservasDoTelefone,
           nomePerfil: conversa.nomeCliente,
           retomada: params.retomada === true,
@@ -1069,6 +1120,7 @@ export async function processarEntrada(params: {
           modo,
           ocupacaoAgora,
           levaSoCortesia: cortesiaSemPergunta,
+          levaSoAvisoDeChegada: avisoDeChegadaJaRespondido,
           reservasDoTelefone,
           nomePerfil: conversa.nomeCliente,
           retomada: params.retomada === true,
@@ -1101,6 +1153,7 @@ export async function processarEntrada(params: {
             modo,
             ocupacaoAgora,
             levaSoCortesia: cortesiaSemPergunta,
+            levaSoAvisoDeChegada: avisoDeChegadaJaRespondido,
             reservasDoTelefone,
             nomePerfil: conversa.nomeCliente,
             retomada: params.retomada === true,
@@ -1156,6 +1209,7 @@ export async function processarEntrada(params: {
             modo,
             ocupacaoAgora,
             levaSoCortesia: cortesiaSemPergunta,
+            levaSoAvisoDeChegada: avisoDeChegadaJaRespondido,
             reservasDoTelefone,
             nomePerfil: conversa.nomeCliente,
             retomada: params.retomada === true,

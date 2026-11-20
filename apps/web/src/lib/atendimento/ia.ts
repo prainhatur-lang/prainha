@@ -444,6 +444,7 @@ REGRAS DE VERDADE:
 - EXCEÇÃO — TEMPO e MARÉ têm ferramenta: "vai chover?", "como tá o tempo hoje/amanhã/sábado?" → chame consultar_previsao_tempo; maré/rio cheio → consultar_mare. Responda com o que a ferramenta devolver e NÃO transfira por isso.
 - RESPONDA TUDO QUE FOI PERGUNTADO: cliente que manda várias mensagens curtas seguidas ("tem música?" / "saxofone?" / "violino?") fez VÁRIAS perguntas — responda cada uma, na mesma resposta. Escolher uma e ignorar o resto é o mesmo que não ouvir o cliente.
 - AGENDA POR DIA DA SEMANA (música ao vivo, violino, programação): antes de afirmar que "hoje/amanhã tem", olhe o DIA DA SEMANA da data em questão (a data/hora de agora está no fim deste prompt) e confira contra a agenda escrita nos blocos — nunca chute. Se o dia não tem, diga com carinho qual é o próximo dia que tem. Instrumento ou atração que os blocos NÃO citam (sax, banda X): não afirme nem negue — diga o que a agenda tem e que a programação exata do dia a equipe confirma.
+- FERIADO NA AGENDA (20/11/2026: feriado numa sexta e você respondeu "o violino é apenas aos sábados, domingos e feriados" negando o violino NO PRÓPRIO FERIADO): quando o bloco diz que a atração vale em "sábados, domingos e feriados" (ou "fins de semana e feriados"), um FERIADO em dia de semana TEM a atração. Antes de negar por causa do dia da semana, confira se a data é feriado (lista PRÓXIMOS FERIADOS e o aviso "HOJE É FERIADO" / "AMANHÃ É FERIADO", quando vierem). Isto vale só pra agenda/programação: taxa e valor de reserva seguem a regra DIA DA SEMANA E TAXA.
 - PREÇOS: você só pode citar valores que estejam ESCRITOS nos blocos acima OU que uma ferramenta retornou NESTA conversa (consultar_cardapio, consultar_disponibilidade_reserva). Fora isso, número nenhum — nem estimativa, nem "a partir de", nem "costuma ser".
 - ITEM PAUSADO (⛔ na consulta): está EM FALTA hoje no PDV — não ofereça, não inclua em orçamento; avise que está temporariamente indisponível e sugira um parecido que esteja ativo.
 - PRATO/COMIDA/BEBIDA: pergunta de preço, porção ou "tem X?" → chame consultar_cardapio ANTES de responder (nunca de memória). Achou → responda nome, porção (ex.: "2 pessoas") e valor, escolhendo o que serve pro tamanho do grupo. Não achou → diga que não tem com esse nome, ofereça os parecidos que a ferramenta devolveu e o cardápio completo com fotos: ${linkMenu}. Não despeje o cardápio inteiro — responda só o que foi perguntado.
@@ -1191,6 +1192,8 @@ COMO AGIR:
 - Problema em cotação/pedido que EXISTE (financeiro, boleto, nota, entrega/retirada de um pedido feito, item errado): transferir_para_humano com um resumo — aí sim é a equipe de compras que resolve.
 - ⚠️ PERGUNTA DE CLIENTE COMUM — horário de funcionamento, reserva, cardápio, preço de prato, evento, como chegar, AquaArena: RESPONDA NORMALMENTE, como atendente do restaurante, usando os blocos de "O QUE VOCÊ SABE" abaixo e as ferramentas de sempre. Fornecedor também janta fora, e o cadastro erra: já aconteceu de um cliente cair aqui porque o telefone dele estava num fornecedor excluído (17/08). Responder "não há cotações pendentes" a quem perguntou se o restaurante está aberto é o pior erro possível — NUNCA force o assunto cotação em cima de uma pergunta que não é sobre isso.
 - Você tem as MESMAS ferramentas do atendimento normal (reserva, cardápio, disponibilidade, orçamento) além da de cotações: se a pessoa pedir mesa, USE criar_reserva de verdade. NUNCA diga que a reserva está confirmada sem a ferramenta ter respondido RESERVA CRIADA — confirmar de boca faz o cliente chegar e não ter mesa.
+- COMPROVANTE, NOTA, CANHOTO, BOLETO OU FOTO que o fornecedor mandar ("total de hoje 406,00" + foto): você NÃO tem como conferir valor nem total — NUNCA escreva "o total está correto", "o valor confere" ou "está tudo certo" (20/11/2026: você afirmou "O total está correto: R$ 406,00" sem conferir nada). Diga só que recebeu e que a equipe de compras confere ("Recebido, obrigada. A equipe de compras confere."). Se ele pedir confirmação do valor ou do pagamento: transferir_para_humano com um resumo.
+- 👍, "ok", "certo", "combinado" ou reação do fornecedor depois da sua resposta NÃO é agradecimento: nunca responda "Por nada!". Se for responder, só "Combinado." — "Por nada" só quando ele AGRADECEU.
 - Regra de ouro: responda A PERGUNTA QUE FOI FEITA. O roteiro de fornecedor vale quando o assunto É fornecimento.
 
 O QUE VOCÊ SABE (mesma base do atendimento ao cliente — use quando a pergunta for de cliente):
@@ -1382,6 +1385,10 @@ export async function gerarResposta(params: {
   /** A leva atual do cliente é só cumprimento/agradecimento e não há pergunta
    *  nossa esperando resposta (20/11/2026: ela repetia a resposta anterior). */
   levaSoCortesia?: boolean;
+  /** A leva atual do cliente só AVISA que está vindo ("estamos a caminho",
+   *  "15 min"), sem pergunta nem pedido, e a Nina já falou do movimento da casa
+   *  há pouco — e a casa segue igual (20/11/2026: ela repetia o estado da casa). */
+  levaSoAvisoDeChegada?: boolean;
   /** Reservas ativas (de hoje em diante) do telefone da conversa nesta casa,
    *  uma por linha — pra ela saber que o cliente JÁ TEM reserva (20/11/2026). */
   reservasDoTelefone?: string | null;
@@ -1547,6 +1554,27 @@ Como usar, SEM EXCEÇÃO:
           role: 'system',
           content: `PRÓXIMOS FERIADOS (calendário oficial): ${lista}. Cliente falou "esse feriado", "o feriado", "o feriadão" sem dizer a data → é o PRIMEIRO dessa lista: NÃO pergunte "qual feriado?", já responda citando o dia (ex.: "o feriado de segunda, dia 12"). Só pergunte a data se ele falar de um feriado que não está na lista.`,
         });
+        // FERIADO HOJE/AMANHÃ CONTA NA AGENDA (20/11/2026, Consciência Negra
+        // numa sexta): perguntaram a atração do dia e ela respondeu "o violino
+        // é apenas aos sábados, domingos e feriados" — negando o violino no
+        // próprio feriado, porque a regra de agenda só olhava o dia da semana.
+        // Sem feriado hoje nem amanhã, nada entra.
+        const avisosFeriado: [string, string][] = [
+          ['HOJE', hojeBr()],
+          ['AMANHÃ', diasAtrasBr(-1)],
+        ];
+        for (const [quando, ymd] of avisosFeriado) {
+          const f = feriados.find((x) => x.data === ymd);
+          if (!f) continue;
+          mensagens.push({
+            role: 'system',
+            content:
+              `${quando} (${f.diaSemana} ${f.data.slice(8, 10)}/${f.data.slice(5, 7)}) É FERIADO (${f.nome}). ` +
+              `Pra AGENDA que os blocos dizem valer em "sábados, domingos e feriados" ou "fins de semana e feriados" (música ao vivo, violino, programação), ${quando.toLowerCase()} CONTA como feriado mesmo caindo em dia de semana: é PROIBIDO negar a atração dizendo que ela "é só aos sábados, domingos e feriados" — ${quando.toLowerCase()} é um deles. ` +
+              'Se o bloco NÃO cita feriado pra aquela atração, não afirme nem negue: diga o que a agenda traz e que a programação exata do dia a equipe confirma. ' +
+              'Isto vale só pra agenda/programação: taxa, valor e horário de reserva continuam sendo os que a consulta de disponibilidade devolver.',
+          });
+        }
       }
     } catch (e) {
       console.error('[nina] lista de feriados falhou:', e instanceof Error ? e.message : e);
@@ -1589,6 +1617,9 @@ Como usar, SEM EXCEÇÃO:
         '- DESPEDIDA NÃO É PERGUNTA: se a última mensagem do cliente é só agradecimento, despedida ou emoji ("obrigada", "boa noite 😘", "valeu", "👍") e o assunto já foi respondido, responda SÓ com uma despedida curtinha (até 6 palavras, ex.: "Boa noite! 😊"). PROIBIDO retomar o assunto, repetir a resposta anterior ou prometer contato de novo. "Boa noite" no fim da conversa é tchau, não cumprimento.\n' +
         '- Nunca diga "registrei seu interesse" sem ter chamado a ferramenta que registra. Sem ferramenta pro assunto, diga onde sai a novidade (ex.: Instagram) e pronto.\n' +
         '- Nunca se contradiga. Se errou antes, corrija em meia frase ("me enganei: hoje abrimos sim, às 9h") e siga.\n' +
+        '- CLIENTE RESPONDEU A UMA PERGUNTA SUA ou só confirmou o que você disse ("sim", "pode", "isso", "casamento", "vamos sim"): vá pro PRÓXIMO passo — faça, ou pergunte só o dado que ainda falta. É PROIBIDO devolver de novo a informação que veio junto com a sua pergunta (capacidade do espaço, valor, horário, movimento da casa): ele acabou de ler. Ex.: você disse "o Terraço acomoda até 50 sentadas. Qual o tipo de evento?" e ele respondeu "Casamento" → só "Que lindo! Pra qual data?", sem repetir a capacidade.\n' +
+        '- MENSAGEM CURTA SEM "?" TAMBÉM É PERGUNTA OU PEDIDO ("Estão abertos" / "Carta de vinho por favor" / "Quero na areia"). Se a leva tem mais de um assunto, responda TODOS na mesma mensagem, uma frase pra cada — não escolha um e largue o outro pra responder só depois.\n' +
+        '- "POR NADA" É RESPOSTA A AGRADECIMENTO: só use quando o cliente agradeceu ("obrigado", "obrigada", "valeu", 🙏). Pra "certo", "ok", "entendi", "combinado", "joia", 👍 a resposta é "Combinado! 😊" (ou "Até já! 😊" se ele está vindo) — "Por nada" pra quem não agradeceu fica sem nexo.\n' +
         '- Cliente perguntou se você é IA/robô: responda com honestidade em meia frase (sou a assistente virtual da casa) e resolva o pedido na mesma mensagem.',
     });
   }
@@ -1620,6 +1651,29 @@ Como usar, SEM EXCEÇÃO:
         'AGORA: a última mensagem do cliente é SÓ CORTESIA (cumprimento, agradecimento ou "certo/entendi") e não há pergunta sua esperando resposta. ' +
         'Se ele só cumprimentou e ainda não disse o que quer: cumprimente de volta e pergunte como pode ajudar — é PROIBIDO presumir que ele quer vir hoje ou falar de reserva, movimento da casa ou horário sem ele pedir. ' +
         'Se você já respondeu o que ele queria: responda SÓ com um "por nada" ou uma despedida de até 6 palavras. É PROIBIDO repetir, resumir ou dizer de novo com outras palavras qualquer informação já dada nesta conversa (movimento da casa, horário, reserva, endereço, feriado).',
+    });
+  }
+  // 2a) "Certo" → "Por nada! 😊" (20/11/2026, releitura das 30 conversas): o
+  // recado acima oferece "por nada" e ela usava pra quem não agradeceu.
+  if (modo === 'cliente' && params.levaSoCortesia) {
+    mensagens.push({
+      role: 'system',
+      content:
+        '"POR NADA" SÓ SE ELE AGRADECEU ("obrigado", "obrigada", "valeu", "agradeço", 🙏). Se a mensagem dele é só "certo", "ok", "entendi", "combinado", "joia" ou 👍, responda "Combinado! 😊" (ou "Até já! 😊" se ele está vindo) — nunca "Por nada".',
+    });
+  }
+  // 2b) O cliente só avisou que está vindo (20/11/2026, mesma releitura:
+  // "Estamos a caminho" / "15 min" recebiam de novo o "a casa está com mesas
+  // livres, é só chegar" dito minutos antes). O motor só liga isto quando ela
+  // JÁ falou do movimento na última hora e a casa segue como ela disse.
+  if (modo === 'cliente' && params.levaSoAvisoDeChegada) {
+    mensagens.push({
+      role: 'system',
+      content:
+        'AGORA: o cliente só AVISOU que está vindo/chegando ("estamos a caminho", "15 min", "chegando") — não perguntou nem pediu nada — e você JÁ disse há pouco como está a casa. ' +
+        'Responda SÓ com uma frase curta de até-já (até 8 palavras, ex.: "Combinado, até já! 😊" ou "Ótimo, esperamos vocês!"). ' +
+        'Se ele disse que JÁ CHEGOU ("chegamos", "já chegamos"), a frase é de boas-vindas: "Sejam bem-vindos! É só procurar a recepção. 😊". ' +
+        'É PROIBIDO repetir ou dizer com outras palavras o movimento da casa, o horário, a reserva ou o endereço — ele já leu. NÃO prometa guardar nem segurar mesa.',
     });
   }
   // 3) O telefone já tem reserva (casos Philipp, Gladson, Nailson).
