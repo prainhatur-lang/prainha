@@ -7,7 +7,8 @@
 // são regravados; alarmes são espelhados (abre o que veio, fecha o que saiu).
 // O "Estou ciente" dado na loja vem junto; o dado aqui na nuvem não volta.
 // Auth: a MESMA assinatura HMAC das outras rotas /api/loja (PAGAR_MESA_SECRET).
-// Assina [f, 'agua', e]. Se AGUA_FILIAL_ID estiver definido, só essa casa envia.
+// Assina [f, 'agua', e]. Só o PRAINHA BAR envia (dono 20/11/2026: esse quadro é
+// só do Bar; as outras casas são diferentes e ainda não têm). AGUA_FILIAL_ID troca a casa.
 import { NextResponse } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
@@ -90,6 +91,8 @@ const data = (s: string | null | undefined) => {
   const d = new Date(s);
   return Number.isNaN(d.getTime()) ? null : d;
 };
+/** 01 Prainha Bar — a casa que tem o quadro da água. */
+const FILIAL_PRAINHA_BAR = '7c5c66ce-cceb-4e89-9c6d-d0785255c4f9';
 /** Chaves que são da nuvem e a loja não regrava. */
 const CHAVE_DA_NUVEM = new Set(['ultima_sincronizacao']);
 /** Alarme que só a nuvem abre/fecha (cópia desatualizada). */
@@ -101,8 +104,8 @@ export async function POST(request: Request) {
   if (!parsed.success) return NextResponse.json({ ok: false, erro: 'corpo inválido' }, { status: 400 });
   const { f, e, s, leituras, bombas, config, alarmes } = parsed.data;
   if (!autoriza(f, e, s)) return NextResponse.json({ ok: false, erro: 'assinatura inválida' }, { status: 403 });
-  const soEssa = process.env.AGUA_FILIAL_ID;
-  if (soEssa && soEssa.toLowerCase() !== f.toLowerCase()) {
+  const soEssa = process.env.AGUA_FILIAL_ID || FILIAL_PRAINHA_BAR;
+  if (soEssa.toLowerCase() !== f.toLowerCase()) {
     return NextResponse.json({ ok: false, erro: 'o quadro da água é de outra casa' }, { status: 403 });
   }
 

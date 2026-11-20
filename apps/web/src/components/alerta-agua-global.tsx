@@ -85,7 +85,7 @@ export function AlertaAguaGlobal() {
       style={{ zIndex: 2147483000, background: pisca ? 'rgba(170,20,20,0.94)' : 'rgba(110,10,10,0.94)' }}
     >
       <div className="max-h-full w-full max-w-2xl overflow-y-auto rounded-xl border-4 border-red-700 bg-white p-6 text-slate-900">
-        <div className="mb-3 text-2xl font-bold text-red-700 sm:text-3xl">Atenção: problema na água do Prainha</div>
+        <div className="mb-3 text-2xl font-bold text-red-700 sm:text-3xl">Atenção: problema na água do Prainha Bar</div>
         {alarmes.map((a) => (
           <div key={a.id} className="border-t border-slate-200 py-3">
             <div className="text-xl font-semibold">{a.titulo}</div>

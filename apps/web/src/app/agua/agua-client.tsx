@@ -61,7 +61,7 @@ export function AguaClient({ inicial }: { inicial: AguaEstado | null }) {
   if (!estado) {
     return (
       <section className="mx-auto max-w-3xl px-4 py-10">
-        <h1 className="text-2xl font-semibold text-slate-900">Água do Prainha</h1>
+        <h1 className="text-2xl font-semibold text-slate-900">Água do Prainha Bar</h1>
         <p className="mt-2 text-sm text-slate-500">O controle da água não está instalado neste sistema.</p>
       </section>
     );
@@ -107,7 +107,7 @@ export function AguaClient({ inicial }: { inicial: AguaEstado | null }) {
   return (
     <section className="mx-auto grid max-w-5xl gap-4 px-4 py-6">
       <div>
-        <h1 className="text-2xl font-semibold text-slate-900">Água do Prainha</h1>
+        <h1 className="text-2xl font-semibold text-slate-900">Água do Prainha Bar</h1>
         <p className="text-sm text-slate-500">
           Caixas, bombas dos poços e de recalque. Cópia do servidor da loja, atualizada a cada minuto — na loja a
           tela Água funciona mesmo sem internet.
