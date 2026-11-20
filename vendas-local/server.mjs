@@ -850,6 +850,10 @@ async function initSchema() {
     login text, nome text, quando timestamptz DEFAULT now())`;
   await addCol('comanda_item', 'colaborador integer');
   await addCol('comanda_item', 'colaborador_nome text');
+  // QUEM LANÇOU → NUVEM (dono, 20/11/2026: "quem lançou os 5 a mais?" — o nome
+  // só existia aqui). nuvem_em = quando o nome subiu pro Concilia (loopAutoresNuvem).
+  await addCol('item_autor', 'nuvem_em timestamptz');
+  await sql`CREATE INDEX IF NOT EXISTS ix_item_autor_nuvem ON item_autor (quando) WHERE nuvem_em IS NULL`;
   // FOTO DO PRODUTO. Vem do Consumer como arquivo <PRODUTOS.CODIGO>.jpg — a
   // foto é do PRODUTO, não da variante: "T Gin" tem uma só, e as 17 frutas
   // usam a mesma. Guardar no banco (e não em disco) mantém tudo num lugar só,
@@ -13950,6 +13954,49 @@ async function loopMarcasNuvem() {
     console.log(`[marcas] ${j.aplicadas}/${j.total} marca(s) na nuvem (até ${cursorNovo})`);
   } catch (err) { console.error('[marcas] nuvem:', err.message); }
   finally { marcasNuvemRodando = false; }
+}
+// ---- QUEM LANÇOU O ITEM → NUVEM ----
+// item_autor (login/nome de quem lançou) só existia no servidor da loja; o
+// espelho do pedido no Concilia não sabia de quem era o lançamento. Sobe pelo
+// mesmo /api/loja/marcas (campo lancado_por), 400 por minuto, do mais novo pro
+// mais antigo, só de conta que JÁ subiu (comanda.sync_nuvem_em) — o item tem que
+// existir lá pra receber o nome. Cobre os últimos 45 dias (o que ficou pra trás
+// sobe sozinho, sem reenviar pedido). Só no banco próprio.
+let autoresNuvemRodando = false;
+async function loopAutoresNuvem() {
+  if (autoresNuvemRodando || !nativo() || !FILIAL_ID || !PAGAR_MESA_SECRET) return;
+  autoresNuvemRodando = true;
+  try {
+    const rows = await sql`
+      SELECT a.item_codigo, COALESCE(NULLIF(a.nome, ''), a.login) AS quem
+      FROM item_autor a
+      JOIN comanda_item ci ON ci.item_codigo = a.item_codigo
+      JOIN comanda c ON c.codigo = ci.comanda_codigo
+      WHERE a.nuvem_em IS NULL AND a.quando > now() - interval '45 days'
+        AND c.sync_nuvem_em IS NOT NULL
+      ORDER BY a.item_codigo DESC LIMIT 400`;
+    if (!rows.length) return;
+    const marcas = rows.filter((x) => x.quem).map((x) => ({
+      item_codigo: Number(x.item_codigo),
+      lancado_por: String(x.quem).slice(0, 80),
+    }));
+    const cods = rows.map((x) => Number(x.item_codigo));
+    if (marcas.length) {
+      const e = Math.floor(Date.now() / 1000) + 120;
+      const r = await fetch(`${PAGAR_MESA_URL}/api/loja/marcas`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ f: FILIAL_ID, e, s: nfceAssina('marcas', e), marcas }),
+        signal: AbortSignal.timeout(25000),
+      });
+      const j = await r.json().catch(() => null);
+      if (!j?.ok) { console.error('[autor] nuvem recusou:', j?.erro || r.status); return; }
+      // nuvem ainda na versão que ignora o nome: não marca, tenta de novo depois
+      if (!j.aceitaAutor) return;
+      console.log(`[autor] ${j.aplicadas}/${j.total} nome(s) de quem lançou na nuvem`);
+    }
+    await sql`UPDATE item_autor SET nuvem_em = now() WHERE item_codigo = ANY(${cods})`;
+  } catch (err) { console.error('[autor] nuvem:', err.message); }
+  finally { autoresNuvemRodando = false; }
 }
 // ---- FILA DA NUVEM: o Financeiro lança, a LOJA aplica ----
 // A tela do Concilia não alcança o Firebird (o banco é daqui). Ela enfileira e
@@ -36275,6 +36322,8 @@ async function main() {
   setInterval(() => loopPontoTroca().catch(() => {}), 60 * 1000);
   setTimeout(() => loopMarcasNuvem().catch(() => {}), 55 * 1000);
   setInterval(() => loopMarcasNuvem().catch(() => {}), 60 * 1000);
+  setTimeout(() => loopAutoresNuvem().catch(() => {}), 65 * 1000);
+  setInterval(() => loopAutoresNuvem().catch(() => {}), 60 * 1000);
   setTimeout(() => loopProdutoFila().catch(() => {}), 50 * 1000);
   setInterval(() => loopProdutoFila().catch(() => {}), 60 * 1000);
   loopCatalogoNuvem().catch(() => {});

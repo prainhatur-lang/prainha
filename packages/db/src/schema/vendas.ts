@@ -239,6 +239,9 @@ export const pedidoItem = pgTable(
      *  quando a cozinha marcou PRONTO e quando o salão marcou ENTREGUE. */
     prontoEm: timestamp('pronto_em', { withTimezone: true }),
     entregueEm: timestamp('entregue_em', { withTimezone: true }),
+    /** Nome de quem LANÇOU o item (garçom, caixa, maquininha ou "CLIENTE…" do QR).
+     *  Vem do item_autor da loja pelo /api/loja/marcas (dono, 20/11/2026). */
+    lancadoPor: varchar('lancado_por', { length: 80 }),
     dataDelete: timestamp('data_delete', { withTimezone: true }),
     detalhes: text('detalhes'),
     versaoReg: integer('versao_reg'),

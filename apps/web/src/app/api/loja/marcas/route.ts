@@ -27,6 +27,8 @@ const Marca = z.object({
   item_codigo: z.coerce.number().int().positive(),
   pronto_em: z.string().min(10).nullable().optional(),
   entregue_em: z.string().min(10).nullable().optional(),
+  /** nome de quem lançou o item (item_autor da loja; loja a partir de 20/11/2026) */
+  lancado_por: z.string().max(200).nullable().optional(),
 });
 
 const Body = z.object({
@@ -46,9 +48,11 @@ export async function POST(req: Request) {
 
   let aplicadas = 0;
   for (const m of marcas) {
-    const set: Record<string, Date> = {};
+    const set: { prontoEm?: Date; entregueEm?: Date; lancadoPor?: string } = {};
     if (m.pronto_em) set.prontoEm = new Date(m.pronto_em);
     if (m.entregue_em) set.entregueEm = new Date(m.entregue_em);
+    const quem = m.lancado_por?.trim().slice(0, 80);
+    if (quem) set.lancadoPor = quem;
     if (Object.keys(set).length === 0) continue;
     const r = await db
       .update(schema.pedidoItem)
@@ -63,5 +67,6 @@ export async function POST(req: Request) {
     if (r.length > 0) aplicadas++;
   }
   // item que ainda não sincronizou via CDC não conta — a loja reenvia depois
-  return NextResponse.json({ ok: true, aplicadas, total: marcas.length });
+  // aceitaAutor: a loja só dá o nome por entregue se a nuvem já sabe gravá-lo
+  return NextResponse.json({ ok: true, aplicadas, total: marcas.length, aceitaAutor: true });
 }

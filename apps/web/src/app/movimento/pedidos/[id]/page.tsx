@@ -69,6 +69,7 @@ export default async function EspelhoPedidoPage(props: { params: Promise<{ id: s
       valorTotal: schema.pedidoItem.valorTotal,
       detalhes: schema.pedidoItem.detalhes,
       lancadoEm: schema.pedidoItem.dataHoraCadastro,
+      lancadoPor: schema.pedidoItem.lancadoPor,
       prontoEm: schema.pedidoItem.prontoEm,
       entregueEm: schema.pedidoItem.entregueEm,
       cancelado: schema.pedidoItem.dataDelete,
@@ -236,7 +237,14 @@ export default async function EspelhoPedidoPage(props: { params: Promise<{ id: s
                     </td>
                     <td className="px-3 py-1.5 text-right font-mono">{Number(i.quantidade ?? 0)}</td>
                     <td className="px-3 py-1.5 text-right font-mono">{brl(Number(i.valorTotal ?? 0))}</td>
-                    <td className="px-3 py-1.5 font-mono text-slate-500">{hora(i.lancadoEm)}</td>
+                    <td className="px-3 py-1.5 font-mono text-slate-500">
+                      {hora(i.lancadoEm)}
+                      {i.lancadoPor && (
+                        <div className="font-sans text-[10px] text-slate-600" title={i.lancadoPor}>
+                          {i.lancadoPor.trim().toUpperCase().startsWith('CLIENTE') ? '📱 Cliente' : `👤 ${i.lancadoPor}`}
+                        </div>
+                      )}
+                    </td>
                     <td className="px-3 py-1.5 font-mono">
                       {i.prontoEm ? (
                         <>
