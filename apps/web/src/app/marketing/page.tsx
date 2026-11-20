@@ -139,9 +139,25 @@ async function lerPostsPublicar(filialId: string): Promise<PostVisto[]> {
       // sem miniatura: a lista mostra o ícone
     }
   }
+  // Post só de vídeo não tem foto pra capa: assina o vídeo pra tela mostrar o 1º quadro.
+  const videos = linhas
+    .filter((l) => !l.midias.some((m) => m.tipo === 'foto'))
+    .map((l) => l.midias.find((m) => m.tipo === 'video')?.path)
+    .filter((x): x is string => !!x);
+  if (videos.length) {
+    try {
+      const admin = await createAdminClient();
+      const { data } = await admin.storage.from(BUCKET_MARKETING).createSignedUrls([...new Set(videos)], 3600);
+      for (const d of data ?? []) if (d.path && d.signedUrl) capas.set(d.path, d.signedUrl);
+    } catch {
+      // sem prévia: a lista mostra o ícone
+    }
+  }
   return linhas.map((l) => {
     const foto = l.midias.find((m) => m.tipo === 'foto')?.path;
+    const video = foto ? undefined : l.midias.find((m) => m.tipo === 'video')?.path;
     return {
+      video: video ? (capas.get(video) ?? null) : null,
       id: l.id,
       status: l.status,
       legenda: l.legenda,
@@ -177,6 +193,17 @@ async function lerFila(filialId: string): Promise<PostFila[]> {
       // sem miniatura: o card mostra o ícone
     }
   }
+  const videosFila = linhas.flatMap((l) => l.midias.filter((m) => m.tipo === 'video').map((m) => m.path));
+  const linksVideo = new Map<string, string>();
+  if (videosFila.length) {
+    try {
+      const admin = await createAdminClient();
+      const { data } = await admin.storage.from(BUCKET_MARKETING).createSignedUrls([...new Set(videosFila)], 3600);
+      for (const d of data ?? []) if (d.path && d.signedUrl) linksVideo.set(d.path, d.signedUrl);
+    } catch {
+      // sem prévia: o card mostra o ícone
+    }
+  }
   return linhas.map((l) => ({
     id: l.id,
     titulo: l.titulo,
@@ -185,7 +212,7 @@ async function lerFila(filialId: string): Promise<PostFila[]> {
     legendaTiktok: l.legendaTiktok,
     musica: l.musica,
     redes: l.redes,
-    midias: l.midias.map((m) => ({ path: m.path, tipo: m.tipo, nome: m.nome, url: links.get(m.path) ?? null })),
+    midias: l.midias.map((m) => ({ path: m.path, tipo: m.tipo, nome: m.nome, url: links.get(m.path) ?? null, videoUrl: linksVideo.get(m.path) ?? null })),
     agendadoPara: l.agendadoPara ? l.agendadoPara.toISOString() : null,
   }));
 }

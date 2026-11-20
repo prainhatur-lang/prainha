@@ -16,6 +16,8 @@ export interface MidiaFila {
   tipo: 'foto' | 'video';
   nome?: string;
   url: string | null;
+  /** Vídeo já salvo: link assinado, pra mostrar o 1º quadro e abrir. */
+  videoUrl?: string | null;
 }
 
 export interface PostFila {
@@ -358,6 +360,10 @@ function Card({ filialId, p, casas }: { filialId: string; p: PostFila; casas: Ar
                   setLarguras((l) => (l[m.path] === w ? l : { ...l, [m.path]: w }));
                 }}
               />
+            ) : m.videoUrl ? (
+              <a href={m.videoUrl} target="_blank" rel="noopener" title="Ver o vídeo">
+                <video src={`${m.videoUrl}#t=0.5`} muted playsInline preload="metadata" className="h-20 w-16 rounded object-cover" />
+              </a>
             ) : (
               <div className="flex h-20 w-16 items-center justify-center rounded bg-slate-100 text-xl">
                 {m.tipo === 'video' ? '🎞' : '🖼'}

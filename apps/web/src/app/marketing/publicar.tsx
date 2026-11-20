@@ -17,6 +17,8 @@ export interface PostVisto {
   redes: string[];
   midias: Array<{ tipo: 'foto' | 'video'; nome?: string }>;
   capa: string | null;
+  /** Post só de vídeo: link assinado do vídeo, pra mostrar o 1º quadro e abrir. */
+  video?: string | null;
   agendadoPara: string | null;
   criadoEm: string;
   publicadoEm: string | null;
@@ -607,6 +609,11 @@ export function Publicar({
                   <div className="h-16 w-14 shrink-0 overflow-hidden rounded bg-slate-100">
                     {p.capa ? (
                       <img src={p.capa} alt="" className="h-full w-full object-cover" />
+                    ) : p.video ? (
+                      <a href={p.video} target="_blank" rel="noopener" title="Ver o vídeo" className="relative block h-full w-full">
+                        <video src={`${p.video}#t=0.5`} muted playsInline preload="metadata" className="h-full w-full object-cover" />
+                        <span className="absolute inset-0 flex items-center justify-center text-lg text-white drop-shadow">▶</span>
+                      </a>
                     ) : (
                       <div className="flex h-full items-center justify-center text-xl">{p.midias[0]?.tipo === 'video' ? '🎬' : '🖼'}</div>
                     )}
