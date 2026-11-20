@@ -111,6 +111,15 @@ export async function medirOcupacaoHoje(
   const hoje = hojeBr();
   const agora = horaAgoraBr();
 
+  // Dia FECHADO pra reserva pela casa (exceção do calendário). O bloco do fim
+  // da função já tratava isso com a casa aberta; ANTES de abrir, os dois ramos
+  // "ainda não abriu" abaixo não olhavam a exceção e mandavam "reserva pra hoje
+  // vale normalmente" — e a Nina dizia de manhã "reservas até 17h hoje" num dia
+  // em que as reservas estavam fechadas (20/11/2026, feriado). Aqui só se lê a
+  // exceção; cada ramo devolve o resumo certo antes do antigo, que segue igual
+  // pros dias sem exceção.
+  const reservasFechadasHoje = !!cfg?.excecoes?.some((e) => e.data === hoje && e.fechado);
+
   // Casa com funcionamento próprio (Tabuará, Mar): abre/fecha por dia da
   // semana, com intervalo no meio do dia. Fora dessas, segue o fluxo do Bar
   // logo abaixo, intocado.
@@ -127,6 +136,13 @@ export async function medirOcupacaoHoje(
         casaTranquila: false,
       };
       const proxima = janelasHoje.find((j) => agora < j.abre);
+      if (proxima && reservasFechadasHoje) {
+        return {
+          ...zero,
+          antesDeAbrir: true,
+          resumo: `A casa está FECHADA NESTE INSTANTE mas ABRE HOJE às ${proxima.abre} — o funcionamento de hoje é ${textoJanelas(janelasHoje)}. HOJE É DIA ABERTO: é PROIBIDO dizer que hoje está fechado ou empurrar o cliente pra amanhã. Mas HOJE A CASA FECHOU AS RESERVAS: NÃO dá pra reservar pra hoje em área nenhuma e é PROIBIDO oferecer reserva de hoje, "tentar reservar" ou citar horário de chegada liberado. Hoje é por ordem de chegada, a partir das ${proxima.abre}: chegando, é só procurar a recepção, que acomoda conforme as mesas forem vagando. Reserva que o cliente JÁ TEM pra hoje continua valendo. Só não diga que dá pra vir "agora" — o convite é a partir das ${proxima.abre}.`,
+        };
+      }
       if (proxima) {
         // Antes de abrir, ou no intervalo entre o almoço e o jantar.
         return {
@@ -147,6 +163,18 @@ export async function medirOcupacaoHoje(
   // no "fechada → convide pra AMANHÃ" abaixo, e às 08:57 de uma sexta a Nina
   // disse ao Charles (5 pessoas, beira do rio, hoje) que "hoje a casa está
   // fechada"; depois se desmentiu e o cliente pediu um humano.
+  if (!janelasHoje && agora < ABRE && reservasFechadasHoje) {
+    return {
+      comandasAbertas: 0,
+      reservasFuturasHoje: 0,
+      capacidadeMesas,
+      taxa: 0,
+      corteEstendido: null,
+      casaTranquila: false,
+      antesDeAbrir: true,
+      resumo: `A casa AINDA NÃO ABRIU — abre HOJE às ${ABRE} (funcionamento: ${ABRE} às ${FECHA}). HOJE É DIA ABERTO: é PROIBIDO dizer que hoje está fechado ou empurrar o cliente pra amanhã. Mas HOJE A CASA FECHOU AS RESERVAS: NÃO dá pra reservar pra hoje em área nenhuma e é PROIBIDO oferecer reserva de hoje, "tentar reservar" ou citar horário de chegada liberado. Hoje é por ordem de chegada, a partir das ${ABRE}: chegando, é só procurar a recepção, que acomoda conforme as mesas forem vagando. Reserva que o cliente JÁ TEM pra hoje continua valendo. Só não diga que dá pra vir "agora" — o convite é a partir das ${ABRE}.`,
+    };
+  }
   if (!janelasHoje && agora < ABRE) {
     return {
       comandasAbertas: 0,

@@ -14,7 +14,14 @@ import { enviarTexto, enviarAudio, marcarLidaComDigitando, baixarMidia } from '.
 import { gerarAudioNina } from './voz';
 import { transcreverAudio } from './transcrever';
 import { avisarEquipe } from './avisos';
-import { hojeBr } from '@/lib/datas';
+import { hojeBr, dateToBrYmd } from '@/lib/datas';
+import {
+  soCortesia,
+  tirarFrasesJaDitas,
+  quantoJaFoiDito,
+  clienteDizQueJaTemReserva,
+  clientePedeReservaNova,
+} from './repeticao';
 import { responsavelAchadosPerdidos, telefoneResponsavel } from './achados-perdidos';
 import {
   consultarDisponibilidade,
@@ -198,6 +205,9 @@ function limparMarkdown(texto: string): string {
       // vira "rótulo: url".
       const r = String(rotulo).trim();
       if (/^https?:\/\//i.test(r) || /^(link|clique|aqui|acesse|responder)/i.test(r)) return String(url);
+      // Rótulo que é o próprio endereço sem o "https://" (20/11/2026: saía
+      // "prainhabar.com/pt/cardapio: https://prainhabar.com/pt/cardapio").
+      if (/^(www\.)?[\w-]+(\.[\w-]+)+(\/\S*)?$/i.test(r)) return String(url);
       return `${r}: ${url}`;
     })
     .replace(/\*\*\*([^*\n]+)\*\*\*/g, '*$1*')
@@ -521,12 +531,90 @@ export async function processarEntrada(params: {
         autor: schema.atendimentoMensagem.autor,
         tipo: schema.atendimentoMensagem.tipo,
         corpo: schema.atendimentoMensagem.corpo,
+        criadoEm: schema.atendimentoMensagem.criadoEm,
       })
       .from(schema.atendimentoMensagem)
       .where(eq(schema.atendimentoMensagem.conversaId, registro.conversaId))
       .orderBy(desc(schema.atendimentoMensagem.criadoEm))
       .limit(HISTORICO_MAX);
     const historico: MsgHistorico[] = historicoRows.reverse();
+
+    // NINA PERDIDA / REPETINDO (dono 20/11/2026: "repete frases, não está
+    // sabendo o que está acontecendo"). Relendo as conversas do dia: o cliente
+    // respondia só "Certo" / "Joia" / "Obrigado" e ela devolvia de novo a
+    // resposta anterior inteira ("A casa está com mesa livre agora, então é só
+    // chegar…", "Hoje não precisa reservar — a casa abre às 9h…"). A regra
+    // contra isso já está no prompt e o modelo não obedece, porque o motor
+    // reinjeta o ESTADO DA CASA em toda resposta e ele se sente obrigado a
+    // falar dele. Então: a LEVA atual (o que o cliente mandou depois da última
+    // fala nossa) só de cortesia + nenhuma pergunta nossa pendente = a resposta
+    // sai SEM o estado da casa. Quem pergunta, pede ou responde uma pergunta
+    // segue recebendo o estado ao vivo como antes (caso 16/08).
+    const ultimaSaidaIdx = historico.map((m) => m.direcao).lastIndexOf('saida');
+    const ultimaSaida = ultimaSaidaIdx >= 0 ? historico[ultimaSaidaIdx] : null;
+    const leva = historico.slice(ultimaSaidaIdx + 1).filter((m) => m.direcao === 'entrada');
+    const levaCorpos = leva.map((m) => (m.corpo ?? '').trim()).filter(Boolean);
+    const levaTemMidia = leva.some(
+      (m) => ['imagem', 'video', 'documento'].includes(m.tipo) || !(m.corpo ?? '').trim(),
+    );
+    const levaSoCortesia =
+      modo === 'cliente' && leva.length > 0 && !levaTemMidia && levaCorpos.length > 0 && soCortesia(levaCorpos);
+    const ultimaSaidaDeOutroDia =
+      !!ultimaSaida?.criadoEm && dateToBrYmd(ultimaSaida.criadoEm) !== hojeBr();
+    const cortesiaSemPergunta =
+      levaSoCortesia && (!ultimaSaida || !(ultimaSaida.corpo ?? '').includes('?') || ultimaSaidaDeOutroDia);
+    if (cortesiaSemPergunta && ocupacaoAgora) {
+      console.log('[nina] leva só de cortesia — respondo sem o estado da casa', registro.conversaId);
+      ocupacaoAgora = null;
+    }
+
+    // RESERVAS QUE ESTE TELEFONE JÁ TEM (dono 20/11/2026). A Nina não sabia que
+    // o cliente já tinha reserva: quem avisava do atraso ou pedia pra mudar o
+    // horário era tratado como pedido novo, ou ouvia que a reserva "não foi
+    // registrada" (Philipp, reserva das 11:00 feita pelo site). Agora as
+    // reservas ativas do número entram no contexto. Best-effort: falhou, segue
+    // como antes.
+    let reservasDoTelefone: string | null = null;
+    if (modo === 'cliente') {
+      try {
+        const suf = entrada.telefone.replace(/\D/g, '').slice(-8);
+        if (suf.length === 8) {
+          const rs = await db
+            .select({
+              data: sql<string>`${schema.reserva.data}::text`,
+              hora: schema.reserva.hora,
+              pessoas: schema.reserva.pessoas,
+              area: schema.reserva.area,
+              mesa: schema.reserva.mesa,
+              status: schema.reserva.status,
+              clienteNome: schema.reserva.clienteNome,
+            })
+            .from(schema.reserva)
+            .where(
+              and(
+                eq(schema.reserva.filialId, entrada.filialId),
+                sql`${schema.reserva.data} >= ${hojeBr()}::date`,
+                sql`${schema.reserva.status} not in ('cancelada', 'no_show')`,
+                sql`right(regexp_replace(${schema.reserva.clienteTelefone}, '\\D', '', 'g'), 8) = ${suf}`,
+              ),
+            )
+            .orderBy(schema.reserva.data, schema.reserva.hora)
+            .limit(5);
+          if (rs.length > 0) {
+            const hojeYmd = hojeBr();
+            reservasDoTelefone = rs
+              .map((r) => {
+                const [, mm, dd] = String(r.data).split('-');
+                const quando = r.data === hojeYmd ? `HOJE (${dd}/${mm})` : `${dd}/${mm}`;
+                return `- ${quando} às ${r.hora ?? '?'}, ${r.pessoas ?? '?'} pessoa(s)${r.area ? `, ${r.area}` : ''}${r.mesa ? `, mesa ${r.mesa}` : ''}, em nome de ${r.clienteNome ?? '?'} (situação: ${r.status})`;
+              })
+              .join('\n');
+          }
+        }
+      } catch (e) {
+        console.error('[nina] reservas do telefone falhou:', e instanceof Error ? e.message : e);
+      }
+    }
 
     const numerosEquipe = config.numerosEquipe ?? [];
 
@@ -948,6 +1036,8 @@ export async function processarEntrada(params: {
           executores,
           modo,
           ocupacaoAgora,
+          levaSoCortesia: cortesiaSemPergunta,
+          reservasDoTelefone,
           nomePerfil: conversa.nomeCliente,
           retomada: params.retomada === true,
           perguntaPendente: params.retomada === true ? entrada.corpo : null,
@@ -978,6 +1068,8 @@ export async function processarEntrada(params: {
           executores,
           modo,
           ocupacaoAgora,
+          levaSoCortesia: cortesiaSemPergunta,
+          reservasDoTelefone,
           nomePerfil: conversa.nomeCliente,
           retomada: params.retomada === true,
           perguntaPendente: params.retomada === true ? entrada.corpo : null,
@@ -1008,6 +1100,8 @@ export async function processarEntrada(params: {
             executores,
             modo,
             ocupacaoAgora,
+            levaSoCortesia: cortesiaSemPergunta,
+            reservasDoTelefone,
             nomePerfil: conversa.nomeCliente,
             retomada: params.retomada === true,
             perguntaPendente: params.retomada === true ? entrada.corpo : null,
@@ -1061,6 +1155,8 @@ export async function processarEntrada(params: {
             executores,
             modo,
             ocupacaoAgora,
+            levaSoCortesia: cortesiaSemPergunta,
+            reservasDoTelefone,
             nomePerfil: conversa.nomeCliente,
             retomada: params.retomada === true,
             perguntaPendente: params.retomada === true ? entrada.corpo : null,
@@ -1272,7 +1368,36 @@ export async function processarEntrada(params: {
             .limit(1)
             .catch(() => [])
         : [];
-      if (!existe) {
+      // RESERVA QUE O CLIENTE JÁ TINHA (dono 20/11/2026, caso Philipp): ele
+      // avisou que ia atrasar pra reserva das 11:00 (feita pelo site, em outro
+      // telefone), a Nina respondeu "sua reserva está confirmada" e esta rede
+      // leu como reserva de boca: transferiu com "Nina disse que reservou sem
+      // criar" e mandou "ainda não consegui deixar sua reserva registrada" pra
+      // quem não tinha pedido reserva nenhuma. Quando quem fala em reserva é o
+      // cliente (já tem, vai atrasar, quer mudar), ele não pediu uma nova e a
+      // Nina não disse que CRIOU nada, o caminho é achar a reserva: pede o
+      // nome/telefone usado. Só uma vez — se a pergunta já saiu, segue a
+      // transferência de sempre.
+      const PEDE_NOME_DA_RESERVA =
+        'Não localizei sua reserva por este número de WhatsApp. Me passa o nome completo (ou o telefone) que foi usado na reserva pra eu conferir aqui?';
+      const falasRecentes = historico
+        .filter((m) => m.direcao === 'entrada')
+        .slice(-3)
+        .map((m) => m.corpo ?? '');
+      const reservaEraDoCliente =
+        !existe &&
+        !transferiu &&
+        clienteDizQueJaTemReserva([...falasRecentes, entrada.corpo ?? '']) &&
+        !clientePedeReservaNova([...falasRecentes, entrada.corpo ?? '']) &&
+        !/\b(registrei|reservei|agendei|marquei|anotei|garanti)\b/i.test(texto) &&
+        !historico
+          .filter((m) => m.direcao === 'saida')
+          .slice(-5)
+          .some((m) => normalizarPraComparar(m.corpo ?? '') === normalizarPraComparar(PEDE_NOME_DA_RESERVA));
+      if (reservaEraDoCliente) {
+        console.log('[nina] reserva era do cliente (não é de boca) — peço o nome', filialNome, registro.conversaId, texto.slice(0, 200));
+        texto = PEDE_NOME_DA_RESERVA;
+      } else if (!existe) {
         console.log('[nina] reserva de boca segurada', filialNome, registro.conversaId, texto.slice(0, 200));
         if (!transferiu) {
           await executores
@@ -1352,6 +1477,39 @@ export async function processarEntrada(params: {
           .trim();
         texto = `${texto}\n\n${passagemFeita.link}`;
       }
+      // REPETIÇÃO (dono 20/11/2026: "Nina repete frases"). Duas redes novas
+      // ANTES da do texto idêntico, que segue igual logo abaixo:
+      // 1) o cliente só agradeceu/cumprimentou, não havia pergunta nossa no ar
+      //    e a resposta é quase toda o que já foi dito nas últimas falas
+      //    (Vitoria: "Certo" → de novo "a casa está com mesa livre agora, é só
+      //    chegar") → não sai, como no texto idêntico;
+      // 2) frase que já saiu IGUAL numa fala recente e que o cliente não
+      //    perguntou de novo (João Pedro: "Amanhã é feriado de Consciência
+      //    Negra e a expectativa é de casa cheia" abrindo 3 respostas; Alex:
+      //    "O parque inflável está fechado até o verão" abrindo 4) → sai a
+      //    resposta sem essa frase.
+      // Não mexe em resposta que fez algo (reserva, transferência, ferramenta
+      // com efeito) nem em pergunta ou link.
+      const saidasAnteriores = historico.filter((m) => m.direcao === 'saida').map((m) => m.corpo ?? '');
+      if (!transferiu && !reservaCriada && !usouFerramentaComEfeito && !passagemFeita) {
+        if (
+          cortesiaSemPergunta &&
+          !usouFerramenta &&
+          !texto.includes('?') &&
+          quantoJaFoiDito(texto, saidasAnteriores.slice(-3)) >= 0.7
+        ) {
+          console.log('[nina] cortesia respondida com o que já foi dito — não reenvio', registro.conversaId, texto.slice(0, 160));
+          texto = null;
+        } else {
+          const corte = tirarFrasesJaDitas(texto, saidasAnteriores.slice(-6), levaCorpos);
+          if (corte.cortadas.length > 0) {
+            console.log('[nina] frase repetida tirada da resposta', registro.conversaId, corte.cortadas);
+            texto = corte.texto;
+          }
+        }
+      }
+    }
+    if (texto) {
       // ANTI-PAPAGAIO (caso Gleice 24/08): mensagem IGUAL a uma saída recente
       // não sai de novo — silêncio é melhor que eco de robô (a cliente mandou
       // figurinha e ouviu o mesmo "aproveitem o aniversário" pela 2ª vez).
@@ -1360,7 +1518,13 @@ export async function processarEntrada(params: {
         .filter((m) => m.direcao === 'saida')
         .slice(-5)
         .some((m) => normalizarPraComparar(m.corpo ?? '') === eco);
-      if (repetida && !transferiu) {
+      // 20/11/2026: cumprimento em DIA NOVO não é eco. Sem o estado da casa, a
+      // resposta ao "Bom dia" tende a sair igual à de ontem ("Bom dia! Como
+      // posso ajudar?") e o cliente ficaria sem resposta. Só vale quando a
+      // leva é só cortesia e a nossa última fala é de outro dia; no mesmo dia
+      // a rede segue igual.
+      const cumprimentoDeDiaNovo = cortesiaSemPergunta && ultimaSaidaDeOutroDia;
+      if (repetida && !transferiu && !cumprimentoDeDiaNovo) {
         console.log('[nina] resposta idêntica a saída recente — não reenvio', registro.conversaId);
         texto = null;
       }

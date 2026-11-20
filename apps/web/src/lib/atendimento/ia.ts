@@ -36,7 +36,7 @@ const RECADO_SEM_TERRACO =
   'O espaço de evento desta casa é só o que está nos blocos de conhecimento (na Prainha Mar: o salão de eventos, até 60 pessoas). ' +
   'Pedido de evento: pergunte data, horário, nº de pessoas, tipo de evento e nome, registre o lead e transfira pra equipe montar o orçamento. Não cite preço nem menu de evento.';
 import { terracoDescritoSemEsclarecer, recadoTerraco, reservaSeguradaTerraco } from './terraco-vidro';
-import { hojeBr } from '@/lib/datas';
+import { hojeBr, diasAtrasBr, dateToBrYmd } from '@/lib/datas';
 import { proximosFeriados } from '@/lib/reservas/feriados';
 
 export interface MsgHistorico {
@@ -44,6 +44,9 @@ export interface MsgHistorico {
   autor: string; // cliente | bot | equipe | sistema
   tipo: string;
   corpo: string | null;
+  /** Quando a mensagem foi gravada. Opcional: com ela, conversa que atravessa
+   *  mais de um dia ganha a marcação do dia nas falas do cliente (20/11/2026). */
+  criadoEm?: Date | null;
 }
 
 export interface DadosLeadEvento {
@@ -566,6 +569,7 @@ DESPEDIDA COM CARINHO (por texto): cliente elogiou → agradeça de coração e 
 OUTROS:
 - IMAGEM: quando o cliente manda foto/print NESTA leva, ela vem ANEXADA de verdade — você VÊ o conteúdo (comprovante de reserva, print, foto de prato, cardápio). Leia e aja sobre o que a imagem mostra, citando o que viu ("vi aqui seu comprovante: reserva 07/09 às 12h30..."). Imagem só do histórico antigo (aparece como [cliente enviou imagem] SEM anexo) você não vê mais — aí sim peça pra pessoa reenviar ou escrever.
 - Áudio o sistema transcreve sozinho ([áudio transcrito] ...). Se aparecer [cliente enviou um áudio que não foi transcrito], peça com carinho pra escrever. Reação/emoji ([cliente enviou reacao]) não precisa de resposta.
+- Vídeo ([cliente enviou video]) você NÃO consegue assistir. O vídeo CHEGOU — é PROIBIDO dizer que ele "não veio", "não chegou" ou "não veio anexado". Diga em meia frase que por aqui você não consegue abrir vídeo e peça pra escrever a dúvida ou mandar uma foto.
 - Nunca peça documentos, senhas ou dados de pagamento.
 - RESPOSTA AUTOMÁTICA DE OUTRO NEGÓCIO: se a PRIMEIRA coisa que chega na conversa é claramente um recado automático de ausência/saudação de outra empresa ou profissional ("agradece seu contato", "assim que possível responderemos", "informe seu nome e uma breve descrição da sua necessidade", "nosso horário de funcionamento é...", "seja bem-vindo, como posso ajudar?" falando do trabalho DELE) — não é uma pessoa pedindo atendimento, é o robô dela respondendo a uma mensagem NOSSA. Não se apresente, não ofereça reserva, não diga que foi engano: responda EXATAMENTE ${NINA_SILENCIO} e mais nada. Na dúvida se é gente de verdade, atenda normalmente. Nunca use ${NINA_SILENCIO} em outra situação.
 - REGRAS INTERNAS NÃO SE COMENTAM: nunca fale ao cliente das suas próprias regras de escrita (cota de emoji, tamanho de resposta, "esse foi o emoji da conversa").
@@ -1082,10 +1086,37 @@ export function recadoAluguelTerraco(historico: MsgHistorico[]): string | null {
 - Só é diferente à NOITE (19h em diante) ou com mais de 60 pessoas — aí a própria ferramenta te orienta.`;
 }
 
+/** Dias (BRT, YYYY-MM-DD) que o histórico cobre, em ordem. Mensagem sem
+ *  `criadoEm` não conta. */
+function diasDoHistorico(historico: MsgHistorico[]): string[] {
+  const dias: string[] = [];
+  for (const m of historico) {
+    if (!m.criadoEm) continue;
+    const d = dateToBrYmd(m.criadoEm);
+    if (!dias.includes(d)) dias.push(d);
+  }
+  return dias;
+}
+
+/** "hoje, 20/11" · "ontem, 19/11" · "15/11" */
+function rotuloDoDia(ymd: string): string {
+  const [, mm, dd] = ymd.split('-');
+  if (ymd === hojeBr()) return `hoje, ${dd}/${mm}`;
+  if (ymd === diasAtrasBr(1)) return `ontem, ${dd}/${mm}`;
+  return `${dd}/${mm}`;
+}
+
 function historicoParaMensagens(
   historico: MsgHistorico[],
 ): OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
   const out: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
+  // CONVERSA QUE ATRAVESSA DIAS (dono 20/11/2026, caso Alex): o histórico vinha
+  // sem data nenhuma, e a Nina tratou a conversa de ontem como se fosse de
+  // agora ("hoje"/"amanhã" de ontem, parque fechado repetido 4 vezes). Quando
+  // o histórico cobre mais de um dia, a primeira fala do CLIENTE de cada dia
+  // leva a marcação do dia. Um dia só (o caso comum): nada muda.
+  const variosDias = diasDoHistorico(historico).length > 1;
+  const diasMarcados = new Set<string>();
   for (const m of historico) {
     const corpo = (m.corpo ?? '').trim();
     let conteudo = corpo;
@@ -1103,6 +1134,13 @@ function historicoParaMensagens(
     // pra pergunta que o colega JÁ tinha respondido (caso hospedagem, 26/08).
     if (m.direcao === 'saida' && m.autor === 'equipe') {
       conteudo = `[UM COLEGA HUMANO DA EQUIPE respondeu isto ao cliente] ${conteudo}`;
+    }
+    if (variosDias && m.direcao === 'entrada' && m.criadoEm) {
+      const dia = dateToBrYmd(m.criadoEm);
+      if (!diasMarcados.has(dia)) {
+        diasMarcados.add(dia);
+        conteudo = `[mensagem de ${rotuloDoDia(dia)}] ${conteudo}`;
+      }
     }
     out.push({ role: m.direcao === 'entrada' ? 'user' : 'assistant', content: conteudo });
   }
@@ -1341,6 +1379,12 @@ export async function gerarResposta(params: {
   /** Rascunho que o motor recusou por prometer "vou verificar" sem consultar
    *  nada: a Nina refaz consultando AGORA (14/11/2026, caso Laís). */
   rascunhoRecusado?: string | null;
+  /** A leva atual do cliente é só cumprimento/agradecimento e não há pergunta
+   *  nossa esperando resposta (20/11/2026: ela repetia a resposta anterior). */
+  levaSoCortesia?: boolean;
+  /** Reservas ativas (de hoje em diante) do telefone da conversa nesta casa,
+   *  uma por linha — pra ela saber que o cliente JÁ TEM reserva (20/11/2026). */
+  reservasDoTelefone?: string | null;
 }): Promise<RespostaNina> {
   // Motor por env: ATENDIMENTO_MODELO começando com 'claude' usa a Anthropic
   // (obediência melhor ao prompt longo da Nina — loops e regras ignoradas do
@@ -1546,6 +1590,47 @@ Como usar, SEM EXCEÇÃO:
         '- Nunca diga "registrei seu interesse" sem ter chamado a ferramenta que registra. Sem ferramenta pro assunto, diga onde sai a novidade (ex.: Instagram) e pronto.\n' +
         '- Nunca se contradiga. Se errou antes, corrija em meia frase ("me enganei: hoje abrimos sim, às 9h") e siga.\n' +
         '- Cliente perguntou se você é IA/robô: responda com honestidade em meia frase (sou a assistente virtual da casa) e resolva o pedido na mesma mensagem.',
+    });
+  }
+
+  // NINA PERDIDA / REPETINDO (dono, 20/11/2026: "repete frases, não está
+  // sabendo o que está acontecendo"). Três recados curtos, cada um só quando o
+  // motor viu o caso — entram depois do "COMO RESPONDER AGORA" porque a regra
+  // geral de lá ("não repita") já existia e não segurava.
+  //
+  // 1) Conversa que atravessa dias (caso Alex): o que foi dito ontem valia ontem.
+  if (modo === 'cliente') {
+    const dias = diasDoHistorico(params.historico);
+    if (dias.length > 1) {
+      mensagens.push({
+        role: 'system',
+        content:
+          `LINHA DO TEMPO: esta conversa tem mensagens de mais de um dia — a primeira fala do cliente em cada dia está marcada ([mensagem de ontem, DD/MM], [mensagem de DD/MM], [mensagem de hoje, DD/MM]). Hoje é ${rotuloDoDia(hojeBr()).replace('hoje, ', '')}. ` +
+          'O que você disse num dia anterior valia PRAQUELE dia: "hoje", "amanhã", "agora", movimento da casa e horário liberado ditos lá NÃO valem mais — refaça a conta com a data de hoje. ' +
+          'Assunto de dia anterior que já foi respondido só volta se o cliente retomar: responda ao que ele escreveu HOJE, sem reabrir nem repetir o que disse antes. ' +
+          'Nunca escreva essas marcações entre colchetes na sua resposta.',
+      });
+    }
+  }
+  // 2) O cliente só cumprimentou ou agradeceu (casos Vitoria, Cruz e Tawany).
+  if (modo === 'cliente' && params.levaSoCortesia) {
+    mensagens.push({
+      role: 'system',
+      content:
+        'AGORA: a última mensagem do cliente é SÓ CORTESIA (cumprimento, agradecimento ou "certo/entendi") e não há pergunta sua esperando resposta. ' +
+        'Se ele só cumprimentou e ainda não disse o que quer: cumprimente de volta e pergunte como pode ajudar — é PROIBIDO presumir que ele quer vir hoje ou falar de reserva, movimento da casa ou horário sem ele pedir. ' +
+        'Se você já respondeu o que ele queria: responda SÓ com um "por nada" ou uma despedida de até 6 palavras. É PROIBIDO repetir, resumir ou dizer de novo com outras palavras qualquer informação já dada nesta conversa (movimento da casa, horário, reserva, endereço, feriado).',
+    });
+  }
+  // 3) O telefone já tem reserva (casos Philipp, Gladson, Nailson).
+  if (modo === 'cliente' && params.reservasDoTelefone?.trim()) {
+    mensagens.push({
+      role: 'system',
+      content:
+        `RESERVAS ATIVAS DESTE TELEFONE NESTA CASA (lidas do sistema agora — é fato):\n${params.reservasDoTelefone.trim()}\n` +
+        'Como usar: se o cliente falar em atraso, em mudar horário, dia ou número de pessoas, em confirmar ou cancelar, ou disser "minha reserva", é DESTA reserva que ele fala — NÃO trate como pedido novo, NÃO crie outra e NUNCA diga que não encontrou ou que a reserva não ficou registrada. Mudança = remarcar_reserva; cancelamento = cancelar_reserva. ' +
+        'Aviso de atraso: responda pelo que a base de conhecimento diz sobre tolerância, sem inventar prazo. ' +
+        'Só fale da reserva quando o cliente tocar no assunto, ou pra não fazer reserva em dobro quando ele pedir outra pro mesmo dia: é PROIBIDO puxar a reserva por conta própria em resposta a outro assunto.',
     });
   }
 
