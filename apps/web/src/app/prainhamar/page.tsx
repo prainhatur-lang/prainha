@@ -24,7 +24,7 @@ const WHATSAPP_URL =
   'https://wa.me/5579999812578?text=' + encodeURIComponent('Olá! Quero reservar uma mesa na Prainha Mar e Grill.');
 const TELEFONE = '(79) 99600-7289';
 // Delivery próprio da casa (sem iFood): cardápio, entrega ou retirada, Pix/cartão.
-const DELIVERY_URL = 'https://app.prainhabar.com/delivery/prainhamar';
+// Abre no mesmo domínio que serviu a página (ver linkDelivery abaixo).
 const TELEFONE_URL = 'tel:+5579996007289';
 const ENDERECO = 'Shopping Praia Sul, loja 198 · Rod. dos Náufragos, 4880 · Aruana, Aracaju - SE';
 const MAPS_BUSCA = encodeURIComponent('Shopping Praia Sul, Aracaju - SE');
@@ -40,6 +40,13 @@ const RESERVA_TOKEN = 'f631c264ae946fc54b3f52c0cb63fc2f0b8f2d94b92c02fc7c6162fa5
 async function linkReserva(): Promise<string> {
   const host = ((await headers()).get('host') ?? '').split(':')[0];
   return PRAINHAMAR_HOSTS.has(host) ? '/reserva' : `/reservar/${RESERVA_TOKEN}`;
+}
+
+// Delivery também é da casa: em prainhamar.com.br o proxy serve /delivery
+// (PRAINHAMAR_REWRITES); em outro host vale o caminho de verdade.
+async function linkDelivery(): Promise<string> {
+  const host = ((await headers()).get('host') ?? '').split(':')[0];
+  return PRAINHAMAR_HOSTS.has(host) ? '/delivery' : '/delivery/prainhamar';
 }
 
 const display = { fontFamily: 'var(--font-display-mar)' };
@@ -98,6 +105,7 @@ function Secao({ secao }: { secao: SecaoCardapio }) {
 
 export default async function PrainhaMarPage() {
   const reservaUrl = await linkReserva();
+  const DELIVERY_URL = await linkDelivery();
   return (
     <main className="min-h-screen bg-[#FBF7EE] text-[#4A5568] antialiased" style={texto}>
       {/* Header */}

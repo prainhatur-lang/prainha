@@ -38,6 +38,8 @@ const PRAINHAMAR_RESERVA_TOKEN =
 const PRAINHAMAR_REWRITES: Record<string, string> = {
   '/': '/prainhamar',
   '/reserva': `/reservar/${PRAINHAMAR_RESERVA_TOKEN}`,
+  // delivery próprio da casa sem sair do domínio (igual à Tabuará)
+  '/delivery': '/delivery/prainhamar',
   '/presente': '/presentear/mar',
 };
 
