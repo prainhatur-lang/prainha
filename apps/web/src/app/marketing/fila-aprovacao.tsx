@@ -9,7 +9,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
-import { chamar, prepararFoto, quadroDoVideo, quandoBr } from './publicar';
+import { chamar, FotosAbertas, prepararFoto, quadroDoVideo, quandoBr } from './publicar';
 
 export interface MidiaFila {
   path: string;
@@ -191,6 +191,7 @@ function Card({ filialId, p, casas }: { filialId: string; p: PostFila; casas: Ar
   const [doIg, setDoIg] = useState(false);
   // Largura real de cada foto do card: abaixo de 1080 px o Instagram estica e borra (26/10: posts da Mar com miniatura do cardápio).
   const [larguras, setLarguras] = useState<Record<string, number>>({});
+  const [aberta, setAberta] = useState<string | null>(null);
 
   const mudouTexto =
     legenda !== p.legenda || legendaTt !== (p.legendaTiktok ?? '') || quando !== paraCampo(p.agendadoPara) ||
@@ -347,6 +348,7 @@ function Card({ filialId, p, casas }: { filialId: string; p: PostFila; casas: Ar
         </div>
       )}
 
+      {aberta && <FotosAbertas fotos={[aberta]} fechar={() => setAberta(null)} />}
       <div className="mt-2 flex flex-wrap items-center gap-2">
         {midias.map((m) => (
           <div key={m.path} className="relative">
@@ -354,7 +356,9 @@ function Card({ filialId, p, casas }: { filialId: string; p: PostFila; casas: Ar
               <img
                 src={m.url}
                 alt=""
-                className="h-20 w-16 rounded object-cover"
+                className="h-20 w-16 cursor-zoom-in rounded object-cover"
+                title="Abrir a foto"
+                onClick={() => setAberta(m.url)}
                 onLoad={(e) => {
                   const w = e.currentTarget.naturalWidth;
                   setLarguras((l) => (l[m.path] === w ? l : { ...l, [m.path]: w }));

@@ -139,6 +139,17 @@ async function lerPostsPublicar(filialId: string): Promise<PostVisto[]> {
       // sem miniatura: a lista mostra o ícone
     }
   }
+  // Todas as fotos de cada post, pra abrir grande ao tocar na miniatura (a 1ª já está assinada acima).
+  const outras = linhas.flatMap((l) => l.midias.filter((m) => m.tipo === 'foto').map((m) => m.path)).filter((x) => !capas.has(x));
+  if (outras.length) {
+    try {
+      const admin = await createAdminClient();
+      const { data } = await admin.storage.from(BUCKET_MARKETING).createSignedUrls([...new Set(outras)], 3600);
+      for (const d of data ?? []) if (d.path && d.signedUrl) capas.set(d.path, d.signedUrl);
+    } catch {
+      // sem as outras fotos: abre só a capa
+    }
+  }
   // Post só de vídeo não tem foto pra capa: assina o vídeo pra tela mostrar o 1º quadro.
   const videos = linhas
     .filter((l) => !l.midias.some((m) => m.tipo === 'foto'))
@@ -158,6 +169,7 @@ async function lerPostsPublicar(filialId: string): Promise<PostVisto[]> {
     const video = foto ? undefined : l.midias.find((m) => m.tipo === 'video')?.path;
     return {
       video: video ? (capas.get(video) ?? null) : null,
+      fotos: l.midias.filter((m) => m.tipo === 'foto').map((m) => capas.get(m.path)).filter((x): x is string => !!x),
       id: l.id,
       status: l.status,
       legenda: l.legenda,

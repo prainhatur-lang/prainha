@@ -19,6 +19,8 @@ export interface PostVisto {
   capa: string | null;
   /** Post só de vídeo: link assinado do vídeo, pra mostrar o 1º quadro e abrir. */
   video?: string | null;
+  /** Links assinados de todas as fotos do post, pra abrir grande ao tocar na miniatura. */
+  fotos?: string[];
   agendadoPara: string | null;
   criadoEm: string;
   publicadoEm: string | null;
@@ -143,6 +145,33 @@ export async function chamar(url: string, metodo: string, corpo: unknown) {
   return j;
 }
 
+/** Foto(s) do post em tela cheia; toque fora (ou no ✕) fecha. Carrossel mostra uma embaixo da outra. */
+export function FotosAbertas({ fotos, fechar }: { fotos: string[]; fechar: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-black/80 p-4" onClick={fechar} role="dialog" aria-modal="true">
+      <button
+        type="button"
+        onClick={fechar}
+        className="fixed right-4 top-4 z-10 rounded-full bg-white/90 px-3 py-1 text-sm font-medium text-slate-900"
+      >
+        ✕ Fechar
+      </button>
+      <div className="mx-auto flex max-w-xl flex-col items-center gap-3">
+        {fotos.map((f, i) => (
+          <div key={f} className="relative">
+            <img src={f} alt="" className="max-h-[88vh] w-auto rounded" />
+            {fotos.length > 1 && (
+              <span className="absolute left-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-xs text-white">
+                {i + 1}/{fotos.length}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function Publicar({
   filialId,
   casa,
@@ -158,6 +187,7 @@ export function Publicar({
   const entrada = useRef<HTMLInputElement>(null);
   const [arquivos, setArquivos] = useState<Arquivo[]>([]);
   const [ideia, setIdeia] = useState('');
+  const [abertas, setAbertas] = useState<string[] | null>(null);
   const [legenda, setLegenda] = useState('');
   const [escolhidas, setEscolhidas] = useState<string[]>(() => [
     ...(redes.igLigado ? ['instagram'] : []),
@@ -598,6 +628,8 @@ export function Publicar({
         </div>
       </div>
 
+      {abertas && <FotosAbertas fotos={abertas} fechar={() => setAbertas(null)} />}
+
       {posts.length > 0 && (
         <div className="mt-6">
           <h3 className="text-sm font-semibold text-slate-800">Feitos por aqui</h3>
@@ -608,7 +640,14 @@ export function Publicar({
                 <li key={p.id} className="flex gap-3 py-3">
                   <div className="h-16 w-14 shrink-0 overflow-hidden rounded bg-slate-100">
                     {p.capa ? (
-                      <img src={p.capa} alt="" className="h-full w-full object-cover" />
+                      <button
+                        type="button"
+                        title="Abrir a foto"
+                        className="block h-full w-full cursor-zoom-in"
+                        onClick={() => setAbertas(p.fotos?.length ? p.fotos : [p.capa!])}
+                      >
+                        <img src={p.capa} alt="" className="h-full w-full object-cover" />
+                      </button>
                     ) : p.video ? (
                       <a href={p.video} target="_blank" rel="noopener" title="Ver o vídeo" className="relative block h-full w-full">
                         <video src={`${p.video}#t=0.5`} muted playsInline preload="metadata" className="h-full w-full object-cover" />
