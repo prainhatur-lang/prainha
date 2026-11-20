@@ -359,6 +359,14 @@ async function reservasAtivas(filialId: string, ident: IdentReserva) {
 
 type ReservasAtivas = NonNullable<Awaited<ReturnType<typeof reservasAtivas>>>;
 
+/** O que a Nina faz quando remarcar/cancelar não acha reserva NO TELEFONE DA
+ *  CONVERSA. Antes a ferramenta só dizia "se o cliente garantir que tem,
+ *  transfira pra equipe" e ela oferecia a equipe sem procurar pelo nome — caso
+ *  Fernando Santos (20/11/2026): a reserva estava no nome dele, feita pelo site
+ *  com um dígito do celular errado. A equipe continua sendo o último passo. */
+const DICA_RESERVA_OUTRO_TELEFONE =
+  ' Ela pode estar em OUTRO telefone — no site é comum digitar o celular errado. ANTES de falar em equipe: peça o NOME COMPLETO ou o CPF de quem fez a reserva e chame localizar_reserva (ela acha pelo nome). Se o cliente garantir que tem e nem assim aparecer, transfira pra equipe.';
+
 /** Segunda tentativa quando o telefone/CPF que o MODELO passou não achou nada.
  *
  *  Caso Rafa (05/10/2026): a reserva tinha sido criada 30 s antes NESTE mesmo
@@ -617,6 +625,7 @@ export async function cancelarReservaWhatsApp(p: {
     if (outra) return outra;
     const evento = await avisoEventoPago(p.filialId, p.telefone).catch(() => null);
     if (evento) return evento;
+    if (!p.cpfReserva && !p.telefoneReserva) return `Nenhuma reserva ativa encontrada neste telefone (pode já ter sido cancelada ou liberada por atraso).${DICA_RESERVA_OUTRO_TELEFONE}`;
     return 'Nenhuma reserva ativa encontrada neste telefone (pode já ter sido cancelada ou liberada por atraso). Se o cliente garantir que tem, transfira pra equipe.';
   }
 
@@ -1313,6 +1322,10 @@ export async function remarcarReservaWhatsApp(p: {
   if (ativas.length === 0) {
     const outra = await avisoReservaOutraCasa(p.filialId, { telefoneConversa: p.telefone, telefoneReserva: p.telefoneReserva, cpfReserva: p.cpfReserva });
     if (outra) return outra;
+    // Procurou só no telefone da conversa e não achou: antes da equipe, o nome
+    // (caso Fernando Santos, 20/11/2026 — reserva do site com um dígito do
+    // celular errado; localizar_reserva por nome acharia na hora).
+    if (!p.cpfReserva && !p.telefoneReserva) return `Nenhuma reserva ativa neste telefone pra remarcar (pode já ter sido cancelada ou liberada por atraso).${DICA_RESERVA_OUTRO_TELEFONE}`;
     return 'Nenhuma reserva ativa neste telefone pra remarcar (pode já ter sido cancelada ou liberada por atraso). Se o cliente garantir que tem, transfira pra equipe.';
   }
 

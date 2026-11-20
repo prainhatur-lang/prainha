@@ -1304,7 +1304,40 @@ export async function processarEntrada(params: {
         )
         .catch(() => {});
       transferiu = true;
+      // Rastro (20/11/2026): a rede transferia sem deixar linha no log e o
+      // motivo some quando a equipe encerra a conversa — não dava pra saber
+      // depois por que a Nina tinha calado.
+      console.log('[nina] rede de promessa transferiu (prometeu retorno)', registro.conversaId, JSON.stringify(texto.slice(0, 240)));
     }
+
+    // OFERTA NÃO É PROMESSA (caso Fernando Santos, 20/11/2026): "Se tiver
+    // certeza que fez a reserva, posso passar para a equipe verificar." — a
+    // rede de baixo leu "passar para a equipe" como promessa (a exceção dela só
+    // conhecia a oferta terminada em "?"), jogou a conversa pra humano e o
+    // "Tenho certeza" / "O telefone que está errado" do cliente ficou sem
+    // resposta; ele refez a reserva no site sozinho e prendeu 3 mesas num
+    // feriado. Frase em que ela OFERECE sob condição ("se tiver certeza…,
+    // posso passar…", "se preferir, posso transferir…") sem se comprometer
+    // ("vou…", "já passei…") sai só da checagem de baixo: a bola está com o
+    // cliente e a Nina segue na conversa pra responder o que ele disser.
+    // Fica de fora de propósito, transferindo como sempre: a promessa de
+    // verdade, a oferta sem condição ("Posso passar as informações para a
+    // equipe organizar tudo") e a que fala de registrar interesse, orçamento
+    // ou evento — ali a equipe TEM que ser chamada cedo (grupo grande, Terraço,
+    // jantar corporativo). Nas falas reais de 45 dias: das 104 que a rede
+    // pegava, 11 passam a ficar com a Nina (9 delas esta mesma frase de
+    // reserva não encontrada) e as outras 93 seguem iguais.
+    const textoSemOferta = textoPromessa.replace(
+      /[^.!?\n]*\b(posso|podemos|consigo)\b[^.!?\n]{0,30}\b(passar|encaminhar|transferir)\b[^.!?\n]*/gi,
+      (frase) => {
+        const seComprometeu = /\bvou\b|\bj[aá] (passei|encaminhei|transferi|chamei|avisei|acionei)\b/i.test(frase);
+        const sobCondicao =
+          /\b(se|caso)\b[^.!?\n]{0,90}\b(posso|podemos|consigo)\b/i.test(frase) ||
+          /\b(posso|podemos|consigo)\b[^.!?\n]{0,90}\b(se|caso) (voc[eê] )?(tiver|tenha|quiser|queira|preferir|prefira|acredit|achar|desejar|precisar)/i.test(frase);
+        const deEvento = /\b(registr|anot|or[cç]ament|interesse|evento|organiz|proposta|cota[cç])/i.test(frase);
+        return !seComprometeu && sobCondicao && !deEvento ? '' : frase;
+      },
+    );
 
     // PROMESSA DE PASSAR PRA EQUIPE SEM PASSAR (caso Tais, 11/10/2026): "vou
     // transferir para eles", "a equipe vai entrar em contato com você
@@ -1320,7 +1353,7 @@ export async function processarEntrada(params: {
       !/\/orcamento\//.test(texto) &&
       // Pergunta ("posso passar seu contato pra equipe?") é pedir licença, não promessa.
       /\bvou (te )?(transferir|passar|encaminhar)\b|\b(passar|encaminhar|transferir)\b[^.!?\n]{0,25}\b(para|pra|à|a) (a |nossa )?(equipe|time|gerente|respons[aá]vel|eles)\b|\b(a |nossa )?(equipe|time|gerente|respons[aá]vel|algu[eé]m)\b[^.!?\n]{0,40}\b(vai|v[aã]o|ir[aá]|ir[aã]o|j[aá] vai|deve)\b[^.!?\n]{0,20}\b(entrar em contato|te (chamar|responder|retornar|ligar)|falar com (voc[eê]|vc)|retornar)|\bregistrei (o |seu |o seu )?(pedido|interesse|solicita[cç][aã]o)\b/i.test(
-        textoPromessa.replace(/[^.!?\n]*\b(posso|quer que|prefere|gostaria|deseja)\b[^.!?\n]*\?/gi, ''),
+        textoSemOferta.replace(/[^.!?\n]*\b(posso|quer que|prefere|gostaria|deseja)\b[^.!?\n]*\?/gi, ''),
       )
     ) {
       await executores
@@ -1330,6 +1363,7 @@ export async function processarEntrada(params: {
         )
         .catch(() => {});
       transferiu = true;
+      console.log('[nina] rede de promessa transferiu (prometeu passar pra equipe)', registro.conversaId, JSON.stringify(texto.slice(0, 240)));
     }
 
     // RESERVA DE BOCA (caso Tais, 11/10/2026): "Já registrei sua reserva para
