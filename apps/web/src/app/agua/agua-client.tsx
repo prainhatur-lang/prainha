@@ -179,6 +179,17 @@ export function AguaClient({ inicial }: { inicial: AguaEstado | null }) {
                   {b.falha ? ` · ${b.falha.replace(/_/g, ' ')}, tentativa ${b.tentativas} de ${maxTentativas}` : ''}
                 </div>
                 {!b.temDisjuntor && <div className="mt-1 text-xs text-amber-700">Disjuntor inteligente ainda não cadastrado</div>}
+                <button
+                  type="button"
+                  disabled
+                  title="Ligar em manual só é possível na chave do quadro"
+                  className="mt-2 w-full cursor-not-allowed rounded-lg border border-slate-300 bg-slate-100 px-2 py-1.5 text-sm text-slate-400"
+                >
+                  Ligar em manual pelo sistema
+                </button>
+                <div className="mt-1 text-xs text-slate-500">
+                  Manual pelo sistema: não disponível. Só na chave do quadro.
+                </div>
               </div>
             );
           })}

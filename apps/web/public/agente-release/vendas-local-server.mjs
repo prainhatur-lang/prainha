@@ -34000,7 +34000,7 @@ async function aguaAvaliar() {
     WHERE criado_em > now() - (${Math.round(cfg('minutos_boia', 5))}::int * interval '1 minute')`)[0];
   if (b4 && cont.total >= 3 && cont.total === cont.ruins && b4.liberada && b4.modo === 'auto' && !b4.falha) {
     await aguaAbrir('boia_superior', 'critico', 'Caixa superior baixa e a bomba 4 não ligou',
-      'Provável defeito na boia de comando da caixa superior. Passe a chave da bomba 4 para Manual e chame a manutenção. A boia de caixa cheia continua protegendo.', 4);
+      'Provável defeito na boia de comando da caixa superior. Pelo sistema não dá para ligar em manual: passe a chave da bomba 4 para Manual na porta do quadro e chame a manutenção. A boia de caixa cheia continua protegendo.', 4);
   } else await aguaFechar('boia_superior', 4);
 
   for (const b of bombas) {
@@ -34260,7 +34260,7 @@ code{background:#f1f5f9;padding:1px 5px;border-radius:4px;font-size:12px;word-br
   h+='<div class="card"><h2>Bombas</h2><div class="bombas">';
   d.bombas.forEach(function(b){var amp=l?l.correntes[b.id]:null,t='fraco',r='Parada';
    if(!l){r='Sem leitura'}else if(b.falha){t='critico';r='Desarmada'}else if((amp||0)>cz){t='ok';r='Ligada'}else if(!b.liberada){t='aviso';r='Bloqueada'}
-   h+='<div class="bomba l-'+t+'"><div class="linha"><b>'+esc(b.nome)+'</b><span class="'+t+'" style="font-weight:600;font-size:14px">'+r+'</span></div><div class="amp">'+n1(amp)+' A</div><div class="peq">Fases '+esc(b.fases||'—')+' · chave em '+(b.modo==='auto'?'Automático':(b.modo==='manual'?'Manual':'0'))+(b.falha?' · '+esc(String(b.falha).replace(/_/g,' '))+', tentativa '+b.tentativas+' de '+mt:'')+'</div></div>'});
+   h+='<div class="bomba l-'+t+'"><div class="linha"><b>'+esc(b.nome)+'</b><span class="'+t+'" style="font-weight:600;font-size:14px">'+r+'</span></div><div class="amp">'+n1(amp)+' A</div><div class="peq">Fases '+esc(b.fases||'—')+' · chave em '+(b.modo==='auto'?'Automático':(b.modo==='manual'?'Manual':'0'))+(b.falha?' · '+esc(String(b.falha).replace(/_/g,' '))+', tentativa '+b.tentativas+' de '+mt:'')+'</div><button type="button" disabled title="Ligar em manual só é possível na chave do quadro" style="margin-top:8px;width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:8px;background:#f1f5f9;color:#94a3b8;font-size:13px;cursor:not-allowed">Ligar em manual pelo sistema</button><div class="peq">Manual pelo sistema: não disponível. Só na chave do quadro.</div></div>'});
   h+='</div></div><div class="card"><h2>Checklist do sistema</h2>';
   var chk=[['Leituras chegando (menos de 5 min)',!l?null:idade<5],['Caixa superior acima de '+sc+'%',!l||l.nivelSuperior==null?null:l.nivelSuperior>=sc],
    ['Válvulas V1 e V2 (pelo menos uma aberta)',!l||(l.v1Aberta==null&&l.v2Aberta==null)?null:!!(l.v1Aberta||l.v2Aberta)],
