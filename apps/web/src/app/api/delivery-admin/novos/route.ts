@@ -2,15 +2,17 @@
 // o cursor. O painel usa isso pra tocar o sino e recarregar. Mesmo padrão de
 // /api/reservas/chegadas (cursor ?desde= → { novos, agora }).
 
-import { NextResponse } from 'next/server';
+import { NextResponse, after } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, gt, inArray, isNotNull } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { expirarPedidosPendentes } from '@/lib/delivery/pedido';
+import { reemitirNotasDeliveryFaltando } from '@/lib/delivery/nfce-delivery';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
+export const maxDuration = 60;
 
 export async function GET(request: Request) {
   const { user, error } = await exigirPermApi('delivery.read');
@@ -23,6 +25,9 @@ export async function GET(request: Request) {
   }
 
   await expirarPedidosPendentes();
+  // Pedido que saiu sem NFC-e (a emissão do despacho falhou) → tenta de novo em
+  // segundo plano a cada poll do painel. Dono 22/11/2026: todo delivery sai com nota.
+  after(() => reemitirNotasDeliveryFaltando(filialIds).then(() => undefined));
 
   const desdeParam = new URL(request.url).searchParams.get('desde');
   const desde =

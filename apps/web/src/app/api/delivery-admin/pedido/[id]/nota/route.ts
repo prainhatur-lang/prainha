@@ -9,11 +9,29 @@ import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
-import { emitirNfceDelivery } from '@/lib/delivery/nfce-delivery';
+import { emitirNfceDelivery, situacaoNotaDelivery } from '@/lib/delivery/nfce-delivery';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 60;
+
+/** GET — situação da nota (o card mostra "NFC-e nº X" ou "sem nota"). */
+export async function GET(_request: Request, ctx: { params: Promise<{ id: string }> }) {
+  const { user, error } = await exigirPermApi('delivery.read');
+  if (error) return error;
+  const { id } = await ctx.params;
+  const [p] = await db
+    .select({ filialId: schema.deliveryPedido.filialId })
+    .from(schema.deliveryPedido)
+    .where(eq(schema.deliveryPedido.id, id))
+    .limit(1);
+  if (!p) return NextResponse.json({ error: 'pedido não encontrado' }, { status: 404 });
+  const filiais = await filiaisDoUsuario(user.id);
+  if (!filiais.some((f) => f.id === p.filialId)) {
+    return NextResponse.json({ error: 'filial não acessível' }, { status: 403 });
+  }
+  return NextResponse.json(await situacaoNotaDelivery(id));
+}
 
 export async function POST(request: Request, ctx: { params: Promise<{ id: string }> }) {
   const { user, error } = await exigirPermApi('delivery.update');

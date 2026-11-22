@@ -13,7 +13,7 @@
 // caixa aceita e a nota sai por lá (Pedidos sem nota), como sempre.
 
 import { db, schema } from '@concilia/db';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { emitirNfcePedido, type EmitirInput } from '@/lib/nfce/emitir';
 
 const r2c = (v: number): number => Math.round(v * 100) / 100;
@@ -146,5 +146,104 @@ export async function emitirNfceDelivery(
     return { ok: true, nfceId: r.nota.id, numero: r.nota.numero, jaExistia: r.jaExistia, naFila };
   } catch (e) {
     return { ok: false, erro: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export interface SituacaoNotaDelivery {
+  /** 'autorizada' | 'emitindo' | 'falhou' | 'sem_nota' | 'nao_se_aplica' */
+  situacao: 'autorizada' | 'emitindo' | 'falhou' | 'sem_nota' | 'nao_se_aplica';
+  nfceId?: string;
+  numero?: number;
+  motivo?: string | null;
+}
+
+/** Situação da NFC-e do pedido do delivery, pro card do painel mostrar se a
+ *  nota saiu no despacho (dono 22/11/2026: "toda vez que mandar o delivery já
+ *  mandar com a nota fiscal"). */
+export async function situacaoNotaDelivery(pedidoId: string): Promise<SituacaoNotaDelivery> {
+  const [p] = await db
+    .select({
+      filialId: schema.deliveryPedido.filialId,
+      status: schema.deliveryPedido.status,
+      pagamentoMetodo: schema.deliveryPedido.pagamentoMetodo,
+      pagamentoStatus: schema.deliveryPedido.pagamentoStatus,
+    })
+    .from(schema.deliveryPedido)
+    .where(eq(schema.deliveryPedido.id, pedidoId))
+    .limit(1);
+  if (!p) return { situacao: 'nao_se_aplica' };
+  const notas = await db
+    .select({
+      id: schema.nfceEmitida.id,
+      numero: schema.nfceEmitida.numero,
+      status: schema.nfceEmitida.status,
+      xmotivo: schema.nfceEmitida.xmotivo,
+    })
+    .from(schema.nfceEmitida)
+    .where(
+      and(
+        eq(schema.nfceEmitida.filialId, p.filialId),
+        eq(schema.nfceEmitida.pedidoChave, `delivery:${pedidoId}`),
+      ),
+    )
+    .orderBy(desc(schema.nfceEmitida.atualizadoEm));
+  const aut = notas.find((n) => n.status === 'AUTORIZADA');
+  if (aut) return { situacao: 'autorizada', nfceId: aut.id, numero: aut.numero };
+  if (
+    p.status === 'cancelado' ||
+    p.pagamentoMetodo === 'na_entrega' ||
+    p.pagamentoStatus === 'na_entrega' ||
+    p.pagamentoStatus !== 'pago'
+  ) {
+    return { situacao: 'nao_se_aplica' };
+  }
+  const pend = notas.find((n) => n.status === 'PENDENTE');
+  if (pend) return { situacao: 'emitindo', nfceId: pend.id, numero: pend.numero };
+  const falha = notas[0];
+  if (falha) return { situacao: 'falhou', nfceId: falha.id, numero: falha.numero, motivo: falha.xmotivo };
+  return { situacao: 'sem_nota' };
+}
+
+/** Rede de segurança: pedido do delivery que já SAIU (saiu_entrega, chegou ou
+ *  concluído), pago online e sem NFC-e autorizada → tenta emitir de novo. O
+ *  painel chama no polling; a mesma chave `delivery:<id>` impede nota em dobro
+ *  e uma tentativa que falhou só se repete depois de 5 min. Nunca lança. */
+export async function reemitirNotasDeliveryFaltando(filialIds: string[]): Promise<number> {
+  if (filialIds.length === 0) return 0;
+  try {
+    const desde = new Date(Date.now() - 2 * 86_400_000);
+    const candidatos = await db
+      .select({ id: schema.deliveryPedido.id, status: schema.deliveryPedido.status })
+      .from(schema.deliveryPedido)
+      .where(
+        and(
+          inArray(schema.deliveryPedido.filialId, filialIds),
+          inArray(schema.deliveryPedido.status, ['saiu_entrega', 'chegou', 'concluido']),
+          eq(schema.deliveryPedido.pagamentoStatus, 'pago'),
+          sql`coalesce(${schema.deliveryPedido.pagamentoMetodo}, '') <> 'na_entrega'`,
+          gte(schema.deliveryPedido.criadoEm, desde),
+          sql`not exists (
+            select 1 from nfce_emitida n
+             where n.filial_id = ${schema.deliveryPedido.filialId}
+               and n.pedido_chave = 'delivery:' || ${schema.deliveryPedido.id}::text
+               and (n.status in ('AUTORIZADA', 'PENDENTE')
+                    or n.atualizado_em > now() - interval '5 minutes')
+          )`,
+        ),
+      )
+      .limit(5);
+    let feitas = 0;
+    for (const c of candidatos) {
+      // Ainda na rua: o DANFE vai pra impressora da loja. Já concluído: só emite.
+      const r = await emitirNfceDelivery(c.id, 'delivery (reemissão)', {
+        imprimir: c.status === 'concluido' ? false : undefined,
+      });
+      if (r.ok) feitas++;
+      else console.error('[delivery] reemissão da NFC-e falhou', c.id, r.erro);
+    }
+    return feitas;
+  } catch (e) {
+    console.error('[delivery] reemissão de notas', e);
+    return 0;
   }
 }
