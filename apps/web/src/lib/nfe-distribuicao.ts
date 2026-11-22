@@ -9,7 +9,7 @@
 
 import { colunasTribEntrada } from '@/lib/nfe-trib-entrada';
 import { db, schema } from '@concilia/db';
-import { and, asc, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, or, sql } from 'drizzle-orm';
 import { createHash } from 'node:crypto';
 import { createAdminClient } from '@/lib/supabase/server';
 import { decifrarSenha } from '@/lib/certificado';
@@ -100,6 +100,16 @@ function parseEvento(xml: string): {
 }
 
 /** Aplica um evento relevante (cancelamento) à nota_compra correspondente. */
+/** A chave já esteve nesta casa e foi passada pra outra ("Lançar direto na casa"). */
+async function notaMovidaDaqui(filialId: string, chave: string): Promise<boolean> {
+  const [m] = await db
+    .select({ id: schema.notaCompra.id })
+    .from(schema.notaCompra)
+    .where(and(eq(schema.notaCompra.filialOrigemId, filialId), eq(schema.notaCompra.chave, chave)))
+    .limit(1);
+  return !!m;
+}
+
 async function aplicarEvento(
   filialId: string,
   xml: string,
@@ -116,7 +126,11 @@ async function aplicarEvento(
         protocoloAutorizacao: ev.nProt ?? undefined,
       })
       .where(
-        and(eq(schema.notaCompra.filialId, filialId), eq(schema.notaCompra.chave, ev.chave)),
+        and(
+          // também a nota que daqui foi passada pra outra casa
+          or(eq(schema.notaCompra.filialId, filialId), eq(schema.notaCompra.filialOrigemId, filialId)),
+          eq(schema.notaCompra.chave, ev.chave),
+        ),
       )
       .returning({ id: schema.notaCompra.id });
     return r.length > 0 ? 'APLICADO' : 'SEM_NOTA';
@@ -191,6 +205,9 @@ async function inserirNfeCompleta(
       and(eq(schema.notaCompra.filialId, filialId), eq(schema.notaCompra.chave, nfe.chave)),
     )
     .limit(1);
+
+  // Nota passada pra outra casa ("Lançar direto na casa"): não volta pra cá.
+  if (!existente && (await notaMovidaDaqui(filialId, nfe.chave))) return 'DUPLICADA';
 
   const ehResumo =
     existente?.origemImportacao === 'SEFAZ_DFE_RESUMO' ||
@@ -443,6 +460,7 @@ async function inserirResumo(
     .where(and(eq(schema.notaCompra.filialId, filialId), eq(schema.notaCompra.chave, r.chave)))
     .limit(1);
   if (existente) return 'DUPLICADA';
+  if (await notaMovidaDaqui(filialId, r.chave)) return 'DUPLICADA';
 
   const fornecedorId = await resolverFornecedorParaNota({
     filialId,

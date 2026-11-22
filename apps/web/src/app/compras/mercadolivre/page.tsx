@@ -26,6 +26,7 @@ import { desc } from 'drizzle-orm';
 import { mlEmailScript, mlEmailToken } from '@/lib/mercadolivre-email';
 import { casarComprasML } from '@/lib/mercadolivre-casar';
 import { notasDasComprasML } from '@/lib/mercadolivre-nota';
+import { LancarNaCasa } from './lancar-na-casa';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -176,6 +177,13 @@ export default async function MercadoLivrePage(props: { searchParams: Promise<{ 
       vendedorDoc: p.d.vendedorDoc ?? null,
     })),
   );
+
+  // Casas pra "Lançar na casa" (a nota do ML cai na E.B.; passa pra casa da mercadoria)
+  const casas = (await db.select({ id: schema.filial.id, nome: schema.filial.nome }).from(schema.filial))
+    .filter((c): c is { id: string; nome: string } => !!c.nome)
+    .sort((a, b) => a.nome.localeCompare(b.nome));
+  const casaDoPix = (origem: string | undefined) =>
+    origem ? (casas.find((c) => origem.includes(c.nome))?.id ?? null) : null;
 
   const porConta: { conta: (typeof contas)[number]; linhas: Linha[]; erro: string | null }[] = [];
   for (const conta of contas) {
@@ -355,6 +363,17 @@ export default async function MercadoLivrePage(props: { searchParams: Promise<{ 
                                   <div className="text-amber-700">Notas somam {brl(n.valor)} de {brl(p.total)} (frete ou nota que falta)</div>
                                 )}
                                 <div className={est.c}>{est.t}</div>
+                                {n.lancados === 0 && n.contasPagar === 0 && (
+                                  <LancarNaCasa
+                                    notaIds={n.notas.map((x) => x.notaId)}
+                                    filialAtual={n.filialIds.length === 1 ? n.filialIds[0]! : null}
+                                    casas={casas}
+                                    sugestao={(() => {
+                                      const c = casar.porPedido.get(p.pedido);
+                                      return c?.como === 'pix' ? casaDoPix(c.origem) : null;
+                                    })()}
+                                  />
+                                )}
                                 {n.contasPagar > 0 && (
                                   <div className="text-amber-700">
                                     Tem {n.contasPagar} conta a pagar — já foi pago no ML, conferir pra não pagar em dobro

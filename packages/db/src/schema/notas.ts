@@ -101,6 +101,10 @@ export const notaCompra = pgTable(
     // Metadata
     // UPLOAD | SEFAZ_DFE | SEFAZ_DFE_RESUMO | SEFAZ_DFE_RESUMO_CIENTE (23 chars — por isso 40, não 20)
     origemImportacao: varchar('origem_importacao', { length: 40 }).default('UPLOAD'),
+    // Casa onde o DF-e entregou a nota, quando ela foi passada pra outra casa
+    // (compra do ML que cai na E.B.). A importação não traz a chave de volta pra lá.
+    filialOrigemId: uuid('filial_origem_id'),
+    movidaEm: timestamp('movida_em', { withTimezone: true }),
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
     atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
   },

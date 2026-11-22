@@ -24,6 +24,7 @@ export interface PedidoParaNota {
 
 export interface NotaML {
   notaId: string;
+  filialId: string;
   numero: number | null;
   emissao: string | null; // YYYY-MM-DD
   valor: number;
@@ -36,6 +37,8 @@ export interface NotaDoPedido {
   notas: NotaML[];
   emitente: string | null;
   casa: string | null;
+  /** Casas onde as notas estão hoje (pra "Lançar na casa"). */
+  filialIds: string[];
   como: 'cnpj' | 'valor';
   valor: number;
   itens: number;
@@ -45,6 +48,7 @@ export interface NotaDoPedido {
 
 interface LinhaNota {
   id: string;
+  filial_id: string;
   numero: number | null;
   modelo: number | null;
   emit_cnpj: string | null;
@@ -70,7 +74,7 @@ export async function notasDasComprasML(pedidos: PedidoParaNota[]): Promise<Map<
   const desde = ordem[0]!.data;
 
   const notas = (await db.execute(sql`
-    SELECT n.id::text, n.numero, n.modelo, n.emit_cnpj, coalesce(n.emit_fantasia, n.emit_nome) AS emit_nome,
+    SELECT n.id::text, n.filial_id::text, n.numero, n.modelo, n.emit_cnpj, coalesce(n.emit_fantasia, n.emit_nome) AS emit_nome,
            (n.data_emissao AT TIME ZONE 'America/Sao_Paulo')::date::text AS emissao,
            n.valor_total::text AS valor, f.nome AS casa,
            (SELECT count(*)::int FROM nota_compra_item i WHERE i.nota_compra_id = n.id) AS itens,
@@ -89,6 +93,7 @@ export async function notasDasComprasML(pedidos: PedidoParaNota[]): Promise<Map<
     const lista: NotaML[] = ns
       .map((n) => ({
         notaId: n.id,
+        filialId: n.filial_id,
         numero: n.numero,
         emissao: n.emissao,
         valor: Number(n.valor ?? 0),
@@ -102,6 +107,7 @@ export async function notasDasComprasML(pedidos: PedidoParaNota[]): Promise<Map<
       notas: lista,
       emitente: ns[0]!.emit_nome,
       casa: [...new Set(ns.map((n) => n.casa).filter(Boolean))].join(', ') || null,
+      filialIds: [...new Set(ns.map((n) => n.filial_id))],
       como,
       valor: lista.reduce((s, n) => s + n.valor, 0),
       itens: lista.reduce((s, n) => s + n.itens, 0),
