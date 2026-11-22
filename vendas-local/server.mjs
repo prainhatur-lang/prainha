@@ -6150,6 +6150,53 @@ async function contaPedidaDe(numero, mesa) {
   return { pedida: false };
 }
 
+/* ---- PIRÃO DE CALDO SÓ CASADO COM O PRATO — dono, 22/11/2026 ----
+   "Como é que você vai fazer um pirão de peixe sem fazer o peixe, de lagosta
+   sem fazer lagosta?" O pirão de moqueca (e o "Pirão" simples) é feito com o
+   caldo do prato: sozinho, ou junto de caranguejo, a cozinha não tem de onde
+   tirar — foi o que deixou a mesa 107 do Bar (21/11) esperando um pirão que
+   nunca saiu. Então ele só entra se o MESMO envio ou a conta aberta (mesa e
+   comandas dela) tiver um prato de peixe/lagosta/moqueca. Pirão de LEITE sai
+   sozinho, como sempre. O pirão aceito leva no item "P/ <prato>", pra cozinha
+   saber de qual caldo é. Termos ajustáveis por env (PIRAO_PRATOS, vírgula). */
+const PIRAO_PRATOS = String(process.env.PIRAO_PRATOS ||
+  'moqueca,peixe,lagosta,caldeirada,ensopado,robalo,pescada,vermelha,badejo,tilapia,cioba,dourado,arabaiana')
+  .split(',').map((t) => semAcento(t.trim())).filter(Boolean);
+const ehPiraoDeCaldo = (nome) => { const n = semAcento(nome); return n.includes('pirao') && !n.includes('leite'); };
+const ehPratoDoPirao = (nome) => { const n = semAcento(nome); return !n.includes('pirao') && PIRAO_PRATOS.some((t) => n.includes(t)); };
+async function travaPiraoDeCaldo(numero, mesa, itens, cliente = false) {
+  const piroes = itens.filter((i) => ehPiraoDeCaldo([i.nome, i.tamanho].filter(Boolean).join(' ')));
+  if (!piroes.length) return { ok: true };
+  let prato = itens.find((i) => ehPratoDoPirao(i.nome))?.nome || null;
+  if (!prato) {
+    // a conta aberta: o próprio número + a mesa + as comandas penduradas nela
+    const nums = new Set([Number(numero)]);
+    if (mesa != null) {
+      nums.add(Number(mesa));
+      const cs = await sql`SELECT comanda FROM mesa_comanda WHERE mesa=${Number(mesa)} AND fechada_em IS NULL`;
+      for (const c of cs) nums.add(Number(c.comanda));
+    }
+    const rs = await sql`SELECT ci.nome FROM comanda_item ci JOIN comanda c ON c.codigo = ci.comanda_codigo
+      WHERE c.numero = ANY(${[...nums]}) AND c.fechada_em IS NULL AND c.cancelada_em IS NULL
+        AND ci.cancelado_em IS NULL AND COALESCE(ci.tipo, 1) <> 2
+      ORDER BY ci.criado DESC NULLS LAST`;
+    prato = rs.find((r) => ehPratoDoPirao(r.nome))?.nome || null;
+  }
+  if (!prato) {
+    const nome = piroes[0].nome;
+    if (cliente) return { ok: false, pirao_sem_prato: true,
+      erro: `O ${nome.toLowerCase()} é feito com o caldo do prato, então só sai junto com um prato de peixe, lagosta ou moqueca. ` +
+        `Peça junto com o prato. Se quiser só o pirão, o de leite sai sozinho.` };
+    return { ok: false, pirao_sem_prato: true,
+      erro: `${nome} é feito com o caldo do prato — só sai junto com um prato de peixe, lagosta ou moqueca. ` +
+        `Lance junto com o prato (ou na mesa que já tem o prato). Sozinho ou com caranguejo a cozinha não tem como fazer. ` +
+        `Pirão de leite pode sair sozinho.` };
+  }
+  const marca = 'P/ ' + String(prato).toUpperCase().slice(0, 60);
+  for (const p of piroes) p.obs = [p.obs, marca].filter(Boolean).join(' | ');
+  return { ok: true, prato };
+}
+
 async function apiVendaEnviar(body) {
   const numero = Number(body.numero);
   if (!(numero >= 1 && numero <= NUMERO_MAX)) return { ok: false, erro: 'número inválido' };
@@ -6203,6 +6250,11 @@ async function apiVendaEnviar(body) {
   // brinde da avaliação: a casa dá o drink — entra na conta a R$ 0 (a obs
   // "Avaliação de Cliente" vai no item e sai na comanda impressa)
   if (body._brinde) for (const it of itens) it.preco = 0;
+  // pirão de caldo sem prato de peixe/lagosta na conta não entra (ver travaPiraoDeCaldo)
+  if (!body._brinde) {
+    const tp = await travaPiraoDeCaldo(numero, mesa, itens, !!body._cliente);
+    if (!tp.ok) return tp;
+  }
   // QUEM LANÇOU vai em cada item. `_garcom` já vinha do middleware da rota e
   // NUNCA era usado — resultado: nenhum item lançado pelas nossas telas tinha
   // autor, e na hora de conferir a conta ninguém sabia de quem era. O pedido
