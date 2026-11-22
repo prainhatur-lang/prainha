@@ -81,7 +81,16 @@ function Kpi({
 
 type Evento = { quando: string; tipo: string; icone: string; texto: string; detalhe: string | null; ruim: boolean };
 
-function eventosDoDia(d: BalancoDados, estornoItem: Set<number> = new Set()): Evento[] {
+/** O KDS grava quem resolveu a reclamação como "praca <código>" (não tem login
+ *  por pessoa). Mostra o nome da praça no lugar do código; código sem cadastro
+ *  ou outro texto ("kds", "maquininha", nome) fica como veio. */
+function nomeQuemAtendeu(por: string, pracas: Map<number, string>): string {
+  const m = /^praca (\d+)$/i.exec(por.trim());
+  const nome = m ? pracas.get(Number(m[1])) : undefined;
+  return nome ? `praça ${nome}` : por;
+}
+
+function eventosDoDia(d: BalancoDados, estornoItem: Set<number> = new Set(), pracas: Map<number, string> = new Map()): Evento[] {
   const ev: Evento[] = [];
   for (const c of d.cancelamentos?.lista ?? []) {
     // bebida fechada que voltou pro bar: estorno de item, não cancelamento
@@ -147,7 +156,7 @@ function eventosDoDia(d: BalancoDados, estornoItem: Set<number> = new Set()): Ev
       tipo: 'reclamacao',
       icone: '⚠️',
       texto: `Reclamação · mesa ${c.mesa ?? '?'}${c.nota != null ? ` · nota ${c.nota}` : ''}${c.assunto ? ` · ${c.assunto}` : ''}`,
-      detalhe: [c.texto, c.atendido_em ? `atendida ${horaBr(c.atendido_em)}${c.atendido_por ? ` por ${c.atendido_por}` : ''}` : 'AINDA ABERTA'].filter(Boolean).join(' · ') || null,
+      detalhe: [c.texto, c.atendido_em ? `atendida ${horaBr(c.atendido_em)}${c.atendido_por ? ` por ${nomeQuemAtendeu(c.atendido_por, pracas)}` : ''}` : 'AINDA ABERTA'].filter(Boolean).join(' · ') || null,
       ruim: !c.atendido_em,
     });
   }
@@ -257,6 +266,12 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
         .from(ci)
         .leftJoin(schema.areaProducao, and(eq(schema.areaProducao.filialId, ci.filialId), eq(schema.areaProducao.codigoExterno, ci.areaCodigo)))
         .where(and(eq(ci.filialId, f.id), gte(ci.quando, ini), lte(ci.quando, fim)));
+      // nome das praças da casa, pra trocar "praca 1" por "praça COZ PRAINHA" nas reclamações
+      const pracasRows = await db
+        .select({ codigo: schema.areaProducao.codigoExterno, nome: schema.areaProducao.nome })
+        .from(schema.areaProducao)
+        .where(eq(schema.areaProducao.filialId, f.id));
+      const pracas = new Map(pracasRows.map((x) => [x.codigo, x.nome]));
       const estornados = cancNuvem.filter((x) => ehEstornoDeItem(x));
       const estornoItem = {
         ids: new Set(estornados.map((x) => x.idLocal)),
@@ -270,6 +285,7 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
 
       return {
         estornoItem,
+        pracas,
         baixaAte,
         filial: f,
         ultimo: ultimo ? { ...ultimo, dados: ultimo.dados as BalancoDados } : null,
@@ -347,7 +363,7 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
 
         {casas.length === 0 && <p className="mt-10 text-sm text-slate-500">Nenhuma filial disponível.</p>}
 
-        {casas.map(({ filial, ultimo, linha, av, rs, es, baixaAte, estornoItem }) => {
+        {casas.map(({ filial, ultimo, linha, av, rs, es, baixaAte, estornoItem, pracas }) => {
           const d = ultimo?.dados;
           const idadeMin = ultimo ? Math.round((Date.now() - ultimo.capturadoEm.getTime()) / 60000) : null;
           const velho = ehHoje && idadeMin != null && idadeMin > 25;
@@ -370,7 +386,7 @@ export default async function BalancoPage(props: { searchParams: Promise<SP> }) 
           const re = d?.reaberturas;
           const li = d?.liberacoes;
           const rc = d?.reclamacoes;
-          const eventos = d ? eventosDoDia(d, estornoItem.ids) : [];
+          const eventos = d ? eventosDoDia(d, estornoItem.ids, pracas) : [];
           const horasComMovimento = fx
             ? fx.hoje.map((h, i) => ({ h: i, hoje: h.n, ontem: fx.ontem[i]?.n ?? 0, semana: fx.semana[i]?.n ?? 0 })).filter((x, i) => x.hoje || x.ontem || x.semana || (ehHoje && i === fx.hora))
             : [];
