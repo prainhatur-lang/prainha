@@ -28927,7 +28927,7 @@ a.sair{color:var(--mut);font-size:13px;text-decoration:underline;cursor:pointer}
 .mchip b{display:block;font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mchip small{display:block;color:var(--mut);font-size:10.5px;margin-top:1px}
 </style></head><body>
-<header><a class="back" href="/">◂ Início</a><h1>${LOJA_HTML} · <b>Etiqueta</b></h1></header><div class="wrap"><div id="main"></div></div>
+<header><a class="back" href="/">◂ Início</a><h1>${LOJA_HTML} · <b>Etiqueta</b></h1></header><div class="wrap"><div id="abas"></div><div id="main"></div></div>
 <script>
 function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
 async function jget(u){var r=await fetch(u,{cache:'no-store'});return r.json()}
@@ -29197,7 +29197,183 @@ async function etqImprimir(via){
   ok.textContent='✓ '+ETQ.qtd+(ETQ.qtd>1?' etiquetas':' etiqueta')+' de '+ETQ.nome+' (vence '+etqBr(ETQ.validade)+')'+(r&&r.ok?'':' — não registrou no histórico');
   etqBusca();
 }
-telaEtq(document.getElementById('main'));
+/* ---- ETIQUETA LIVRE (dono 22/11/2026: "preciso imprimir outras coisas") ----
+   Texto e/ou imagem qualquer no mesmo rolo, pelos MESMOS caminhos da validade
+   (etqBytes/etqBtEnvia/etqNavegador e a mesma config do aparelho: rolo, calor,
+   posição, invertida). Não grava histórico (não é insumo). A aba Validade é a
+   de sempre e é a que abre; a livre entra ao lado (/etiqueta#livre). */
+var LV=(function(){var x={txt:'',tam:'auto',neg:1,esq:0,mold:0,foto:0,qtd:1};
+  try{var s=JSON.parse(localStorage.getItem('etq_livre')||'null');if(s)for(var k in x)if(s[k]!=null)x[k]=s[k]}catch(e){}
+  x.img=null;x.imgNome='';return x})();
+function lvSalva(){try{localStorage.setItem('etq_livre',JSON.stringify({txt:LV.txt,tam:LV.tam,neg:LV.neg,esq:LV.esq,mold:LV.mold,foto:LV.foto,qtd:LV.qtd}))}catch(e){}}
+function etqModo(){return location.hash==='#livre'?'livre':'validade'}
+function etqAbas(){
+  var m=etqModo(),a=document.getElementById('abas');if(!a)return;
+  a.innerHTML='<div class="row" style="margin-bottom:12px">'+
+    '<button class="seg'+(m==='validade'?' on':'')+'" onclick="etqVaiModo(&quot;validade&quot;)">🏷 Validade</button>'+
+    '<button class="seg'+(m==='livre'?' on':'')+'" onclick="etqVaiModo(&quot;livre&quot;)">✏️ Etiqueta livre</button></div>';
+}
+function etqVaiModo(m){
+  try{history.replaceState(null,'',m==='livre'?'#livre':location.pathname+location.search)}catch(e){location.hash=m==='livre'?'livre':''}
+  etqAbas();var el=document.getElementById('main');if(m==='livre')telaLivre(el);else telaEtq(el);
+}
+function telaLivre(el){
+  el.innerHTML=
+    '<div class="card"><div class="tit" style="margin-top:0">✏️ Etiqueta livre</div>'+
+    '<div class="mut">Escreva o que quiser. Cada Enter vira uma linha; linha comprida quebra sozinha. Pode pôr uma imagem (logo, foto, desenho) junto ou sozinha.</div>'+
+    '<textarea id="lvt" rows="4" placeholder="ex: RESERVADO&#10;FREEZER 2 · PEIXES&#10;NÃO MEXER" style="width:100%;font:inherit;font-size:16px;padding:12px;border:2px solid var(--line);border-radius:12px;margin-top:8px;resize:vertical"></textarea>'+
+    '<div class="tit">Tamanho da letra</div><div class="row" style="grid-template-columns:repeat(4,1fr)" id="lvtam"></div>'+
+    '<div class="tit">Estilo</div><div class="row" style="grid-template-columns:repeat(3,1fr)" id="lvest"></div>'+
+    '<div class="tit">Imagem (opcional)</div>'+
+    '<input id="lvi" type="file" accept="image/*">'+
+    '<div id="lvimg" style="margin-top:6px"></div>'+
+    '<div class="tit">Rolo</div><div class="row" id="lvrolo"></div>'+
+    '<div class="tit">Quantas etiquetas</div>'+
+    '<div class="row" style="grid-template-columns:64px 1fr 64px;align-items:center">'+
+      '<button class="seg" style="font-size:22px;font-weight:800" onclick="lvQtd(-1)">−</button>'+
+      '<input id="lvq" class="num" inputmode="numeric" value="'+LV.qtd+'">'+
+      '<button class="seg" style="font-size:22px;font-weight:800" onclick="lvQtd(1)">+</button></div>'+
+    '<div class="tit">Prévia</div>'+
+    '<div style="text-align:center;background:#f6f6f8;border-radius:12px;padding:10px"><canvas id="lvcv" style="max-width:100%;max-height:260px;border:1px solid #d4d4dc;background:#fff"></canvas></div>'+
+    '<button class="big o" onclick="lvImprimir(&quot;bt&quot;)">🖨 Imprimir (Bluetooth)</button>'+
+    '<button class="big g" onclick="lvImprimir(&quot;nav&quot;)">Imprimir pelo navegador (USB)</button>'+
+    '<div id="lverr" class="err"></div><div id="lvok" class="mut" style="margin-top:6px"></div>'+
+    '<div class="mut" style="margin-top:12px">Calor, posição, calibrar e trocar de impressora ficam na aba Validade e valem pras duas.</div></div>';
+  var t=document.getElementById('lvt');t.value=LV.txt;
+  t.addEventListener('input',function(){LV.txt=t.value;lvSalva();lvPrevia()});
+  var q=document.getElementById('lvq');
+  q.addEventListener('input',function(){LV.qtd=Math.max(1,Math.min(200,parseInt(q.value,10)||1));lvSalva()});
+  var fi=document.getElementById('lvi');
+  fi.addEventListener('change',function(){
+    var f=fi.files&&fi.files[0];if(!f)return;
+    var rd=new FileReader();
+    rd.onload=function(){var im=new Image();im.onload=function(){LV.img=im;LV.imgNome=f.name||'imagem';lvPinta()};
+      im.onerror=function(){var e=document.getElementById('lverr');if(e)e.textContent='não consegui abrir essa imagem'};im.src=rd.result};
+    rd.readAsDataURL(f);
+  });
+  lvPinta();
+}
+function lvBtn(on,fn,txt){return '<button class="seg'+(on?' on':'')+'" onclick="'+fn+'">'+txt+'</button>'}
+function lvPinta(){
+  var h='',ts=[['auto','Auto'],['p','Pequena'],['m','Média'],['g','Grande']];
+  for(var i=0;i<ts.length;i++)h+=lvBtn(LV.tam===ts[i][0],'lvSet(&quot;tam&quot;,&quot;'+ts[i][0]+'&quot;)',ts[i][1]);
+  var e=document.getElementById('lvtam');if(e)e.innerHTML=h;
+  e=document.getElementById('lvest');
+  if(e)e.innerHTML=lvBtn(LV.neg,'lvSet(&quot;neg&quot;,'+(LV.neg?0:1)+')','<b>Negrito</b>')+
+    lvBtn(LV.esq,'lvSet(&quot;esq&quot;,'+(LV.esq?0:1)+')','À esquerda')+
+    lvBtn(LV.mold,'lvSet(&quot;mold&quot;,'+(LV.mold?0:1)+')','▭ Moldura');
+  e=document.getElementById('lvimg');
+  if(e)e.innerHTML=LV.img
+    ?'<div class="mut" style="margin-bottom:6px">'+esc(LV.imgNome)+'</div><div class="row" style="grid-template-columns:1fr 1fr 1fr">'+
+      lvBtn(!LV.foto,'lvSet(&quot;foto&quot;,0)','Logo (P&amp;B)')+lvBtn(LV.foto,'lvSet(&quot;foto&quot;,1)','Foto (pontilhado)')+
+      '<button class="seg" onclick="lvTiraImg()">✕ Tirar</button></div>'
+    :'';
+  var c=etqCfg();h='';
+  for(var k=0;k<ETQ_TAMS.length;k++){var tt=ETQ_TAMS[k];h+=lvBtn(c.w===tt[0]&&c.h===tt[1],'lvTam('+tt[0]+','+tt[1]+')',Math.min(tt[0],tt[1])+'×'+Math.max(tt[0],tt[1]))}
+  e=document.getElementById('lvrolo');if(e)e.innerHTML=h;
+  lvPrevia();
+}
+function lvSet(k,v){LV[k]=v;lvSalva();lvPinta()}
+function lvTam(w,h){etqCfgSalva('w',w);etqCfgSalva('h',h);lvPinta()}
+function lvTiraImg(){LV.img=null;LV.imgNome='';var f=document.getElementById('lvi');if(f)f.value='';lvPinta()}
+function lvQtd(d){LV.qtd=Math.max(1,Math.min(200,(LV.qtd||1)+d));var q=document.getElementById('lvq');if(q)q.value=LV.qtd;lvSalva()}
+function lvLinhas(){
+  var ls=String(LV.txt||'').split(String.fromCharCode(10)).map(function(s){return s.replace(String.fromCharCode(13),'').trim()});
+  while(ls.length&&!ls[0])ls.shift();while(ls.length&&!ls[ls.length-1])ls.pop();
+  return ls;
+}
+/* quebra as linhas pela largura: por palavra, e palavra maior que a etiqueta
+   quebra por letra */
+function lvQuebra(g,ls,w){
+  var out=[];
+  ls.forEach(function(l){
+    if(!l){out.push('');return}
+    var ps=l.split(' ').filter(function(p){return p}),cur='';
+    ps.forEach(function(p){
+      var tst=cur?cur+' '+p:p;
+      if(g.measureText(tst).width<=w){cur=tst;return}
+      if(cur)out.push(cur);
+      cur='';
+      while(g.measureText(p).width>w&&p.length>1){
+        var n=p.length;while(n>1&&g.measureText(p.slice(0,n)).width>w)n--;
+        out.push(p.slice(0,n));p=p.slice(n);
+      }
+      cur=p;
+    });
+    out.push(cur);
+  });
+  return out;
+}
+/* imagem em preto e branco puro (a cabeça térmica só faz ponto ou não ponto):
+   logo = corte no meio; foto = pontilhado Floyd-Steinberg pra dar meio-tom */
+function lvPb(src,dw,dh,foto){
+  var t=document.createElement('canvas');t.width=dw;t.height=dh;
+  var g=t.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,dw,dh);g.drawImage(src,0,0,dw,dh);
+  var im=g.getImageData(0,0,dw,dh),d=im.data,n=dw*dh,L=new Float32Array(n);
+  for(var i=0;i<n;i++)L[i]=0.299*d[i*4]+0.587*d[i*4+1]+0.114*d[i*4+2];
+  for(var y=0;y<dh;y++)for(var x=0;x<dw;x++){
+    var k=y*dw+x,v=L[k]<128?0:255;
+    if(foto){var er=L[k]-v;
+      if(x+1<dw)L[k+1]+=er*7/16;
+      if(y+1<dh){if(x>0)L[k+dw-1]+=er*3/16;L[k+dw]+=er*5/16;if(x+1<dw)L[k+dw+1]+=er/16}}
+    d[k*4]=d[k*4+1]=d[k*4+2]=v;d[k*4+3]=255;
+  }
+  g.putImageData(im,0,0);return t;
+}
+function lvDesenha(){
+  var c=etqCfg(),a=etqArea(c),W=a.W,H=a.H,m=8;
+  var cv=document.createElement('canvas');cv.width=W;cv.height=H;
+  var g=cv.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,W,H);g.fillStyle='#000';g.strokeStyle='#000';g.textBaseline='top';
+  var pad=m;
+  if(LV.mold){g.lineWidth=4;g.strokeRect(4,4,W-8,H-8);pad=m+8}
+  var x0=pad,y0=pad,w=W-2*pad,h=H-2*pad;
+  var ls=lvLinhas(),temTxt=ls.some(function(l){return l}),img=LV.img;
+  var ih=0;
+  if(img){
+    ih=temTxt?Math.round(h*0.45):h;
+    var esc_=Math.min(w/img.width,ih/img.height),dw=Math.max(1,Math.round(img.width*esc_)),dh=Math.max(1,Math.round(img.height*esc_));
+    var pb=lvPb(img,dw,dh,!!LV.foto);
+    g.drawImage(pb,x0+Math.round((w-dw)/2),y0+Math.round((ih-dh)/2));
+    if(temTxt)ih+=6;
+  }
+  if(!temTxt)return cv;
+  var ty0=y0+ih,th=h-ih;
+  function fonte(fs){return (LV.neg?'800 ':'500 ')+fs+'px Arial, Helvetica, sans-serif'}
+  var ini={p:28,m:44,g:72}[LV.tam]||Math.min(th,220),fs=ini,q;
+  for(;fs>10;fs--){g.font=fonte(fs);q=lvQuebra(g,ls,w);if(q.length*Math.round(fs*1.18)<=th)break}
+  g.font=fonte(fs);q=lvQuebra(g,ls,w);
+  var lh=Math.round(fs*1.18),y=ty0+Math.max(0,Math.round((th-q.length*lh)/2));
+  q.forEach(function(l){
+    var tw=g.measureText(l).width,x=LV.esq?x0:x0+Math.round((w-tw)/2);
+    g.fillText(l,x,y+Math.round((lh-fs)/2));y+=lh;
+  });
+  return cv;
+}
+function lvPrevia(){
+  var p=document.getElementById('lvcv');if(!p)return;
+  var cv=lvDesenha();p.width=cv.width;p.height=cv.height;
+  var g=p.getContext('2d');g.drawImage(cv,0,0);
+  if(!LV.img&&!lvLinhas().some(function(l){return l})){g.fillStyle='#b4b4bc';g.textBaseline='middle';g.font='500 26px Arial, Helvetica, sans-serif';
+    var tx='escreva o texto',tw=g.measureText(tx).width;g.fillText(tx,(cv.width-tw)/2,cv.height/2)}
+}
+async function lvImprimir(via){
+  var er=document.getElementById('lverr'),ok=document.getElementById('lvok');er.textContent='';ok.textContent='';
+  LV.txt=(document.getElementById('lvt')||{}).value||'';
+  LV.qtd=Math.max(1,Math.min(200,parseInt((document.getElementById('lvq')||{}).value,10)||1));lvSalva();
+  if(!LV.img&&!lvLinhas().some(function(l){return l})){er.textContent='escreva o texto ou escolha uma imagem';return}
+  var cv=lvDesenha();
+  try{
+    if(via==='bt'){
+      if(!navigator.bluetooth){er.textContent='sem Bluetooth neste navegador — use o Chrome (Android) no endereço https, ou imprima pelo navegador';return}
+      ok.textContent='enviando pra impressora…';
+      await etqBtEnvia(etqBytes(cv,LV.qtd));
+    } else etqNavegador(cv,LV.qtd);
+  }catch(e){ok.textContent='';er.textContent='não imprimiu: '+(e&&e.message||e);ETQ.btCh=null;return}
+  ok.textContent='✓ '+LV.qtd+(LV.qtd>1?' etiquetas enviadas':' etiqueta enviada')+(ETQ.bt&&via==='bt'?' pra '+(ETQ.bt.name||'impressora'):'');
+}
+window.addEventListener('hashchange',function(){etqVaiModo(etqModo())});
+etqAbas();
+if(etqModo()==='livre')telaLivre(document.getElementById('main'));else telaEtq(document.getElementById('main'));
 </script></body></html>`;
 
 const CAIXA_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"><link rel="manifest" href="/app.webmanifest?t=caixa"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><link rel="apple-touch-icon" href="/app-icon.png">
