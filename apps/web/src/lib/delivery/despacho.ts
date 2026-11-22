@@ -379,6 +379,45 @@ export async function confirmarEntrega(token: string, codigoDigitado: string): P
   return pagarBoy(d.id);
 }
 
+/**
+ * O CLIENTE confirmou na página do pedido que recebeu — dono 22/11/2026
+ * ("se ele clicar lá, receber, o boy recebe o Pix"). Vale como o código
+ * digitado pelo boy: marca entregue, conclui o pedido e manda o Pix. Serve
+ * quando o boy não conseguiu digitar o código (sem sinal, link fechado...).
+ * O token é o do PEDIDO (link do cliente), não o do boy.
+ */
+export async function confirmarRecebidoPeloCliente(tokenPedido: string): Promise<ResultadoEntrega> {
+  if (!tokenPedido || tokenPedido.length < 20) return { ok: false, erro: 'pedido não encontrado' };
+  const [r] = await db
+    .select({ d: schema.deliveryDespacho, p: schema.deliveryPedido })
+    .from(schema.deliveryPedido)
+    .innerJoin(schema.deliveryDespacho, eq(schema.deliveryDespacho.pedidoId, schema.deliveryPedido.id))
+    .where(eq(schema.deliveryPedido.token, tokenPedido))
+    .limit(1);
+  if (!r) return { ok: false, erro: 'Esse pedido não saiu com entregador nosso.' };
+  const { d, p } = r;
+  if (p.status === 'cancelado') return { ok: false, erro: 'Pedido cancelado.' };
+  if (!d.entregueEm && p.status !== 'saiu_entrega' && p.status !== 'chegou') {
+    return { ok: false, erro: 'O pedido ainda não saiu pra entrega.' };
+  }
+  const marcou = await db
+    .update(schema.deliveryDespacho)
+    .set({ entregueEm: new Date(), atualizadoEm: new Date() })
+    .where(and(eq(schema.deliveryDespacho.id, d.id), sql`${schema.deliveryDespacho.entregueEm} IS NULL`))
+    .returning({ id: schema.deliveryDespacho.id });
+  if (marcou.length > 0) {
+    await db
+      .update(schema.deliveryPedido)
+      .set({ status: 'concluido', atualizadoEm: new Date() })
+      .where(and(eq(schema.deliveryPedido.id, p.id), sql`${schema.deliveryPedido.status} <> 'cancelado'`));
+    console.log(`delivery: pedido #${p.numero} (${p.id}) confirmado como recebido pelo CLIENTE`);
+  }
+  // Pix do boy: se ele ainda não tem cadastro/chave, fica pendente e sai
+  // quando ele abrir o link dele (confirmarEntrega → pagarBoy).
+  const pix = await pagarBoy(d.id);
+  return { ok: true, mensagem: pix.ok ? 'pix enviado' : (pix.erro ?? 'pix pendente') };
+}
+
 /** Gera um código novo pro cliente (loja, quando o boy errou demais). */
 export async function novoCodigoCliente(despachoId: string): Promise<{ ok: boolean; erro?: string; waCliente?: string; enviado?: boolean }> {
   const [r] = await db

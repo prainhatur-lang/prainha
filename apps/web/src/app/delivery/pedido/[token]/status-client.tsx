@@ -17,6 +17,16 @@ const CODIGO_ENTREGA_TXT: Record<string, { titulo: string; dica: string }> = {
   it: { titulo: 'Il tuo codice di consegna', dica: 'Dallo al fattorino solo quando ricevi l’ordine.' },
 };
 
+// Cliente confirma que recebeu (dono 22/11/2026: "se ele clicar lá, receber,
+// o boy recebe o Pix") — vale como o código digitado pelo entregador.
+const RECEBI_TXT: Record<string, { botao: string; pergunta: string; sim: string; nao: string; ok: string }> = {
+  pt: { botao: 'Já recebi meu pedido', pergunta: 'Confirma que o pedido chegou em suas mãos?', sim: 'Sim, recebi', nao: 'Ainda não', ok: 'Obrigado! Entrega confirmada.' },
+  en: { botao: 'I got my order', pergunta: 'Confirm the order is in your hands?', sim: 'Yes, I got it', nao: 'Not yet', ok: 'Thank you! Delivery confirmed.' },
+  es: { botao: 'Ya recibí mi pedido', pergunta: '¿Confirmas que el pedido llegó a tus manos?', sim: 'Sí, lo recibí', nao: 'Todavía no', ok: '¡Gracias! Entrega confirmada.' },
+  fr: { botao: 'J’ai reçu ma commande', pergunta: 'Confirmez-vous avoir reçu la commande ?', sim: 'Oui, reçue', nao: 'Pas encore', ok: 'Merci ! Livraison confirmée.' },
+  it: { botao: 'Ho ricevuto l’ordine', pergunta: 'Confermi che l’ordine è nelle tue mani?', sim: 'Sì, ricevuto', nao: 'Non ancora', ok: 'Grazie! Consegna confermata.' },
+};
+
 // Horários da linha do tempo e previsão (dono 22/11/2026: "seria interessante
 // ter os horários ... tantos minutos que tá sendo preparado ... informar o
 // cliente o tempo").
@@ -166,6 +176,28 @@ export function StatusClient({
   const [copiado, setCopiado] = useState(false);
   const [mostrarCartao, setMostrarCartao] = useState(false);
   const [gerandoPix, setGerandoPix] = useState(false);
+  const [recebiPergunta, setRecebiPergunta] = useState(false);
+  const [recebiEnviando, setRecebiEnviando] = useState(false);
+  const [recebiMsg, setRecebiMsg] = useState<string | null>(null);
+  const rt = RECEBI_TXT[lang] ?? RECEBI_TXT.pt;
+  async function confirmarRecebi() {
+    setRecebiEnviando(true);
+    try {
+      const r = await fetch(`/api/delivery/pedido/${token}/recebi`, { method: 'POST' });
+      const j = (await r.json().catch(() => ({}))) as { error?: string };
+      if (!r.ok) {
+        setRecebiMsg(`⚠ ${j.error ?? `erro ${r.status}`}`);
+        return;
+      }
+      setRecebiMsg(rt.ok);
+      setRecebiPergunta(false);
+      void carregar();
+    } catch {
+      setRecebiMsg('⚠ sem conexão, tente de novo');
+    } finally {
+      setRecebiEnviando(false);
+    }
+  }
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // diferença servidor − celular, pra contar minutos pelo relógio do servidor
   const [desvio, setDesvio] = useState(0);
@@ -528,7 +560,41 @@ export function StatusClient({
               <p className="mt-1 text-[11px] text-[var(--dlv-muted)]">
                 {CODIGO_ENTREGA_TXT[lang]?.dica ?? CODIGO_ENTREGA_TXT.pt.dica}
               </p>
+              {recebiPergunta ? (
+                <div className="mt-3 border-t border-[var(--dlv-brand-dot)] pt-3">
+                  <p className="text-sm text-[var(--dlv-ink)]">{rt.pergunta}</p>
+                  <div className="mt-2 flex justify-center gap-2">
+                    <button
+                      disabled={recebiEnviando}
+                      onClick={() => void confirmarRecebi()}
+                      className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                    >
+                      {recebiEnviando ? '…' : rt.sim}
+                    </button>
+                    <button
+                      disabled={recebiEnviando}
+                      onClick={() => setRecebiPergunta(false)}
+                      className="rounded-lg border border-[var(--dlv-muted)] px-4 py-2 text-sm text-[var(--dlv-text)]"
+                    >
+                      {rt.nao}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={() => {
+                    setRecebiMsg(null);
+                    setRecebiPergunta(true);
+                  }}
+                  className="mt-3 rounded-lg border border-emerald-600 px-4 py-2 text-sm font-semibold text-emerald-700"
+                >
+                  ✓ {rt.botao}
+                </button>
+              )}
             </div>
+          ) : null}
+          {recebiMsg ? (
+            <p className="mt-2 text-center text-sm text-[var(--dlv-text)]">{recebiMsg}</p>
           ) : null}
           {pedido.pagamento.metodo === 'na_entrega' && pedido.status !== 'concluido' ? (
             <p className="mt-3 rounded-xl bg-[var(--dlv-surface)] px-3 py-2 text-xs text-[var(--dlv-text)]">
