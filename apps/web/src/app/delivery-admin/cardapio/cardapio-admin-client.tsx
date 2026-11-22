@@ -319,9 +319,10 @@ export function CardapioAdminClient({
       setSalao(null);
       setSelecionados(new Set());
       ok(
-        porCategoria
+        (porCategoria
           ? `${escolhidos.length} produto(s) trazido(s) em ${d.categorias} categoria(s) do cardápio — agora ajuste os preços.`
-          : `${escolhidos.length} produto(s) trazido(s) com o preço do salão — agora ajuste o preço do delivery e do iFood.`,
+          : `${escolhidos.length} produto(s) trazido(s) com o preço do salão — agora ajuste o preço do delivery e do iFood.`)
+          + textoFotos(d.fotos),
       );
     } finally {
       setSalvando(false);
@@ -365,6 +366,52 @@ export function CardapioAdminClient({
     }
   }
 
+  // Foto vinda do servidor da loja (dono 22/11/2026: "não está trazendo as fotos").
+  function textoFotos(f: unknown): string {
+    const x = f as { ok?: boolean; trazidas?: number; semFotoNaLoja?: number; falhas?: number } | null;
+    if (!x || !x.ok) return '';
+    const partes: string[] = [];
+    if (x.trazidas) partes.push(`${x.trazidas} foto(s) trazida(s) da loja`);
+    if (x.semFotoNaLoja) partes.push(`${x.semFotoNaLoja} sem foto na loja`);
+    if (x.falhas) partes.push(`${x.falhas} não responderam (tente de novo)`);
+    return partes.length ? ` · ${partes.join(' · ')}` : '';
+  }
+  const [puxandoFotos, setPuxandoFotos] = useState(false);
+  async function puxarFotos() {
+    setPuxandoFotos(true);
+    setErro(null);
+    try {
+      const r = await fetch('/api/delivery-admin/fotos-da-loja', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filialId }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setErro(d.error ?? `Erro ${r.status}`);
+        return;
+      }
+      ok(
+        d.verificados
+          ? `Fotos da loja: ${d.verificados} item(ns) sem foto verificado(s)${textoFotos(d)}.`
+          : 'Nenhum item ligado ao salão está sem foto.',
+      );
+    } finally {
+      setPuxandoFotos(false);
+    }
+  }
+  const semFoto = itens.filter((i) => !i.fotoUrl).length;
+  const botaoFotos =
+    podeEditar && semFoto > 0 ? (
+      <button
+        onClick={() => void puxarFotos()}
+        disabled={puxandoFotos}
+        className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+      >
+        {puxandoFotos ? 'Buscando fotos…' : `📷 Puxar fotos da loja (${semFoto} sem foto)`}
+      </button>
+    ) : null;
+
   const botaoTrazer = podeCriar ? (
     <button
       onClick={() => void abrirJanela()}
@@ -387,7 +434,10 @@ export function CardapioAdminClient({
             salão
           </p>
         </div>
-        {botaoTrazer}
+        <div className="flex flex-wrap gap-2">
+          {botaoFotos}
+          {botaoTrazer}
+        </div>
       </div>
 
       {filiais.length > 1 ? (

@@ -14,6 +14,7 @@ import { and, asc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { limparNomeProduto, normalizarNome } from '@/lib/orcamentos';
+import { puxarFotosDaLoja } from '@/lib/delivery/fotos-da-loja';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -338,9 +339,21 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'nenhum item válido' }, { status: 400 });
   }
 
-  await db.insert(schema.deliveryItem).values(linhas);
+  const criadosIds = await db
+    .insert(schema.deliveryItem)
+    .values(linhas)
+    .returning({ id: schema.deliveryItem.id, varianteId: schema.deliveryItem.varianteId });
+
+  // Foto: o item trazido do salão desta casa já vem com a foto do produto,
+  // que mora no servidor da loja (dono 22/11/2026: "não está trazendo as fotos").
+  const fotos = await puxarFotosDaLoja(
+    filialId,
+    criadosIds.filter((c) => c.varianteId).map((c) => c.id),
+  );
+
   return NextResponse.json({
     ok: true,
+    fotos,
     criados: linhas.length,
     categoriaId,
     categorias: manterCategorias ? cacheCategorias.size : 1,
