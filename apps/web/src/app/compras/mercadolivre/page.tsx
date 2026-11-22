@@ -58,6 +58,44 @@ interface Linha {
   envio: EnvioML | null;
 }
 
+/** Campos que lib/mercadolivre-email (mlEmailLer) grava em ml_email.dados. */
+interface DadosEmailML {
+  produto?: string | null;
+  vendedor?: string | null;
+  vendedorDoc?: string | null;
+  forma?: string | null;
+  cartaoFinal?: string | null;
+  cep?: string | null;
+  previsao?: string | null;
+  entregueEm?: string | null;
+}
+
+interface PedidoDosEmails {
+  pedido: string;
+  primeiro: Date;
+  ultimo: Date;
+  tipos: Set<string>;
+  total: number | null;
+  d: DadosEmailML;
+}
+
+function statusDoPedido(p: PedidoDosEmails): { txt: string; cor: string } {
+  if (p.tipos.has('cancelamento')) return { txt: 'Cancelada', cor: 'bg-rose-100 text-rose-800' };
+  if (p.tipos.has('entrega'))
+    return { txt: p.d.entregueEm ? `Entregue ${p.d.entregueEm}` : 'Entregue', cor: 'bg-emerald-100 text-emerald-800' };
+  if (p.tipos.has('envio')) return { txt: 'A caminho', cor: 'bg-sky-100 text-sky-800' };
+  if (p.tipos.has('nfe')) return { txt: 'NF-e emitida', cor: 'bg-indigo-100 text-indigo-800' };
+  if (p.tipos.has('pagamento_recusado')) return { txt: 'Cartão recusado', cor: 'bg-rose-100 text-rose-800' };
+  if (p.tipos.has('pix_pendente') && !p.tipos.has('compra')) return { txt: 'Pix pendente', cor: 'bg-amber-100 text-amber-800' };
+  return { txt: 'Comprado', cor: 'bg-slate-100 text-slate-700' };
+}
+
+function formaDoPedido(p: PedidoDosEmails): string {
+  if (p.d.forma) return p.d.forma + (p.d.cartaoFinal ? ` final ${p.d.cartaoFinal}` : '');
+  if (p.tipos.has('compra')) return 'Cartão (o e-mail não traz o valor)';
+  return '—';
+}
+
 export default async function MercadoLivrePage(props: { searchParams: Promise<{ ml?: string }> }) {
   const supabase = await createClient();
   const {
@@ -83,10 +121,32 @@ export default async function MercadoLivrePage(props: { searchParams: Promise<{ 
       tipo: schema.mlEmail.tipo,
       pedidoMl: schema.mlEmail.pedidoMl,
       total: schema.mlEmail.total,
+      dados: schema.mlEmail.dados,
     })
     .from(schema.mlEmail)
     .orderBy(desc(schema.mlEmail.recebidoEm))
     .limit(200);
+
+  // Compras montadas a partir dos e-mails: um pedido junta compra, Pix, NF-e, envio e entrega.
+  const porPedido = new Map<string, PedidoDosEmails>();
+  for (const e of [...emails].reverse()) {
+    if (!e.pedidoMl || !e.tipo || e.tipo === 'outro') continue;
+    const d = (e.dados ?? {}) as DadosEmailML;
+    let p = porPedido.get(e.pedidoMl);
+    if (!p) {
+      p = { pedido: e.pedidoMl, primeiro: e.recebidoEm, ultimo: e.recebidoEm, tipos: new Set(), total: null, d: {} };
+      porPedido.set(e.pedidoMl, p);
+    }
+    p.ultimo = e.recebidoEm;
+    p.tipos.add(e.tipo);
+    if (e.tipo === 'compra') p.primeiro = e.recebidoEm;
+    if (e.total != null && (p.total == null || e.tipo === 'compra')) p.total = Number(e.total);
+    for (const k of Object.keys(d) as (keyof DadosEmailML)[]) {
+      const v = d[k];
+      if (v != null && v !== '' && (p.d[k] == null || e.tipo === 'compra')) p.d[k] = v;
+    }
+  }
+  const pedidosEmail = [...porPedido.values()].sort((a, b) => b.primeiro.getTime() - a.primeiro.getTime());
 
   const porConta: { conta: (typeof contas)[number]; linhas: Linha[]; erro: string | null }[] = [];
   for (const conta of contas) {
@@ -158,6 +218,66 @@ export default async function MercadoLivrePage(props: { searchParams: Promise<{ 
 
         {configurado && contas.length === 0 && (
           <p className="text-sm text-slate-500">Nenhuma conta ligada ainda.</p>
+        )}
+
+        {pedidosEmail.length > 0 && (
+          <section className="rounded-lg border border-slate-200 bg-white">
+            <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-slate-100 px-4 py-3">
+              <h2 className="font-medium text-slate-900">Compras pelos e-mails</h2>
+              <span className="text-sm text-slate-600">
+                {pedidosEmail.length} pedido(s) · {brl(pedidosEmail.reduce((s, p) => s + (p.total ?? 0), 0))} com valor no e-mail
+              </span>
+            </header>
+            <p className="px-4 pt-3 text-xs text-slate-500">
+              Compra no cartão não traz o valor no e-mail do Mercado Livre: o valor vem da fatura (data + vendedor).
+            </p>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
+                  <tr>
+                    <th className="px-3 py-2">Data</th>
+                    <th className="px-3 py-2">Pedido</th>
+                    <th className="px-3 py-2">Produto / vendedor</th>
+                    <th className="px-3 py-2">Pagamento</th>
+                    <th className="px-3 py-2 text-right">Valor</th>
+                    <th className="px-3 py-2">Situação</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {pedidosEmail.map((p) => {
+                    const st = statusDoPedido(p);
+                    return (
+                      <tr key={p.pedido}>
+                        <td className="whitespace-nowrap px-3 py-2">{dataBr(p.primeiro.toISOString())}</td>
+                        <td className="whitespace-nowrap px-3 py-2 font-mono text-xs">{p.pedido}</td>
+                        <td className="px-3 py-2">
+                          {p.d.produto ?? '—'}
+                          {(p.d.vendedor || p.d.vendedorDoc) && (
+                            <div className="text-xs text-slate-500">
+                              {p.d.vendedor}
+                              {p.d.vendedorDoc && ` · ${p.d.vendedorDoc}`}
+                            </div>
+                          )}
+                          {!p.tipos.has('compra') && (
+                            <div className="text-xs text-amber-700">Sem o e-mail “Você comprou” (compra antes de 01/11?)</div>
+                          )}
+                        </td>
+                        <td className="px-3 py-2">{formaDoPedido(p)}</td>
+                        <td className="whitespace-nowrap px-3 py-2 text-right">{p.total != null ? brl(p.total) : '—'}</td>
+                        <td className="px-3 py-2">
+                          <span className={`whitespace-nowrap rounded px-2 py-0.5 text-xs ${st.cor}`}>{st.txt}</span>
+                          {p.d.previsao && !p.tipos.has('entrega') && (
+                            <div className="text-xs text-slate-500">Chega {p.d.previsao}</div>
+                          )}
+                          {p.d.cep && <div className="text-xs text-slate-500">CEP {p.d.cep}</div>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </section>
         )}
 
         <section className="rounded-lg border border-slate-200 bg-white">

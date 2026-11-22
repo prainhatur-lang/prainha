@@ -47,7 +47,7 @@ export async function POST(req: Request) {
     if (Number.isNaN(recebidoEm.getTime())) continue;
     const assunto = m.assunto ?? '';
     const texto = m.texto ?? '';
-    const lido = mlEmailLer(assunto, texto);
+    const lido = mlEmailLer(assunto, texto, m.html ?? '', m.de ?? '');
     const r = await db
       .insert(schema.mlEmail)
       .values({
@@ -61,7 +61,7 @@ export async function POST(req: Request) {
         tipo: lido.tipo,
         pedidoMl: lido.pedido,
         total: lido.total != null ? lido.total.toFixed(2) : null,
-        dados: { para: m.para ?? null, valores: lido.valores },
+        dados: { para: m.para ?? null, ...lido },
       })
       .onConflictDoNothing({ target: schema.mlEmail.messageId })
       .returning({ id: schema.mlEmail.id });

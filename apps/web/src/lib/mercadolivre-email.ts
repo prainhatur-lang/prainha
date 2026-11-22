@@ -1,7 +1,7 @@
 // E-mails do Mercado Livre (plano B, sem API). O script do Google na conta que
 // compra empurra os e-mails pra /api/mercadolivre/email com o token abaixo.
 // Aqui: o token (derivado do CREDENCIAL_SECRET, nenhuma env nova) e a leitura
-// best-effort do e-mail (tipo, nº do pedido, total). O e-mail cru fica guardado
+// do e-mail (tipo, nº do pedido, valor, Pix/cartão, vendedor, endereço, previsão). O e-mail cru fica guardado
 // pra refinar a leitura depois.
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
@@ -20,50 +20,144 @@ export function mlEmailTokenConfere(recebido: string | null | undefined): boolea
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-export type TipoEmailML = 'compra' | 'pagamento' | 'envio' | 'entrega' | 'cancelamento' | 'outro';
+export type TipoEmailML =
+  | 'compra' // "Você comprou …" (Pix traz o valor; cartão não traz)
+  | 'pix_pendente' // "Finalize a sua compra" — Pix gerado, ainda não pago
+  | 'pagamento_recusado' // "Pague sua compra de outra forma" — cartão recusado
+  | 'nfe' // "A NF-e da compra #… já está disponível"
+  | 'envio' // a caminho / reagendado
+  | 'entrega' // "Sua compra chegou"
+  | 'cancelamento'
+  | 'pagamento'
+  | 'outro'; // propaganda, avaliação, palavra-chave, lado vendedor…
 
 function semAcento(s: string): string {
   return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 }
 
-export function mlEmailTipo(assunto: string): TipoEmailML {
+/** Remetentes de propaganda: nunca são compra. */
+function ehPropaganda(de: string): boolean {
+  return /ofertas@|promocion@|promo@|novidades@|marketing@/i.test(de);
+}
+
+export function mlEmailTipo(assunto: string, de = ''): TipoEmailML {
+  if (ehPropaganda(de)) return 'outro';
   const a = semAcento(assunto);
+  if (/ganhe pontos|opiniao|palavra-chave|responderam|leve os produtos|agencia correios|avaliar/.test(a)) return 'outro';
   if (/cancel|reembols|devolu/.test(a)) return 'cancelamento';
-  if (/entreg(ue|amos|a realizada)|chegou|recebeu/.test(a)) return 'entrega';
-  if (/caminho|enviad|despach|a caminho|saiu para|rastre/.test(a)) return 'envio';
-  if (/pagamento|pago|aprovad|pix|boleto|fatura/.test(a)) return 'pagamento';
-  if (/compr(ou|a)|pedido/.test(a)) return 'compra';
+  if (/^voce comprou/.test(a)) return 'compra';
+  if (/finalize a sua compra/.test(a)) return 'pix_pendente';
+  if (/pague sua compra de outra forma/.test(a)) return 'pagamento_recusado';
+  if (/nf-e/.test(a)) return 'nfe';
+  if (/chegou|entregue|entregamos|recebeu/.test(a)) return 'entrega';
+  if (/caminho|reagendamos|enviad|despach|saiu para/.test(a)) return 'envio';
+  if (/pagamento|aprovad/.test(a)) return 'pagamento';
   return 'outro';
 }
 
-/** "1.234,56" → 1234.56 */
-function numeroBr(s: string): number | null {
-  const n = Number(s.replace(/\./g, '').replace(',', '.'));
-  return Number.isFinite(n) ? n : null;
+/** HTML do e-mail → texto com "|" entre as tags (o ML põe os centavos numa tag à parte). */
+function emPedacos(html: string): string {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, '|')
+    .replace(/&nbsp;|&#8204;|‌| /g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&ccedil;/g, 'ç')
+    .replace(/&atilde;/g, 'ã')
+    .replace(/&aacute;/g, 'á')
+    .replace(/&eacute;/g, 'é')
+    .replace(/&otilde;/g, 'õ')
+    .replace(/\s+/g, ' ')
+    .replace(/(\| ?)+/g, '|');
+}
+
+/** "4.839" + "99" → 4839.99 ; "1.125" + null → 1125 */
+function reais(inteiro: string, centavos: string | null | undefined): number | null {
+  const n = Number(inteiro.replace(/\./g, '')) + (centavos ? Number(centavos) / 100 : 0);
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
 }
 
 export interface LeituraEmailML {
   tipo: TipoEmailML;
+  /** nº da compra no ML (link "minhas compras", ou o # do assunto). */
   pedido: string | null;
+  /** só quando o e-mail diz o valor (Pix); compra no cartão não traz. */
   total: number | null;
-  valores: number[];
+  forma: string | null; // 'Pix' | 'Cartão final 7224' | …
+  cartaoFinal: string | null;
+  produto: string | null;
+  vendedor: string | null;
+  vendedorDoc: string | null; // CNPJ/CPF só dígitos
+  endereco: string | null;
+  cep: string | null;
+  previsao: string | null; // "entre 21 e 22 de novembro"
+  entregueEm: string | null; // "21 de novembro às 14:28 h"
+  /** demais nºs 2000… do e-mail (pacote/envio), pra casar depois. */
+  outrosIds: string[];
 }
 
-export function mlEmailLer(assunto: string, texto: string): LeituraEmailML {
-  const corpo = `${assunto}\n${texto}`;
+export function mlEmailLer(assunto: string, texto: string, html = '', de = ''): LeituraEmailML {
+  const tipo = mlEmailTipo(assunto, de);
+  const t = html ? emPedacos(html) : texto.replace(/\s*\n\s*/g, '|');
+  const corpo = `${assunto}|${t}`;
+
   const pedido =
-    corpo.match(/(?:pedido|compra|venda)\s*(?:n[ºo°.]*|#|:)?\s*#?\s*(\d{10,})/i)?.[1] ??
-    corpo.match(/#(\d{10,})/)?.[1] ??
+    (html || texto).match(/my_purchases(?:\/|%2F)(\d{12,})/i)?.[1] ??
+    assunto.match(/#(\d{10,})/)?.[1] ??
+    (tipo !== 'outro' ? `${assunto} ${html || texto}`.match(/\b(2000\d{12})\b/)?.[1] : undefined) ??
     null;
-  const valores = [...corpo.matchAll(/R\$\s*([\d.]+,\d{2})/g)]
-    .map((m) => numeroBr(m[1]!))
-    .filter((n): n is number => n != null);
-  const total =
-    (() => {
-      const m = corpo.match(/total[^\n\dR]{0,40}R\$\s*([\d.]+,\d{2})/i) ?? corpo.match(/(?:voc[eê] pagou|pagamento de)[^\n\dR]{0,30}R\$\s*([\d.]+,\d{2})/i);
-      return m ? numeroBr(m[1]!) : null;
-    })() ?? (valores.length ? Math.max(...valores) : null);
-  return { tipo: mlEmailTipo(assunto), pedido, total, valores: valores.slice(0, 30) };
+  const outrosIds = [...new Set([...(html || texto).matchAll(/\b(2000\d{12})\b/g)].map((m) => m[1]!))].filter(
+    (x) => x !== pedido,
+  );
+
+  // valor: "Você pagou |R$|4.839|99|com Pix" / "Pague |R$|703|93|via |Pix" (texto puro: "R$4.83999")
+  let total: number | null = null;
+  let forma: string | null = null;
+  const mHtml = t.match(/(?:Voc[êe] pagou|Pague) ?\|R\$ ?\|?([\d.]+)\|(?:(\d{2})\|)?\s*(?:com|via) ?\|?([^|]+)/i);
+  if (mHtml) {
+    total = reais(mHtml[1]!, mHtml[2]);
+    forma = mHtml[3]!.trim();
+  } else {
+    const mTxt = texto.match(/(?:Voc[êe] pagou|Pague)\s*R\$\s*([\d.]+?)(\d{2})?\s+(?:com|via)\s+(\S+)/i);
+    if (mTxt) {
+      // no texto puro os centavos vêm grudados: "4.83999" = 4.839,99
+      const bruto = mTxt[1]! + (mTxt[2] ?? '');
+      const ult = bruto.split('.').pop()!;
+      total = ult.length > 3 ? reais(bruto.slice(0, -2), bruto.slice(-2)) : reais(bruto, null);
+      forma = mTxt[3]!;
+    }
+  }
+  if (forma && /^pix/i.test(forma)) forma = 'Pix';
+  const cartaoFinal = corpo.match(/terminado em (\d{4})/i)?.[1] ?? corpo.match(/final (\d{4})/i)?.[1] ?? null;
+  if (!forma && cartaoFinal) forma = `Cartão final ${cartaoFinal}`;
+
+  const produto =
+    assunto.match(/^Voc[êe] comprou (.+)$/i)?.[1] ??
+    assunto.match(/^Finalize a sua compra de (.+)$/i)?.[1] ??
+    t.match(/\|Voc[êe] recebeu ([^|]+)/i)?.[1] ??
+    t.match(/\|A caminho! ([^|]+)/i)?.[1] ??
+    (tipo === 'nfe' ? t.match(/\|Voc[êe] comprou ([^|]+?)\.? ?\|/i)?.[1] : undefined) ??
+    null;
+
+  const vend = t.match(/\|Voc[êe] comprou de ([^|]+)\|(?:(CNPJ|CPF) (\d+))?/i);
+  const end = t.match(/\|Envio no meu endere[çc]o\|([^|]+)/i) ?? t.match(/\|(?:Detalhes do envio:|Em) ?\|?(Rua [^|]+?CEP \d{8})/i);
+  const cep = (end?.[1] ?? corpo).match(/CEP (\d{8})/)?.[1] ?? null;
+
+  return {
+    tipo,
+    pedido,
+    total,
+    forma,
+    cartaoFinal,
+    produto: produto?.trim() ?? null,
+    vendedor: vend?.[1]?.trim() ?? null,
+    vendedorDoc: vend?.[3] ?? null,
+    endereco: end?.[1]?.trim() ?? null,
+    cep,
+    previsao: t.match(/\|Chegar[áa] ([^|]+)/i)?.[1]?.trim() ?? assunto.match(/(?:para|chegará) (entre .+)$/i)?.[1] ?? null,
+    entregueEm: t.match(/Entregamos em ([^|.]+)/i)?.[1]?.trim() ?? null,
+    outrosIds: outrosIds.slice(0, 10),
+  };
 }
 
 /** Código do script do Google pra colar na conta que compra no ML. */
