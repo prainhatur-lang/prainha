@@ -125,7 +125,7 @@ type LangCartao = 'pt' | 'en' | 'es' | 'fr' | 'it';
 interface TextosCartao {
   numeroInvalido: string; nomeFalta: string; validadeInvalida: string; cvvInvalido: string;
   cpfInvalido: string; enderecoFalta: string; bancoNegou: string; recusado: string; erroProcessar: string;
-  semLimite: string; pagarPix: string; outroCartao: string; alterar: string; dadosTitular: string;
+  semLimite: string; pagarPix: string; outroCartao: string; alterar: string; enderecoIgual: string;
   credito: string; debito: string; numeroCartao: string; nomeCartao: string; comoNoCartao: string;
   validade: string; mmaa: string; celular: string; paisCelular: string; soNumeros: string;
   email: string; emailPh: string; cpfTitular: string; enderecoCobranca: string; buscando: string;
@@ -147,7 +147,7 @@ const TXT_CARTAO: Record<LangCartao, TextosCartao> = {
     pagarPix: 'Pagar com Pix',
     outroCartao: 'Tentar outro cartão',
     alterar: 'alterar',
-    dadosTitular: 'CPF e endereço de cobrança',
+    enderecoIgual: 'Endereço de cobrança é o mesmo da entrega',
     credito: 'Crédito',
     debito: 'Débito',
     numeroCartao: 'Número do cartão',
@@ -188,7 +188,7 @@ const TXT_CARTAO: Record<LangCartao, TextosCartao> = {
     pagarPix: 'Pay with Pix',
     outroCartao: 'Try another card',
     alterar: 'change',
-    dadosTitular: 'CPF and billing address',
+    enderecoIgual: 'Billing address is the same as delivery',
     credito: 'Credit',
     debito: 'Debit',
     numeroCartao: 'Card number',
@@ -229,7 +229,7 @@ const TXT_CARTAO: Record<LangCartao, TextosCartao> = {
     pagarPix: 'Pagar con Pix',
     outroCartao: 'Probar otra tarjeta',
     alterar: 'cambiar',
-    dadosTitular: 'CPF y dirección de facturación',
+    enderecoIgual: 'La dirección de facturación es la misma de la entrega',
     credito: 'Crédito',
     debito: 'Débito',
     numeroCartao: 'Número de tarjeta',
@@ -270,7 +270,7 @@ const TXT_CARTAO: Record<LangCartao, TextosCartao> = {
     pagarPix: 'Payer par Pix',
     outroCartao: 'Essayer une autre carte',
     alterar: 'modifier',
-    dadosTitular: 'CPF et adresse de facturation',
+    enderecoIgual: 'L’adresse de facturation est celle de la livraison',
     credito: 'Crédit',
     debito: 'Débit',
     numeroCartao: 'Numéro de carte',
@@ -311,7 +311,7 @@ const TXT_CARTAO: Record<LangCartao, TextosCartao> = {
     pagarPix: 'Paga con Pix',
     outroCartao: 'Prova un’altra carta',
     alterar: 'modifica',
-    dadosTitular: 'CPF e indirizzo di fatturazione',
+    enderecoIgual: 'L’indirizzo di fatturazione è quello della consegna',
     credito: 'Credito',
     debito: 'Debito',
     numeroCartao: 'Numero della carta',
@@ -368,10 +368,21 @@ export function CreditCardForm({
   const [cpf, setCpf] = useState('');
   const endPre = preenchido?.endereco ?? null;
   const cpfDoPedido = preenchido?.cpfMascarado ?? null;
-  // Resumo fechado só quando já tem tudo; "alterar" abre os campos de sempre.
-  const [editarTitular, setEditarTitular] = useState(
-    !(cpfDoPedido && endPre?.rua && endPre?.numero && endPre?.bairro),
-  );
+  // CPF do pedido: linha pronta com "alterar". Endereço do pedido: checkbox
+  // "mesmo endereço da entrega" já marcado (dono 22/11/2026: "só clicar e não
+  // ter que preencher novamente"); desmarcar abre os campos de sempre.
+  const temEnderecoPre = !!(endPre?.rua && endPre?.numero && endPre?.bairro);
+  const [editarCpf, setEditarCpf] = useState(!cpfDoPedido);
+  const [enderecoIgual, setEnderecoIgual] = useState(temEnderecoPre);
+  function marcarEnderecoIgual(igual: boolean) {
+    setEnderecoIgual(igual);
+    setStreet(igual ? endPre?.rua ?? '' : '');
+    setNumber(igual ? endPre?.numero ?? '' : '');
+    setNeighborhood(igual ? endPre?.bairro ?? '' : '');
+    setCity(igual ? endPre?.cidade || 'Aracaju' : '');
+    setState(igual ? (endPre?.uf || 'SE').toUpperCase().slice(0, 2) : 'SE');
+    setCep(igual ? (endPre?.cep ?? '').replace(/\D/g, '').slice(0, 8) : '');
+  }
   const [semLimite, setSemLimite] = useState(false);
   // O 3DS 2.0 manda telefone e e-mail do titular na analise de risco do
   // emissor. Iam vazios, e o SDK devolvia onError sem autenticar nada.
@@ -599,10 +610,10 @@ export function CreditCardForm({
     // CPF vazio + CPF do pedido: o servidor usa o que o cliente já informou.
     const usaCpfDoPedido = !!cpfDoPedido && cpf.replace(/\D/g, '').length === 0;
     if (!usaCpfDoPedido && cpf.replace(/\D/g, '').length < 11) {
-      setEditarTitular(true);
+      setEditarCpf(true);
       return setError(t.cpfInvalido);
     }
-    if (!street || !number || !neighborhood) setEditarTitular(true);
+    if (!street || !number || !neighborhood) setEnderecoIgual(false);
     if (!street || !number || !neighborhood) return setError(t.enderecoFalta);
 
     setProcessing(true);
@@ -843,35 +854,45 @@ export function CreditCardForm({
         </div>
       </div>
 
-      {!editarTitular ? (
-        <div className="rounded-xl border border-[var(--rsv-field-border)] bg-[var(--rsv-field-bg)] px-3.5 py-2.5">
-          <div className="flex items-center justify-between gap-2">
-            <span className={lbl}>{t.dadosTitular}</span>
+      {!editarCpf ? (
+        <div>
+          <label className={lbl}>{t.cpfTitular}</label>
+          <div className="mt-1.5 flex items-center justify-between gap-2 rounded-xl border border-[var(--rsv-field-border)] bg-[var(--rsv-field-bg)] px-3.5 py-2.5 text-sm text-[var(--rsv-ink)]">
+            <span>{cpfDoPedido}</span>
             <button
               type="button"
-              onClick={() => setEditarTitular(true)}
+              onClick={() => setEditarCpf(true)}
               className="text-xs font-semibold text-[var(--rsv-strong)] underline"
             >
               {t.alterar}
             </button>
           </div>
-          <p className="mt-1 text-sm text-[var(--rsv-ink)]">
-            {cpf ? cpf : cpfDoPedido}
-            <br />
-            {street}, {number} — {neighborhood}
-            {city ? ` · ${city}/${state}` : ''}
-          </p>
         </div>
-      ) : null}
-
-      {editarTitular ? (
+      ) : (
       <div>
         <label className={lbl}>{t.cpfTitular}</label>
         <input value={cpf} onChange={(e) => setCpf(formatCPF(e.target.value))} placeholder={cpfDoPedido ?? '000.000.000-00'} inputMode="numeric" className={inp} />
       </div>
+      )}
+
+      {temEnderecoPre ? (
+        <label className="flex cursor-pointer items-start gap-2.5 rounded-xl border border-[var(--rsv-field-border)] bg-[var(--rsv-field-bg)] px-3.5 py-2.5">
+          <input
+            type="checkbox"
+            checked={enderecoIgual}
+            onChange={(e) => marcarEnderecoIgual(e.target.checked)}
+            className="mt-0.5 h-4 w-4 accent-[var(--rsv-accent)]"
+          />
+          <span className="text-sm text-[var(--rsv-ink)]">
+            {t.enderecoIgual}
+            <span className="mt-0.5 block text-xs text-[var(--rsv-muted)]">
+              {endPre?.rua}, {endPre?.numero} — {endPre?.bairro}
+            </span>
+          </span>
+        </label>
       ) : null}
 
-      {editarTitular ? (
+      {!enderecoIgual ? (
       <div>
         <label className={lbl}>{t.enderecoCobranca}</label>
         <div className="mt-1.5 grid grid-cols-2 gap-2">
