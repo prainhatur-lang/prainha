@@ -145,7 +145,12 @@ const VENDA_ORIGEM_FB = 3; // origem do pedido gravado no Consumer (3 = Cardápi
 
 const ORIGEM_NOME = { 1: 'Balcão', 2: 'Comanda', 3: 'QR Mesa', 4: 'iFood', 5: 'MenuDino', 6: 'MenuDino', 7: 'DeliveryHub', 8: 'Totem' };
 const DELIVERY_ORIGENS = new Set([4, 5, 6, 7]);
-function classificar(origem, numero) {
+// Pedido do NOSSO delivery (site) entra com a mesma origem 4 do iFood e nome
+// "SITE S16 · Fulano" — o KDS chamava de iFood (dono 22/11/2026: "esses pedidos
+// não são do iFood, é do nosso delivery"). O iFood de verdade segue igual.
+const ehPedidoDoSite = (nome) => /^SITE\b/i.test(String(nome || '').trim());
+function classificar(origem, numero, nome) {
+  if (DELIVERY_ORIGENS.has(origem) && ehPedidoDoSite(nome)) return { tipo: 'delivery', rotulo: 'Delivery do site' };
   if (DELIVERY_ORIGENS.has(origem)) return { tipo: 'delivery', rotulo: ORIGEM_NOME[origem] || 'Delivery' };
   if (numero && numero > 0) return { tipo: 'mesa', rotulo: 'Mesa ' + numero };
   return { tipo: 'balcao', rotulo: 'Balcão' };
@@ -4211,9 +4216,10 @@ const impMoeda = (v) => 'R$ ' + (Number(v) || 0).toLocaleString('pt-BR', { minim
 const impQtd = (q) => { const n = Number(q) || 0; return (n % 1 ? n.toLocaleString('pt-BR') : String(n)) + 'x'; };
 const impHm = (d) => new Date(d || Date.now()).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 function impDetalhes(d) { return String(d || '').split(/\r?\n/).map((x) => x.trim()).filter((x) => temMod(x)); }
-function impRotulo(numero, origem) {
+function impRotulo(numero, origem, nome) {
   const n = Number(numero) || 0;
   if (COMANDA_ATIVA && n >= COMANDA_DE && n <= COMANDA_MAX) return 'COMANDA ' + n;
+  if (DELIVERY_ORIGENS.has(Number(origem)) && ehPedidoDoSite(nome)) return 'DELIVERY DO SITE';
   if (DELIVERY_ORIGENS.has(Number(origem))) return String(ORIGEM_NOME[Number(origem)] || 'Delivery').toUpperCase() + (n > 0 ? ' ' + n : '');
   if (n > 0) return 'MESA ' + n;
   return String(ORIGEM_NOME[Number(origem)] || 'Balcão').toUpperCase();
@@ -4368,7 +4374,7 @@ async function imprimirComandasNovas() {
           await sql`INSERT INTO comanda_impressa ${sql(marcar.map((v) => ({ item_codigo: v })), 'item_codigo')} ON CONFLICT (item_codigo) DO NOTHING`;
           continue;
         }
-        let rotulo = impRotulo(um.numero, um.origem);
+        let rotulo = impRotulo(um.numero, um.origem, um.cliente);
         const mesaV = mesaDaComanda.get(Number(um.numero));
         if (mesaV) rotulo += ' · MESA ' + mesaV;
         const b = [IMP.init, IMP.centro, IMP.neg, IMP.grande, impLn((um.area_nome || 'Sem praça').toUpperCase()), IMP.norm, IMP.negFim, IMP.esquerda, impTraco(),
@@ -17223,7 +17229,7 @@ function agrupar(itens, ordem) {
   // comanda que ficou SÓ com linha escondida (ex.: um "NENHUM" solto) não vira
   // cartão vazio na tela
   const comandas = [...porC.values()].filter((c) => c.itens.length)
-    .map((c) => ({ ...c, ...classificar(c.origem, c.numero) }));
+    .map((c) => ({ ...c, ...classificar(c.origem, c.numero, c.nome) }));
   // FIFO: quem chegou (ou ficou pronto) primeiro aparece primeiro — ordem de produção, não de mesa.
   const chave = ordem === 'pronto' ? 'pronta_desde' : 'chegada';
   comandas.sort((a, b) => {
