@@ -24,6 +24,7 @@ import {
 } from '@/lib/mercadolivre';
 import { desc } from 'drizzle-orm';
 import { mlEmailScript, mlEmailToken } from '@/lib/mercadolivre-email';
+import { casarComprasML } from '@/lib/mercadolivre-casar';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -50,6 +51,11 @@ const ENVIO: Record<string, string> = {
 function dataBr(iso?: string | null): string {
   if (!iso) return '—';
   const [a, m, d] = dateToBrYmd(new Date(iso)).split('-');
+  return `${d}/${m}/${a}`;
+}
+
+function dataYmdBr(ymd: string): string {
+  const [a, m, d] = ymd.split('-');
   return `${d}/${m}/${a}`;
 }
 
@@ -147,6 +153,18 @@ export default async function MercadoLivrePage(props: { searchParams: Promise<{ 
     }
   }
   const pedidosEmail = [...porPedido.values()].sort((a, b) => b.primeiro.getTime() - a.primeiro.getTime());
+  // Casa com o dinheiro que saiu: Pix no extrato (valor + data) ou fatura do cartão (data + vendedor)
+  const casar = await casarComprasML(
+    pedidosEmail
+      .filter((p) => p.tipos.has('compra') || p.total != null)
+      .map((p) => ({
+        pedido: p.pedido,
+        data: dateToBrYmd(p.primeiro),
+        total: p.total,
+        pix: p.d.forma === 'Pix',
+        vendedor: p.d.vendedor ?? null,
+      })),
+  );
 
   const porConta: { conta: (typeof contas)[number]; linhas: Linha[]; erro: string | null }[] = [];
   for (const conta of contas) {
@@ -241,6 +259,7 @@ export default async function MercadoLivrePage(props: { searchParams: Promise<{ 
                     <th className="px-3 py-2">Pagamento</th>
                     <th className="px-3 py-2 text-right">Valor</th>
                     <th className="px-3 py-2">Situação</th>
+                    <th className="px-3 py-2">Saiu de onde</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -271,12 +290,56 @@ export default async function MercadoLivrePage(props: { searchParams: Promise<{ 
                           )}
                           {p.d.cep && <div className="text-xs text-slate-500">CEP {p.d.cep}</div>}
                         </td>
+                        <td className="px-3 py-2 text-xs">
+                          {(() => {
+                            const c = casar.porPedido.get(p.pedido);
+                            if (c)
+                              return (
+                                <>
+                                  <span className={c.certeza === 'certo' ? 'text-emerald-700' : 'text-amber-700'}>
+                                    {c.como === 'pix' ? 'Pix' : 'Cartão'} {dataYmdBr(c.data)} · {brl(c.valor)}
+                                    {c.certeza === 'provavel' && ' (provável)'}
+                                  </span>
+                                  <div className="text-slate-500">{c.origem}</div>
+                                </>
+                              );
+                            if (!p.tipos.has('compra') && p.total == null) return <span className="text-slate-400">—</span>;
+                            if (p.d.forma === 'Pix')
+                              return <span className="text-rose-700">Pix não achado no extrato</span>;
+                            if (!casar.faturaAte || dateToBrYmd(p.primeiro) > casar.faturaAte)
+                              return <span className="text-slate-500">Aguardando a fatura do cartão</span>;
+                            return <span className="text-rose-700">Não achado na fatura</span>;
+                          })()}
+                        </td>
                       </tr>
                     );
                   })}
                 </tbody>
               </table>
             </div>
+            {casar.pixSobrando.length > 0 && (
+              <div className="border-t border-slate-100 px-4 py-3 text-sm">
+                <p className="font-medium text-amber-800">
+                  Pix pro Mercado Pago sem pedido nos e-mails ({casar.pixSobrando.length} ·{' '}
+                  {brl(casar.pixSobrando.reduce((s, c) => s + c.valor, 0))})
+                </p>
+                <p className="text-xs text-slate-500">
+                  Saiu dinheiro pro Mercado Pago e não chegou e-mail de compra com esse valor: pode ser compra de outra conta,
+                  frete ou outro pagamento no Mercado Pago.
+                </p>
+                <ul className="mt-1 space-y-0.5 text-xs text-slate-700">
+                  {casar.pixSobrando.map((c) => (
+                    <li key={c.id}>
+                      {dataYmdBr(c.data)} · {brl(c.valor)} · {c.origem}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <p className="border-t border-slate-100 px-4 py-2 text-xs text-slate-500">
+              Faturas de cartão lidas até {casar.faturaAte ? dataYmdBr(casar.faturaAte) : '—'}: compra no cartão depois disso casa
+              quando a fatura entrar em Financeiro → Faturas de cartão.
+            </p>
           </section>
         )}
 
