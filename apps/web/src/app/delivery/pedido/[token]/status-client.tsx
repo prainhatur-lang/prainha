@@ -17,6 +17,66 @@ const CODIGO_ENTREGA_TXT: Record<string, { titulo: string; dica: string }> = {
   it: { titulo: 'Il tuo codice di consegna', dica: 'Dallo al fattorino solo quando ricevi l’ordine.' },
 };
 
+// Horários da linha do tempo e previsão (dono 22/11/2026: "seria interessante
+// ter os horários ... tantos minutos que tá sendo preparado ... informar o
+// cliente o tempo").
+const TEMPO_TXT: Record<
+  string,
+  {
+    ha: (min: number) => string;
+    previsaoEntrega: string;
+    previsaoRetirada: string;
+    emInstantes: string;
+    atraso: string;
+  }
+> = {
+  pt: {
+    ha: (m) => (m < 1 ? 'agora há pouco' : `há ${m} min`),
+    previsaoEntrega: 'Previsão de chegada',
+    previsaoRetirada: 'Previsão pra ficar pronto',
+    emInstantes: 'chegando em instantes',
+    atraso: 'Está levando um pouco mais que o normal — já já sai.',
+  },
+  en: {
+    ha: (m) => (m < 1 ? 'just now' : `${m} min ago`),
+    previsaoEntrega: 'Estimated arrival',
+    previsaoRetirada: 'Estimated ready time',
+    emInstantes: 'arriving any moment',
+    atraso: 'Taking a little longer than usual — almost there.',
+  },
+  es: {
+    ha: (m) => (m < 1 ? 'hace un momento' : `hace ${m} min`),
+    previsaoEntrega: 'Llegada estimada',
+    previsaoRetirada: 'Listo aproximadamente',
+    emInstantes: 'llegando en instantes',
+    atraso: 'Está tardando un poco más de lo normal — ya casi.',
+  },
+  fr: {
+    ha: (m) => (m < 1 ? 'à l’instant' : `il y a ${m} min`),
+    previsaoEntrega: 'Arrivée prévue',
+    previsaoRetirada: 'Prêt vers',
+    emInstantes: 'arrive d’un instant à l’autre',
+    atraso: 'Un peu plus long que d’habitude — presque prêt.',
+  },
+  it: {
+    ha: (m) => (m < 1 ? 'poco fa' : `${m} min fa`),
+    previsaoEntrega: 'Arrivo previsto',
+    previsaoRetirada: 'Pronto verso le',
+    emInstantes: 'in arrivo a momenti',
+    atraso: 'Ci vuole un po’ più del solito — quasi pronto.',
+  },
+};
+
+const MIN = 60_000;
+
+function hhmm(ms: number): string {
+  return new Date(ms).toLocaleTimeString('pt-BR', {
+    timeZone: 'America/Maceio',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 interface PedidoResp {
   numero: number;
   status: string;
@@ -48,6 +108,12 @@ interface PedidoResp {
   canceladoMotivo: string | null;
   /** Código que o cliente passa pro entregador (só com o pedido na rua). */
   codigoEntrega?: string | null;
+  /** Primeira vez em cada status (ISO). */
+  statusEm?: Record<string, string>;
+  /** Relógio do servidor no momento da resposta. */
+  agora?: string;
+  /** Minutos estimados de moto até o cliente. */
+  deslocamentoMin?: number;
   pagamento: {
     metodo: 'pix' | 'cartao' | 'na_entrega' | null;
     status: string | null;
@@ -101,6 +167,13 @@ export function StatusClient({
   const [mostrarCartao, setMostrarCartao] = useState(false);
   const [gerandoPix, setGerandoPix] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // diferença servidor − celular, pra contar minutos pelo relógio do servidor
+  const [desvio, setDesvio] = useState(0);
+  const [, setTique] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTique((n) => n + 1), 30_000);
+    return () => clearInterval(id);
+  }, []);
 
   const carregar = useCallback(async () => {
     try {
@@ -111,6 +184,7 @@ export function StatusClient({
       }
       const d = (await r.json()) as PedidoResp;
       setPedido(d);
+      if (d.agora) setDesvio(new Date(d.agora).getTime() - Date.now());
       setErro(null);
     } catch {
       /* rede oscilou — próximo poll resolve */
@@ -205,6 +279,49 @@ export function StatusClient({
           { id: 'concluido', label: t.retirado },
         ];
   const idxAtual = etapas.findIndex((e) => e.id === pedido.status);
+  const tt = TEMPO_TXT[lang] ?? TEMPO_TXT.pt;
+  const agoraMs = Date.now() + desvio;
+  const horaDe = (st: string): number | null => {
+    const iso = pedido.statusEm?.[st];
+    const ms = iso ? new Date(iso).getTime() : NaN;
+    return Number.isFinite(ms) ? ms : null;
+  };
+  // Previsão: só "o quanto antes" e com tempo de preparo configurado.
+  // Preparo conta do pagamento; entrega soma o deslocamento. Se já passou do
+  // previsto, não inventa hora: avisa que está demorando um pouco mais.
+  const previsao = (() => {
+    if (!pedido.asap || pedido.status === 'concluido' || pedido.status === 'cancelado') return null;
+    const pMin = pedido.loja?.tempoPreparoMin;
+    const pMax = pedido.loja?.tempoPreparoMax;
+    const desl = pedido.tipo === 'entrega' ? (pedido.deslocamentoMin ?? 15) : 0;
+    const titulo = pedido.tipo === 'entrega' ? tt.previsaoEntrega : tt.previsaoRetirada;
+    if (pedido.status === 'chegou') return { titulo, texto: tt.emInstantes, atraso: false };
+    if (pedido.status === 'saiu_entrega') {
+      const saiu = horaDe('saiu_entrega');
+      if (saiu == null) return null;
+      const chega = saiu + desl * MIN;
+      return chega > agoraMs
+        ? { titulo, texto: `~${hhmm(chega)}`, atraso: false }
+        : { titulo, texto: tt.emInstantes, atraso: false };
+    }
+    if (pedido.status === 'pronto') {
+      if (pedido.tipo !== 'entrega') return null;
+      const pronto = horaDe('pronto') ?? agoraMs;
+      const chega = Math.max(pronto, agoraMs) + (desl + 5) * MIN;
+      return { titulo, texto: `~${hhmm(chega)}`, atraso: false };
+    }
+    if (pMin == null || pMax == null) return null;
+    const base = horaDe('pago');
+    if (base == null) return null;
+    const ini = base + (pMin + desl) * MIN;
+    const fim = base + (pMax + desl) * MIN;
+    if (fim < agoraMs) return { titulo, texto: null, atraso: true };
+    return {
+      titulo,
+      texto: `${hhmm(Math.max(ini, agoraMs))} – ${hhmm(fim)}`,
+      atraso: false,
+    };
+  })();
   const totalCents = Math.round(Number(pedido.total) * 100);
   const aguardandoPixComQr =
     pendente && pedido.pagamento.metodo === 'pix' && !!pedido.pagamento.qrCodeString;
@@ -349,6 +466,11 @@ export function StatusClient({
             {etapas.map((e, idx) => {
               const feito = idx <= idxAtual;
               const atual = idx === idxAtual;
+              const quando = feito ? horaDe(e.id) : null;
+              const minDesde =
+                atual && quando != null && pedido.status !== 'concluido'
+                  ? Math.max(0, Math.floor((agoraMs - quando) / MIN))
+                  : null;
               return (
                 <li key={e.id} className="flex items-center gap-3">
                   <span
@@ -369,11 +491,32 @@ export function StatusClient({
                   >
                     {e.label}
                     {atual && pedido.status === 'pago' ? t.obrigado : ''}
+                    {minDesde != null ? (
+                      <span className="ml-1 text-xs font-normal text-[var(--dlv-muted)]">
+                        · {tt.ha(minDesde)}
+                      </span>
+                    ) : null}
                   </span>
+                  {quando != null ? (
+                    <span className="ml-auto text-xs tabular-nums text-[var(--dlv-muted)]">
+                      {hhmm(quando)}
+                    </span>
+                  ) : null}
                 </li>
               );
             })}
           </ol>
+          {previsao ? (
+            <div className="mt-3 rounded-xl bg-[var(--dlv-surface)] px-3 py-2 text-sm text-[var(--dlv-text)]">
+              {previsao.atraso ? (
+                <span>⏱ {tt.atraso}</span>
+              ) : (
+                <span>
+                  ⏱ {previsao.titulo}: <b className="text-[var(--dlv-ink)]">{previsao.texto}</b>
+                </span>
+              )}
+            </div>
+          ) : null}
           {pedido.codigoEntrega ? (
             <div className="mt-3 rounded-xl border-2 border-dashed border-[var(--dlv-brand-dot)] bg-[var(--dlv-surface)] px-3 py-3 text-center">
               <p className="text-xs text-[var(--dlv-muted)]">

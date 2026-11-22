@@ -192,6 +192,9 @@ export const deliveryPedido = pgTable(
     /** pendente_pagamento | pago | em_preparo | pronto | saiu_entrega |
      *  concluido | cancelado */
     status: varchar('status', { length: 20 }).notNull().default('pendente_pagamento'),
+    /** Primeira vez em cada status: { "em_preparo": "<ISO>", ... }. Gravado
+     *  por trigger no banco (migrate-delivery-status-em) — não escrever na mão. */
+    statusEm: jsonb('status_em').$type<Record<string, string>>().notNull().default({}),
     /** pix | cartao */
     pagamentoMetodo: varchar('pagamento_metodo', { length: 10 }),
     /** null | aguardando | pago | reembolsado (espelha reserva/orçamento). */

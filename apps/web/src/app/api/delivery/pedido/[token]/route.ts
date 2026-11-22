@@ -115,6 +115,15 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
     canceladoMotivo: p.canceladoMotivo,
     codigoEntrega,
     criadoEm: sqlToIso(p.criadoEm),
+    // Hora de cada etapa + previsão (dono 22/11/2026: "informar o cliente o
+    // tempo"). statusEm vem do trigger; agora = relógio do servidor, pra
+    // tela não depender do relógio do celular.
+    statusEm: {
+      ...(p.pagoEm && !p.statusEm?.pago ? { pago: sqlToIso(p.pagoEm) } : {}),
+      ...(p.statusEm ?? {}),
+    },
+    agora: new Date().toISOString(),
+    deslocamentoMin: minutosDeslocamento(p.distanciaKm),
     pagamento: {
       metodo: p.pagamentoMetodo,
       status: p.pagamentoStatus,
@@ -133,6 +142,14 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
         }
       : null,
   });
+}
+
+/** Tempo de moto até o cliente: ~3 min/km + 5 de saída/estacionar,
+ *  entre 10 e 45. Sem distância (pedido sem geocódigo), 15 min. */
+function minutosDeslocamento(km: string | null): number {
+  const d = Number(km);
+  if (!km || !Number.isFinite(d) || d <= 0) return 15;
+  return Math.max(10, Math.min(45, Math.round(5 + d * 3)));
 }
 
 function sqlToIso(d: Date | null): string | null {
