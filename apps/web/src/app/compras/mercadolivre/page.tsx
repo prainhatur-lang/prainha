@@ -25,6 +25,7 @@ import {
 import { desc } from 'drizzle-orm';
 import { mlEmailScript, mlEmailToken } from '@/lib/mercadolivre-email';
 import { casarComprasML } from '@/lib/mercadolivre-casar';
+import { notasDasComprasML } from '@/lib/mercadolivre-nota';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -166,6 +167,16 @@ export default async function MercadoLivrePage(props: { searchParams: Promise<{ 
       })),
   );
 
+  // NF-e do vendedor que já chegou pela SEFAZ: a entrada no estoque vai por ela (sem pedido sem nota, senão dobra)
+  const notasML = await notasDasComprasML(
+    pedidosEmail.map((p) => ({
+      pedido: p.pedido,
+      data: dateToBrYmd(p.primeiro),
+      total: p.total ?? casar.porPedido.get(p.pedido)?.valor ?? null,
+      vendedorDoc: p.d.vendedorDoc ?? null,
+    })),
+  );
+
   const porConta: { conta: (typeof contas)[number]; linhas: Linha[]; erro: string | null }[] = [];
   for (const conta of contas) {
     try {
@@ -260,6 +271,7 @@ export default async function MercadoLivrePage(props: { searchParams: Promise<{ 
                     <th className="px-3 py-2 text-right">Valor</th>
                     <th className="px-3 py-2">Situação</th>
                     <th className="px-3 py-2">Saiu de onde</th>
+                    <th className="px-3 py-2">Nota fiscal / estoque</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -309,6 +321,47 @@ export default async function MercadoLivrePage(props: { searchParams: Promise<{ 
                             if (!casar.faturaAte || dateToBrYmd(p.primeiro) > casar.faturaAte)
                               return <span className="text-slate-500">Aguardando a fatura do cartão</span>;
                             return <span className="text-rose-700">Não achado na fatura</span>;
+                          })()}
+                        </td>
+                        <td className="px-3 py-2 text-xs">
+                          {(() => {
+                            const n = notasML.get(p.pedido);
+                            if (!n) {
+                              if (p.tipos.has('cancelamento')) return <span className="text-slate-400">—</span>;
+                              return <span className="text-slate-500">Sem NF-e ainda</span>;
+                            }
+                            const est =
+                              n.itens > 0 && n.lancados >= n.itens
+                                ? { t: 'Estoque lançado', c: 'text-emerald-700' }
+                                : n.lancados > 0
+                                  ? { t: `Estoque parcial (${n.lancados}/${n.itens})`, c: 'text-amber-700' }
+                                  : { t: 'Falta dar entrada', c: 'text-rose-700' };
+                            return (
+                              <>
+                                {n.notas.map((x) => (
+                                  <div key={x.notaId}>
+                                    <a href={`/movimento/entrada-notas/${x.notaId}`} className="text-sky-700 underline">
+                                      NF {x.numero ?? '?'} · {brl(x.valor)}
+                                    </a>
+                                    {x.emissao && <span className="text-slate-500"> · {dataYmdBr(x.emissao)}</span>}
+                                  </div>
+                                ))}
+                                {n.como === 'valor' && <div className="text-amber-700">(achada pelo valor)</div>}
+                                <div className="text-slate-500">
+                                  {n.emitente} · {n.casa}
+                                  {n.notas.length > 1 && ` · ${n.notas.length} notas = ${brl(n.valor)}`}
+                                </div>
+                                {p.total != null && n.valor < p.total - 0.5 && (
+                                  <div className="text-amber-700">Notas somam {brl(n.valor)} de {brl(p.total)} (frete ou nota que falta)</div>
+                                )}
+                                <div className={est.c}>{est.t}</div>
+                                {n.contasPagar > 0 && (
+                                  <div className="text-amber-700">
+                                    Tem {n.contasPagar} conta a pagar — já foi pago no ML, conferir pra não pagar em dobro
+                                  </div>
+                                )}
+                              </>
+                            );
                           })()}
                         </td>
                       </tr>
