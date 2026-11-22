@@ -81,6 +81,13 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
     status: p.status,
     tipo: p.tipo,
     clienteNome: p.clienteNome,
+    // Pro cartão já vir preenchido. CPF só mascarado (o link é público por
+    // token); o servidor do pagamento usa o do pedido.
+    clienteCpfMascarado: (() => {
+      const d = (p.clienteCpf ?? '').replace(/\D/g, '');
+      return d.length === 11 ? `***.***.${d.slice(6, 9)}-${d.slice(9)}` : null;
+    })(),
+    clienteTelefone: p.clienteTelefone,
     agendadoData: p.agendadoData,
     agendadoHora: p.agendadoHora,
     asap: p.asap,

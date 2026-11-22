@@ -103,6 +103,20 @@ interface Props {
   extraPayload?: Record<string, unknown>;
   /** Idioma da tela (delivery com ?lang=); sem ele, português. */
   lang?: LangCartao;
+  /** Dados que o cliente já deu antes (delivery: CPF, celular e endereço do
+   *  pedido — dono 22/11/2026: "eu já informei o CPF na primeira parte").
+   *  Vêm preenchidos; com CPF e endereço completos, aparecem num resumo com
+   *  "alterar" em vez dos campos abertos. Sem isto, a tela segue como sempre. */
+  preenchido?: {
+    /** CPF mascarado (***.***.123-45): o servidor usa o do pedido. */
+    cpfMascarado?: string | null;
+    telefone?: string | null;
+    endereco?: {
+      cep?: string; rua?: string; numero?: string; bairro?: string; cidade?: string; uf?: string;
+    } | null;
+  };
+  /** Recusa por falta de limite: botão "Pagar com Pix" chama isto. */
+  onPreferirPix?: () => void;
 }
 
 // Delivery com ?lang= (turista): a tela do cartão sai no idioma do cliente.
@@ -111,6 +125,7 @@ type LangCartao = 'pt' | 'en' | 'es' | 'fr' | 'it';
 interface TextosCartao {
   numeroInvalido: string; nomeFalta: string; validadeInvalida: string; cvvInvalido: string;
   cpfInvalido: string; enderecoFalta: string; bancoNegou: string; recusado: string; erroProcessar: string;
+  semLimite: string; pagarPix: string; outroCartao: string; alterar: string; dadosTitular: string;
   credito: string; debito: string; numeroCartao: string; nomeCartao: string; comoNoCartao: string;
   validade: string; mmaa: string; celular: string; paisCelular: string; soNumeros: string;
   email: string; emailPh: string; cpfTitular: string; enderecoCobranca: string; buscando: string;
@@ -128,6 +143,11 @@ const TXT_CARTAO: Record<LangCartao, TextosCartao> = {
     bancoNegou: 'O banco não autorizou esse cartão. Tente outro cartão ou pague via Pix.',
     recusado: 'Pagamento recusado. Tente outro cartão ou pague via Pix.',
     erroProcessar: 'Erro ao processar cartão.',
+    semLimite: 'Seu cartão não passou por falta de limite. Pague com Pix ou tente outro cartão.',
+    pagarPix: 'Pagar com Pix',
+    outroCartao: 'Tentar outro cartão',
+    alterar: 'alterar',
+    dadosTitular: 'CPF e endereço de cobrança',
     credito: 'Crédito',
     debito: 'Débito',
     numeroCartao: 'Número do cartão',
@@ -164,6 +184,11 @@ const TXT_CARTAO: Record<LangCartao, TextosCartao> = {
     bancoNegou: "The bank didn't authorize this card. Try another card or pay with Pix.",
     recusado: 'Payment declined. Try another card or pay with Pix.',
     erroProcessar: 'Error processing card.',
+    semLimite: "Your card was declined for insufficient limit. Pay with Pix or try another card.",
+    pagarPix: 'Pay with Pix',
+    outroCartao: 'Try another card',
+    alterar: 'change',
+    dadosTitular: 'CPF and billing address',
     credito: 'Credit',
     debito: 'Debit',
     numeroCartao: 'Card number',
@@ -200,6 +225,11 @@ const TXT_CARTAO: Record<LangCartao, TextosCartao> = {
     bancoNegou: 'El banco no autorizó esta tarjeta. Prueba con otra tarjeta o paga con Pix.',
     recusado: 'Pago rechazado. Prueba con otra tarjeta o paga con Pix.',
     erroProcessar: 'Error al procesar la tarjeta.',
+    semLimite: 'Tu tarjeta fue rechazada por falta de límite. Paga con Pix o prueba otra tarjeta.',
+    pagarPix: 'Pagar con Pix',
+    outroCartao: 'Probar otra tarjeta',
+    alterar: 'cambiar',
+    dadosTitular: 'CPF y dirección de facturación',
     credito: 'Crédito',
     debito: 'Débito',
     numeroCartao: 'Número de tarjeta',
@@ -236,6 +266,11 @@ const TXT_CARTAO: Record<LangCartao, TextosCartao> = {
     bancoNegou: 'La banque n’a pas autorisé cette carte. Essayez une autre carte ou payez par Pix.',
     recusado: 'Paiement refusé. Essayez une autre carte ou payez par Pix.',
     erroProcessar: 'Erreur lors du traitement de la carte.',
+    semLimite: 'Votre carte a été refusée pour plafond insuffisant. Payez par Pix ou essayez une autre carte.',
+    pagarPix: 'Payer par Pix',
+    outroCartao: 'Essayer une autre carte',
+    alterar: 'modifier',
+    dadosTitular: 'CPF et adresse de facturation',
     credito: 'Crédit',
     debito: 'Débit',
     numeroCartao: 'Numéro de carte',
@@ -272,6 +307,11 @@ const TXT_CARTAO: Record<LangCartao, TextosCartao> = {
     bancoNegou: 'La banca non ha autorizzato questa carta. Prova con un’altra carta o paga con Pix.',
     recusado: 'Pagamento rifiutato. Prova con un’altra carta o paga con Pix.',
     erroProcessar: 'Errore durante l’elaborazione della carta.',
+    semLimite: 'La tua carta è stata rifiutata per limite insufficiente. Paga con Pix o prova un’altra carta.',
+    pagarPix: 'Paga con Pix',
+    outroCartao: 'Prova un’altra carta',
+    alterar: 'modifica',
+    dadosTitular: 'CPF e indirizzo di fatturazione',
     credito: 'Credito',
     debito: 'Debito',
     numeroCartao: 'Numero della carta',
@@ -315,6 +355,8 @@ export function CreditCardForm({
   endpointMpiToken,
   extraPayload,
   lang = 'pt',
+  preenchido,
+  onPreferirPix,
 }: Props) {
   const t = TXT_CARTAO[lang] ?? TXT_CARTAO.pt;
   const urlPagamento = endpointPagamento ?? `/api/reservar/${token}/pagamento-cartao`;
@@ -324,18 +366,28 @@ export function CreditCardForm({
   const [expiry, setExpiry] = useState('');
   const [cvv, setCvv] = useState('');
   const [cpf, setCpf] = useState('');
+  const endPre = preenchido?.endereco ?? null;
+  const cpfDoPedido = preenchido?.cpfMascarado ?? null;
+  // Resumo fechado só quando já tem tudo; "alterar" abre os campos de sempre.
+  const [editarTitular, setEditarTitular] = useState(
+    !(cpfDoPedido && endPre?.rua && endPre?.numero && endPre?.bairro),
+  );
+  const [semLimite, setSemLimite] = useState(false);
   // O 3DS 2.0 manda telefone e e-mail do titular na analise de risco do
   // emissor. Iam vazios, e o SDK devolvia onError sem autenticar nada.
-  const [fone, setFone] = useState('');
+  const [fone, setFone] = useState(() => {
+    const d = (preenchido?.telefone ?? '').replace(/\D/g, '');
+    return d.length >= 12 && d.startsWith('55') ? d.slice(2, 13) : d.slice(0, 11);
+  });
   const [foneDdi, setFoneDdi] = useState('55');
   const [email, setEmail] = useState('');
   const [cardType, setCardType] = useState<'CreditCard' | 'DebitCard'>('CreditCard');
-  const [street, setStreet] = useState('');
-  const [number, setNumber] = useState('');
-  const [neighborhood, setNeighborhood] = useState('');
-  const [city, setCity] = useState('');
-  const [state, setState] = useState('SE');
-  const [cep, setCep] = useState('');
+  const [street, setStreet] = useState(endPre?.rua ?? '');
+  const [number, setNumber] = useState(endPre?.numero ?? '');
+  const [neighborhood, setNeighborhood] = useState(endPre?.bairro ?? '');
+  const [city, setCity] = useState(endPre?.cidade || (endPre?.rua ? 'Aracaju' : ''));
+  const [state, setState] = useState((endPre?.uf || 'SE').toUpperCase().slice(0, 2));
+  const [cep, setCep] = useState((endPre?.cep ?? '').replace(/\D/g, '').slice(0, 8));
   const [buscandoCep, setBuscandoCep] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
@@ -537,13 +589,20 @@ export function CreditCardForm({
 
   async function handleSubmit() {
     setError(null);
+    setSemLimite(false);
 
     if (cleanNumber.length < 13) return setError(t.numeroInvalido);
     if (!holder.trim()) return setError(t.nomeFalta);
     const expiryDigits = expiry.replace(/\D/g, '');
     if (expiryDigits.length !== 4) return setError(t.validadeInvalida);
     if (cvv.length < 3) return setError(t.cvvInvalido);
-    if (cpf.replace(/\D/g, '').length < 11) return setError(t.cpfInvalido);
+    // CPF vazio + CPF do pedido: o servidor usa o que o cliente já informou.
+    const usaCpfDoPedido = !!cpfDoPedido && cpf.replace(/\D/g, '').length === 0;
+    if (!usaCpfDoPedido && cpf.replace(/\D/g, '').length < 11) {
+      setEditarTitular(true);
+      return setError(t.cpfInvalido);
+    }
+    if (!street || !number || !neighborhood) setEditarTitular(true);
     if (!street || !number || !neighborhood) return setError(t.enderecoFalta);
 
     setProcessing(true);
@@ -600,6 +659,12 @@ export function CreditCardForm({
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok || !d.pago) {
+        if (d.motivo === 'limite') {
+          setSemLimite(true);
+          setError(t.semLimite);
+          setProcessing(false);
+          return;
+        }
         setError(d.error ?? t.recusado);
         setProcessing(false);
         return;
@@ -624,6 +689,33 @@ export function CreditCardForm({
       {error && (
         <div className="rounded-xl border border-[var(--rsv-danger)] bg-[var(--rsv-danger-bg)] px-3.5 py-2.5 text-xs text-[var(--rsv-danger)]">
           {error}
+          {semLimite ? (
+            <div className="mt-2.5 flex flex-wrap gap-2">
+              {onPreferirPix ? (
+                <button
+                  type="button"
+                  onClick={onPreferirPix}
+                  className="rounded-full bg-[var(--rsv-accent)] px-3.5 py-2 text-xs font-semibold text-[var(--rsv-accent-ink)]"
+                >
+                  {t.pagarPix}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => {
+                  setSemLimite(false);
+                  setError(null);
+                  setCardNumber('');
+                  setHolder('');
+                  setExpiry('');
+                  setCvv('');
+                }}
+                className="rounded-full border border-[var(--rsv-field-border)] bg-[var(--rsv-field-bg)] px-3.5 py-2 text-xs font-semibold text-[var(--rsv-strong)]"
+              >
+                {t.outroCartao}
+              </button>
+            </div>
+          ) : null}
         </div>
       )}
 
@@ -751,11 +843,35 @@ export function CreditCardForm({
         </div>
       </div>
 
+      {!editarTitular ? (
+        <div className="rounded-xl border border-[var(--rsv-field-border)] bg-[var(--rsv-field-bg)] px-3.5 py-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className={lbl}>{t.dadosTitular}</span>
+            <button
+              type="button"
+              onClick={() => setEditarTitular(true)}
+              className="text-xs font-semibold text-[var(--rsv-strong)] underline"
+            >
+              {t.alterar}
+            </button>
+          </div>
+          <p className="mt-1 text-sm text-[var(--rsv-ink)]">
+            {cpf ? cpf : cpfDoPedido}
+            <br />
+            {street}, {number} — {neighborhood}
+            {city ? ` · ${city}/${state}` : ''}
+          </p>
+        </div>
+      ) : null}
+
+      {editarTitular ? (
       <div>
         <label className={lbl}>{t.cpfTitular}</label>
-        <input value={cpf} onChange={(e) => setCpf(formatCPF(e.target.value))} placeholder="000.000.000-00" inputMode="numeric" className={inp} />
+        <input value={cpf} onChange={(e) => setCpf(formatCPF(e.target.value))} placeholder={cpfDoPedido ?? '000.000.000-00'} inputMode="numeric" className={inp} />
       </div>
+      ) : null}
 
+      {editarTitular ? (
       <div>
         <label className={lbl}>{t.enderecoCobranca}</label>
         <div className="mt-1.5 grid grid-cols-2 gap-2">
@@ -778,6 +894,7 @@ export function CreditCardForm({
           <input value={state} onChange={(e) => setState(e.target.value.toUpperCase().slice(0, 2))} placeholder={t.uf} className={`${inp} col-span-2 mt-0`} />
         </div>
       </div>
+      ) : null}
 
       <button onClick={handleSubmit} disabled={isProcessing} className={btn}>
         {isProcessing

@@ -14,6 +14,8 @@ interface PedidoResp {
   status: string;
   tipo: 'entrega' | 'retirada';
   clienteNome: string;
+  clienteCpfMascarado?: string | null;
+  clienteTelefone?: string | null;
   agendadoData: string;
   agendadoHora: string | null;
   asap: boolean;
@@ -23,6 +25,9 @@ interface PedidoResp {
     complemento?: string;
     bairro?: string;
     referencia?: string;
+    cep?: string;
+    cidade?: string;
+    uf?: string;
   } | null;
   subtotal: string;
   taxaEntrega: string;
@@ -282,6 +287,12 @@ export function StatusClient({
                 endpointPagamento={`/api/delivery/pedido/${token}/pagamento-cartao`}
                 endpointMpiToken={`/api/delivery/pedido/${token}/mpi-token`}
                 lang={lang}
+                preenchido={{
+                  cpfMascarado: pedido.clienteCpfMascarado ?? null,
+                  telefone: pedido.clienteTelefone ?? null,
+                  endereco: pedido.tipo === 'entrega' ? pedido.endereco : null,
+                }}
+                onPreferirPix={() => void gerarPix()}
               />
             </div>
           ) : null}

@@ -5,7 +5,7 @@
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { eq, sql } from 'drizzle-orm';
-import { createCieloCardPayment, friendlyCieloError } from '@/lib/cielo';
+import { cieloRecusaPorLimite, createCieloCardPayment, friendlyCieloError } from '@/lib/cielo';
 import { marcarDeliveryPedidoPago } from '@/lib/delivery/pedido';
 import { SEM_3DS_TETO_CENTAVOS } from '@/lib/pagar-mesa';
 
@@ -34,7 +34,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
   const cardExpiration = typeof b?.cardExpiration === 'string' ? b.cardExpiration : '';
   const cardCvv = typeof b?.cardCvv === 'string' ? b.cardCvv.replace(/\D/g, '') : '';
   const brand = typeof b?.brand === 'string' ? b.brand : 'Visa';
-  const cpf = typeof b?.cpf === 'string' ? b.cpf : '';
+  // CPF vazio = o cliente já informou no pedido (a tela mostra só mascarado).
+  const cpfDigitado = typeof b?.cpf === 'string' ? b.cpf : '';
+  const cpf = cpfDigitado.replace(/\D/g, '') ? cpfDigitado : (pedido.clienteCpf ?? '');
   const paymentType = b?.paymentType === 'DebitCard' ? 'DebitCard' : 'CreditCard';
   const billingAddress =
     b?.billingAddress &&
@@ -109,7 +111,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ tok
     }
 
     return NextResponse.json(
-      { ok: false, error: friendlyCieloError(resultado.returnCode) },
+      {
+        ok: false,
+        error: friendlyCieloError(resultado.returnCode),
+        // A tela mostra o aviso de limite com os botões Pix / outro cartão.
+        motivo: cieloRecusaPorLimite(resultado.returnCode) ? 'limite' : undefined,
+        returnCode: resultado.returnCode || undefined,
+      },
       { status: 402 },
     );
   } catch (e) {

@@ -317,7 +317,26 @@ export function friendlyCieloError(returnCode: string): string {
     BV: 'Cartão vencido.',
     BP: 'Transação não permitida.',
   };
-  return messages[returnCode] || `Pagamento recusado (${returnCode}). Tente outro cartão ou pague via Pix.`;
+  // A API 3.0 devolve o código com 2 dígitos ("51"); a tabela usa 3 ("051").
+  const pad = /^\d{1,2}$/.test(returnCode) ? returnCode.padStart(3, '0') : returnCode;
+  if (cieloRecusaPorLimite(returnCode)) return MSG_SEM_LIMITE;
+  return (
+    messages[returnCode] ||
+    messages[pad] ||
+    `Pagamento recusado (${returnCode}). Tente outro cartão ou pague via Pix.`
+  );
+}
+
+// Recusa por falta de limite/saldo (dono 22/11/2026: "o cartão deu falta de
+// limite, o ideal é que avisasse que não passou por conta do limite e sugerir
+// pagamento com Pix ou outro cartão"). 51 = saldo/limite insuficiente; 61/121 =
+// excede limite de valor; 116 = saldo insuficiente (Elo/Amex).
+const CODIGOS_SEM_LIMITE = new Set(['51', '61', '116', '121']);
+export const MSG_SEM_LIMITE =
+  'Seu cartão não passou por falta de limite. Pague com Pix ou tente outro cartão.';
+export function cieloRecusaPorLimite(returnCode: string | null | undefined): boolean {
+  const c = String(returnCode ?? '').trim().replace(/^0+(?=\d)/, '');
+  return CODIGOS_SEM_LIMITE.has(c);
 }
 
 // ============================================
