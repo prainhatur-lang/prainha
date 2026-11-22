@@ -8,6 +8,7 @@ import { createClient } from '@/lib/supabase/server';
 import { exigirPerm } from '@/lib/exigir-perm';
 import { podeUsuario } from '@/lib/permissoes-runtime';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { filiaisOndeEhGerente } from '@/lib/delivery/gerente';
 import { AppHeader } from '@/components/app-header';
 import { diasAtrasBr } from '@/lib/datas';
 import { PedidosClient } from './pedidos-client';
@@ -72,6 +73,7 @@ export default async function DeliveryAdminPage(props: {
       canceladoMotivo: schema.deliveryPedido.canceladoMotivo,
       criadoEm: sql<string>`${schema.deliveryPedido.criadoEm}::text`,
       pagoEm: sql<string>`${schema.deliveryPedido.pagoEm}::text`,
+      statusEm: schema.deliveryPedido.statusEm,
     })
     .from(schema.deliveryPedido)
     .where(
@@ -106,6 +108,8 @@ export default async function DeliveryAdminPage(props: {
           )
       : [];
 
+  const gerenteEm = await filiaisOndeEhGerente(user.id, filialIds);
+
   const lojas = await db
     .select({ id: schema.filial.id, config: schema.filial.deliveryConfig })
     .from(schema.filial)
@@ -123,6 +127,7 @@ export default async function DeliveryAdminPage(props: {
         filialFiltro={filialFiltro}
         podeAtualizar={podeAtualizar}
         podeConfigurar={podeConfigurar}
+        gerenteEm={gerenteEm}
         lojas={lojas.map((l) => ({
           id: l.id,
           slug: l.config?.slug ?? null,

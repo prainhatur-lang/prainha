@@ -6,7 +6,10 @@
 
 import { NextResponse, after } from 'next/server';
 import { db, schema } from '@concilia/db';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
+import { ehGerenteDaFilial } from '@/lib/delivery/gerente';
+import { randomBytes } from 'node:crypto';
+import { diasAtrasBr } from '@/lib/datas';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { refundPayment } from '@/lib/pagamento-online';
@@ -57,6 +60,7 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
   const { id } = await ctx.params;
   const b = await request.json().catch(() => null);
   const acao = typeof b?.acao === 'string' ? b.acao : '';
+  if (acao === 'cancelar_concluido') return cancelarConcluido(user, id, b);
   const regra = TRANSICOES[acao];
   if (!regra) return NextResponse.json({ error: 'ação inválida' }, { status: 400 });
 
@@ -137,4 +141,150 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
   }
 
   return NextResponse.json({ ok: true, status: regra.para, estorno });
+}
+
+function codigoCredito(): string {
+  const alfa = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+  const b = randomBytes(6);
+  let c = '';
+  for (let i = 0; i < 6; i++) c += alfa[b[i]! % alfa.length];
+  return `CRED-${c}`;
+}
+
+const brl = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+
+/** Cancelar pedido já CONCLUÍDO (deu problema depois da entrega) — dono
+ *  22/11/2026: 'só supervisor, só gerente pode cancelar ... normalmente vai
+ *  gerar um crédito ou devolução do dinheiro'. Destino:
+ *   - devolucao: estorna no meio de pagamento (Cielo/Rede/Pix). Se o estorno
+ *     automático falhar (ou foi pago na entrega), o pedido é cancelado e a
+ *     devolução fica pra fazer à mão — a resposta avisa.
+ *   - credito: cria um cupom de valor fixo (CRED-XXXXXX), 1 uso, 90 dias,
+ *     no valor pago, e manda o código pro cliente no WhatsApp.
+ *   - nenhum: só cancela.
+ *  O destino fica escrito no motivo do cancelamento (sem coluna nova). */
+async function cancelarConcluido(
+  user: { id: string; email?: string | null },
+  id: string,
+  b: Record<string, unknown> | null,
+) {
+  const destino = b?.destino;
+  if (destino !== 'devolucao' && destino !== 'credito' && destino !== 'nenhum') {
+    return NextResponse.json({ error: 'escolha: devolução, crédito ou nenhum' }, { status: 400 });
+  }
+  const motivoTxt = typeof b?.motivo === 'string' ? b.motivo.trim().slice(0, 200) : '';
+  if (!motivoTxt) return NextResponse.json({ error: 'informe o motivo' }, { status: 400 });
+
+  const [p] = await db
+    .select()
+    .from(schema.deliveryPedido)
+    .where(eq(schema.deliveryPedido.id, id))
+    .limit(1);
+  if (!p) return NextResponse.json({ error: 'pedido não encontrado' }, { status: 404 });
+  if (!(await ehGerenteDaFilial(user.id, p.filialId))) {
+    return NextResponse.json(
+      { error: 'só gerente ou dono da casa cancela pedido concluído' },
+      { status: 403 },
+    );
+  }
+  if (p.status !== 'concluido') {
+    return NextResponse.json(
+      { error: `pedido está "${p.status}" — só pedido concluído cancela por aqui` },
+      { status: 400 },
+    );
+  }
+
+  const valor = Number(p.total);
+  let estorno: 'ok' | 'falhou' | 'manual' | null = null;
+  let credito: { codigo: string; validade: string } | null = null;
+
+  if (destino === 'devolucao') {
+    if (p.pagamentoStatus === 'pago' && p.pagamentoId) {
+      try {
+        const r = await refundPayment(p.pagamentoId, undefined, p.filialId);
+        if (r.status !== 'reembolsado') throw new Error(r.reason ?? 'negado');
+        estorno = 'ok';
+      } catch (e) {
+        console.error('delivery: estorno (concluído) falhou:', (e as Error).message);
+        estorno = 'falhou';
+      }
+    } else {
+      estorno = 'manual';
+    }
+  } else if (destino === 'credito') {
+    const validade = diasAtrasBr(-90);
+    for (let t = 0; t < 5 && !credito; t++) {
+      const codigo = codigoCredito();
+      const ins = await db
+        .insert(schema.deliveryCupom)
+        .values({
+          filialId: p.filialId,
+          codigo,
+          tipo: 'fixo',
+          valor: valor.toFixed(2),
+          validadeFim: validade,
+          usosMax: 1,
+          usosPorCliente: 1,
+          primeiraCompraApenas: false,
+          ativo: true,
+        })
+        .onConflictDoNothing()
+        .returning({ id: schema.deliveryCupom.id });
+      if (ins.length) credito = { codigo, validade };
+    }
+    if (!credito) return NextResponse.json({ error: 'não consegui gerar o crédito' }, { status: 500 });
+  }
+
+  const destinoTxt =
+    destino === 'credito'
+      ? `crédito ${credito!.codigo} de ${brl(valor)}`
+      : destino === 'devolucao'
+        ? estorno === 'ok'
+          ? `devolução de ${brl(valor)} (estornado)`
+          : `devolução de ${brl(valor)} (FAZER À MÃO)`
+        : 'sem crédito nem devolução';
+  const quem = user.email ?? 'gerente';
+
+  await db
+    .update(schema.deliveryPedido)
+    .set({
+      status: 'cancelado',
+      atualizadoEm: sql`now()`,
+      canceladoMotivo: `${motivoTxt} — após concluído, por ${quem}: ${destinoTxt}`.slice(0, 500),
+      ...(estorno === 'ok' ? { pagamentoStatus: 'reembolsado' as const } : {}),
+    })
+    .where(and(eq(schema.deliveryPedido.id, id), eq(schema.deliveryPedido.status, 'concluido')));
+
+  // Aviso pro cliente — best-effort.
+  try {
+    const [loja] = await db
+      .select({ config: schema.filial.deliveryConfig })
+      .from(schema.filial)
+      .where(eq(schema.filial.id, p.filialId))
+      .limit(1);
+    const slug = loja?.config?.slug;
+    const site = slug ? ` em https://app.prainhabar.com/delivery/${slug}` : '';
+    const [aa, mm, dd] = (credito?.validade ?? '').split('-');
+    const extra =
+      destino === 'credito'
+        ? ` Geramos um crédito de ${brl(valor)} pra você: use o código ${credito!.codigo} no próximo pedido${site} (vale até ${dd}/${mm}/${aa}).`
+        : destino === 'devolucao'
+          ? estorno === 'ok'
+            ? ` O valor de ${brl(valor)} foi devolvido no mesmo meio de pagamento.`
+            : ` Vamos devolver ${brl(valor)} pra você — entramos em contato pra combinar.`
+          : '';
+    await enviarAtualizacaoReserva(p.clienteTelefone, {
+      nome: p.clienteNome.split(' ')[0] ?? '',
+      mensagem: `Seu pedido #${p.numero} foi cancelado: ${motivoTxt}.${extra}`,
+    });
+  } catch (e) {
+    console.error('delivery: aviso WhatsApp (cancelar concluído) falhou:', (e as Error).message);
+  }
+
+  return NextResponse.json({
+    ok: true,
+    status: 'cancelado',
+    estorno,
+    credito: credito?.codigo ?? null,
+  });
 }

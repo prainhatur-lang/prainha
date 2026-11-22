@@ -46,6 +46,8 @@ interface Pedido {
   canceladoMotivo: string | null;
   criadoEm: string;
   pagoEm: string | null;
+  /** Primeira vez em cada status (trigger do banco) — ISO. */
+  statusEm?: Record<string, string> | null;
   itens: ItemPedido[];
 }
 
@@ -55,6 +57,8 @@ interface Props {
   filialFiltro: string | null;
   podeAtualizar: boolean;
   podeConfigurar: boolean;
+  /** Casas onde o usuário é DONO/GERENTE (cancela pedido concluído). */
+  gerenteEm?: string[];
   lojas: Array<{ id: string; slug: string | null; ativo: boolean; pausado: boolean }>;
 }
 
@@ -91,6 +95,7 @@ export function PedidosClient({
   filialFiltro,
   podeAtualizar,
   podeConfigurar,
+  gerenteEm = [],
   lojas,
 }: Props) {
   const router = useRouter();
@@ -383,27 +388,333 @@ export function PedidosClient({
           </h2>
           <div className="mt-2 space-y-1.5">
             {encerrados.map((p) => (
-              <div
+              <LinhaEncerrado
                 key={p.id}
-                className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
-              >
-                <span className="text-slate-600">
-                  #{p.numero} · {p.clienteNome} · {brl(p.total)}
-                  {p.canceladoMotivo ? (
-                    <span className="ml-1 text-xs text-rose-600">({p.canceladoMotivo})</span>
-                  ) : null}
-                </span>
-                <span
-                  className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${STATUS_INFO[p.status]?.cls ?? ''}`}
-                >
-                  {STATUS_INFO[p.status]?.txt ?? p.status}
-                </span>
-              </div>
+                p={p}
+                podeAtualizar={podeAtualizar}
+                ehGerente={gerenteEm.includes(p.filialId)}
+                onCancelado={(texto) => {
+                  setErro(null);
+                  setMsg(texto);
+                  start(() => router.refresh());
+                }}
+              />
             ))}
           </div>
         </>
       ) : null}
     </section>
+  );
+}
+
+const ETAPAS_TXT: Array<[string, string]> = [
+  ['pendente_pagamento', 'Pedido feito'],
+  ['pago', 'Pago'],
+  ['em_preparo', 'Na cozinha'],
+  ['pronto', 'Pronto'],
+  ['saiu_entrega', 'Saiu pra entrega'],
+  ['chegou', 'Entregador na porta'],
+  ['concluido', 'Concluído'],
+  ['cancelado', 'Cancelado'],
+];
+
+/** Detalhe de pedido encerrado (concluído/cancelado), só leitura — dono
+ *  22/11/2026 ('quando clicar, mesmo com o pedido concluído, saber o que foi,
+ *  quem é o cliente, qual é o endereço'). Sem botões de mudar status. */
+function LinhaEncerrado({
+  p,
+  podeAtualizar,
+  ehGerente,
+  onCancelado,
+}: {
+  p: Pedido;
+  podeAtualizar: boolean;
+  ehGerente: boolean;
+  onCancelado: (texto: string) => void;
+}) {
+  // Só monta o detalhe quando abre (o entregador/nota buscam dados no mount).
+  const [aberto, setAberto] = useState(false);
+  return (
+    <details
+      className="group rounded-lg border border-slate-200 bg-white text-sm open:shadow-sm"
+      onToggle={(e) => setAberto((e.currentTarget as HTMLDetailsElement).open)}
+    >
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 hover:bg-slate-50 [&::-webkit-details-marker]:hidden">
+        <span className="text-slate-600">
+          <span className="mr-1 inline-block text-slate-400 transition-transform group-open:rotate-90">›</span>
+          #{p.numero} · {p.clienteNome} · {brl(p.total)}
+          {p.canceladoMotivo ? <span className="ml-1 text-xs text-rose-600">({p.canceladoMotivo})</span> : null}
+        </span>
+        <span
+          className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${STATUS_INFO[p.status]?.cls ?? ''}`}
+        >
+          {STATUS_INFO[p.status]?.txt ?? p.status}
+        </span>
+      </summary>
+      {aberto ? (
+        <DetalheEncerrado p={p} podeAtualizar={podeAtualizar} ehGerente={ehGerente} onCancelado={onCancelado} />
+      ) : null}
+    </details>
+  );
+}
+
+/** Cancelar pedido JÁ CONCLUÍDO — só gerente/dono da casa. Escolhe se vira
+ *  devolução do dinheiro, crédito pro cliente (cupom CRED-…) ou nada. */
+function CancelarConcluido({ p, onCancelado }: { p: Pedido; onCancelado: (texto: string) => void }) {
+  const [aberto, setAberto] = useState(false);
+  const [destino, setDestino] = useState<'credito' | 'devolucao' | 'nenhum'>('credito');
+  const [motivo, setMotivo] = useState('');
+  const [erro, setErro] = useState<string | null>(null);
+  const [ocupado, setOcupado] = useState(false);
+  const pagoOnline = p.pagamentoMetodo !== 'na_entrega';
+
+  async function confirmar() {
+    if (!motivo.trim()) {
+      setErro('Escreva o motivo.');
+      return;
+    }
+    const txt =
+      destino === 'credito'
+        ? `gerar crédito de ${brl(p.total)} pro cliente`
+        : destino === 'devolucao'
+          ? `devolver ${brl(p.total)} ao cliente`
+          : 'cancelar sem crédito nem devolução';
+    if (!window.confirm(`Cancelar o pedido #${p.numero} e ${txt}?`)) return;
+    setOcupado(true);
+    setErro(null);
+    try {
+      const r = await fetch(`/api/delivery-admin/pedido/${p.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ acao: 'cancelar_concluido', destino, motivo }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setErro(d.error ?? `Erro ${r.status}`);
+        return;
+      }
+      onCancelado(
+        d.credito
+          ? `Pedido #${p.numero} cancelado. Crédito ${d.credito} de ${brl(p.total)} enviado ao cliente no WhatsApp.`
+          : d.estorno === 'ok'
+            ? `Pedido #${p.numero} cancelado e valor devolvido (estorno feito).`
+            : d.estorno === 'falhou'
+              ? `Pedido #${p.numero} cancelado, mas o estorno automático falhou — devolva ${brl(p.total)} à mão.`
+              : d.estorno === 'manual'
+                ? `Pedido #${p.numero} cancelado — devolva ${brl(p.total)} ao cliente à mão (não foi pago online).`
+                : `Pedido #${p.numero} cancelado.`,
+      );
+    } finally {
+      setOcupado(false);
+    }
+  }
+
+  if (!aberto) {
+    return (
+      <button
+        onClick={() => setAberto(true)}
+        className="rounded-md border border-rose-200 bg-white px-3 py-2 text-sm text-rose-600 hover:bg-rose-50"
+      >
+        Cancelar pedido (gerente)
+      </button>
+    );
+  }
+  return (
+    <div className="space-y-2 rounded-lg border border-rose-200 bg-rose-50/50 p-3">
+      <p className="text-sm font-semibold text-rose-800">Cancelar pedido #{p.numero} — {brl(p.total)}</p>
+      <input
+        value={motivo}
+        onChange={(e) => setMotivo(e.target.value)}
+        placeholder="Motivo (o cliente recebe no WhatsApp) — ex.: pedido chegou errado"
+        className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-sm"
+      />
+      <div className="space-y-1 text-sm text-slate-700">
+        <label className="flex items-start gap-2">
+          <input type="radio" checked={destino === 'credito'} onChange={() => setDestino('credito')} className="mt-1" />
+          <span>
+            <b>Crédito pro cliente</b> — gera um cupom de {brl(p.total)} (1 uso, 90 dias) e manda o código no WhatsApp
+          </span>
+        </label>
+        <label className="flex items-start gap-2">
+          <input type="radio" checked={destino === 'devolucao'} onChange={() => setDestino('devolucao')} className="mt-1" />
+          <span>
+            <b>Devolver o dinheiro</b> —{' '}
+            {pagoOnline ? 'estorna no Pix/cartão em que ele pagou' : 'foi pago na entrega: a devolução é feita à mão'}
+          </span>
+        </label>
+        <label className="flex items-start gap-2">
+          <input type="radio" checked={destino === 'nenhum'} onChange={() => setDestino('nenhum')} className="mt-1" />
+          <span>
+            <b>Só cancelar</b> — sem crédito nem devolução
+          </span>
+        </label>
+      </div>
+      <p className="text-xs text-slate-500">
+        A nota fiscal (se saiu) não é cancelada sozinha — confira em Fiscal. O Pix do entregador não volta.
+      </p>
+      {erro ? <p className="text-xs text-rose-700">{erro}</p> : null}
+      <div className="flex gap-2">
+        <button
+          disabled={ocupado}
+          onClick={confirmar}
+          className="rounded-md bg-rose-600 px-3 py-2 text-sm font-medium text-white hover:bg-rose-700 disabled:opacity-50"
+        >
+          {ocupado ? 'Cancelando…' : 'Confirmar cancelamento'}
+        </button>
+        <button
+          disabled={ocupado}
+          onClick={() => setAberto(false)}
+          className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+        >
+          Voltar
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function DetalheEncerrado({
+  p,
+  podeAtualizar,
+  ehGerente,
+  onCancelado,
+}: {
+  p: Pedido;
+  podeAtualizar: boolean;
+  ehGerente: boolean;
+  onCancelado: (texto: string) => void;
+}) {
+  const etapas = ETAPAS_TXT.filter(([k]) => p.statusEm?.[k]).map(([k, txt]) => ({
+    txt,
+    em: p.statusEm![k]!,
+  }));
+  const quando = (iso: string) => {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    return d.toLocaleString('pt-BR', {
+      timeZone: 'America/Sao_Paulo',
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  };
+  const e = p.endereco;
+  return (
+    <div className="space-y-3 border-t border-slate-100 px-3 py-3">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Cliente</p>
+          <p className="font-medium text-slate-900">{p.clienteNome}</p>
+          <p className="text-slate-600">
+            {p.clienteTelefone}{' '}
+            <a
+              href={`https://wa.me/${p.clienteTelefone}?text=${encodeURIComponent(`Oi ${p.clienteNome.split(' ')[0]}! Sobre seu pedido #${p.numero}:`)}`}
+              target="_blank"
+              rel="noreferrer"
+              className="ml-1 text-xs text-emerald-700 underline"
+            >
+              WhatsApp
+            </a>
+          </p>
+        </div>
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+            {p.tipo === 'entrega' ? '🛵 Entrega' : '🏖️ Retirada'}
+          </p>
+          {p.tipo === 'entrega' && e ? (
+            <p className="text-slate-700">
+              {e.rua}, {e.numero}
+              {e.complemento ? ` — ${e.complemento}` : ''}
+              {e.bairro ? ` · ${e.bairro}` : ''}
+              {e.referencia ? <span className="block text-xs text-slate-500">ref: {e.referencia}</span> : null}
+              {p.distanciaKm ? (
+                <span className="block text-xs text-slate-500">
+                  {Number(p.distanciaKm).toFixed(1).replace('.', ',')} km
+                </span>
+              ) : null}
+            </p>
+          ) : (
+            <p className="text-slate-600">Cliente busca na loja</p>
+          )}
+          <p className="text-xs text-slate-500">
+            {p.asap ? `O quanto antes (${hhmm(p.pagoEm ?? p.criadoEm)})` : `Agendado: ${fmtData(p.agendadoData)} às ${p.agendadoHora}`}
+          </p>
+        </div>
+      </div>
+
+      <div>
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Itens</p>
+        <ul className="mt-1 space-y-1">
+          {p.itens.length === 0 ? <li className="text-slate-400">Sem itens gravados</li> : null}
+          {p.itens.map((i, idx) => (
+            <li key={idx} className="flex justify-between gap-2">
+              <span className="text-slate-700">
+                <span className="font-semibold">{i.qtd}×</span> {i.nome}
+                {i.complementos?.length ? (
+                  <span className="block text-xs text-sky-700">↳ {i.complementos.map((c) => c.nome).join(', ')}</span>
+                ) : null}
+                {i.obs ? <span className="block text-xs text-amber-700">↳ {i.obs}</span> : null}
+              </span>
+              <span className="shrink-0 text-slate-500">{brl(i.total)}</span>
+            </li>
+          ))}
+        </ul>
+        <div className="mt-2 space-y-0.5 border-t border-slate-100 pt-2">
+          <div className="flex justify-between text-slate-500">
+            <span>Subtotal</span>
+            <span>{brl(p.subtotal)}</span>
+          </div>
+          {Number(p.desconto) > 0 ? (
+            <div className="flex justify-between text-emerald-700">
+              <span>Cupom {p.cupomCodigo ?? ''}</span>
+              <span>− {brl(p.desconto)}</span>
+            </div>
+          ) : null}
+          {p.tipo === 'entrega' ? (
+            <div className="flex justify-between text-slate-500">
+              <span>Entrega{p.freteGratisMotivo ? ` (grátis: ${p.freteGratisMotivo.replace('_', ' ')})` : ''}</span>
+              <span>{brl(p.taxaEntrega)}</span>
+            </div>
+          ) : null}
+          <div className="flex justify-between font-bold text-slate-900">
+            <span>Total ({metodoTxt(p.pagamentoMetodo)})</span>
+            <span>{brl(p.total)}</span>
+          </div>
+        </div>
+      </div>
+
+      {p.observacao ? (
+        <p className="rounded-lg bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800">Obs: {p.observacao}</p>
+      ) : null}
+      {p.canceladoMotivo ? (
+        <p className="rounded-lg bg-rose-50 px-2.5 py-1.5 text-xs text-rose-700">
+          Motivo do cancelamento: {p.canceladoMotivo}
+        </p>
+      ) : null}
+
+      <div>
+        <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Andamento</p>
+        {etapas.length > 0 ? (
+          <ol className="mt-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600">
+            {etapas.map((x) => (
+              <li key={x.txt}>
+                {x.txt} <span className="font-medium text-slate-900">{quando(x.em)}</span>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="mt-1 text-xs text-slate-600">
+            Pedido feito {quando(p.criadoEm)}
+            {p.pagoEm ? ` · pago ${quando(p.pagoEm)}` : ''}
+          </p>
+        )}
+      </div>
+
+      {p.status === 'concluido' ? <ImprimirENota p={p} podeAtualizar={podeAtualizar} /> : null}
+      {p.tipo === 'entrega' && podeAtualizar && p.status === 'concluido' ? <EntregadorProprio p={p} /> : null}
+      {ehGerente && podeAtualizar && p.status === 'concluido' ? <CancelarConcluido p={p} onCancelado={onCancelado} /> : null}
+    </div>
   );
 }
 
@@ -554,6 +865,29 @@ function ImprimirENota({ p, podeAtualizar }: { p: Pedido; podeAtualizar: boolean
   const [msg, setMsg] = useState<string | null>(null);
   const [ocupado, setOcupado] = useState(false);
   const naEntrega = p.pagamentoMetodo === 'na_entrega';
+  // Situação da NFC-e (dono 22/11/2026: todo delivery sai com nota) — mostra
+  // no card se a nota do despacho saiu; se não saiu, o aviso fica vermelho.
+  const [sit, setSit] = useState<{
+    situacao: string;
+    nfceId?: string;
+    numero?: number;
+    motivo?: string | null;
+  } | null>(null);
+  const [versao, setVersao] = useState(0);
+  useEffect(() => {
+    if (naEntrega) return;
+    let vivo = true;
+    fetch(`/api/delivery-admin/pedido/${p.id}/nota`, { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (vivo && j) setSit(j);
+      })
+      .catch(() => {});
+    return () => {
+      vivo = false;
+    };
+  }, [p.id, p.status, naEntrega, versao]);
+  const jaSaiu = ['saiu_entrega', 'chegou', 'concluido'].includes(p.status);
 
   async function nota(imprimir: boolean) {
     setOcupado(true);
@@ -573,6 +907,7 @@ function ImprimirENota({ p, podeAtualizar }: { p: Pedido; podeAtualizar: boolean
         return;
       }
       if (aba) aba.location.href = `/fiscal/nfce/${j.nfceId}/danfe`;
+      setVersao((v) => v + 1);
       setMsg(
         imprimir
           ? `✓ NFC-e nº ${j.numero} na fila da impressora da loja`
@@ -613,6 +948,26 @@ function ImprimirENota({ p, podeAtualizar }: { p: Pedido; podeAtualizar: boolean
       ) : null}
       {naEntrega ? (
         <span className="text-xs text-slate-500">Nota: sai pelo caixa da loja (pagamento na entrega)</span>
+      ) : null}
+      {!naEntrega && sit?.situacao === 'autorizada' ? (
+        <a
+          href={`/fiscal/nfce/${sit.nfceId}/danfe`}
+          target="_blank"
+          rel="noreferrer"
+          className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800"
+        >
+          🧾 NFC-e nº {sit.numero} emitida
+        </a>
+      ) : null}
+      {!naEntrega && sit?.situacao === 'emitindo' ? (
+        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
+          🧾 emitindo a nota…
+        </span>
+      ) : null}
+      {!naEntrega && jaSaiu && (sit?.situacao === 'falhou' || sit?.situacao === 'sem_nota') ? (
+        <span className="rounded-full bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-800">
+          ⚠ Saiu SEM nota{sit.motivo ? ` (${sit.motivo})` : ''} — toque em 🧾 Nota fiscal
+        </span>
       ) : null}
       {msg ? <span className="text-xs text-slate-600">{msg}</span> : null}
     </div>
