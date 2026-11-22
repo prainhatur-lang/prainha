@@ -11,11 +11,12 @@
 // Só sai pedido PAGO. Pedido pendente de pagamento não existe pro caixa: o
 // dinheiro entra antes de ocupar a cozinha.
 
-import { NextResponse } from 'next/server';
+import { NextResponse, after } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { db, schema } from '@concilia/db';
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import { enviarAtualizacaoReserva } from '@/lib/whatsapp-otp';
+import { emitirNfceDelivery } from '@/lib/delivery/nfce-delivery';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -174,6 +175,14 @@ export async function POST(request: Request) {
       .update(schema.deliveryPedido)
       .set({ status: acao, atualizadoEm: sql`now()` })
       .where(onde);
+    // Saiu pra entrega pela tela da loja → NFC-e emitida e impressa ali
+    // mesmo (dono 22/11/2026). Depois da resposta, nunca segura a loja.
+    if (acao === 'saiu_entrega') {
+      after(async () => {
+        const r = await emitirNfceDelivery(pedidoId, 'loja');
+        if (!r.ok && !r.pular) console.error('delivery-fila: NFC-e no despacho falhou:', r.erro);
+      });
+    }
     // Aviso no WhatsApp do cliente pelos toques do ENTREGADOR (saí / cheguei):
     // é o que faz a pessoa descer pra porta com o cartão na mão.
     const naEntrega = p.pagamentoStatus === 'na_entrega';

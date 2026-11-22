@@ -539,7 +539,83 @@ function CardPedido({
       {p.tipo === 'entrega' && podeAtualizar && (ABERTO_ENTREGADOR.includes(p.status) || p.status === 'concluido') ? (
         <EntregadorProprio p={p} />
       ) : null}
+      {p.status !== 'pendente_pagamento' && p.status !== 'cancelado' ? (
+        <ImprimirENota p={p} podeAtualizar={podeAtualizar} />
+      ) : null}
     </article>
+  );
+}
+
+/** Via do pedido (com endereço) e NFC-e do pedido — dono 22/11/2026. A nota
+ *  sai sozinha no despacho (Pix/cartão pago no site) e vai pra impressora da
+ *  loja; aqui dá pra abrir/imprimir de novo. Pagamento na entrega: a nota sai
+ *  pelo caixa da loja (vira pedido no PDV). */
+function ImprimirENota({ p, podeAtualizar }: { p: Pedido; podeAtualizar: boolean }) {
+  const [msg, setMsg] = useState<string | null>(null);
+  const [ocupado, setOcupado] = useState(false);
+  const naEntrega = p.pagamentoMetodo === 'na_entrega';
+
+  async function nota(imprimir: boolean) {
+    setOcupado(true);
+    setMsg(imprimir ? 'mandando pra impressora da loja…' : 'emitindo a nota…');
+    // abre a aba já no clique (o navegador bloqueia popup depois do await)
+    const aba = imprimir ? null : window.open('about:blank', '_blank');
+    try {
+      const r = await fetch(`/api/delivery-admin/pedido/${p.id}/nota`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ imprimir }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        aba?.close();
+        setMsg(`⚠ ${j.error ?? `erro ${r.status}`}`);
+        return;
+      }
+      if (aba) aba.location.href = `/fiscal/nfce/${j.nfceId}/danfe`;
+      setMsg(
+        imprimir
+          ? `✓ NFC-e nº ${j.numero} na fila da impressora da loja`
+          : `✓ NFC-e nº ${j.numero}${j.jaExistia ? ' (já emitida)' : ' emitida'}`,
+      );
+    } finally {
+      setOcupado(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-2 text-sm">
+      <a
+        href={`/delivery-admin/pedido/${p.id}/imprimir?auto=1`}
+        target="_blank"
+        rel="noreferrer"
+        className="rounded-md border border-slate-300 bg-white px-3 py-1.5 hover:bg-slate-50"
+      >
+        🖨 Imprimir pedido
+      </a>
+      {podeAtualizar && !naEntrega ? (
+        <>
+          <button
+            disabled={ocupado}
+            onClick={() => nota(false)}
+            className="rounded-md border border-slate-300 bg-white px-3 py-1.5 hover:bg-slate-50 disabled:opacity-50"
+          >
+            🧾 Nota fiscal
+          </button>
+          <button
+            disabled={ocupado}
+            onClick={() => nota(true)}
+            className="rounded-md border border-slate-300 bg-white px-3 py-1.5 hover:bg-slate-50 disabled:opacity-50"
+          >
+            Imprimir nota na loja
+          </button>
+        </>
+      ) : null}
+      {naEntrega ? (
+        <span className="text-xs text-slate-500">Nota: sai pelo caixa da loja (pagamento na entrega)</span>
+      ) : null}
+      {msg ? <span className="text-xs text-slate-600">{msg}</span> : null}
+    </div>
   );
 }
 

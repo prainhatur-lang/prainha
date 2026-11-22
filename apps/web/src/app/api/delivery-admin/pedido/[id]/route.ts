@@ -4,13 +4,14 @@
 // Cancelar pedido já pago tenta o estorno na Cielo (best-effort; se falhar,
 // o pedido é cancelado do mesmo jeito e o estorno vira tarefa manual).
 
-import { NextResponse } from 'next/server';
+import { NextResponse, after } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { eq, sql } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
 import { refundPayment } from '@/lib/pagamento-online';
 import { enviarAtualizacaoReserva } from '@/lib/whatsapp-otp';
+import { emitirNfceDelivery } from '@/lib/delivery/nfce-delivery';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -105,6 +106,15 @@ export async function PATCH(request: Request, ctx: { params: Promise<{ id: strin
         : {}),
     })
     .where(eq(schema.deliveryPedido.id, id));
+
+  // Saiu pra entrega → emite a NFC-e e manda o DANFE pra impressora da loja
+  // (dono 22/11/2026). Depois da resposta, nunca segura o despacho.
+  if (regra.para === 'saiu_entrega') {
+    after(async () => {
+      const r = await emitirNfceDelivery(id, user.email ?? null);
+      if (!r.ok && !r.pular) console.error('delivery: NFC-e no despacho falhou:', r.erro);
+    });
+  }
 
   // Aviso no WhatsApp do cliente — best-effort, nunca derruba a ação.
   try {

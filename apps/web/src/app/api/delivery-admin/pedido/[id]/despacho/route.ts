@@ -6,11 +6,12 @@
 // Não existe "liberar Pix sem código": o Pix só sai pelo link do boy com o
 // código do cliente (lib/delivery/despacho.ts).
 
-import { NextResponse } from 'next/server';
+import { NextResponse, after } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { emitirNfceDelivery } from '@/lib/delivery/nfce-delivery';
 import {
   boyCadastroCompleto,
   despacharPedido,
@@ -80,6 +81,11 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   if (acao === 'despachar') {
     const r = await despacharPedido({ pedidoId: id, telefoneBoy: String(b?.telefone ?? ''), usuarioId: user.id });
     if (!r.ok) return NextResponse.json({ error: r.erro }, { status: r.status ?? 400 });
+    // Despachou → NFC-e emitida e impressa na loja (dono 22/11/2026).
+    after(async () => {
+      const n = await emitirNfceDelivery(id, user.email ?? null);
+      if (!n.ok && !n.pular) console.error('delivery: NFC-e no despacho falhou:', n.erro);
+    });
     return NextResponse.json(r);
   }
   if (acao === 'novo_codigo') {
