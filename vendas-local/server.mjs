@@ -29207,19 +29207,54 @@ var LV=(function(){var x={txt:'',tam:'auto',neg:1,esq:0,mold:0,foto:0,qtd:1};
   x.img=null;x.imgNome='';return x})();
 function lvSalva(){try{localStorage.setItem('etq_livre',JSON.stringify({txt:LV.txt,tam:LV.tam,neg:LV.neg,esq:LV.esq,mold:LV.mold,foto:LV.foto,qtd:LV.qtd}))}catch(e){}}
 function etqModo(){return location.hash==='#livre'?'livre':'validade'}
+/* Livre só pra GERENTE ou ADMIN (dono 22/11/2026). Quem não é gerente vê a
+   tela de Validade igualzinha (sem abas). Reconhece o gerente pelo token do
+   login desta tela, do /gerente neste aparelho, ou entrando aqui (#livre). As
+   chamadas vão por URL completa pra o fetch da porta não trocar o token. */
+var ETQ_GER=null;
+function etqGerToks(){var t=[];try{['etq_ger'].forEach(function(k){var v=sessionStorage.getItem(k);if(v)t.push(v)})}catch(e){}
+  try{['gerente_tok','acesso_etiqueta'].forEach(function(k){var v=localStorage.getItem(k);if(v)t.push(v)})}catch(e){}return t}
+async function etqChecaGer(){
+  var t=etqGerToks();ETQ_GER=null;
+  for(var i=0;i<t.length;i++){
+    try{var r=await (await fetch(location.origin+'/api/gerente/sessao?t='+encodeURIComponent(t[i]),{cache:'no-store'})).json();
+      if(r&&r.ok){ETQ_GER={login:r.login,nome:r.nome};return}}catch(e){}
+  }
+}
 function etqAbas(){
   var m=etqModo(),a=document.getElementById('abas');if(!a)return;
+  if(!ETQ_GER){a.innerHTML='';return}
   a.innerHTML='<div class="row" style="margin-bottom:12px">'+
     '<button class="seg'+(m==='validade'?' on':'')+'" onclick="etqVaiModo(&quot;validade&quot;)">🏷 Validade</button>'+
     '<button class="seg'+(m==='livre'?' on':'')+'" onclick="etqVaiModo(&quot;livre&quot;)">✏️ Etiqueta livre</button></div>';
 }
 function etqVaiModo(m){
   try{history.replaceState(null,'',m==='livre'?'#livre':location.pathname+location.search)}catch(e){location.hash=m==='livre'?'livre':''}
-  etqAbas();var el=document.getElementById('main');if(m==='livre')telaLivre(el);else telaEtq(el);
+  etqAbas();var el=document.getElementById('main');if(m!=='livre')telaEtq(el);else if(ETQ_GER)telaLivre(el);else telaGerLivre(el);
 }
+function telaGerLivre(el){
+  el.innerHTML='<div class="card"><div class="tit" style="margin-top:0">🔒 Etiqueta livre</div>'+
+    '<div class="mut">Só gerente ou administrador. Entre com o login e o PIN da loja.</div>'+
+    '<input id="lgl" placeholder="login" autocapitalize="none" autocomplete="off" style="width:100%;font:inherit;font-size:18px;padding:12px;border:2px solid var(--line);border-radius:12px;margin-top:8px">'+
+    '<input id="lgp" placeholder="PIN" type="password" inputmode="numeric" maxlength="8" style="width:100%;font:inherit;font-size:18px;padding:12px;border:2px solid var(--line);border-radius:12px;margin-top:8px">'+
+    '<input id="lgp2" placeholder="repita o PIN (primeira vez)" type="password" inputmode="numeric" maxlength="8" style="display:none;width:100%;font:inherit;font-size:18px;padding:12px;border:2px solid var(--line);border-radius:12px;margin-top:8px">'+
+    '<button class="seg on" style="width:100%;margin-top:12px" onclick="etqGerEntra()">Entrar</button>'+
+    '<button class="seg" style="width:100%;margin-top:8px" onclick="etqVaiModo(&quot;validade&quot;)">← voltar pra Validade</button>'+
+    '<div id="lgerr" style="color:#b91c1c;margin-top:10px"></div></div>';
+  setTimeout(function(){var i=document.getElementById('lgl');if(i)i.focus()},50);
+}
+async function etqGerEntra(){
+  var b={login:document.getElementById('lgl').value.trim(),pin:document.getElementById('lgp').value,pin2:document.getElementById('lgp2').value},r;
+  try{r=await (await fetch(location.origin+'/api/gerente/entrar',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(b)})).json()}catch(e){r={ok:false,erro:'sem conexão com o servidor da loja'}}
+  if(r.ok&&r.token){try{sessionStorage.setItem('etq_ger',r.token)}catch(e){}ETQ_GER={login:r.login||b.login,nome:r.nome||b.login};etqVaiModo('livre');return}
+  if(r.primeira_vez){document.getElementById('lgp2').style.display='block';document.getElementById('lgerr').textContent=r.erro||'Primeira vez: repita o PIN pra criar';return}
+  document.getElementById('lgerr').textContent=r.erro||'não entrou';
+}
+function etqGerSai(){try{sessionStorage.removeItem('etq_ger')}catch(e){}etqChecaGer().then(function(){etqVaiModo('validade')})}
 function telaLivre(el){
   el.innerHTML=
     '<div class="card"><div class="tit" style="margin-top:0">✏️ Etiqueta livre</div>'+
+    (ETQ_GER?'<div class="mut" style="margin-bottom:6px">👤 '+esc(ETQ_GER.nome||ETQ_GER.login)+' · <a href="javascript:void 0" onclick="etqGerSai()">sair</a></div>':'')+
     '<div class="mut">Escreva o que quiser. Cada Enter vira uma linha; linha comprida quebra sozinha. Pode pôr uma imagem (logo, foto, desenho) junto ou sozinha.</div>'+
     '<textarea id="lvt" rows="4" placeholder="ex: RESERVADO&#10;FREEZER 2 · PEIXES&#10;NÃO MEXER" style="width:100%;font:inherit;font-size:16px;padding:12px;border:2px solid var(--line);border-radius:12px;margin-top:8px;resize:vertical"></textarea>'+
     '<div class="tit">Tamanho da letra</div><div class="row" style="grid-template-columns:repeat(4,1fr)" id="lvtam"></div>'+
@@ -29373,7 +29408,8 @@ async function lvImprimir(via){
 }
 window.addEventListener('hashchange',function(){etqVaiModo(etqModo())});
 etqAbas();
-if(etqModo()==='livre')telaLivre(document.getElementById('main'));else telaEtq(document.getElementById('main'));
+if(etqModo()==='livre')document.getElementById('main').innerHTML='<div class="card mut">conferindo o acesso…</div>';else telaEtq(document.getElementById('main'));
+etqChecaGer().then(function(){etqAbas();if(etqModo()==='livre')etqVaiModo('livre')});
 </script></body></html>`;
 
 const CAIXA_HTML = `<!doctype html><html lang="pt-br"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"><link rel="manifest" href="/app.webmanifest?t=caixa"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"><link rel="apple-touch-icon" href="/app-icon.png">
