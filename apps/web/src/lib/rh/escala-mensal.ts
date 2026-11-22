@@ -18,7 +18,7 @@ import { diaDaSemana, jornadaNoDia, minutosPrevistos } from '@/lib/rh/banco-hora
 import { PONTO_VIRADA_HORA, somarDias } from '@/lib/rh/dia-operacional';
 import { dateToBrYmd } from '@/lib/datas';
 import { trocasForaDaEscala } from '@/lib/rh/troca-folga';
-import { diasDoMes, sugerirMes, type Sexo } from '@/lib/rh/escala-mensal-regras';
+import { diasDoMes, folgasPorSemana, sugerirMes, type Sexo } from '@/lib/rh/escala-mensal-regras';
 
 export * from '@/lib/rh/escala-mensal-regras';
 
@@ -211,7 +211,7 @@ export async function montarEscalaMes(filialId: string, mes: string, hoje: strin
       }
     }
 
-    const sugestao = sugerirMes(dias, folgaFixa, sexo, ultimoDomingoFolga, idx, new Set(dias.filter((d) => !naCasa(d))));
+    const sugestao = sugerirMes(dias, folgaFixa, sexo, ultimoDomingoFolga, idx, new Set(dias.filter((d) => !naCasa(d))), folgasPorSemana(filialId));
 
     const salvo: Record<string, boolean> = {};
     for (const s of salvos) if (s.funcionarioId === f.id) salvo[s.dia] = s.folga;

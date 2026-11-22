@@ -1,5 +1,5 @@
 // Escala do mês (pedido do dono 19/10/2026): grade pessoa × dia pra marcar as
-// folgas. 6x1 — quem folga o domingo não folga na semana; domingo pela CCT
+// folgas. 6x1 (Prainha Bar: 2 folgas) — o domingo de folga conta como folga da semana; domingo pela CCT
 // (homem 1 a cada 5, mulher a cada 2 semanas). O VT da quinzena conta os dias
 // de trabalho daqui. Conta em lib/rh/escala-mensal.ts.
 
@@ -11,7 +11,7 @@ import { filiaisDoUsuario } from '@/lib/filiais';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { AppHeader } from '@/components/app-header';
 import { hojeBr } from '@/lib/datas';
-import { montarEscalaMes } from '@/lib/rh/escala-mensal';
+import { folgasPorSemana, montarEscalaMes, regraDaCasa } from '@/lib/rh/escala-mensal';
 import { EscalaGrade } from './grade';
 import { PendenciasEscalaAviso } from './pendencias';
 import { pendenciasEscala, type PendenciasEscala } from '@/lib/rh/escala-pendencias';
@@ -97,7 +97,7 @@ export default async function EscalaMensalPage(props: { searchParams: Promise<SP
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Escala do mês — {nomeMes(mes)}</h1>
             <p className="mt-1 text-sm text-slate-600">
-              {filial.nome} · 6x1: uma folga na semana; quem folga o domingo trabalha a semana inteira · domingo:
+              {filial.nome} · {regraDaCasa(folgasPorSemana(filial.id))} · domingo:
               homem folga 1 a cada 5, mulher a cada 2 semanas
             </p>
           </div>

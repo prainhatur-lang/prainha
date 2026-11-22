@@ -17,6 +17,7 @@
 import { db } from '@concilia/db';
 import { sql, type SQL } from 'drizzle-orm';
 import { somarDias } from '@/lib/rh/dia-operacional';
+import { folgasPorSemana } from '@/lib/rh/escala-mensal-regras';
 
 export interface CandidatoCobertura {
   funcionarioId: string;
@@ -176,7 +177,7 @@ export async function pendenciasEscala(filialId: string, hoje: string): Promise<
           diasNaSemana: trabalhoNaSemana(a.id, r.dia),
         });
       }
-      // Quem trabalha menos na semana primeiro (6x1: com 6 dias já não dá).
+      // Quem trabalha menos na semana primeiro (6x1: com 6 dias já não dá; Prainha Bar: 5).
       candidatos.sort((x, y) => x.diasNaSemana - y.diasNaSemana || x.nome.localeCompare(y.nome, 'pt-BR'));
       furos.push({
         funcionarioId: r.funcionario_id,
@@ -184,7 +185,7 @@ export async function pendenciasEscala(filialId: string, hoje: string): Promise<
         cargo: r.cargo,
         desligamento: r.dd,
         dia: r.dia,
-        candidatos: candidatos.filter((c) => c.diasNaSemana < 6),
+        candidatos: candidatos.filter((c) => c.diasNaSemana < 7 - folgasPorSemana(filialId)),
       });
     }
   }

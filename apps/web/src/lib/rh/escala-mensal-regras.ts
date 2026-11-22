@@ -9,6 +9,31 @@ export type Sexo = 'H' | 'M';
 /** Domingos entre folgas: homem 5 trabalhados + 1 de folga; mulher 1 + 1. */
 export const CICLO_DOMINGO: Record<Sexo, number> = { H: 6, M: 2 };
 
+/** Folgas por semana seg–dom por casa (dono 22/11/2026: Prainha Bar folga 2).
+ *  Casa fora da lista = 6x1 (1 folga). O domingo de folga conta como uma delas. */
+const FOLGAS_POR_SEMANA: Record<string, number> = {
+  '7c5c66ce-cceb-4e89-9c6d-d0785255c4f9': 2, // Prainha Bar
+};
+
+export function folgasPorSemana(filialId: string): number {
+  return FOLGAS_POR_SEMANA[filialId] ?? 1;
+}
+
+/** Texto curto da regra pro cabeçalho da tela. */
+export function regraDaCasa(folgas: number): string {
+  return folgas === 1
+    ? '6x1: uma folga na semana; quem folga o domingo trabalha a semana inteira'
+    : `${7 - folgas}x${folgas}: ${folgas} folgas na semana; o domingo de folga conta como uma delas`;
+}
+
+/** Dias de seg–sáb de folga na semana, a partir da folga fixa: ela e os dias
+ *  seguintes (sábado volta pra segunda). */
+function diasDeFolgaNaSemana(folgaFixa: number, quantos: number): Set<number> {
+  const out = new Set<number>();
+  for (let i = 0; i < quantos && i < 6; i++) out.add(((folgaFixa - 1 + i) % 6) + 1);
+  return out;
+}
+
 export const DIA_SEMANA_CURTO = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb'];
 
 export function diasDoMes(mes: string): string[] {
@@ -43,8 +68,10 @@ export function domingosDeFolga(domingos: string[], ultimo: string | null, ciclo
   return out;
 }
 
-/** Sugestão do mês: folga fixa na semana; domingo pela CCT; na semana em que
- *  folga o domingo, trabalha o dia da folga fixa (6x1). Só dias na casa. */
+/** Sugestão do mês: folga fixa na semana; domingo pela CCT; o domingo de folga
+ *  conta como uma das folgas da semana (6x1: trabalha o dia da folga fixa;
+ *  2 folgas: folga só a fixa). Com 2 folgas, a 2ª é o dia seguinte à fixa.
+ *  Só dias na casa. */
 export function sugerirMes(
   dias: string[],
   folgaFixa: number | null,
@@ -52,6 +79,7 @@ export function sugerirMes(
   ultimoDomingoFolga: string | null,
   deslocamento: number,
   foraDaCasa: Set<string>,
+  folgasSemana = 1,
 ): Record<string, boolean> {
   const domingos = dias.filter((d) => diaDaSemana(d) === 0);
   const folgaDom = sexo ? domingosDeFolga(domingos, ultimoDomingoFolga, CICLO_DOMINGO[sexo], deslocamento) : new Set<string>();
@@ -63,18 +91,25 @@ export function sugerirMes(
       out[d] = folgaDom.has(d);
       continue;
     }
-    // Semana seg–dom: se o domingo dela é folga, não folga na semana.
-    out[d] = folgaFixa === w && !folgaDom.has(somarDias(d, 7 - w));
+    // Semana seg–dom: o domingo de folga já é uma das folgas dela.
+    if (folgaFixa == null) {
+      out[d] = false;
+      continue;
+    }
+    const naSemana = folgasSemana - (folgaDom.has(somarDias(d, 7 - w)) ? 1 : 0);
+    out[d] = diasDeFolgaNaSemana(folgaFixa, naSemana).has(w);
   }
   return out;
 }
 
-/** Avisos da linha: semana sem folga, 2 folgas na semana, domingo fora da CCT. */
+/** Avisos da linha: semana com folga de menos ou de mais (pela regra da casa),
+ *  domingo fora da CCT. */
 export function avisosEscala(
   dias: string[],
   folga: Record<string, boolean | undefined>,
   sexo: Sexo | null,
   ultimoDomingoFolga: string | null,
+  folgasSemana = 1,
 ): string[] {
   const out: string[] = [];
   // Semanas seg–dom inteiras dentro do mês.
@@ -86,7 +121,8 @@ export function avisosEscala(
     const n = semana.filter((x) => folga[x]).length;
     const nome = `${d.slice(8)}/${d.slice(5, 7)}`;
     if (n === 0) out.push(`semana de ${nome} sem folga`);
-    if (n > 1) out.push(`semana de ${nome} com ${n} folgas`);
+    else if (n < folgasSemana) out.push(`semana de ${nome} com ${n} folga (a casa folga ${folgasSemana})`);
+    else if (n > folgasSemana) out.push(`semana de ${nome} com ${n} folgas`);
   }
   if (sexo) {
     const limite = CICLO_DOMINGO[sexo] - 1;

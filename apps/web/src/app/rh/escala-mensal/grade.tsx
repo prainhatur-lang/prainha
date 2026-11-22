@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { diaDaSemana } from '@/lib/rh/banco-horas';
-import { avisosEscala, DIA_SEMANA_CURTO, sugerirMes, type Sexo } from '@/lib/rh/escala-mensal-regras';
+import { avisosEscala, DIA_SEMANA_CURTO, folgasPorSemana, sugerirMes, type Sexo } from '@/lib/rh/escala-mensal-regras';
 import type { PessoaEscala } from '@/lib/rh/escala-mensal';
 
 interface Props {
@@ -113,11 +113,13 @@ export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar, at
   const [msg, setMsg] = useState<{ tipo: 'ok' | 'erro'; texto: string } | null>(null);
   const [salvando, setSalvando] = useState(false);
 
+  // Prainha Bar folga 2 por semana (22/11/2026); a 2ª é o dia seguinte à fixa.
+  const folgasSemana = folgasPorSemana(filialId);
   const linhas = useMemo(
     () =>
       pessoas.map((p, idx) => {
         const fora = new Set(p.foraDaCasa);
-        const sug = sugerirMes(dias, fixa[p.funcionarioId], sexo[p.funcionarioId], p.ultimoDomingoFolga, idx, fora);
+        const sug = sugerirMes(dias, fixa[p.funcionarioId], sexo[p.funcionarioId], p.ultimoDomingoFolga, idx, fora, folgasSemana);
         const salvo = salvoEm[p.funcionarioId] ?? {};
         const ed = editado[p.funcionarioId] ?? {};
         const folga: Record<string, boolean | undefined> = {};
@@ -145,10 +147,10 @@ export function EscalaGrade({ filialId, mes, hoje, dias, pessoas, podeEditar, at
           ponto: new Set(p.ponto),
           q1,
           q2,
-          avisos: avisosEscala(dias, folga, sexo[p.funcionarioId], p.ultimoDomingoFolga),
+          avisos: avisosEscala(dias, folga, sexo[p.funcionarioId], p.ultimoDomingoFolga, folgasSemana),
         };
       }),
-    [pessoas, dias, mes, fixa, sexo, salvoEm, editado],
+    [pessoas, dias, mes, fixa, sexo, salvoEm, editado, folgasSemana],
   );
 
   const pendentes = Object.values(editado).reduce((s, x) => s + Object.keys(x).length, 0);
