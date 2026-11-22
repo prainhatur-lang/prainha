@@ -22,6 +22,8 @@ import {
   type CompraML,
   type EnvioML,
 } from '@/lib/mercadolivre';
+import { desc } from 'drizzle-orm';
+import { mlEmailScript, mlEmailToken } from '@/lib/mercadolivre-email';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -68,6 +70,23 @@ export default async function MercadoLivrePage(props: { searchParams: Promise<{ 
   const aviso = sp.ml ? AVISOS[sp.ml] : null;
   const configurado = mlConfigurado() && segredoConfigurado();
   const contas = await db.select().from(schema.mlConta);
+
+  // Plano B: e-mails do ML empurrados pelo script do Google (ver lib/mercadolivre-email)
+  const tokenEmail = mlEmailToken();
+  const scriptEmail = tokenEmail ? mlEmailScript('https://app.prainhabar.com', tokenEmail) : null;
+  const emails = await db
+    .select({
+      id: schema.mlEmail.id,
+      recebidoEm: schema.mlEmail.recebidoEm,
+      de: schema.mlEmail.de,
+      assunto: schema.mlEmail.assunto,
+      tipo: schema.mlEmail.tipo,
+      pedidoMl: schema.mlEmail.pedidoMl,
+      total: schema.mlEmail.total,
+    })
+    .from(schema.mlEmail)
+    .orderBy(desc(schema.mlEmail.recebidoEm))
+    .limit(200);
 
   const porConta: { conta: (typeof contas)[number]; linhas: Linha[]; erro: string | null }[] = [];
   for (const conta of contas) {
@@ -140,6 +159,62 @@ export default async function MercadoLivrePage(props: { searchParams: Promise<{ 
         {configurado && contas.length === 0 && (
           <p className="text-sm text-slate-500">Nenhuma conta ligada ainda.</p>
         )}
+
+        <section className="rounded-lg border border-slate-200 bg-white">
+          <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-slate-100 px-4 py-3">
+            <h2 className="font-medium text-slate-900">E-mails do Mercado Livre</h2>
+            <span className="text-sm text-slate-600">{emails.length} e-mail(s) recebido(s)</span>
+          </header>
+          <div className="space-y-3 px-4 py-3 text-sm">
+            <p className="text-slate-600">
+              Enquanto o Mercado Livre não libera o app, as compras chegam pelos e-mails de confirmação: um script do
+              Google, rodando na conta que compra, manda os e-mails pra cá a cada 15 minutos (desde 01/11/2026).
+            </p>
+            {scriptEmail ? (
+              <details className="rounded-md border border-slate-200 bg-slate-50 p-3">
+                <summary className="cursor-pointer font-medium text-slate-800">Instalar o script (uma vez)</summary>
+                <ol className="mt-2 list-decimal space-y-1 pl-5 text-slate-700">
+                  <li>Logado no Gmail da conta que compra no ML, abra script.google.com e clique em Novo projeto.</li>
+                  <li>Apague o que estiver lá e cole o código abaixo. Salve.</li>
+                  <li>No topo, escolha a função <code>instalar</code> e clique em Executar. Autorize o acesso ao Gmail.</li>
+                </ol>
+                <p className="mt-2 text-xs text-amber-800">O código tem a chave de acesso do sistema: não compartilhe.</p>
+                <pre className="mt-2 max-h-96 overflow-auto rounded bg-white p-3 text-xs">{scriptEmail}</pre>
+              </details>
+            ) : (
+              <p className="text-rose-700">Falta CREDENCIAL_SECRET na Vercel.</p>
+            )}
+          </div>
+          {emails.length > 0 && (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
+                  <tr>
+                    <th className="px-3 py-2">Data</th>
+                    <th className="px-3 py-2">Tipo</th>
+                    <th className="px-3 py-2">Assunto</th>
+                    <th className="px-3 py-2">Pedido</th>
+                    <th className="px-3 py-2 text-right">Valor</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {emails.map((e) => (
+                    <tr key={e.id}>
+                      <td className="whitespace-nowrap px-3 py-2">{dataBr(e.recebidoEm.toISOString())}</td>
+                      <td className="px-3 py-2">{e.tipo ?? '—'}</td>
+                      <td className="px-3 py-2">
+                        {e.assunto}
+                        {e.de && <div className="text-xs text-slate-500">{e.de}</div>}
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-2 font-mono text-xs">{e.pedidoMl ?? '—'}</td>
+                      <td className="whitespace-nowrap px-3 py-2 text-right">{e.total != null ? brl(Number(e.total)) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
 
         {porConta.map(({ conta, linhas, erro }) => {
           const total = linhas.reduce((s, l) => s + (l.compra.status === 'cancelled' ? 0 : Number(l.compra.total_amount || 0)), 0);
