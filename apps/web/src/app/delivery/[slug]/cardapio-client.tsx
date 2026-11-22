@@ -253,7 +253,14 @@ export function CardapioClient({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Só grava depois de ler a sacola salva: antes disso o carrinho em memória
+  // ainda é o vazio inicial e apagaria a sacola do cliente.
+  const hidratado = useRef(false);
   useEffect(() => {
+    if (!hidratado.current) {
+      hidratado.current = true;
+      return;
+    }
     try {
       localStorage.setItem(chaveCart, JSON.stringify(carrinho));
     } catch {
@@ -411,7 +418,28 @@ export function CardapioClient({
     }
   }
 
+  // A sacola é um passo do histórico (dono 22/11/2026: voltou pra pôr o
+  // guaraná e perdeu o pedido). Sem isso o "voltar" do celular/navegador,
+  // com a sacola aberta, saía do site em vez de voltar pro cardápio.
+  useEffect(() => {
+    const aoVoltar = () => {
+      if (!(window.history.state as { dlvSacola?: boolean } | null)?.dlvSacola) setTela('cardapio');
+    };
+    window.addEventListener('popstate', aoVoltar);
+    return () => window.removeEventListener('popstate', aoVoltar);
+  }, []);
+  function voltarAoCardapio() {
+    if ((window.history.state as { dlvSacola?: boolean } | null)?.dlvSacola) window.history.back();
+    else setTela('cardapio');
+  }
+
   async function abrirSacola() {
+    try {
+      if (!(window.history.state as { dlvSacola?: boolean } | null)?.dlvSacola)
+        window.history.pushState({ ...(window.history.state ?? {}), dlvSacola: true }, '');
+    } catch {
+      /* sem histórico: segue como antes */
+    }
     setTela('sacola');
     try {
       const r = await fetch(`/api/delivery/${slug}/agenda`, { cache: 'no-store' });
@@ -544,7 +572,7 @@ export function CardapioClient({
         className="mx-auto w-full max-w-lg px-4 pb-40 pt-4 lg:max-w-5xl lg:px-8 lg:pb-10"
       >
         <button
-          onClick={() => setTela('cardapio')}
+          onClick={voltarAoCardapio}
           className="text-sm font-semibold text-[var(--dlv-strong)]"
         >
           {t.voltarCardapio}

@@ -61,6 +61,17 @@ export async function proxy(request: NextRequest) {
   if (process.env.CONCILIA_INSTANCIA === 'clientes' && request.nextUrl.pathname.startsWith('/api/cron/')) {
     return NextResponse.json({ ok: true, pulado: 'instancia-clientes' });
   }
+  // www → domínio sem www (dono 22/11/2026: "voltei pra colocar o guaraná e
+  // a coca e ele cancelou todo o meu pedido"). A sacola do delivery fica no
+  // navegador, e www.prainhamar.com.br e prainhamar.com.br são "sites"
+  // diferentes pra ele: quem montou a sacola num e voltou pelo outro achava a
+  // sacola vazia. Mesmas páginas, um endereço só.
+  if (hostname === 'www.prainhamar.com.br' || hostname === 'www.tabuara.com.br') {
+    const url = request.nextUrl.clone();
+    url.hostname = hostname.slice(4);
+    url.port = '';
+    return NextResponse.redirect(url, 308);
+  }
   if (CONCILIA_HOSTS.has(hostname) && request.nextUrl.pathname === '/') {
     const url = request.nextUrl.clone();
     url.pathname = '/conheca';
