@@ -32,7 +32,17 @@ import { FATOR_CLT, FATOR_INTERMITENTE } from '@/lib/rh/horas-regime';
 import { custoRealDaCasa, custoCasa, PAGO_ZERO, type Pago, type PagoSemPonto } from '@/lib/rh/custo-real-equipe';
 
 async function q<T>(query: SQL): Promise<T[]> {
-  return (await db.execute(query)) as unknown as T[];
+  // Rede de segurança (22/11/2026): consulta presa vira erro em 60 s em vez de
+  // segurar a tela até a Vercel derrubar aos 300 s.
+  let t: ReturnType<typeof setTimeout> | undefined;
+  const limite = new Promise<never>((_, rej) => {
+    t = setTimeout(() => rej(new Error('Estudo de equipe: consulta ao banco não respondeu em 60 s — abra de novo.')), 60_000);
+  });
+  try {
+    return (await Promise.race([db.execute(query), limite])) as unknown as T[];
+  } finally {
+    clearTimeout(t);
+  }
 }
 const num = (v: unknown): number => {
   const n = Number(v);
@@ -949,10 +959,12 @@ export async function montarEstudoEquipe(filialId: string, mes: string, hoje: st
   if (!per) return null;
   const meses = [mesAnterior(mes, 1), mesAnterior(mes, 2)];
   const pers = meses.map((m) => ({ m, p: periodoDoMes(filialId, m, hoje) }));
-  const [base, ...basesAnt] = await Promise.all([
-    carregarBase(filialId, per.ini, per.fim, per.parcial),
-    ...pers.filter((x) => x.p).map((x) => carregarBase(filialId, x.p!.ini, x.p!.fim, x.p!.parcial)),
-  ]);
+  // Um mês de cada vez (22/11/2026): os 3 meses juntos disparavam ~20 consultas
+  // de uma vez no pooler e uma delas ficava presa pra sempre — a tela estourava
+  // os 300 s da Vercel e não abria. Em sequência são 6 por vez e fecha em segundos.
+  const base = await carregarBase(filialId, per.ini, per.fim, per.parcial);
+  const basesAnt: Base[] = [];
+  for (const x of pers) if (x.p) basesAnt.push(await carregarBase(filialId, x.p.ini, x.p.fim, x.p.parcial));
   const mesesAnt = pers.filter((x) => x.p).map((x) => x.m);
 
   const atip = marcarAtipicos(base);
