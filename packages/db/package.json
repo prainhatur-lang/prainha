@@ -109,6 +109,7 @@
     "migrate:delivery-precos-estoque": "tsx scripts/migrate-delivery-precos-estoque.ts",
     "migrate:produto-etiqueta": "tsx scripts/migrate-produto-etiqueta.ts",
     "sync:etiquetas": "tsx scripts/sync-etiquetas.ts",
+    "migrate:delivery-despacho": "tsx scripts/migrate-delivery-despacho.ts",
     "migrate:delivery-complemento": "tsx scripts/migrate-delivery-complemento.ts",
     "sync:complementos": "tsx scripts/sync-complementos.ts",
     "migrate:wizard": "tsx scripts/migrate-wizard.ts",

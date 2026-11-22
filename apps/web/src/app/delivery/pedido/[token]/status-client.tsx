@@ -9,6 +9,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { CreditCardForm } from '@/app/reservar/[token]/credit-card-form';
 import { TXT_DELIVERY, TXT_PEDIDO, type IdiomaDelivery } from '@/lib/delivery/idioma';
 
+const CODIGO_ENTREGA_TXT: Record<string, { titulo: string; dica: string }> = {
+  pt: { titulo: 'Seu código de entrega', dica: 'Passe pro entregador só quando receber o pedido.' },
+  en: { titulo: 'Your delivery code', dica: 'Give it to the courier only when you receive your order.' },
+  es: { titulo: 'Tu código de entrega', dica: 'Dáselo al repartidor solo cuando recibas tu pedido.' },
+  fr: { titulo: 'Votre code de livraison', dica: 'Donnez-le au livreur seulement à la réception.' },
+  it: { titulo: 'Il tuo codice di consegna', dica: 'Dallo al fattorino solo quando ricevi l’ordine.' },
+};
+
 interface PedidoResp {
   numero: number;
   status: string;
@@ -38,6 +46,8 @@ interface PedidoResp {
   cupomCodigo: string | null;
   observacao: string | null;
   canceladoMotivo: string | null;
+  /** Código que o cliente passa pro entregador (só com o pedido na rua). */
+  codigoEntrega?: string | null;
   pagamento: {
     metodo: 'pix' | 'cartao' | 'na_entrega' | null;
     status: string | null;
@@ -364,6 +374,19 @@ export function StatusClient({
               );
             })}
           </ol>
+          {pedido.codigoEntrega ? (
+            <div className="mt-3 rounded-xl border-2 border-dashed border-[var(--dlv-brand-dot)] bg-[var(--dlv-surface)] px-3 py-3 text-center">
+              <p className="text-xs text-[var(--dlv-muted)]">
+                {CODIGO_ENTREGA_TXT[lang]?.titulo ?? CODIGO_ENTREGA_TXT.pt.titulo}
+              </p>
+              <p className="mt-1 font-mono text-3xl font-bold tracking-[0.3em] text-[var(--dlv-ink)]">
+                {pedido.codigoEntrega}
+              </p>
+              <p className="mt-1 text-[11px] text-[var(--dlv-muted)]">
+                {CODIGO_ENTREGA_TXT[lang]?.dica ?? CODIGO_ENTREGA_TXT.pt.dica}
+              </p>
+            </div>
+          ) : null}
           {pedido.pagamento.metodo === 'na_entrega' && pedido.status !== 'concluido' ? (
             <p className="mt-3 rounded-xl bg-[var(--dlv-surface)] px-3 py-2 text-xs text-[var(--dlv-text)]">
               💳 <b>{t.pagEntregaTitulo}</b>

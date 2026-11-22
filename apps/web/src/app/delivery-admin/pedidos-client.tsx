@@ -536,6 +536,9 @@ function CardPedido({
       {p.tipo === 'entrega' && podeAtualizar && ABERTO_ENTREGADOR.includes(p.status) ? (
         <EntregadorIfood p={p} />
       ) : null}
+      {p.tipo === 'entrega' && podeAtualizar && (ABERTO_ENTREGADOR.includes(p.status) || p.status === 'concluido') ? (
+        <EntregadorProprio p={p} />
+      ) : null}
     </article>
   );
 }
@@ -876,6 +879,200 @@ function EntregadorIfood({ p }: { p: Pedido }) {
         </div>
       )}
       {erro ? <p className="mt-2 text-xs text-rose-700">⚠ {erro}</p> : null}
+    </div>
+  );
+}
+
+interface DespachoBoy {
+  id: string;
+  link: string;
+  valor: number;
+  codigoCliente: string;
+  tentativas: number;
+  bloqueado: boolean;
+  entregueEm: string | null;
+  pixStatus: string | null;
+  pixErro: string | null;
+  boy: { telefone: string; nome: string | null; pixChave: string | null; cadastroCompleto: boolean };
+}
+
+const PIX_BOY_LABEL: Record<string, string> = {
+  PAGO: '✅ Pix pago',
+  ENVIANDO: '⏳ Pix em processamento',
+  APROVACAO: '⏳ Pix aguardando aprovação no Inter',
+  AGENDADO: '⏳ Pix agendado',
+  PENDENTE: '⚠️ Banco não respondeu — conferir no Inter',
+  ERRO: '❌ Pix não saiu',
+};
+
+/** "🛵 Despachar com boy" (dono 22/11/2026): boy nosso ou de terceiro recebe o
+ *  link no WhatsApp; o cliente recebe o código; com o código, o Pix do frete
+ *  cheio cai na chave do boy. Fica ao lado do iFood — não troca nada. */
+function EntregadorProprio({ p }: { p: Pedido }) {
+  const [d, setD] = useState<DespachoBoy | null>(null);
+  const [previsto, setPrevisto] = useState<number | null>(null);
+  const [aberto, setAberto] = useState(false);
+  const [tel, setTel] = useState('');
+  const [erro, setErro] = useState<string | null>(null);
+  const [aviso, setAviso] = useState<{ texto: string; waBoy?: string; waCliente?: string } | null>(null);
+  const [ocupado, setOcupado] = useState(false);
+  const url = `/api/delivery-admin/pedido/${p.id}/despacho`;
+
+  async function ler() {
+    const r = await fetch(url, { cache: 'no-store' });
+    const j = await r.json().catch(() => ({}));
+    if (r.ok) {
+      setD(j.despacho ?? null);
+      if (j.valorPrevisto != null) setPrevisto(j.valorPrevisto);
+    }
+  }
+  useEffect(() => {
+    ler();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p.id, p.status]);
+  const naRua = !!d && !d.entregueEm;
+  const pixAberto = !!d && !!d.entregueEm && d.pixStatus !== 'PAGO';
+  useEffect(() => {
+    if (!naRua && !pixAberto) return;
+    const t = setInterval(ler, 20000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [naRua, pixAberto]);
+
+  async function post(corpo: Record<string, unknown>) {
+    setOcupado(true);
+    setErro(null);
+    try {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(corpo),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setErro(j.error ?? `erro ${r.status}`);
+        return null;
+      }
+      return j;
+    } finally {
+      setOcupado(false);
+    }
+  }
+
+  async function despachar() {
+    const j = await post({ acao: 'despachar', telefone: tel });
+    if (!j) return;
+    setAberto(false);
+    setAviso({
+      texto: `${j.boyNovo ? 'Boy novo: ele faz o cadastro pelo link. ' : ''}${j.enviadoBoy ? 'Link enviado pro boy' : 'WhatsApp do boy não foi — mande pelo botão'} · ${j.enviadoCliente ? 'código enviado pro cliente' : 'código do cliente não foi — mande pelo botão'}.`,
+      waBoy: j.enviadoBoy ? undefined : j.waBoy,
+      waCliente: j.enviadoCliente ? undefined : j.waCliente,
+    });
+    await ler();
+  }
+  async function novoCodigo() {
+    if (!window.confirm('Gerar um código novo e mandar pro cliente? O código antigo deixa de valer.')) return;
+    const j = await post({ acao: 'novo_codigo' });
+    if (!j) return;
+    setAviso({
+      texto: j.enviado ? 'Código novo enviado pro cliente.' : 'Código novo gerado — o WhatsApp não foi, mande pelo botão.',
+      waCliente: j.enviado ? undefined : j.waCliente,
+    });
+    await ler();
+  }
+
+  if (!d && p.status === 'concluido') return null;
+  const valor = d?.valor ?? previsto;
+
+  return (
+    <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50/50 p-3 text-sm">
+      {d ? (
+        <div className="space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-semibold text-emerald-900">
+              🛵 Boy: {d.boy.nome ?? `(cadastro pendente) …${d.boy.telefone.slice(-4)}`}
+            </span>
+            <span className="text-emerald-800">{valor != null ? `R$ ${valor.toFixed(2).replace('.', ',')}` : ''}</span>
+            {d.entregueEm ? (
+              <span className="font-semibold">{d.pixStatus ? PIX_BOY_LABEL[d.pixStatus] ?? d.pixStatus : 'Entregue'}</span>
+            ) : (
+              <span className="rounded bg-white px-2 py-0.5 font-mono text-xs">código cliente {d.codigoCliente}</span>
+            )}
+          </div>
+          {d.pixErro && d.pixStatus !== 'PAGO' ? <p className="text-xs text-rose-700">{d.pixErro}</p> : null}
+          {d.bloqueado && !d.entregueEm ? (
+            <p className="text-xs font-semibold text-rose-700">Boy errou o código {d.tentativas}x — gere um código novo.</p>
+          ) : null}
+          {!d.entregueEm ? (
+            <div className="flex flex-wrap gap-2 pt-1">
+              <button
+                onClick={() => {
+                  setTel(d.boy.telefone.replace(/^55/, ''));
+                  setAberto(true);
+                }}
+                className="rounded-md border border-emerald-300 bg-white px-2 py-1 text-xs"
+              >
+                Reenviar / trocar boy
+              </button>
+              <button onClick={novoCodigo} disabled={ocupado} className="rounded-md border border-emerald-300 bg-white px-2 py-1 text-xs">
+                Novo código pro cliente
+              </button>
+              <button
+                onClick={() => navigator.clipboard?.writeText(d.link)}
+                className="rounded-md border border-emerald-300 bg-white px-2 py-1 text-xs"
+              >
+                Copiar link do boy
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : !aberto ? (
+        <button
+          onClick={() => setAberto(true)}
+          className="rounded-md bg-emerald-600 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+        >
+          🛵 Despachar com boy{valor != null ? ` (R$ ${valor.toFixed(2).replace('.', ',')})` : ''}
+        </button>
+      ) : null}
+
+      {aberto ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <input
+            value={tel}
+            onChange={(e) => setTel(e.target.value)}
+            inputMode="tel"
+            placeholder="WhatsApp do boy (DDD + número)"
+            className="min-w-[200px] flex-1 rounded-md border border-slate-300 px-2 py-2"
+          />
+          <button
+            onClick={despachar}
+            disabled={ocupado || tel.replace(/\D/g, '').length < 10}
+            className="rounded-md bg-emerald-600 px-3 py-2 font-semibold text-white disabled:opacity-50"
+          >
+            {ocupado ? 'Enviando…' : 'Mandar link'}
+          </button>
+          <button onClick={() => setAberto(false)} className="text-xs text-slate-500">
+            cancelar
+          </button>
+        </div>
+      ) : null}
+
+      {aviso ? (
+        <div className="mt-2 text-xs text-emerald-900">
+          {aviso.texto}{' '}
+          {aviso.waBoy ? (
+            <a className="font-semibold underline" href={aviso.waBoy} target="_blank" rel="noreferrer">
+              WhatsApp do boy
+            </a>
+          ) : null}{' '}
+          {aviso.waCliente ? (
+            <a className="font-semibold underline" href={aviso.waCliente} target="_blank" rel="noreferrer">
+              WhatsApp do cliente
+            </a>
+          ) : null}
+        </div>
+      ) : null}
+      {erro ? <p className="mt-1 text-xs font-semibold text-rose-700">{erro}</p> : null}
     </div>
   );
 }

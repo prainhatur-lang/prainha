@@ -179,6 +179,10 @@ export const deliveryPedido = pgTable(
     asap: boolean('asap').notNull().default(false),
     subtotal: numeric('subtotal', { precision: 10, scale: 2 }).notNull(),
     taxaEntrega: numeric('taxa_entrega', { precision: 10, scale: 2 }).notNull().default('0'),
+    /** Frete cheio pela distância (antes de frete grátis/cupom) — é o que o
+     *  boy recebe no despacho (dono 22/11/2026). Null em pedido antigo:
+     *  recalcula pela distância. */
+    taxaEntregaCheia: numeric('taxa_entrega_cheia', { precision: 10, scale: 2 }),
     desconto: numeric('desconto', { precision: 10, scale: 2 }).notNull().default('0'),
     total: numeric('total', { precision: 10, scale: 2 }).notNull(),
     /** Por que o frete saiu grátis: distancia | promocao | primeira_compra | cupom. */
@@ -328,4 +332,63 @@ export const ifoodEntrega = pgTable(
     orderIdx: index('ifood_entrega_order_idx').on(t.ifoodOrderId),
     filialIdx: index('ifood_entrega_filial_idx').on(t.filialId, t.criadoEm),
   }),
+);
+
+// ─── Despacho com boy (dono 22/11/2026) ─────────────────────────────────────
+// O boy (nosso ou de terceiro) se cadastra uma vez: CPF, nome, telefone
+// confirmado por código no WhatsApp e chave Pix (QUALQUER chave que ele
+// informar — exceção só deste Pix de entrega). No despacho recebe um link;
+// na porta digita o código que o cliente recebeu; o código bate → Pix do
+// frete cheio na hora, pelo Inter da casa, sem aprovação. Sem código, não paga.
+
+/** Cadastro do boy — único por telefone, vale pras três casas. */
+export const deliveryEntregador = pgTable('delivery_entregador', {
+  id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  /** Só dígitos, com 55. */
+  telefone: varchar('telefone', { length: 20 }).notNull().unique(),
+  nome: varchar('nome', { length: 120 }),
+  cpf: varchar('cpf', { length: 11 }),
+  pixChave: varchar('pix_chave', { length: 140 }),
+  telefoneVerificadoEm: timestamp('telefone_verificado_em', { withTimezone: true }),
+  /** Código de confirmação do telefone (hash), validade e tentativas. */
+  otpHash: text('otp_hash'),
+  otpExpira: timestamp('otp_expira', { withTimezone: true }),
+  otpTentativas: integer('otp_tentativas').notNull().default(0),
+  criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+  atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Um despacho por pedido: boy, link dele, código do cliente e o Pix. */
+export const deliveryDespacho = pgTable(
+  'delivery_despacho',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    pedidoId: uuid('pedido_id')
+      .notNull()
+      .unique()
+      .references(() => deliveryPedido.id, { onDelete: 'cascade' }),
+    filialId: uuid('filial_id')
+      .notNull()
+      .references(() => filial.id, { onDelete: 'cascade' }),
+    entregadorId: uuid('entregador_id')
+      .notNull()
+      .references(() => deliveryEntregador.id),
+    /** Token do link do boy (/delivery/entrega/[token]). */
+    token: text('token').notNull().unique(),
+    /** Frete cheio que o boy recebe. */
+    valor: numeric('valor', { precision: 10, scale: 2 }).notNull(),
+    /** Código de 4 dígitos que o cliente recebe e o boy digita. */
+    codigoCliente: varchar('codigo_cliente', { length: 6 }).notNull(),
+    tentativas: integer('tentativas').notNull().default(0),
+    saiuEm: timestamp('saiu_em', { withTimezone: true }).notNull().defaultNow(),
+    entregueEm: timestamp('entregue_em', { withTimezone: true }),
+    pixPagamentoId: uuid('pix_pagamento_id'),
+    /** null | ENVIANDO | PAGO | APROVACAO | AGENDADO | ERRO | PENDENTE */
+    pixStatus: varchar('pix_status', { length: 20 }),
+    pixErro: text('pix_erro'),
+    usuarioId: uuid('usuario_id'),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('delivery_despacho_entregador_idx').on(t.entregadorId, t.saiuEm)],
 );

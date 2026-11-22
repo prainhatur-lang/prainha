@@ -281,6 +281,7 @@ export async function criarPedidoDelivery(params: {
 
   // Frete (só entrega): geocodifica e recalcula no servidor
   let taxaCentavos = 0;
+  let taxaCheiaCentavos: number | null = null;
   let distanciaKm: number | null = null;
   let freteGratisMotivo: string | null = null;
   let endereco: DeliveryEnderecoCliente | null = null;
@@ -325,6 +326,7 @@ export async function criarPedidoDelivery(params: {
     });
     if (!frete.ok) return { ok: false, erro: frete.erro };
     taxaCentavos = frete.taxaCentavos;
+    taxaCheiaCentavos = frete.taxaCheiaCentavos;
     freteGratisMotivo = frete.motivo;
   }
 
@@ -351,6 +353,7 @@ export async function criarPedidoDelivery(params: {
       asap: input.agendamento.asap === true,
       subtotal: reais(subtotalCentavos),
       taxaEntrega: reais(taxaCentavos),
+      taxaEntregaCheia: taxaCheiaCentavos != null ? reais(taxaCheiaCentavos) : null,
       desconto: reais(descontoCentavos),
       total: reais(totalCentavos),
       freteGratisMotivo,

@@ -73,6 +73,18 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
     .from(schema.deliveryPedidoItem)
     .where(eq(schema.deliveryPedidoItem.pedidoId, p.id));
 
+  // Código de entrega do boy (dono 22/11/2026): o cliente passa pro
+  // entregador na porta; só aparece enquanto o pedido está na rua.
+  let codigoEntrega: string | null = null;
+  if (p.status === 'saiu_entrega' || p.status === 'chegou') {
+    const [d] = await db
+      .select({ codigo: schema.deliveryDespacho.codigoCliente, entregueEm: schema.deliveryDespacho.entregueEm })
+      .from(schema.deliveryDespacho)
+      .where(eq(schema.deliveryDespacho.pedidoId, p.id))
+      .limit(1);
+    if (d && !d.entregueEm) codigoEntrega = d.codigo;
+  }
+
   const aguardandoPix =
     p.status === 'pendente_pagamento' && p.pagamentoMetodo === 'pix' && p.pagamentoStatus === 'aguardando';
 
@@ -101,6 +113,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ toke
     cupomCodigo: p.cupomCodigo,
     observacao: p.observacao,
     canceladoMotivo: p.canceladoMotivo,
+    codigoEntrega,
     criadoEm: sqlToIso(p.criadoEm),
     pagamento: {
       metodo: p.pagamentoMetodo,

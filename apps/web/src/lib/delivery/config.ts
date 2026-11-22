@@ -45,7 +45,7 @@ const CHAVES_BOOL = [
   'naEntregaAtivo',
 ] as const;
 
-function normalizarConfig(c: DeliveryConfig): DeliveryConfig {
+export function normalizarConfig(c: DeliveryConfig): DeliveryConfig {
   const out = { ...c } as Record<string, unknown>;
   for (const k of CHAVES_BOOL) {
     const v = bool(out[k]);
