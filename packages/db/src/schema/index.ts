@@ -79,3 +79,4 @@ export * from './empresa-pix';
 export * from './nfse-avulsa';
 export * from './venda-pergunta';
 export * from './agua';
+export * from './mercadolivre';

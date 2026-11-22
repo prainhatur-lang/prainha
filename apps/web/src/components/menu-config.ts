@@ -270,6 +270,12 @@ export const MENU_AREAS: MenuArea[] = [
           { label: 'Cotações', href: '/cotacao', perm: 'cotacao.read', aka: ['orçamento de fornecedor'] },
           { label: 'Pedidos de compra', href: '/compras/pedidos', perm: 'pedido_compra.read' },
           {
+            label: 'Compras no Mercado Livre',
+            href: '/compras/mercadolivre',
+            perm: 'pedido_compra.read',
+            aka: ['Mercado Livre', 'ML'],
+          },
+          {
             label: 'Pedidos aguardando nota',
             href: '/compras/aguardando-nf',
             perm: 'pedido_compra.read',
