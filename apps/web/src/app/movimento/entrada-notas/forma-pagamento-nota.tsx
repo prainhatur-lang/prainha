@@ -4,18 +4,20 @@
 // pagamento se decide quando a nota entra, não na hora de pagar.
 //  - Nota ou recibo com boleto → 🧾 Boleto (não pede chave Pix; não sai Pix).
 //  - Recibo no Pix → 💠 Pix e CONFIRMA a chave do cadastro do fornecedor
-//    (Pix só na chave autorizada). Se o cadastro mudar depois, o Pix trava.
+//    (Pix só na chave autorizada) e o WhatsApp de quem recebe, obrigatório,
+//    pra onde vai o comprovante. Se o cadastro mudar depois, o Pix trava.
 // As contas a pagar desta nota herdam a forma (a conta ainda pode trocar).
 
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { EditPix, ConferenciaPixLinha } from '@/app/cadastros/fornecedores/edit-pix';
+import { EditWhatsapp } from '@/app/cadastros/fornecedores/edit-whatsapp';
 import { conferirChavePix } from '@/lib/pix-titular';
 
 interface Estado {
   forma: 'boleto' | 'pix' | null;
   pixChaveConfirmada: string | null;
-  fornecedor: { id: string; nome: string | null; chavePix: string | null; pixFavorecido: string | null; doc: string | null } | null;
+  fornecedor: { id: string; nome: string | null; chavePix: string | null; pixFavorecido: string | null; doc: string | null; foneWhatsapp: string | null } | null;
 }
 
 export function FormaPagamentoNota({ notaId, compacto = false }: { notaId: string; compacto?: boolean }) {
@@ -61,6 +63,7 @@ export function FormaPagamentoNota({ notaId, compacto = false }: { notaId: strin
   const chaveCad = est.fornecedor?.chavePix?.trim() || null;
   const chaveMudou = est.forma === 'pix' && !!est.pixChaveConfirmada && est.pixChaveConfirmada !== chaveCad;
   const mostrarPix = escolhendoPix || chaveMudou;
+  const zapOk = (est.fornecedor?.foneWhatsapp ?? '').replace(/\D/g, '').length >= 10;
   const conf =
     chaveCad && est.fornecedor
       ? conferirChavePix({ chave: chaveCad, docFornecedor: est.fornecedor.doc, favorecido: est.fornecedor.pixFavorecido })
@@ -134,10 +137,22 @@ export function FormaPagamentoNota({ notaId, compacto = false }: { notaId: strin
                 {est.fornecedor.pixFavorecido && <> — recebe: {est.fornecedor.pixFavorecido}</>}
               </p>
               <ConferenciaPixLinha c={conf} />
+              <div className={`mt-2 flex flex-wrap items-center gap-2 ${zapOk ? '' : 'rounded border border-amber-300 bg-amber-50 p-1.5'}`}>
+                <span className={zapOk ? 'text-slate-700' : 'font-semibold text-amber-800'}>
+                  WhatsApp de quem recebe (vai o comprovante){zapOk ? ':' : ' — obrigatório:'}
+                </span>
+                <EditWhatsapp fornecedorId={est.fornecedor.id} valorAtual={est.fornecedor.foneWhatsapp} />
+                {!zapOk && (
+                  <button type="button" className="text-[11px] text-sky-700 underline" onClick={() => void carregar()}>
+                    ↻ já cadastrei
+                  </button>
+                )}
+              </div>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  disabled={pending || conf?.nivel === 'diverge'}
+                  disabled={pending || conf?.nivel === 'diverge' || !zapOk}
+                  title={zapOk ? undefined : 'Cadastre o WhatsApp de quem recebe antes de confirmar'}
                   className="rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
                   onClick={() => salvar('pix', chaveCad)}
                 >
@@ -159,7 +174,7 @@ export function FormaPagamentoNota({ notaId, compacto = false }: { notaId: strin
             <>
               <p className="text-amber-800">
                 O fornecedor não tem chave Pix no cadastro. Cadastre a chave que ele informou (nunca o CPF por conta própria)
-                e depois confirme:
+                e o WhatsApp de quem recebe (vai o comprovante) — os dois são obrigatórios — e depois confirme:
               </p>
               <div className="mt-1 flex flex-wrap items-center gap-2">
                 <EditPix
@@ -168,6 +183,7 @@ export function FormaPagamentoNota({ notaId, compacto = false }: { notaId: strin
                   favorecidoAtual={est.fornecedor.pixFavorecido}
                   docFornecedor={est.fornecedor.doc}
                 />
+                <EditWhatsapp fornecedorId={est.fornecedor.id} valorAtual={est.fornecedor.foneWhatsapp} />
                 <button type="button" className="text-[11px] text-sky-700 underline" onClick={() => void carregar()}>
                   ↻ já cadastrei
                 </button>

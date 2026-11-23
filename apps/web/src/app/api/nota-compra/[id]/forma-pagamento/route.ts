@@ -3,11 +3,12 @@
 // a pessoa está dando entrada na nota." Nota com boleto = boleto; recibo com
 // boleto = boleto; recibo no Pix = Pix, e quem dá entrada CONFIRMA a chave.
 //
-// GET  → { forma, pixChaveConfirmada, fornecedor: { id, nome, chavePix, pixFavorecido, doc } | null }
+// GET  → { forma, pixChaveConfirmada, fornecedor: { id, nome, chavePix, pixFavorecido, doc, foneWhatsapp } | null }
 // PATCH body:
 //   { forma: 'boleto' }                         → nota se paga por boleto
 //   { forma: 'pix', chaveConfirmada: '<chave>' } → só aceita a chave que está
-//      no cadastro do fornecedor agora (Pix só na chave autorizada)
+//      no cadastro do fornecedor agora (Pix só na chave autorizada) e exige
+//      o WhatsApp de quem recebe (comprovante) — dono 23/11/2026
 //   { forma: null }                             → volta a "não informado"
 // As contas a pagar desta nota herdam: forma da conta > da nota > do fornecedor.
 
@@ -48,7 +49,7 @@ async function carregar(id: string, userId: string) {
   const f = schema.fornecedor;
   const [forn] = nota.fornecedorId
     ? await db
-        .select({ id: f.id, nome: f.nome, chavePix: f.chavePix, pixFavorecido: f.pixFavorecido, doc: f.cnpjOuCpf })
+        .select({ id: f.id, nome: f.nome, chavePix: f.chavePix, pixFavorecido: f.pixFavorecido, doc: f.cnpjOuCpf, foneWhatsapp: f.foneWhatsapp })
         .from(f)
         .where(eq(f.id, nota.fornecedorId))
         .limit(1)
@@ -107,6 +108,14 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       return NextResponse.json(
         { error: 'A chave confirmada não é a do cadastro (mudou agora?). Recarregue e confirme de novo.' },
         { status: 409 },
+      );
+    }
+    // E o WhatsApp de quem recebe é obrigatório: é pra onde vai o comprovante
+    // do Pix (dono 23/11/2026).
+    if ((r.forn.foneWhatsapp ?? '').replace(/\D/g, '').length < 10) {
+      return NextResponse.json(
+        { error: 'Pix exige o WhatsApp de quem recebe (pra mandar o comprovante). Cadastre o WhatsApp com DDD e confirme.' },
+        { status: 400 },
       );
     }
     pixChave = chaveCad;
