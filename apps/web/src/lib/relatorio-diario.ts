@@ -15,6 +15,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { dateToBrYmd, hojeBr } from './datas';
 import { diasEntre, rotuloTipoDoc } from './empresa-documento';
 import { chamarLojaCaixa } from './caixa-loja';
+import { saldosDaFilial, type PortadorSaldo } from './portador';
 import { X509Certificate } from 'node:crypto';
 import { credencialSicredi } from './sicredi-pix';
 import { contarEvento } from './evento-ticket';
@@ -310,7 +311,22 @@ export interface RelatorioCasa {
   google?: GoogleDia | null;
   /** Calendário: eventos (orçamento/pedido) de hoje até 14 dias, com status (03/11/2026) */
   proximosEventos?: EventoCalendario[];
+  /** Dinheiro guardado agora com cada portador (Cofre, Elison, Marta…) — /financeiro/portadores (23/11/2026, dono) */
+  portadores?: PortadorSaldo[];
   atencao: string[];
+}
+
+/** Portadores que entram no relatório: o Cofre e o Elison sempre; os outros
+ *  (Marta, "sem portador") só quando estão com dinheiro (dono 23/11/2026:
+ *  "Marta, se ela tirar dinheiro"). */
+export function portadoresDoRelatorio(c: Pick<RelatorioCasa, 'portadores'>): PortadorSaldo[] {
+  return (c.portadores ?? []).filter(
+    (p) => p.ativo && (p.tipo === 'COFRE' || semAcentoNome(p.nome) === 'ELISON' || Math.abs(p.saldo) >= 0.01),
+  );
+}
+
+function semAcentoNome(t: string): string {
+  return t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim();
 }
 
 /** Janela do calendário de eventos no relatório diário (a partir de hoje). */
@@ -1785,6 +1801,11 @@ export async function montarRelatorioFiliais(
         console.error('[relatorio-diario] calendário de eventos:', e);
         return [] as EventoCalendario[];
       });
+      // Dinheiro com cada portador (23/11/2026, dono). Extra — falhou, sai sem.
+      casa.portadores = await saldosDaFilial(f.id).catch((e) => {
+        console.error('[relatorio-diario] portadores:', e);
+        return [] as PortadorSaldo[];
+      });
       const taBaixas = [1, 2, 3].reduce((s, n) => s + (casa.tripadvisor?.porNota[n] ?? 0), 0);
       if (taBaixas) {
         casa.atencao.push(`TripAdvisor: ${taBaixas} ${taBaixas === 1 ? 'avaliação nova' : 'avaliações novas'} com nota 3 ou menos — ver em /avaliacoes`);
@@ -2162,6 +2183,15 @@ function linhasCaixa(c: RelatorioCasa): string[] {
   return L;
 }
 
+/** Quanto tem agora no Cofre, com o Elison e com a Marta (se ela tirou). */
+function linhasPortadores(c: RelatorioCasa): string[] {
+  const ps = portadoresDoRelatorio(c);
+  if (!ps.length) return [];
+  const total = ps.reduce((s, p) => s + p.saldo, 0);
+  const lista = ps.map((p) => `${p.nome} ${reais(p.saldo)}`).join(' · ');
+  return [`🏦 Dinheiro guardado agora: ${lista}${ps.length > 1 ? ` — total ${reais(total)}` : ''}`];
+}
+
 function textoCasa(c: RelatorioCasa): string {
   const L: string[] = [];
   L.push(`*${c.nome}*`);
@@ -2177,6 +2207,7 @@ function textoCasa(c: RelatorioCasa): string {
         for (const a of doCaixa) L.push(`• ${a}`);
       }
     }
+    L.push(...linhasPortadores(c));
     L.push(...linhasCartoesForaDoSistema(c));
     L.push(...linhasPontoAberto(c));
     L.push(...linhasBancoHoras(c));
@@ -2243,6 +2274,7 @@ function textoCasa(c: RelatorioCasa): string {
     );
   }
   L.push(...linhasCaixa(c));
+  L.push(...linhasPortadores(c));
   L.push(...linhasCartoesForaDoSistema(c));
   L.push(...linhasPontoAberto(c));
   L.push(...linhasBancoHoras(c));

@@ -20,6 +20,7 @@ import {
   fraseDocVencendo,
   pctSemServico,
   montarRelatorioFiliais,
+  portadoresDoRelatorio,
   rotuloDia,
   somaDias,
   ticketsDeEvento,
@@ -120,6 +121,39 @@ function Bloco({ titulo, children, nota }: { titulo: string; children: React.Rea
       <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">{titulo}</h3>
       <div className="mt-2 text-sm text-slate-700">{children}</div>
       {nota && <p className="mt-2 text-[11px] text-slate-400">{nota}</p>}
+    </div>
+  );
+}
+
+/** Dinheiro guardado agora com cada portador: Cofre e Elison sempre, Marta se tirou (23/11/2026). */
+function Portadores({ c }: { c: RelatorioCasa }) {
+  const ps = portadoresDoRelatorio(c);
+  if (!ps.length) return null;
+  const total = ps.reduce((s, p) => s + p.saldo, 0);
+  return (
+    <div className="mt-3">
+      <Bloco
+        titulo="Dinheiro guardado agora"
+        nota="Saldo de cada portador em /financeiro/portadores (sangria do caixa entra sozinha). Marta só aparece quando está com dinheiro."
+      >
+        <ul className="space-y-1">
+          {ps.map((p) => (
+            <li key={p.id ?? 'sem'} className="flex justify-between gap-3">
+              <span>{p.nome}</span>
+              <span className={p.saldo < 0 ? 'text-red-600' : 'text-slate-900'}>{brl(p.saldo)}</span>
+            </li>
+          ))}
+          {ps.length > 1 && (
+            <li className="flex justify-between gap-3 border-t border-slate-100 pt-1 font-semibold">
+              <span>Total</span>
+              <span>{brl(total)}</span>
+            </li>
+          )}
+        </ul>
+        <Link href={`/financeiro/portadores?filialId=${c.filialId}`} className="mt-2 inline-block text-xs text-sky-700 hover:underline">
+          Ver portadores →
+        </Link>
+      </Bloco>
     </div>
   );
 }
@@ -393,6 +427,7 @@ function Casa({ c, ff }: { c: RelatorioCasa; ff?: FolhaFaturamentoMes | null }) 
             <CaixaDoDia cx={c.caixa} />
           </div>
         )}
+        <Portadores c={c} />
         <ProximosEventos c={c} />
       </section>
     );
@@ -696,6 +731,7 @@ function Casa({ c, ff }: { c: RelatorioCasa; ff?: FolhaFaturamentoMes | null }) 
           <CaixaDoDia cx={c.caixa} />
         </div>
       )}
+      <Portadores c={c} />
 
       {(c.avaliacoes.baixas.length > 0 ||
         c.reservas.total > 0 ||
