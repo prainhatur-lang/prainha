@@ -27,6 +27,7 @@ import { acharGemea } from '@/lib/juntar-pedido-foto';
 import { EditPix } from '@/app/cadastros/fornecedores/edit-pix';
 import { ReciboPeloCelular } from './recibo-pelo-celular';
 import { CartaoNota } from './cartao-nota';
+import { FormaPagamentoNota } from '../forma-pagamento-nota';
 import { cartoesDaEmpresa, parcelasDaNotaNoCartao } from '@/lib/nota-cartao';
 
 export const dynamic = 'force-dynamic';
@@ -727,6 +728,10 @@ export default async function NotaDetalhePage(props: {
             )}
           </div>
         )}
+
+        {/* Como se paga (boleto | Pix confirmando a chave) — informado NA ENTRADA
+            da nota, não na hora de pagar (dono 23/11/2026). */}
+        {nota.situacao !== 'CANCELADA' && nota.situacao !== 'DENEGADA' && <FormaPagamentoNota notaId={id} />}
 
         {/* Pago no cartão de crédito: qual cartão, parcelas e o encontro com a fatura */}
         {nota.situacao !== 'CANCELADA' && nota.situacao !== 'DENEGADA' && (

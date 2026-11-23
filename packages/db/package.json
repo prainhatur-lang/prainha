@@ -313,7 +313,8 @@
     "migrate:fornecedor-folha-semanal-pix": "tsx scripts/migrate-fornecedor-folha-semanal-pix.ts",
     "migrate:produto-nacionalidade": "tsx scripts/migrate-produto-nacionalidade.ts",
     "migrate:nota-filial-origem": "tsx scripts/migrate-nota-filial-origem.ts",
-    "migrate:forma-pagamento": "tsx scripts/migrate-forma-pagamento.ts"
+    "migrate:forma-pagamento": "tsx scripts/migrate-forma-pagamento.ts",
+    "migrate:forma-pagamento-nota": "tsx scripts/migrate-forma-pagamento-nota.ts"
   },
   "dependencies": {
     "@concilia/shared": "workspace:*",

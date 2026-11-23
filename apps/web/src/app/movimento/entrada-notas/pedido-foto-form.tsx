@@ -9,6 +9,7 @@ import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { PedidoPeloCelular } from './pedido-pelo-celular';
+import { FormaPagamentoNota } from './forma-pagamento-nota';
 
 interface Filial {
   id: string;
@@ -613,6 +614,8 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
                     }
                   />
                 )}
+                {/* Como se paga: decide na entrada (dono 23/11/2026) */}
+                {r.ok && r.notaId && <FormaPagamentoNota notaId={r.notaId} compacto />}
                 {r.notaId && (
                   <Link href={`/movimento/entrada-notas/${r.notaId}`} className="mt-1 inline-block underline">
                     {r.titulo.startsWith('Lançado') ? 'abrir a entrada' : 'abrir pra conferir'}

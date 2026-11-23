@@ -129,7 +129,10 @@ export async function POST(req: Request) {
       descricao: c.descricao,
       venc: sql<string>`to_char(${c.dataVencimento}, 'DD/MM')`,
       fornecedorId: c.fornecedorId,
-      formaConta: c.formaPagamento,
+      // conta > nota (informada na entrada, 23/11/2026) > fornecedor
+      formaConta: sql<string | null>`coalesce(${c.formaPagamento}, (select n.forma_pagamento from nota_compra n where n.id = ${c.notaCompraId}))`,
+      // Pix confirmado na entrada da nota: a chave que quem deu entrada viu.
+      pixChaveNota: sql<string | null>`(select n.pix_chave_confirmada from nota_compra n where n.id = ${c.notaCompraId} and n.forma_pagamento = 'pix')`,
       jaPago: sql<string>`coalesce((select sum(b.valor) from conta_pagar_baixa b where b.conta_pagar_id = ${c.id}), 0)::text`,
     })
     .from(c)
@@ -165,6 +168,17 @@ export async function POST(req: Request) {
   if (contas.some((x) => formaEfetiva(x.formaConta, forn.forma) === 'boleto')) {
     return NextResponse.json(
       { error: 'Esta conta é paga por BOLETO (cadastro do fornecedor ou da conta). O Pix NÃO foi enviado. Se for mesmo Pix, troque a forma na tela.' },
+      { status: 409 },
+    );
+  }
+  // Chave confirmada NA ENTRADA da nota (23/11/2026): se o cadastro trocou a
+  // chave depois, não manda — confirma de novo na nota.
+  const chaveTrocada = contas.find((x) => x.pixChaveNota && x.pixChaveNota.trim() !== chave);
+  if (chaveTrocada) {
+    return NextResponse.json(
+      {
+        error: `A chave Pix do cadastro mudou depois da entrada da nota (confirmada: ${chaveTrocada.pixChaveNota}). O Pix NÃO foi enviado. Confirme a chave de novo na entrada da nota.`,
+      },
       { status: 409 },
     );
   }

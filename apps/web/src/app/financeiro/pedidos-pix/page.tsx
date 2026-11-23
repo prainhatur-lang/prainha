@@ -269,7 +269,8 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
       documento: f.cnpjOuCpf,
       // Como recebe (23/11/2026): boleto | pix | null — a da conta vale por cima.
       formaForn: f.formaPagamento,
-      formaConta: c.formaPagamento,
+      // Forma informada NA ENTRADA da nota (23/11/2026) vale quando a conta não tem a dela.
+      formaConta: sql<string | null>`coalesce(${c.formaPagamento}, (select n.forma_pagamento from nota_compra n where n.id = ${c.notaCompraId}))`,
     })
     .from(c)
     .leftJoin(f, eq(f.id, c.fornecedorId))

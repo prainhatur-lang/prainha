@@ -98,6 +98,16 @@ export const notaCompra = pgTable(
     cartaoFinal: varchar('cartao_final', { length: 8 }),
     cartaoParcelas: integer('cartao_parcelas'),
 
+    /** Como esta nota/recibo se paga, informado NA ENTRADA (dono 23/11/2026):
+     *  'boleto' (nota ou recibo com boleto) | 'pix'. NULL = não informado (segue
+     *  o cadastro do fornecedor). A conta a pagar herda: conta > nota > fornecedor. */
+    formaPagamento: varchar('forma_pagamento', { length: 10 }),
+    /** Pix: a chave que quem deu entrada CONFIRMOU (a do cadastro do fornecedor
+     *  naquele momento). Se o cadastro mudar depois, o Pix trava até confirmar de novo. */
+    pixChaveConfirmada: varchar('pix_chave_confirmada', { length: 140 }),
+    formaInformadaEm: timestamp('forma_informada_em', { withTimezone: true }),
+    formaInformadaPor: uuid('forma_informada_por'),
+
     // Metadata
     // UPLOAD | SEFAZ_DFE | SEFAZ_DFE_RESUMO | SEFAZ_DFE_RESUMO_CIENTE (23 chars — por isso 40, não 20)
     origemImportacao: varchar('origem_importacao', { length: 40 }).default('UPLOAD'),
