@@ -63,6 +63,7 @@ export * from './nfse';
 export * from './registro-exclusao';
 export * from './imposto-guia';
 export * from './pix-pagamento';
+export * from './conta-consumo-pagamento';
 export * from './marketing-post';
 export * from './marketing-espelho';
 export * from './vale-presente';

@@ -611,6 +611,136 @@ export async function incluirPagamentoPixInterConta(
   return data;
 }
 
+// ---------------------------------------------------------------------------
+// Conta de consumo / boleto fora do DDA (23/11/2026 — tela Pagar conta).
+// Contrato do SDK oficial do Inter (pj-sdk-python, banking):
+//  - POST /banking/v2/pagamento (escopo pagamento-boleto.write): body
+//    {codBarraLinhaDigitavel, valorPagar, dataPagamento, dataVencimento,
+//    cpfCnpjBeneficiario} → {quantidadeAprovadores, statusPagamento,
+//    codigoTransacao, dataAgendamento}.
+//  - GET /banking/v2/pagamento?dataInicio&dataFim&codBarraLinhaDigitavel
+//    &codigoTransacao (pagamento-boleto.read).
+//  - Pix copia-e-cola: POST /banking/v2/pix com destinatario
+//    {tipo: 'PIX_COPIA_E_COLA', pixCopiaECola}.
+// Mesma regra de erro do Pix: 4xx (fora 408/409) = recusa certa, nada saiu;
+// o resto é AMBÍGUO e quem chama deixa pendente pra conferir.
+
+export interface InterBoletoIncluirResposta {
+  quantidadeAprovadores?: number;
+  dataAgendamento?: string;
+  statusPagamento?: string; // REALIZADO | AGUARDANDO_APROVACAO | AGENDADO ...
+  codigoTransacao?: string;
+  [k: string]: unknown;
+}
+
+export async function incluirPagamentoBoletoInter(
+  cred: InterCredenciais,
+  p: {
+    codigo: string;
+    valor: number;
+    dataPagamento: string; // YYYY-MM-DD
+    dataVencimento?: string | null; // YYYY-MM-DD
+    cpfCnpjBeneficiario?: string | null;
+    idempotencia: string;
+  },
+): Promise<InterBoletoIncluirResposta> {
+  let token: string;
+  try {
+    token = await getAccessToken(cred, 'pagamento-boleto.write');
+  } catch (e) {
+    throw new InterPixRecusado(e instanceof Error ? e.message : String(e), 401, null);
+  }
+  const body = JSON.stringify({
+    codBarraLinhaDigitavel: p.codigo.replace(/\D/g, ''),
+    valorPagar: Number(p.valor.toFixed(2)),
+    dataPagamento: p.dataPagamento,
+    ...(p.dataVencimento ? { dataVencimento: p.dataVencimento } : {}),
+    ...(p.cpfCnpjBeneficiario ? { cpfCnpjBeneficiario: p.cpfCnpjBeneficiario.replace(/\D/g, '') } : {}),
+  });
+  const { status, data } = await requestJson<InterBoletoIncluirResposta>({
+    method: 'POST',
+    path: '/banking/v2/pagamento',
+    body,
+    authorization: `Bearer ${token}`,
+    headers: { 'x-id-idempotente': p.idempotencia },
+    timeoutMs: 45_000,
+    cred,
+  });
+  if (status >= 400 && status < 500 && status !== 408 && status !== 409) {
+    throw new InterPixRecusado(`Inter recusou o pagamento (${status}): ${JSON.stringify(data).slice(0, 500)}`, status, data);
+  }
+  if (status < 200 || status >= 300) {
+    throw new Error(`Inter pagamento resposta ${status}: ${JSON.stringify(data).slice(0, 500)}`);
+  }
+  return data;
+}
+
+/** Pagamentos de boleto filtrados por código de barras e/ou codigoTransacao. */
+export async function buscarPagamentoBoletoInter(
+  cred: InterCredenciais,
+  f: { dataInicio: string; dataFim: string; codigoBarras?: string; codigoTransacao?: string },
+): Promise<InterPagamento[]> {
+  const token = await getAccessToken(cred, 'pagamento-boleto.read');
+  const q = new URLSearchParams({ dataInicio: f.dataInicio, dataFim: f.dataFim });
+  if (f.codigoBarras) q.set('codBarraLinhaDigitavel', f.codigoBarras);
+  if (f.codigoTransacao) q.set('codigoTransacao', f.codigoTransacao);
+  const { status, data } = await requestJson<InterPagamento[] | { title?: string }>({
+    method: 'GET',
+    path: `/banking/v2/pagamento?${q.toString()}`,
+    authorization: `Bearer ${token}`,
+    timeoutMs: 30_000,
+    cred,
+  });
+  if (status !== 200 || !Array.isArray(data)) {
+    throw new Error(`Inter consulta pagamento erro (${status}): ${JSON.stringify(data).slice(0, 500)}`);
+  }
+  return data;
+}
+
+/** Status do pagamento de boleto → nosso. */
+export function classificarStatusBoletoInter(s: string | undefined | null): 'PAGO' | 'ERRO' | 'APROVACAO' | 'AGENDADO' | null {
+  const v = (s ?? '').toUpperCase();
+  if (['REALIZADO', 'PAGO', 'EFETIVADO', 'DEBITADO'].includes(v)) return 'PAGO';
+  if (['CANCELADO', 'REPROVADO', 'EXPIRADO', 'FALHA', 'ERRO', 'RECUSADO', 'NAO_REALIZADO'].includes(v)) return 'ERRO';
+  if (v.includes('APROVACAO')) return 'APROVACAO';
+  if (v.includes('AGENDADO') || v === 'SCHEDULED') return 'AGENDADO';
+  return null;
+}
+
+/** Pix copia-e-cola (o QR da conta de luz/água). Mesmos erros do Pix por chave. */
+export async function incluirPagamentoPixCopiaColaInter(
+  cred: InterCredenciais,
+  p: { valor: number; pixCopiaECola: string; descricao?: string; idempotencia: string },
+): Promise<InterPixIncluirResposta> {
+  let token: string;
+  try {
+    token = await getAccessToken(cred, 'pagamento-pix.write');
+  } catch (e) {
+    throw new InterPixRecusado(e instanceof Error ? e.message : String(e), 401, null);
+  }
+  const body = JSON.stringify({
+    valor: p.valor.toFixed(2),
+    ...(p.descricao ? { descricao: p.descricao.slice(0, 140) } : {}),
+    destinatario: { tipo: 'PIX_COPIA_E_COLA', pixCopiaECola: p.pixCopiaECola.trim() },
+  });
+  const { status, data } = await requestJson<InterPixIncluirResposta>({
+    method: 'POST',
+    path: '/banking/v2/pix',
+    body,
+    authorization: `Bearer ${token}`,
+    headers: { 'x-id-idempotente': p.idempotencia },
+    timeoutMs: 45_000,
+    cred,
+  });
+  if (status >= 400 && status < 500 && status !== 408 && status !== 409) {
+    throw new InterPixRecusado(`Inter recusou o Pix (${status}): ${JSON.stringify(data).slice(0, 500)}`, status, data);
+  }
+  if (status < 200 || status >= 300) {
+    throw new Error(`Inter Pix resposta ${status}: ${JSON.stringify(data).slice(0, 500)}`);
+  }
+  return data;
+}
+
 export interface InterPixConsulta {
   transacaoPix?: {
     status?: string;
