@@ -11,11 +11,13 @@ import { and, eq, sql } from 'drizzle-orm';
 import { recalcularAgregado } from '@/lib/conta-pagar-baixa';
 import { dateToBrYmd, diasAtrasBr, hojeBr } from '@/lib/datas';
 import {
-  buscarPagamentoBoletoInter,
+  buscarPagamentosBoletoJanelas,
+  mesmoCodigoBoleto,
   classificarStatusBoletoInter,
   classificarStatusPixInter,
   consultarPagamentoPixInter,
   type InterCredenciais,
+  type InterPagamento,
 } from '@/lib/inter';
 
 type Exec = Pick<typeof db, 'execute'>;
@@ -150,6 +152,8 @@ export async function sincronizarContasConsumo(
     codigo_inter: string | null;
     criado_em: string;
   }>;
+  // uma consulta (janelas de 30 dias) serve pra todos os boletos abertos
+  let lista: InterPagamento[] | null = null;
   for (const p of abertos) {
     if (fim - Date.now() < 1_000) break;
     try {
@@ -176,16 +180,11 @@ export async function sincronizarContasConsumo(
         continue;
       }
       // BOLETO: procura pelo codigoTransacao ou pelo código de barras
-      const ini = p.criado_em.slice(0, 10) < diasAtrasBr(60) ? diasAtrasBr(60) : diasAtrasBr(45);
-      const lista = await buscarPagamentoBoletoInter(cred, {
-        dataInicio: ini,
-        dataFim: diasAtrasBr(-60),
-        ...(p.codigo_inter ? { codigoTransacao: p.codigo_inter } : { codigoBarras: p.codigo_barras ?? undefined }),
-      });
+      lista ??= await buscarPagamentosBoletoJanelas(cred, { dataInicio: diasAtrasBr(60), dataFim: hojeBr(), futuroAte: diasAtrasBr(-60) });
       out.conferidos += 1;
       const achado =
         lista.find((x) => p.codigo_inter && x.codigoTransacao === p.codigo_inter) ??
-        lista.find((x) => (x.codigoBarra ?? '').replace(/\D/g, '') === p.codigo_barras) ??
+        lista.find((x) => mesmoCodigoBoleto(x.codigoBarra, p.codigo_barras)) ??
         null;
       if (!achado) continue;
       const st = String(achado.statusPagamento ?? '');

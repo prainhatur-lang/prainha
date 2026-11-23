@@ -697,6 +697,54 @@ export async function buscarPagamentoBoletoInter(
   return data;
 }
 
+/**
+ * Pagamentos de boleto num período longo, em janelas de até 30 dias e sem
+ * filtro de código no Inter (período longo/futuro + codBarraLinhaDigitavel deu
+ * 400 "semanticamente errada" na Lelis, 23/11/2026 — as telas que funcionam
+ * consultam ≤30 dias até hoje). O passado é obrigatório (erro sobe); o futuro
+ * (agendados) é melhor-esforço. Quem chama filtra pelo código aqui.
+ */
+export async function buscarPagamentosBoletoJanelas(
+  cred: InterCredenciais,
+  f: { dataInicio: string; dataFim: string; futuroAte?: string },
+): Promise<InterPagamento[]> {
+  const dia = 86_400_000;
+  const toMs = (ymd: string) => Date.UTC(Number(ymd.slice(0, 4)), Number(ymd.slice(5, 7)) - 1, Number(ymd.slice(8, 10)));
+  const toYmd = (ms: number) => new Date(ms).toISOString().slice(0, 10); // calendário puro (UTC)
+  const janelas = (ini: string, fim: string): Array<[string, string]> => {
+    const out: Array<[string, string]> = [];
+    for (let a = toMs(ini); a <= toMs(fim); a += 30 * dia) out.push([toYmd(a), toYmd(Math.min(a + 29 * dia, toMs(fim)))]);
+    return out;
+  };
+  const vistos = new Map<string, InterPagamento>();
+  const add = (l: InterPagamento[]) => l.forEach((p, i) => vistos.set(p.codigoTransacao ?? `${p.codigoBarra}-${i}`, p));
+  for (const [a, b] of janelas(f.dataInicio, f.dataFim)) add(await buscarPagamentosInter(cred, a, b));
+  if (f.futuroAte && f.futuroAte > f.dataFim) {
+    for (const [a, b] of janelas(toYmd(toMs(f.dataFim) + dia), f.futuroAte)) {
+      try {
+        add(await buscarPagamentosInter(cred, a, b));
+      } catch {
+        /* futuro não aceito pelo Inter — segue com o passado */
+      }
+    }
+  }
+  return [...vistos.values()];
+}
+
+/** O código do Inter (44 ou 48 dígitos) é o mesmo boleto? */
+export function mesmoCodigoBoleto(codigoInter: string | null | undefined, ...nossos: Array<string | null | undefined>): boolean {
+  const c = (codigoInter ?? '').replace(/\D/g, '');
+  if (!c) return false;
+  return nossos.some((n) => {
+    const d = (n ?? '').replace(/\D/g, '');
+    if (!d) return false;
+    if (d === c) return true;
+    // 48 (linha de convênio) → 44: tira o DV de cada bloco de 12
+    const para44 = (x: string) => (x.length === 48 && x[0] === '8' ? [0, 1, 2, 3].map((b) => x.slice(b * 12, b * 12 + 11)).join('') : x);
+    return para44(d) === para44(c);
+  });
+}
+
 /** Status do pagamento de boleto → nosso. */
 export function classificarStatusBoletoInter(s: string | undefined | null): 'PAGO' | 'ERRO' | 'APROVACAO' | 'AGENDADO' | null {
   const v = (s ?? '').toUpperCase();

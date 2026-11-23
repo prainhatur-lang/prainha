@@ -24,6 +24,8 @@ import { exigirPermApi } from '@/lib/exigir-perm';
 import { ebLiberadaNoFinanceiro } from '@/lib/eb/acesso-financeiro';
 import {
   buscarPagamentoBoletoInter,
+  buscarPagamentosBoletoJanelas,
+  mesmoCodigoBoleto,
   classificarStatusBoletoInter,
   incluirPagamentoBoletoInter,
   incluirPagamentoPixCopiaColaInter,
@@ -114,14 +116,14 @@ export async function POST(req: Request) {
   // Boleto: já pago no Inter por outro caminho (app, borderô, outra tela)?
   if (dado.tipo === 'BOLETO') {
     try {
-      const ja = await buscarPagamentoBoletoInter(cred, {
+      const ja = await buscarPagamentosBoletoJanelas(cred, {
         dataInicio: diasAtrasBr(90),
-        dataFim: diasAtrasBr(-60),
-        codigoBarras: dado.codigoBarras,
+        dataFim: hojeBr(),
+        futuroAte: diasAtrasBr(-60),
       });
       const vivo = ja.find((p) => {
         const c = classificarStatusBoletoInter(p.statusPagamento);
-        return c !== 'ERRO' && (p.codigoBarra ?? '').replace(/\D/g, '') === dado.codigoBarras;
+        return c !== 'ERRO' && mesmoCodigoBoleto(p.codigoBarra, dado.codigoBarras, dado.codigo);
       });
       if (vivo) {
         return NextResponse.json(
