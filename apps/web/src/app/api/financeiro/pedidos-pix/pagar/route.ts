@@ -28,6 +28,7 @@ import { rescisoesDasContas } from '@/lib/rh/rescisao-pix';
 import { folhaMensalDasContas } from '@/lib/rh/folha-mensal-pix';
 import { destinoContaInter, folhaSemanalChavePixDasContas, folhaSemanalPixDasContas } from '@/lib/rh/folha-semanal-pix';
 import { consumerParado, FORNECEDORES_CONSUMER_NO_PIX } from '@/lib/consumer-contas';
+import { formaEfetiva, travaMesmaDivida } from '@/lib/conta-mesma-divida';
 import { baixarContasDoPix, lerSaldoParaPix, podePagarPix, sincronizarPixAbertos, type SaldoParaPix } from '@/lib/pix-pagamento';
 
 export const dynamic = 'force-dynamic';
@@ -76,6 +77,7 @@ export async function POST(req: Request) {
       chave: schema.fornecedor.chavePix,
       favorecido: schema.fornecedor.pixFavorecido,
       doc: schema.fornecedor.cnpjOuCpf,
+      forma: schema.fornecedor.formaPagamento,
     })
     .from(schema.fornecedor)
     .where(eq(schema.fornecedor.id, fornecedorId))
@@ -127,6 +129,7 @@ export async function POST(req: Request) {
       descricao: c.descricao,
       venc: sql<string>`to_char(${c.dataVencimento}, 'DD/MM')`,
       fornecedorId: c.fornecedorId,
+      formaConta: c.formaPagamento,
       jaPago: sql<string>`coalesce((select sum(b.valor) from conta_pagar_baixa b where b.conta_pagar_id = ${c.id}), 0)::text`,
     })
     .from(c)
@@ -155,6 +158,19 @@ export async function POST(req: Request) {
       { status: 409 },
     );
   }
+
+  // Forma de pagamento (23/11/2026): fornecedor (ou conta) que recebe por
+  // BOLETO não leva Pix — a dívida sai pelo boleto. Troca a forma na tela se
+  // essa conta for mesmo Pix.
+  if (contas.some((x) => formaEfetiva(x.formaConta, forn.forma) === 'boleto')) {
+    return NextResponse.json(
+      { error: 'Esta conta é paga por BOLETO (cadastro do fornecedor ou da conta). O Pix NÃO foi enviado. Se for mesmo Pix, troque a forma na tela.' },
+      { status: 409 },
+    );
+  }
+  // Mesma dívida (23/11/2026): gêmea já paga (boleto, baixa, borderô) → não manda.
+  const dobro = await travaMesmaDivida(contaIds);
+  if (dobro) return NextResponse.json({ error: `${dobro.msg} O Pix NÃO foi enviado.`, mesmaDivida: dobro.tipo }, { status: 409 });
 
   // Trava por casa + confere conta presa + confere saldo + cria a linha
   // ENVIANDO, tudo junto. O saldo fica dentro da trava: dois Pix da mesma casa

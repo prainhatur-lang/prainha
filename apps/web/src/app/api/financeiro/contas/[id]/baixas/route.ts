@@ -19,6 +19,7 @@ import { and, eq } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { consumerParado } from '@/lib/consumer-contas';
+import { travaMesmaDivida } from '@/lib/conta-mesma-divida';
 import { recalcularAgregado } from '@/lib/conta-pagar-baixa';
 import { lerMotivo, registrarExclusao } from '@/lib/registro-exclusao';
 
@@ -101,6 +102,11 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   const r = await carregarConta(id, user.id);
   if (r.erro) return r.erro;
   const conta = r.conta!;
+
+  // Mesma dívida (23/11/2026): conta VINCULADA a outra já paga (boleto × Pix)
+  // não leva segunda baixa. Só a parecida (sem vínculo) não trava aqui.
+  const dobro = await travaMesmaDivida([id]).catch(() => null);
+  if (dobro?.tipo === 'vinculada') return NextResponse.json({ error: dobro.msg }, { status: 409 });
 
   const valorConta = Number(conta.valor);
   const jaPago = (

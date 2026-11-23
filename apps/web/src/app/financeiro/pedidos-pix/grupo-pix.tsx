@@ -16,6 +16,7 @@ import { useRouter } from 'next/navigation';
 import { EditPix, ConferenciaPixLinha } from '@/app/cadastros/fornecedores/edit-pix';
 import { conferirChavePix, type ConferenciaPix } from '@/lib/pix-titular';
 import { EVENTO_SALDO_PIX, useSaldoPix } from './saldo-inter';
+import type { Gemea } from '@/lib/conta-mesma-divida';
 
 export interface PedidoPix {
   id: string;
@@ -25,6 +26,16 @@ export interface PedidoPix {
   saldo: number;
   parcial: boolean;
   pareceBoleto: boolean;
+  /** Forma efetiva (23/11/2026): a da conta por cima da do fornecedor. */
+  forma?: 'boleto' | 'pix' | null;
+  /** Forma marcada só nesta conta (null = segue o fornecedor). */
+  formaConta?: 'boleto' | 'pix' | null;
+  /** Recebe por boleto e o boleto ainda não chegou/anexou. */
+  aguardandoBoleto?: boolean;
+  /** Mesma dívida lançada de outro jeito (boleto × Pix), vinculada ou parecida. */
+  gemeas?: Gemea[];
+  /** A gêmea VINCULADA já foi paga: esta não se paga de novo. */
+  jaPagaPorGemea?: boolean;
   /** Boleto desta conta já pago no Inter (26/10/2026): baixa pronta. */
   boletoInter?: {
     codigo: string;
@@ -206,6 +217,186 @@ function LinhaOrigem({ o }: { o: NonNullable<PedidoPix['origem']> }) {
   );
 }
 
+/** "Recebe por" do fornecedor (23/11/2026): grava no cadastro (vale nas outras casas). */
+function SeletorFormaFornecedor({ fornecedorId, atual }: { fornecedorId: string; atual: 'boleto' | 'pix' | null }) {
+  const router = useRouter();
+  const [pending, setPending] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  async function gravar(v: string) {
+    setPending(true);
+    setErro(null);
+    const r = await fetch(`/api/fornecedores/${fornecedorId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ formaPagamento: v === '' ? null : v }),
+    }).catch(() => null);
+    setPending(false);
+    if (!r || !r.ok) {
+      const d = r ? ((await r.json().catch(() => ({}))) as { error?: string }) : {};
+      setErro(d.error ?? 'falha de rede');
+      return;
+    }
+    router.refresh();
+  }
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-slate-600">
+      <span>Recebe por:</span>
+      {([
+        ['', 'não definido'],
+        ['boleto', '🧾 Boleto'],
+        ['pix', '💠 Pix'],
+      ] as const).map(([v, rot]) => (
+        <button
+          key={v}
+          type="button"
+          disabled={pending}
+          onClick={() => void gravar(v)}
+          className={`rounded-md border px-2 py-0.5 text-[11px] font-medium ${
+            (atual ?? '') === v
+              ? 'border-slate-900 bg-slate-900 text-white'
+              : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+          } disabled:opacity-50`}
+        >
+          {rot}
+        </button>
+      ))}
+      {erro && <span className="text-rose-700">Não gravou: {erro}</span>}
+    </div>
+  );
+}
+
+/** Forma só desta conta, por cima do fornecedor (23/11/2026). */
+function SeletorFormaConta({ conta }: { conta: PedidoPix }) {
+  const router = useRouter();
+  const [pending, setPending] = useState(false);
+  async function gravar(v: string) {
+    setPending(true);
+    const r = await fetch(`/api/financeiro/contas/${conta.id}/forma-pagamento`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ forma: v === '' ? null : v }),
+    }).catch(() => null);
+    setPending(false);
+    if (!r || !r.ok) {
+      const d = r ? ((await r.json().catch(() => ({}))) as { error?: string }) : {};
+      window.alert(`Não gravou: ${d.error ?? 'falha de rede'}`);
+      return;
+    }
+    router.refresh();
+  }
+  return (
+    <select
+      value={conta.formaConta ?? ''}
+      disabled={pending}
+      onChange={(e) => void gravar(e.target.value)}
+      title="Como ESTA conta é paga (por cima do que está no fornecedor)"
+      className="shrink-0 rounded border border-slate-300 bg-white px-1 py-0.5 text-[10px] text-slate-600"
+    >
+      <option value="">forma: do fornecedor</option>
+      <option value="boleto">esta: boleto</option>
+      <option value="pix">esta: Pix</option>
+    </select>
+  );
+}
+
+/** Aviso de mesma dívida lançada duas vezes (boleto × Pix), 23/11/2026. */
+function AvisoGemeas({ conta, podeMarcar }: { conta: PedidoPix; podeMarcar: boolean }) {
+  const router = useRouter();
+  const [pending, setPending] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  const gemeas = conta.gemeas ?? [];
+  if (gemeas.length === 0) return null;
+  async function marcar(body: Record<string, unknown>) {
+    setPending(true);
+    setErro(null);
+    const r = await fetch(`/api/financeiro/contas/${conta.id}/forma-pagamento`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }).catch(() => null);
+    setPending(false);
+    if (!r || !r.ok) {
+      const d = r ? ((await r.json().catch(() => ({}))) as { error?: string }) : {};
+      setErro(d.error ?? 'falha de rede');
+      return;
+    }
+    router.refresh();
+  }
+  const desc = (g: Gemea) =>
+    `${g.descricao ?? 'conta'} · ${brl(g.valor)} · venc ${dataBr(g.venc)}${g.temBoleto ? ' · com boleto' : ''}`;
+  const situ = (g: Gemea) =>
+    g.emBordero ? 'num borderô' : g.paga ? `PAGA${g.pagaEm ? ` em ${dataBr(g.pagaEm)}` : ''}` : 'em aberto';
+  return (
+    <div className="mx-4 mb-2 space-y-1">
+      {gemeas.map((g) => (
+        <div
+          key={g.id}
+          className={`flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border px-3 py-2 text-xs ${
+            g.vinculo && g.paga
+              ? 'border-rose-300 bg-rose-50 text-rose-900'
+              : g.paga
+                ? 'border-amber-300 bg-amber-50 text-amber-900'
+                : 'border-slate-200 bg-slate-50 text-slate-700'
+          }`}
+        >
+          <span className="font-semibold">
+            {g.vinculo
+              ? g.paga
+                ? '⛔ Mesma dívida, já paga — não pague de novo'
+                : '🔗 Mesma dívida (pague só uma)'
+              : g.paga
+                ? '⚠ Parece a mesma dívida, que já foi paga'
+                : '⚠ Parece a mesma dívida lançada de outro jeito'}
+          </span>
+          <a href={`/financeiro/conta/${g.id}`} className="text-sky-700 hover:underline">
+            {desc(g)}
+          </a>
+          <span>({situ(g)})</span>
+          {podeMarcar && (
+            <span className="ml-auto flex gap-1.5">
+              {g.vinculo ? (
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => void marcar({ mesmaDividaId: null, naoEMesmaDivida: true })}
+                  className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-700 disabled:opacity-50"
+                >
+                  Desfazer: não é a mesma
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    disabled={pending}
+                    onClick={() => void marcar({ mesmaDividaId: g.id })}
+                    className="rounded bg-rose-700 px-1.5 py-0.5 text-[11px] font-semibold text-white disabled:opacity-50"
+                  >
+                    É a mesma
+                  </button>
+                  <button
+                    type="button"
+                    disabled={pending}
+                    onClick={() => void marcar({ naoEMesmaDivida: true })}
+                    className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[11px] text-slate-700 disabled:opacity-50"
+                  >
+                    Não é
+                  </button>
+                </>
+              )}
+            </span>
+          )}
+        </div>
+      ))}
+      {erro && <div className="text-xs text-rose-700">Não gravou: {erro}</div>}
+    </div>
+  );
+}
+
+/** Conta que não pode sair por Pix agora: boleto, ou gêmea já paga (vinculada ou sem conferir). */
+function bloqueiaPix(c: PedidoPix) {
+  return c.forma === 'boleto' || !!c.jaPagaPorGemea || (c.gemeas ?? []).some((g) => g.paga);
+}
+
 export interface GrupoPedidos {
   fornecedorId: string | null;
   nome: string;
@@ -213,6 +404,8 @@ export interface GrupoPedidos {
   chavePix: string | null;
   pixFavorecido: string | null;
   contas: PedidoPix[];
+  /** Como o fornecedor recebe (23/11/2026): boleto | pix | null (indefinido). */
+  formaPagamento?: 'boleto' | 'pix' | null;
   /** Rescisão (26/10/2026): sem chave no cadastro, o Pix sai pelo CPF do funcionário. */
   chaveCpfRescisao?: string | null;
   /** Folha semanal liberada pra Pix (14/11/2026): sem chave, o Pix vai pra conta Inter do funcionário. */
@@ -285,7 +478,7 @@ export function GrupoPix({
 }) {
   const router = useRouter();
   const [marcadas, setMarcadas] = useState<Set<string>>(
-    () => new Set(grupo.contas.filter((c) => !c.pareceBoleto).map((c) => c.id)),
+    () => new Set(grupo.contas.filter((c) => !c.pareceBoleto && !c.jaPagaPorGemea).map((c) => c.id)),
   );
   const [dataPgto, setDataPgto] = useState(hoje);
   const [pending, setPending] = useState(false);
@@ -306,7 +499,7 @@ export function GrupoPix({
   // Folha semanal (dono 14/11/2026, "junte as contas diária + gratificação"): os
   // lançamentos da mesma pessoa podem sair num Pix só. O Pix por conta continua.
   const idsFolha = useMemo(() => new Set(grupo.contaInterFolha?.contaIds ?? []), [grupo.contaInterFolha]);
-  const contasJuntas = grupo.contas.filter((c) => idsFolha.has(c.id) && !travadas.has(c.id));
+  const contasJuntas = grupo.contas.filter((c) => idsFolha.has(c.id) && !travadas.has(c.id) && !bloqueiaPix(c));
   const totalJuntas = Math.round(contasJuntas.reduce((s, c) => s + c.saldo, 0) * 100) / 100;
   const confirmandoJuntas = confirmandoId === TODAS_JUNTAS && contasJuntas.length > 1;
   const contaConfirmando: PedidoPix | null = confirmandoJuntas
@@ -377,6 +570,24 @@ export function GrupoPix({
   async function baixar() {
     const contas = grupo.contas.filter((c) => marcadas.has(c.id));
     if (contas.length === 0) return;
+    // Mesma dívida (23/11/2026): gêmea vinculada já paga → não baixa de novo.
+    const dobro = contas.filter((c) => c.jaPagaPorGemea);
+    if (dobro.length > 0) {
+      setMsg({
+        tipo: 'erro',
+        texto: `Baixa não feita: ${dobro.map((c) => c.descricao).join(', ')} é a MESMA dívida de uma conta já paga. Desmarque, ou desfaça o vínculo se não for a mesma.`,
+      });
+      return;
+    }
+    const parecidas = contas.filter((c) => (c.gemeas ?? []).some((g) => !g.vinculo && g.paga));
+    if (parecidas.length > 0) {
+      const segue = window.confirm(
+        `⚠ ${parecidas.length} conta(s) marcada(s) parecem a mesma dívida de outra conta JÁ PAGA (${parecidas
+          .map((c) => c.descricao)
+          .join(', ')}).\n\nConfira na linha da conta ("É a mesma" / "Não é").\n\nDar baixa mesmo assim?`,
+      );
+      if (!segue) return;
+    }
     const emPix = contas.filter((c) => travadas.has(c.id));
     if (emPix.length > 0) {
       const segue = window.confirm(
@@ -466,8 +677,15 @@ export function GrupoPix({
               <span className="rounded-md bg-orange-50 px-2 py-1 font-mono text-sm text-orange-900">🏦 {contaInter.destino}</span>
               <span className="text-[11px] text-slate-500">conta da folha no Inter, em nome de {contaInter.nome}</span>
             </div>
+          ) : grupo.formaPagamento === 'boleto' ? (
+            <div className="mt-2 text-xs font-medium text-slate-700">
+              🧾 Recebe por BOLETO — não precisa de chave Pix. Pague pelo boleto quando ele chegar.
+            </div>
           ) : (
             <div className="mt-2 text-xs font-medium text-amber-700">Sem chave Pix autorizada no cadastro — cadastre a chave que a pessoa informou</div>
+          )}
+          {grupo.fornecedorId && podeEditarFornecedor && (
+            <SeletorFormaFornecedor fornecedorId={grupo.fornecedorId} atual={grupo.formaPagamento ?? null} />
           )}
           {grupo.pixFavorecido && (
             <div className="mt-1 text-xs text-slate-600">Recebe em nome de {grupo.pixFavorecido}</div>
@@ -521,7 +739,7 @@ export function GrupoPix({
                 title={c.descricao}
               >
                 {c.descricao}
-                {c.pareceBoleto && <span className="ml-2 text-[10px] text-slate-400">(boleto/NF-e)</span>}
+                {c.pareceBoleto && !c.forma && <span className="ml-2 text-[10px] text-slate-400">(boleto/NF-e)</span>}
                 {c.parcial && <span className="ml-2 text-[10px] text-sky-700">(saldo de pagamento parcial)</span>}
               </a>
               {atraso > 0 ? (
@@ -533,8 +751,21 @@ export function GrupoPix({
                   vence hoje
                 </span>
               ) : null}
-              <span className="w-24 shrink-0 text-right font-medium text-slate-900">{brl(c.saldo)}</span>
-              {podeBotaoPix && !travadas.has(c.id) && (
+              {c.forma === 'boleto' && (
+                <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-700">
+                  {c.aguardandoBoleto ? '⏳ Aguardando boleto' : '🧾 Paga por boleto'}
+                </span>
+              )}
+              {c.jaPagaPorGemea && (
+                <span className="shrink-0 rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800">
+                  já paga pela outra
+                </span>
+              )}
+              {podeBaixar && <SeletorFormaConta conta={c} />}
+              <span className={`w-24 shrink-0 text-right font-medium ${c.jaPagaPorGemea ? 'text-slate-400 line-through' : 'text-slate-900'}`}>
+                {brl(c.saldo)}
+              </span>
+              {podeBotaoPix && !travadas.has(c.id) && !bloqueiaPix(c) && (
                 <button
                   type="button"
                   disabled={pending || enviando}
@@ -566,6 +797,7 @@ export function GrupoPix({
                 confirmar={() => void pagarPix()}
               />
             )}
+            <AvisoGemeas conta={c} podeMarcar={podeBaixar} />
             {c.origem && <LinhaOrigem o={c.origem} />}
             {c.boletoInter && <FaixaBoletoInter conta={c} b={c.boletoInter} />}
             </li>
@@ -634,7 +866,7 @@ export function GrupoPix({
           </button>
         </div>
       )}
-      {mostraPagarPix && !podeBotaoPix && (
+      {mostraPagarPix && !podeBotaoPix && grupo.formaPagamento !== 'boleto' && (
         <div className="border-t border-slate-100 bg-violet-50/50 px-4 py-2 text-xs text-slate-500">
           💸 Pagar Pix pelo sistema:{' '}
           {!temInterPix ? 'esta casa ainda não tem a integração de pagamentos do Inter.' : 'cadastre a chave Pix primeiro.'}

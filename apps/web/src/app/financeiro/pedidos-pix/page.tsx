@@ -54,6 +54,7 @@ import { rescisoesDasContas, sqlEhRescisao } from '@/lib/rh/rescisao-pix';
 import { folhaMensalDasContas, sqlEhFolhaMensal } from '@/lib/rh/folha-mensal-pix';
 import { destinoContaInter, folhaSemanalChavePixDasContas, folhaSemanalPixDasContas, sqlEhFolhaSemanalPix } from '@/lib/rh/folha-semanal-pix';
 import { consumerParado, FORNECEDORES_CONSUMER_NO_PIX } from '@/lib/consumer-contas';
+import { formaEfetiva, gemeasDasContas } from '@/lib/conta-mesma-divida';
 
 export const dynamic = 'force-dynamic';
 
@@ -266,6 +267,9 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
       chavePix: f.chavePix,
       pixFavorecido: f.pixFavorecido,
       documento: f.cnpjOuCpf,
+      // Como recebe (23/11/2026): boleto | pix | null — a da conta vale por cima.
+      formaForn: f.formaPagamento,
+      formaConta: c.formaPagamento,
     })
     .from(c)
     .leftJoin(f, eq(f.id, c.fornecedorId))
@@ -439,7 +443,13 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
           ((o?.nota_origem === 'PEDIDO_FOTO' || /^recibo de servi/i.test(descricao)) &&
             !l.temBoleto && !boleto) ||
           (!boleto && (l.origem === 'MANUAL' || temChave)));
-    if (!ehPix && !verTodas) {
+    // Forma marcada no fornecedor/conta (23/11/2026, PMP Ocean Food): PIX entra
+    // aqui; BOLETO continua na lista, mas como "aguardando boleto" — sem cobrar
+    // chave Pix e sem 💸 Pagar.
+    const forma = formaEfetiva(l.formaConta, l.formaForn);
+    const ehBoletoMarcado = forma === 'boleto';
+    const entra = ehPix || forma === 'pix';
+    if (!entra && !verTodas) {
       escondidas += 1;
       continue;
     }
@@ -454,6 +464,7 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
         documento: l.documento,
         chavePix: l.chavePix,
         pixFavorecido: l.pixFavorecido,
+        formaPagamento: formaEfetiva(null, l.formaForn),
         contas: [],
       };
       grupos.set(chave, g);
@@ -468,7 +479,10 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
       valor: Number(l.valor),
       saldo,
       parcial: Number(l.jaPago) > 0,
-      pareceBoleto: !ehPix,
+      pareceBoleto: !entra || ehBoletoMarcado,
+      forma,
+      formaConta: formaEfetiva(l.formaConta, null),
+      aguardandoBoleto: ehBoletoMarcado && !l.temBoleto,
       origem: (() => {
         const o = origens.get(l.id);
         if (!o) return undefined;
@@ -537,15 +551,36 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
     }
   }
 
+  // Mesma dívida em dobro (23/11/2026): gêmeas (boleto × Pix) de cada conta.
+  // Falhou → a tela segue igual, sem o aviso (a trava do servidor continua).
+  try {
+    const todas = [...grupos.values()].flatMap((g) => g.contas.map((x) => x.id));
+    const gem = await gemeasDasContas(todas);
+    for (const g of grupos.values()) {
+      for (const x of g.contas) {
+        const arr = gem.get(x.id);
+        if (!arr) continue;
+        x.gemeas = arr;
+        x.jaPagaPorGemea = arr.some((y) => y.vinculo && y.paga);
+      }
+    }
+  } catch (e) {
+    console.error('[pedidos-pix] gemeas', e);
+  }
+
   // mais atrasado primeiro
   const lista = [...grupos.values()].sort((a, b) => a.contas[0]!.venc.localeCompare(b.contas[0]!.venc));
-  const total = lista.reduce((s, g) => s + g.contas.reduce((t, x) => t + x.saldo, 0), 0);
+  // Conta já paga pela gêmea vinculada não soma no "a pagar".
+  const total = lista.reduce((s, g) => s + g.contas.filter((x) => !x.jaPagaPorGemea).reduce((t, x) => t + x.saldo, 0), 0);
   const vencido = lista.reduce(
-    (s, g) => s + g.contas.filter((x) => x.venc <= hoje).reduce((t, x) => t + x.saldo, 0),
+    (s, g) => s + g.contas.filter((x) => x.venc <= hoje && !x.jaPagaPorGemea).reduce((t, x) => t + x.saldo, 0),
     0,
   );
   const qtd = lista.reduce((s, g) => s + g.contas.length, 0);
-  const semChave = lista.filter((g) => g.fornecedorId && !g.chavePix?.trim() && !g.contaInterFolha).length;
+  // Fornecedor que recebe por BOLETO não conta como "sem chave" (23/11/2026).
+  const semChave = lista.filter(
+    (g) => g.fornecedorId && !g.chavePix?.trim() && !g.contaInterFolha && !g.contas.every((x) => x.forma === 'boleto'),
+  ).length;
 
   return (
     <main className="min-h-screen bg-slate-50">

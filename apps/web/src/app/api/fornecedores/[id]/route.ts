@@ -39,6 +39,8 @@ export async function PATCH(
     nome?: string;
     chavePix?: string | null;
     pixFavorecido?: string | null;
+    /** Como recebe (23/11/2026): 'boleto' | 'pix' | null (indefinido). */
+    formaPagamento?: 'boleto' | 'pix' | null;
   };
   try {
     body = (await req.json()) as typeof body;
@@ -84,6 +86,14 @@ export async function PATCH(
   // Como o fornecedor recebe: chave Pix e quem recebe (quando o Pix cai no nome de outra pessoa)
   if ('chavePix' in body) updates.chavePix = body.chavePix?.trim().slice(0, 100) || null;
   if ('pixFavorecido' in body) updates.pixFavorecido = body.pixFavorecido?.trim().slice(0, 200) || null;
+
+  if ('formaPagamento' in body) {
+    const fp = body.formaPagamento ?? null;
+    if (fp !== null && fp !== 'boleto' && fp !== 'pix') {
+      return NextResponse.json({ error: 'formaPagamento invalida (boleto, pix ou vazio)' }, { status: 400 });
+    }
+    updates.formaPagamento = fp;
+  }
 
   // Anti-fraude (22/10/2026): chave CPF/CNPJ de OUTRA pessoa/empresa só entra
   // dizendo em nome de quem o Pix cai. Telefone/e-mail/aleatória seguem livres.

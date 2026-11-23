@@ -132,6 +132,9 @@ export const fornecedor = pgTable(
     /** Dono autorizou pagar a folha SEMANAL liberada desta pessoa por Pix na chave
      *  do cadastro (15/11/2026, Antonio da Mar). NULL = segue pro caixa/lotérica. */
     folhaSemanalPixEm: timestamp('folha_semanal_pix_em', { withTimezone: true }),
+    /** Como o fornecedor recebe (23/11/2026): 'boleto' | 'pix' | NULL (indefinido).
+     *  'boleto' = a conta espera o boleto chegar e não cobra chave Pix. */
+    formaPagamento: varchar('forma_pagamento', { length: 10 }),
     /** Mesma empresa nas outras casas (cadastro único). Ver grupoEconomico. */
     grupoEconomicoId: uuid('grupo_economico_id').references(() => grupoEconomico.id, { onDelete: 'set null' }),
     contatoTravado: boolean('contato_travado').notNull().default(false),
@@ -331,6 +334,13 @@ export const contaPagar = pgTable(
      *  com prefixo nfe-boletos/). Pode ser anexado no momento do lancamento
      *  ou depois via foto enviada pelo celular (token publico da nota). */
     boletoStoragePath: text('boleto_storage_path'),
+    /** Forma desta conta (23/11/2026), por cima da do fornecedor: 'boleto' | 'pix' | NULL (segue o fornecedor). */
+    formaPagamento: varchar('forma_pagamento', { length: 10 }),
+    /** Mesma dívida lançada duas vezes (ex.: boleto e pedido sem nota): aponta pra outra conta.
+     *  Paga uma, a outra não se paga de novo. */
+    mesmaDividaId: uuid('mesma_divida_id'),
+    /** Alguém conferiu que a conta parecida NÃO é a mesma dívida: some o aviso. */
+    gemeaConferidaEm: timestamp('gemea_conferida_em', { withTimezone: true }),
     /** Se origem='FOLHA', aponta pra folha semanal que gerou. Permite
      *  reverter (cancelar todas as contas geradas pela folha) e auditar.
      *  FK eh declarada na tabela folha_semana via referencia inversa
