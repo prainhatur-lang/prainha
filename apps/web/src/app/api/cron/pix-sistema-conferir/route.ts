@@ -9,6 +9,7 @@ import { NextResponse } from 'next/server';
 import { resolverCredenciaisInterPagamentos } from '@/lib/inter';
 import { baixarIndividuaisDeBorderoAvulso } from '@/lib/bordero-avulso-baixa';
 import { filiaisComPixAberto, sincronizarPixAbertos } from '@/lib/pix-pagamento';
+import { filiaisComContaConsumoAberta, sincronizarContasConsumo } from '@/lib/conta-consumo-pagamento';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -29,6 +30,22 @@ export async function GET(req: Request) {
       saida[filialId] = { erro: e instanceof Error ? e.message : String(e) };
     }
   }
+  // tela Pagar conta (código/QR): guia aprovada no app do Inter baixa sozinha,
+  // sem ninguém tocar "Conferir no Inter" (DAE da Lelis, 23/11/2026)
+  const contaConsumo: Record<string, unknown> = {};
+  try {
+    for (const filialId of await filiaisComContaConsumoAberta()) {
+      const cred = resolverCredenciaisInterPagamentos(filialId);
+      if (!cred) continue;
+      try {
+        contaConsumo[filialId] = await sincronizarContasConsumo(filialId, cred, 12_000);
+      } catch (e) {
+        contaConsumo[filialId] = { erro: e instanceof Error ? e.message : String(e) };
+      }
+    }
+  } catch (e) {
+    contaConsumo.erro = e instanceof Error ? e.message : String(e);
+  }
   // borderô avulso pago: baixa as contas individuais presas nele (não têm tela
   // de baixa em lote como a folha e o VT). Conta da equipe fica de fora: essa
   // só baixa com o comprovante do depósito (14/11/2026).
@@ -38,5 +55,5 @@ export async function GET(req: Request) {
   } catch (e) {
     borderoAvulso = { erro: e instanceof Error ? e.message : String(e) };
   }
-  return NextResponse.json({ ok: true, casas: saida, borderoAvulso });
+  return NextResponse.json({ ok: true, casas: saida, contaConsumo, borderoAvulso });
 }

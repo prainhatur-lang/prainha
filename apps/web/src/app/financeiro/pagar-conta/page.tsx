@@ -82,6 +82,13 @@ export default async function PagarContaPage(props: { searchParams: Promise<SP> 
       .limit(50)
       .catch(() => []),
   ]);
+  // conta com pagamento saindo ou pago por esta tela não volta pro "Pagar esta"
+  // (DAE da Lelis 23/11/2026: aprovado no Inter e ainda aparecia pra pagar)
+  const emAndamento = new Set(
+    pagamentos
+      .filter((p) => p.contaPagarId && ['ENVIANDO', 'APROVACAO', 'AGENDADO', 'PAGO'].includes(p.status))
+      .map((p) => p.contaPagarId as string),
+  );
   const contasAbertas: ContaAberta[] = contas.map((c) => ({
       id: c.id,
       rotulo: `${c.dataVencimento.split('-').reverse().join('/')} · ${c.fornecedor ?? c.descricao ?? 'conta'}${c.fornecedor && c.descricao ? ` — ${c.descricao}` : ''}`.slice(0, 120),
@@ -89,7 +96,7 @@ export default async function PagarContaPage(props: { searchParams: Promise<SP> 
       vencimento: c.dataVencimento,
       // guia do contador / boleto lançado já traz o código na observação;
       // repasse entre casas não paga a guia (quem paga é a pagadora)
-      codigo: (c.descricao ?? '').startsWith('Repasse ')
+      codigo: (c.descricao ?? '').startsWith('Repasse ') || emAndamento.has(c.id)
         ? null
         : (c.observacao?.match(/C[óo]digo de barras:\s*(\d{44,48})/)?.[1] ?? null),
     }));

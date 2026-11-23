@@ -130,9 +130,9 @@ export async function sincronizarContasConsumo(
   filialId: string,
   cred: InterCredenciais,
   limiteMs = 10_000,
-): Promise<{ conferidos: number; pagos: number; recusados: number }> {
+): Promise<{ conferidos: number; pagos: number; recusados: number; erro?: string }> {
   const fim = Date.now() + limiteMs;
-  const out = { conferidos: 0, pagos: 0, recusados: 0 };
+  const out: { conferidos: number; pagos: number; recusados: number; erro?: string } = { conferidos: 0, pagos: 0, recusados: 0 };
   const semBaixa = (await db.execute(sql`
     SELECT id FROM conta_consumo_pagamento
      WHERE filial_id = ${filialId}::uuid AND status = 'PAGO' AND baixado_em IS NULL
@@ -220,12 +220,23 @@ export async function sincronizarContasConsumo(
       }
     } catch (e) {
       console.warn('[conta-consumo] consulta', p.id, e instanceof Error ? e.message : e);
+      out.erro = (e instanceof Error ? e.message : String(e)).slice(0, 300);
       break;
     }
   }
   // pagos que ainda não foram pro contador (os de antes do envio e os que falharam)
   if (fim - Date.now() > 3_000) await enviarComprovantesPendentes(filialId, 3).catch(() => 0);
   return out;
+}
+
+/** Casas com pagamento desta tela sem desfecho (pro cron conferir sozinho). */
+export async function filiaisComContaConsumoAberta(): Promise<string[]> {
+  const rows = (await db.execute(sql`
+    SELECT DISTINCT filial_id FROM conta_consumo_pagamento
+     WHERE (status IN ('ENVIANDO','APROVACAO','AGENDADO') AND criado_em > now() - interval '60 days')
+        OR (status = 'PAGO' AND baixado_em IS NULL)
+  `)) as unknown as Array<{ filial_id: string }>;
+  return rows.map((r) => r.filial_id);
 }
 
 async function marcarErro(id: string, erro: string) {

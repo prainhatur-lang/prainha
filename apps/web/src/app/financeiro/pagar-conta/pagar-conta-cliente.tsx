@@ -159,10 +159,10 @@ export function PagarContaCliente(props: {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ filialId: props.filialId }),
       });
-      const j = (await r.json().catch(() => ({}))) as { error?: string; conferidos?: number; pagos?: number; recusados?: number };
+      const j = (await r.json().catch(() => ({}))) as { error?: string; erro?: string; conferidos?: number; pagos?: number; recusados?: number };
       setMsg(
         r.ok
-          ? { ok: true, texto: `Conferido no Inter: ${j.conferidos ?? 0} consultado(s), ${j.pagos ?? 0} pago(s), ${j.recusados ?? 0} recusado(s).` }
+          ? { ok: !j.erro, texto: `Conferido no Inter: ${j.conferidos ?? 0} consultado(s), ${j.pagos ?? 0} pago(s), ${j.recusados ?? 0} recusado(s).${j.erro ? ` Erro do Inter: ${j.erro}` : ''}` }
           : { ok: false, texto: j.error ?? `Erro ${r.status}` },
       );
       router.refresh();
