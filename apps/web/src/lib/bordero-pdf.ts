@@ -171,6 +171,7 @@ function linhasBanco(p: PessoaBordero): string[] {
     .join(' · ');
   if (agConta) out.push(agConta);
   if (p.chavePix) out.push(`Pix: ${p.chavePix}`);
+  if (p.recebeEmNomeDe) out.push(`Recebe em nome de: ${p.recebeEmNomeDe}`);
   if (p.contaDeOutraCasa) out.push(`(conta do cadastro: ${p.contaDeOutraCasa})`);
   return out;
 }

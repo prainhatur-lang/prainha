@@ -23,6 +23,7 @@ type Pessoa = {
   fornecedorId: string;
   nome: string;
   chavePix: string | null;
+  pixFavorecido?: string | null;
   linhas: Linha[];
   ajustes: Array<{ tipo: string; valor: number; descricao: string | null; origem: string }>;
   bruto: number;
@@ -390,6 +391,11 @@ export function BorderoFolha({ folhaId, hoje }: { folhaId: string; hoje: string 
                     </div>
                   )}
                   {p.chavePix && <div className="mt-1 text-[11px] text-slate-500">Pix: {p.chavePix}</div>}
+                  {p.pixFavorecido && (
+                    <div className="mt-1 text-[11px] font-medium text-amber-700">
+                      Recebe em nome de {p.pixFavorecido}
+                    </div>
+                  )}
                 </div>
               )}
             </div>

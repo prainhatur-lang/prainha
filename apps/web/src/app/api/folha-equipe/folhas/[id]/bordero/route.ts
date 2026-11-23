@@ -102,6 +102,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       fornecedorId: schema.contaPagar.fornecedorId,
       nome: schema.fornecedor.nome,
       chavePix: schema.fornecedor.chavePix,
+      pixFavorecido: schema.fornecedor.pixFavorecido,
       descricao: schema.contaPagar.descricao,
       observacao: schema.contaPagar.observacao,
       valor: schema.contaPagar.valor,
@@ -129,6 +130,8 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
     fornecedorId: string;
     nome: string;
     chavePix: string | null;
+    /** Quem recebe no lugar da pessoa (conta em nome de outro). */
+    pixFavorecido: string | null;
     linhas: Array<{
       contaId: string;
       rotulo: string;
@@ -155,6 +158,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
         fornecedorId: fid,
         nome: k.nome ?? '(sem cadastro)',
         chavePix: k.chavePix ?? null,
+        pixFavorecido: k.pixFavorecido?.trim() || null,
         linhas: [],
         ajustes: [],
         bruto: 0,

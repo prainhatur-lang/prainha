@@ -28,6 +28,9 @@ export type PessoaBordero = {
   bancoAgencia: string | null;
   bancoConta: string | null;
   chavePix: string | null;
+  /** Quem recebe no lugar da pessoa: a conta é de outro titular
+   *  (fornecedor.pix_favorecido). Ex.: Adelmo trabalha, Maria Cristiane recebe. */
+  recebeEmNomeDe: string | null;
   /** Nome da casa de onde veio a conta, quando o cadastro desta casa não tem. */
   contaDeOutraCasa: string | null;
   itens: Array<{ rotulo: string; valor: number }>;
@@ -130,6 +133,7 @@ type LinhaConta = {
   banco_agencia: string | null;
   banco_conta: string | null;
   chave_pix: string | null;
+  pix_favorecido: string | null;
 };
 
 /** Monta a relação de um borderô. null se o borderô não existe. */
@@ -171,7 +175,7 @@ export async function relacaoDoBordero(borderoId: string): Promise<RelacaoBorder
            coalesce(c.descontos, 0)::text AS descontos,
            coalesce((SELECT sum(x.valor) FROM conta_pagar_baixa x
                       WHERE x.conta_pagar_id = c.id AND x.criado_em < bo.criado_em), 0)::text AS pago_antes,
-           fo.nome, fo.cnpj_ou_cpf AS doc, fo.banco_nome, fo.banco_agencia, fo.banco_conta, fo.chave_pix
+           fo.nome, fo.cnpj_ou_cpf AS doc, fo.banco_nome, fo.banco_agencia, fo.banco_conta, fo.chave_pix, fo.pix_favorecido
       FROM conta_pagar c
       JOIN bordero bo ON bo.id = c.bordero_id
       LEFT JOIN fornecedor fo ON fo.id = c.fornecedor_id
@@ -198,6 +202,7 @@ export async function relacaoDoBordero(borderoId: string): Promise<RelacaoBorder
         bancoAgencia: limpo(c.banco_agencia),
         bancoConta: limpo(c.banco_conta),
         chavePix: limpo(c.chave_pix),
+        recebeEmNomeDe: limpo(c.pix_favorecido),
         contaDeOutraCasa: null,
         itens: [],
         total: 0,
