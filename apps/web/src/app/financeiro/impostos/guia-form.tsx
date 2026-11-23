@@ -28,7 +28,7 @@ interface Guia {
 }
 
 interface Proposta {
-  regra: 'FOLHA' | 'PERCENTUAL' | 'CASA';
+  regra: 'FOLHA' | 'PERCENTUAL' | 'CASA' | 'EMPRESA';
   pagadoraNome: string;
   pagadoraFilialId: string | null;
   explicacao: string;
@@ -255,7 +255,9 @@ export function GuiaImpostoForm({
   const ativas = filiais.filter((f) => numPct(pct[f.id]) > 0 || numVal(vals[f.id]) > 0);
   const modoValor = ativas.length > 0 && ativas.every((f) => numVal(vals[f.id]) > 0);
   const somaVal = Math.round(ativas.reduce((s, f) => s + numVal(vals[f.id]), 0) * 100) / 100;
-  const rateioOk = modoValor ? Math.abs(somaVal - valorNum) <= 0.01 : Math.abs(somaPct - 100) <= 0.01;
+  // EMPRESA (Lelis: ICMS, IRPJ...): guia inteira na filial dela, sem rateio entre casas.
+  const soEmpresa = proposta?.regra === 'EMPRESA' && !!proposta.pagadoraFilialId;
+  const rateioOk = soEmpresa ? true : modoValor ? Math.abs(somaVal - valorNum) <= 0.01 : Math.abs(somaPct - 100) <= 0.01;
   const ebPagadora = proposta?.regra === 'FOLHA' && proposta.pagadoraFilialId;
 
   async function lancar(acao: 'lancar' | 'descartar') {
@@ -288,7 +290,7 @@ export function GuiaImpostoForm({
       if (!r.ok) throw new Error(d.error ?? `erro ${r.status}`);
       setOk(
         acao === 'lancar'
-          ? `Lançada: ${(d.rateio ?? []).length} conta(s) nas casas${d.contaGuiaId ? ' + a guia inteira na E.B.' : ''}.`
+          ? `Lançada: ${(d.rateio ?? []).length} conta(s) nas casas${d.contaGuiaId ? ` + a guia inteira na ${proposta?.pagadoraNome || 'empresa'}` : ''}.`
           : 'Guia descartada.',
       );
       setGuia(null);
@@ -449,6 +451,12 @@ export function GuiaImpostoForm({
                 </div>
               );
             })()}
+            {soEmpresa ? (
+              <p className="mt-3 text-sm font-medium text-emerald-700">
+                Vai criar uma conta a pagar de {brl(valorNum)} na {proposta.pagadoraNome} (a guia inteira). Nenhuma casa repassa.
+              </p>
+            ) : (
+            <>
             <div className="mt-3 space-y-2">
               {filiais.map((f) => {
                 const p = numPct(pct[f.id]);
@@ -499,11 +507,13 @@ export function GuiaImpostoForm({
                 Soma: {somaPct.toLocaleString('pt-BR')}%{Math.abs(somaPct - 100) > 0.01 ? ' — tem que dar 100%' : ''}
               </p>
             )}
+            </>
+            )}
             {proposta.regra === 'FOLHA' && (
               <p className="mt-2 text-xs text-slate-600">
                 Vai criar em cada casa uma conta “Repasse {proposta.pagadoraNome}” com a parte dela (Pix pra{' '}
                 {proposta.pagadoraNome})
-                {ebPagadora ? ' e, na E.B., a conta da guia inteira.' : '.'}
+                {ebPagadora ? `, e na ${proposta.pagadoraNome} a conta da guia inteira.` : '.'}
               </p>
             )}
           </div>

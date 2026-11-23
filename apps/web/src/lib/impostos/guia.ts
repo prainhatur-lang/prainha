@@ -41,7 +41,19 @@ export const TIPOS_IMPOSTO = [
 ] as const;
 export type TipoImposto = (typeof TIPOS_IMPOSTO)[number];
 
-export type RegraImposto = 'FOLHA' | 'PERCENTUAL' | 'CASA';
+/** EMPRESA: imposto da própria empresa (hoje só a Lelis: ICMS, IRPJ...) — a guia
+ *  inteira vira conta da filial dela e nenhuma casa repassa. */
+export type RegraImposto = 'FOLHA' | 'PERCENTUAL' | 'CASA' | 'EMPRESA';
+
+/** Tipos que saem da folha (as casas repassam a parte delas). */
+const TIPOS_FOLHA = new Set<TipoImposto>(['INSS', 'FGTS']);
+
+/** CNPJ da E.B./Lelis pelo nome do contribuinte (o DAE da SEFAZ só traz o nome). */
+export function cnpjDaEmpresaPeloNome(nome: string | null | undefined): string | null {
+  const n = (nome ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+  if (n.includes('LELIS')) return LELIS_CNPJ;
+  return null;
+}
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const digitos = (s: string | null | undefined) => (s ?? '').replace(/\D/g, '');
@@ -311,7 +323,7 @@ export async function proporcaoFolha(cnpj: string, competencia: string | null): 
 export interface Proposta {
   regra: RegraImposto;
   pagadoraNome: string;
-  /** Filial que paga a guia inteira (E.B.). */
+  /** Filial que paga a guia inteira (E.B./Lelis). */
   pagadoraFilialId: string | null;
   /** CNPJ cuja folha dá a proporção (FOLHA). */
   cnpjFolha: string | null;
@@ -340,12 +352,26 @@ export async function proporRateio(g: {
   tipo: TipoImposto | null;
   contribuinteCnpj: string | null;
   competencia: string | null;
+  contribuinteNome?: string | null;
 }): Promise<Proposta> {
-  const doc = digitos(g.contribuinteCnpj);
+  const doc = digitos(g.contribuinteCnpj) || cnpjDaEmpresaPeloNome(g.contribuinteNome) || '';
   if (doc === EB_CNPJ || doc === LELIS_CNPJ) {
     const eb = doc === EB_CNPJ;
-    const pagadora = eb ? await filialDoCnpj(EB_CNPJ) : null;
+    // E.B. e Lelis têm filial própria: a guia inteira vira conta dela.
+    const pagadora = await filialDoCnpj(doc);
     const nome = eb ? 'E.B. Serviços' : 'Lelis';
+    // Lelis é outra empresa: imposto que não é da folha (ICMS, IRPJ...) é dela só.
+    if (!eb && pagadora && g.tipo && !TIPOS_FOLHA.has(g.tipo)) {
+      return {
+        regra: 'EMPRESA',
+        pagadoraNome: pagadora.nome,
+        pagadoraFilialId: pagadora.id,
+        cnpjFolha: null,
+        folha: null,
+        percentuais: [],
+        explicacao: `Imposto da própria Lelis — a guia inteira vira conta a pagar da ${pagadora.nome}, paga pelo Inter dela. Nenhuma casa repassa.`,
+      };
+    }
     // opção a mais (não muda a proposta padrão): % pelas horas de cada casa
     const porHoras = eb ? await proporcaoPelasHoras(doc, g.competencia, g.tipo).catch(() => null) : null;
     // 1º: o rateio que o contador mandou pra essa competência (valor de cada casa)

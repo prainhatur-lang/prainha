@@ -11,13 +11,16 @@ import { EB_CNPJ } from '@/lib/eb/faturas';
 import type { schema as S } from '@concilia/db';
 import {
   BUCKET_IMPOSTO,
+  LELIS_CNPJ,
   MIMES_IMPOSTO,
   NOME_TIPO,
   NaoEGuia,
   TIPOS_IMPOSTO,
   categoriaDoImposto,
+  cnpjDaEmpresaPeloNome,
   cnpjDoRateio,
   dividirValor,
+  filialDoCnpj,
   filialDoDepartamento,
   fornecedorPagadorNaCasa,
   lerArquivoImposto,
@@ -45,7 +48,7 @@ export async function reabrirGuia(guiaId: string): Promise<Resposta> {
   if (!/^[0-9a-f-]{36}$/i.test(guiaId)) return { status: 400, body: { error: 'guiaId inválido' } };
   const [g] = await db.select().from(schema.impostoGuia).where(eq(schema.impostoGuia.id, guiaId)).limit(1);
   if (!g) return { status: 404, body: { error: 'guia não encontrada' } };
-  const proposta = await proporRateio({ tipo: (g.tipo as never) ?? null, contribuinteCnpj: g.contribuinteCnpj, competencia: g.competencia });
+  const proposta = await proporRateio({ tipo: (g.tipo as never) ?? null, contribuinteCnpj: g.contribuinteCnpj, competencia: g.competencia, contribuinteNome: g.contribuinteNome });
   return { status: 200, body: { ok: true, repetida: true, guia: g, proposta } };
 }
 
@@ -69,6 +72,7 @@ export async function lerArquivo(arquivo: File, usuarioId: string): Promise<Resp
       tipo: (existe.tipo as never) ?? null,
       contribuinteCnpj: existe.contribuinteCnpj,
       competencia: existe.competencia,
+      contribuinteNome: existe.contribuinteNome,
     });
     return { status: 200, body: { ok: true, repetida: true, guia: existe, proposta } };
   }
@@ -150,7 +154,7 @@ export async function lerArquivo(arquivo: File, usuarioId: string): Promise<Resp
     lido: lida.bruto,
     erro: null,
     tipo: lida.tipo,
-    contribuinteCnpj: lida.contribuinteCnpj,
+    contribuinteCnpj: lida.contribuinteCnpj ?? cnpjDaEmpresaPeloNome(lida.contribuinteNome),
     contribuinteNome: lida.contribuinteNome?.slice(0, 200) ?? null,
     competencia: lida.competencia,
     vencimento: lida.vencimento,
@@ -213,11 +217,23 @@ export async function lancarGuia(
   const valor = Math.round(Number(b.valor) * 100) / 100;
   if (!Number.isFinite(valor) || valor <= 0) return { status: 400, body: { error: 'valor inválido' } };
   const competencia = b.competencia && /^\d{4}-\d{2}$/.test(b.competencia) ? b.competencia : null;
-  const cnpj = (b.contribuinteCnpj ?? '').replace(/\D/g, '') || null;
+  const cnpj =
+    (b.contribuinteCnpj ?? '').replace(/\D/g, '') || cnpjDaEmpresaPeloNome(b.contribuinteNome ?? guia.contribuinteNome) || null;
   const barras = (b.codigoBarras ?? '').replace(/\D/g, '') || null;
-  const regra: RegraImposto = b.regra === 'FOLHA' || b.regra === 'PERCENTUAL' ? b.regra : 'CASA';
+  const regra: RegraImposto =
+    b.regra === 'FOLHA' || b.regra === 'PERCENTUAL' || b.regra === 'EMPRESA' ? b.regra : 'CASA';
 
-  const bruto = (b.rateio ?? []).map((r) => ({
+  // E.B./Lelis têm filial própria: é ela quem recebe a conta da guia inteira.
+  const ehEmpresa = cnpj === EB_CNPJ || cnpj === LELIS_CNPJ;
+  const pagadoraFilialId = guia.pagadoraFilialId ?? (ehEmpresa && cnpj ? ((await filialDoCnpj(cnpj))?.id ?? null) : null);
+  if (regra === 'EMPRESA' && !pagadoraFilialId) {
+    return { status: 400, body: { error: 'a empresa dessa guia não tem filial cadastrada no sistema' } };
+  }
+
+  // EMPRESA: imposto da própria empresa — guia inteira na filial dela, sem rateio entre casas.
+  const bruto = regra === 'EMPRESA'
+    ? [{ filialId: pagadoraFilialId!, percentual: 100, valor: null as number | null }]
+    : (b.rateio ?? []).map((r) => ({
     filialId: String(r.filialId),
     percentual: Math.round(Number(r.percentual) * 100) / 100 || 0,
     valor: r.valor === null || r.valor === undefined ? null : Math.round(Number(r.valor) * 100) / 100,
@@ -246,13 +262,13 @@ export async function lancarGuia(
     }
   }
   const fora = rateioIn.find((r) => !filiaisPermitidas.has(r.filialId));
-  if (fora) return { status: 403, body: { error: 'casa sem acesso no rateio' } };
+  if (fora && regra !== 'EMPRESA') return { status: 403, body: { error: 'casa sem acesso no rateio' } };
   if (new Set(rateioIn.map((r) => r.filialId)).size !== rateioIn.length) {
     return { status: 400, body: { error: 'casa repetida no rateio' } };
   }
 
-  // Quem paga a guia inteira: E.B. (filial própria) ou Lelis (sem filial).
-  const ebPaga = regra === 'FOLHA' && cnpj === EB_CNPJ && guia.pagadoraFilialId;
+  // Quem paga a guia inteira: E.B. ou Lelis (cada uma com filial própria).
+  const ebPaga = regra === 'FOLHA' && ehEmpresa && pagadoraFilialId;
   const repassa = regra === 'FOLHA' && !!cnpj && (cnpj === EB_CNPJ || !!guia.pagadoraNome);
   const pagadoraNome = guia.pagadoraNome ?? (cnpj === EB_CNPJ ? 'E.B. Serviços' : 'Lelis');
 
@@ -274,7 +290,7 @@ export async function lancarGuia(
     partes.map(async (p) => ({
       ...p,
       categoriaId: await categoriaDoImposto(p.filialId, tipo),
-      fornecedorId: repassa && cnpj && p.filialId !== guia.pagadoraFilialId ? await fornecedorPagadorNaCasa(p.filialId, cnpj) : null,
+      fornecedorId: repassa && cnpj && p.filialId !== pagadoraFilialId ? await fornecedorPagadorNaCasa(p.filialId, cnpj) : null,
     })),
   );
 
@@ -304,7 +320,7 @@ export async function lancarGuia(
         .insert(schema.contaPagar)
         .values({
           ...comum,
-          filialId: guia.pagadoraFilialId!,
+          filialId: pagadoraFilialId!,
           valor: valor.toFixed(2),
           descricao: `${descGuia} — guia inteira (as casas repassam a parte delas)`,
           observacao: obsBase,
@@ -314,7 +330,7 @@ export async function lancarGuia(
     }
     const rateio: S.ImpostoRateio[] = [];
     for (const p of preparo) {
-      const ehPagadora = ebPaga && p.filialId === guia.pagadoraFilialId;
+      const ehPagadora = ebPaga && p.filialId === pagadoraFilialId;
       if (ehPagadora) {
         rateio.push({ filialId: p.filialId, percentual: p.percentual, valor: p.valor, contaPagarId: contaGuiaId });
         continue;
@@ -339,6 +355,7 @@ export async function lancarGuia(
         })
         .returning({ id: schema.contaPagar.id });
       rateio.push({ filialId: p.filialId, percentual: p.percentual, valor: p.valor, contaPagarId: c!.id });
+      if (regra === 'EMPRESA') contaGuiaId = c!.id;
     }
     await tx
       .update(schema.impostoGuia)
@@ -354,6 +371,7 @@ export async function lancarGuia(
         regra,
         rateio,
         contaGuiaId,
+        pagadoraFilialId,
         status: 'LANCADA',
         lancadoPor: usuarioId,
         lancadoEm: agora,

@@ -165,7 +165,7 @@ export default async function ImpostosPage() {
                         </td>
                         <td className="px-3 py-2 text-slate-600">
                           {g.contribuinteNome ?? '—'}
-                          {g.pagadoraNome && g.regra === 'FOLHA' && (
+                          {g.pagadoraNome && (g.regra === 'FOLHA' || g.regra === 'EMPRESA') && (
                             <div className="text-xs text-slate-500">paga: {g.pagadoraNome}</div>
                           )}
                         </td>
@@ -174,7 +174,7 @@ export default async function ImpostosPage() {
                         <td className="px-3 py-2 text-xs text-slate-600">
                           {(g.rateio ?? []).map((r) => (
                             <div key={r.filialId} className="whitespace-nowrap">
-                              {nomes.get(r.filialId) ?? 'casa'}: {r.percentual.toLocaleString('pt-BR')}% · {brl(r.valor)}
+                              {nomes.get(r.filialId) ?? (r.filialId === g.pagadoraFilialId ? g.pagadoraNome : null) ?? 'casa'}: {r.percentual.toLocaleString('pt-BR')}% · {brl(r.valor)}
                             </div>
                           ))}
                         </td>
