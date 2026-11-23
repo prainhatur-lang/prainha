@@ -58,6 +58,7 @@ export default async function PagarContaPage(props: { searchParams: Promise<SP> 
         descricao: schema.contaPagar.descricao,
         valor: schema.contaPagar.valor,
         dataVencimento: schema.contaPagar.dataVencimento,
+        observacao: schema.contaPagar.observacao,
         fornecedor: schema.fornecedor.nome,
       })
       .from(schema.contaPagar)
@@ -86,6 +87,11 @@ export default async function PagarContaPage(props: { searchParams: Promise<SP> 
       rotulo: `${c.dataVencimento.split('-').reverse().join('/')} · ${c.fornecedor ?? c.descricao ?? 'conta'}${c.fornecedor && c.descricao ? ` — ${c.descricao}` : ''}`.slice(0, 120),
       valor: Number(c.valor),
       vencimento: c.dataVencimento,
+      // guia do contador / boleto lançado já traz o código na observação;
+      // repasse entre casas não paga a guia (quem paga é a pagadora)
+      codigo: (c.descricao ?? '').startsWith('Repasse ')
+        ? null
+        : (c.observacao?.match(/C[óo]digo de barras:\s*(\d{44,48})/)?.[1] ?? null),
     }));
   const linhas: PagamentoLinha[] = pagamentos.map((p) => ({
     id: p.id,

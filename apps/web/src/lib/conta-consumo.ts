@@ -107,9 +107,10 @@ function lerBarras44(barras: string, codigo: string): ResultadoLeitura {
   if (barras[0] === '8') {
     const ident = barras[2];
     const corpo = barras.slice(0, 3) + barras.slice(4);
-    const dv = ident === '6' || ident === '8' ? mod10(corpo) : mod11Convenio(corpo);
+    // FEBRABAN: 6/7 → módulo 10; 8/9 → módulo 11. Valor efetivo: 6 e 8.
+    const dv = ident === '6' || ident === '7' ? mod10(corpo) : mod11Convenio(corpo);
     if (Number(barras[3]) !== dv) return { ok: false, erro: 'Código de barras com dígito verificador errado — confira os números.' };
-    const temValor = ident === '6' || ident === '7';
+    const temValor = ident === '6' || ident === '8';
     const v = Number(barras.slice(4, 15)) / 100;
     return {
       ok: true,
@@ -156,7 +157,7 @@ function lerLinha47(d: string): ResultadoLeitura {
 
 function lerLinha48(d: string): ResultadoLeitura {
   const ident = d[2];
-  const usaMod10 = ident === '6' || ident === '8';
+  const usaMod10 = ident === '6' || ident === '7';
   let barras = '';
   for (let b = 0; b < 4; b++) {
     const bloco = d.slice(b * 12, b * 12 + 11);

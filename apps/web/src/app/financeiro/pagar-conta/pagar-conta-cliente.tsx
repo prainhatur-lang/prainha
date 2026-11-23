@@ -4,7 +4,14 @@ import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { escolherCodigoPagavel, lerCodigoConta, type CodigoLido } from '@/lib/conta-consumo';
 
-export type ContaAberta = { id: string; rotulo: string; valor: number; vencimento: string };
+export type ContaAberta = {
+  id: string;
+  rotulo: string;
+  valor: number;
+  vencimento: string;
+  /** código de barras que já veio com a conta (guia do contador, boleto lançado) */
+  codigo?: string | null;
+};
 export type PagamentoLinha = {
   id: string;
   tipo: 'BOLETO' | 'PIX';
@@ -187,6 +194,34 @@ export function PagarContaCliente(props: {
       {!props.temInter && (
         <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
           Esta casa não tem a integração de pagamentos do Inter configurada — não dá pra pagar por aqui.
+        </div>
+      )}
+
+      {props.contas.some((c) => c.codigo) && (
+        <div className="space-y-2 rounded-xl border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
+          <p className="text-sm font-medium text-emerald-900">
+            Guias e boletos já lançados com o código (ex.: guia que o contador subiu) — é só tocar e confirmar
+          </p>
+          {props.contas
+            .filter((c) => c.codigo)
+            .map((c) => (
+              <div key={c.id} className="flex flex-wrap items-center gap-2 rounded-lg bg-white px-3 py-2 text-sm">
+                <span className="flex-1 text-slate-700">{c.rotulo}</span>
+                <b className="text-slate-900">{brl(c.valor)}</b>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTexto(c.codigo ?? '');
+                    setContaId(c.id);
+                    setDescricao(c.rotulo.split(' · ').slice(1).join(' · ').slice(0, 100));
+                    setMsg(null);
+                  }}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-medium ${contaId === c.id ? 'bg-emerald-700 text-white' : 'bg-emerald-600 text-white hover:bg-emerald-700'}`}
+                >
+                  {contaId === c.id ? '✓ Escolhida' : 'Pagar esta'}
+                </button>
+              </div>
+            ))}
         </div>
       )}
 
