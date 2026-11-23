@@ -332,6 +332,7 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
       const valor = Number(c.valor);
       const pago = Number(c.valorPago ?? 0);
       acc.total += valor;
+      acc.pagoTudo += pago;
       if (c.dataPagamento) {
         acc.pagas += 1;
         acc.pago += pago;
@@ -341,7 +342,7 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
       }
       return acc;
     },
-    { total: 0, pagas: 0, pago: 0, abertas: 0, aberto: 0 },
+    { total: 0, pagas: 0, pago: 0, abertas: 0, aberto: 0, pagoTudo: 0 },
   );
 
   function href(next: Partial<SP>): string {
@@ -407,6 +408,12 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
             className="shrink-0 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
           >
             Pedidos a pagar por Pix
+          </Link>
+          <Link
+            href={`/financeiro/pagar-conta${filialSelecionada ? `?filialId=${filialSelecionada.id}` : ''}`}
+            className="shrink-0 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+          >
+            Pagar conta (código/QR)
           </Link>
           <Link
             href={`/financeiro/excluidas${filialSelecionada ? `?filialId=${filialSelecionada.id}` : ''}`}
@@ -788,13 +795,15 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                     <th className="px-4 py-2">Categoria</th>
                     <th className="px-4 py-2">Parcela</th>
                     <th className="px-4 py-2 text-right">Valor</th>
+                    <th className="px-4 py-2 text-right">Pago</th>
+                    <th className="px-4 py-2 text-right">Saldo</th>
                     <th className="px-4 py-2">Pagamento</th>
                   </tr>
                 </thead>
                 <tbody>
                   {contas.length === 0 ? (
                     <tr>
-                      <td colSpan={todasFiliais ? 10 : 9} className="px-4 py-6 text-center text-xs text-slate-500">
+                      <td colSpan={todasFiliais ? 12 : 11} className="px-4 py-6 text-center text-xs text-slate-500">
                         Nenhuma conta nesse filtro.
                       </td>
                     </tr>
@@ -951,6 +960,24 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                           >
                             {brl(c.valor)}
                           </td>
+                          {(() => {
+                            const vPago = Number(c.valorPago ?? 0);
+                            const saldo = pago ? 0 : Math.max(0, Number(c.valor) - vPago);
+                            return (
+                              <>
+                                <td className="px-4 py-2 text-right font-mono text-xs text-emerald-700">
+                                  {vPago > 0 ? brl(vPago) : <span className="text-slate-300">—</span>}
+                                </td>
+                                <td
+                                  className={`px-4 py-2 text-right font-mono text-sm font-medium ${
+                                    saldo > 0 ? (atrasado ? 'text-rose-700' : 'text-slate-900') : 'text-slate-300'
+                                  }`}
+                                >
+                                  {saldo > 0 ? brl(saldo) : '—'}
+                                </td>
+                              </>
+                            );
+                          })()}
                           <td className="px-4 py-2 text-xs">
                             {pago ? (
                               <span className="inline-flex items-center gap-1 rounded-md bg-emerald-100 px-2 py-0.5 text-emerald-800">
@@ -989,6 +1016,8 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                         {brl(resumo.pago)}
                       </td>
                       <td />
+                      <td />
+                      <td />
                     </tr>
                     <tr>
                       <td colSpan={todasFiliais ? 8 : 7} className="px-4 py-2 text-right text-slate-600">
@@ -999,6 +1028,8 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                         {brl(resumo.aberto)}
                       </td>
                       <td />
+                      <td />
+                      <td />
                     </tr>
                     <tr className="border-t border-slate-200">
                       <td colSpan={todasFiliais ? 8 : 7} className="px-4 py-2 text-right font-medium text-slate-700">
@@ -1007,6 +1038,18 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                       </td>
                       <td className="px-4 py-2 text-right font-mono text-sm font-bold text-slate-900">
                         {brl(resumo.total)}
+                      </td>
+                      <td
+                        className="px-4 py-2 text-right font-mono text-sm font-bold text-emerald-700"
+                        title="Tudo que já saiu pra essas contas, incluindo pagamentos parciais"
+                      >
+                        {brl(resumo.pagoTudo)}
+                      </td>
+                      <td
+                        className="px-4 py-2 text-right font-mono text-sm font-bold text-slate-900"
+                        title="O que ainda falta pagar"
+                      >
+                        {brl(resumo.aberto)}
                       </td>
                       <td />
                     </tr>
