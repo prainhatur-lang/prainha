@@ -26,6 +26,10 @@ export function FormaPagamentoNota({ notaId, compacto = false }: { notaId: strin
   const [escolhendoPix, setEscolhendoPix] = useState(false);
   const [pending, setPending] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+  // Mesmo com chave e WhatsApp já no cadastro, quem dá entrada CONFIRMA os
+  // dois, um por um, toda vez (dono 23/11/2026).
+  const [confChave, setConfChave] = useState(false);
+  const [confZap, setConfZap] = useState(false);
 
   const carregar = useCallback(async () => {
     const r = await fetch(`/api/nota-compra/${notaId}/forma-pagamento`, { cache: 'no-store' });
@@ -36,14 +40,14 @@ export function FormaPagamentoNota({ notaId, compacto = false }: { notaId: strin
     void carregar();
   }, [carregar]);
 
-  async function salvar(forma: 'boleto' | 'pix' | null, chaveConfirmada?: string) {
+  async function salvar(forma: 'boleto' | 'pix' | null, chaveConfirmada?: string, zapConfirmado?: string) {
     setPending(true);
     setErro(null);
     try {
       const r = await fetch(`/api/nota-compra/${notaId}/forma-pagamento`, {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ forma, chaveConfirmada }),
+        body: JSON.stringify({ forma, chaveConfirmada, zapConfirmado }),
       });
       if (!r.ok) {
         const d = (await r.json().catch(() => ({}))) as { error?: string };
@@ -91,7 +95,11 @@ export function FormaPagamentoNota({ notaId, compacto = false }: { notaId: strin
           type="button"
           disabled={pending}
           className={btn(est.forma === 'pix' && !chaveMudou)}
-          onClick={() => setEscolhendoPix(true)}
+          onClick={() => {
+            setConfChave(false);
+            setConfZap(false);
+            setEscolhendoPix(true);
+          }}
         >
           💠 Pix
         </button>
@@ -148,15 +156,37 @@ export function FormaPagamentoNota({ notaId, compacto = false }: { notaId: strin
                   </button>
                 )}
               </div>
+              <div className="mt-2 space-y-1 rounded border border-slate-200 bg-white p-1.5">
+                <label className="flex items-center gap-1.5">
+                  <input type="checkbox" checked={confChave} onChange={(e) => setConfChave(e.target.checked)} />
+                  Conferi a chave Pix <span className="font-mono font-semibold">{chaveCad}</span> com quem recebe
+                </label>
+                <label className={`flex items-center gap-1.5 ${zapOk ? '' : 'opacity-50'}`}>
+                  <input
+                    type="checkbox"
+                    disabled={!zapOk}
+                    checked={confZap && zapOk}
+                    onChange={(e) => setConfZap(e.target.checked)}
+                  />
+                  Conferi o WhatsApp{' '}
+                  <span className="font-mono font-semibold">{est.fornecedor.foneWhatsapp || '—'}</span> (vai o comprovante)
+                </label>
+              </div>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  disabled={pending || conf?.nivel === 'diverge' || !zapOk}
-                  title={zapOk ? undefined : 'Cadastre o WhatsApp de quem recebe antes de confirmar'}
+                  disabled={pending || conf?.nivel === 'diverge' || !zapOk || !confChave || !confZap}
+                  title={
+                    !zapOk
+                      ? 'Cadastre o WhatsApp de quem recebe antes de confirmar'
+                      : !confChave || !confZap
+                        ? 'Marque que conferiu a chave e o WhatsApp'
+                        : undefined
+                  }
                   className="rounded-md bg-emerald-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
-                  onClick={() => salvar('pix', chaveCad)}
+                  onClick={() => salvar('pix', chaveCad, est.fornecedor?.foneWhatsapp ?? '')}
                 >
-                  ✓ Confirmo: pagar nesta chave
+                  ✓ Confirmo: pagar nesta chave e mandar o comprovante neste WhatsApp
                 </button>
                 <span className="text-[11px] text-slate-500">chave errada? corrija no cadastro:</span>
                 <EditPix

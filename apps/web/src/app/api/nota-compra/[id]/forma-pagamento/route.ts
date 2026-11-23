@@ -24,6 +24,7 @@ export const runtime = 'nodejs';
 const Body = z.object({
   forma: z.enum(['boleto', 'pix']).nullable(),
   chaveConfirmada: z.string().max(140).optional(),
+  zapConfirmado: z.string().max(30).optional(),
 });
 
 async function carregar(id: string, userId: string) {
@@ -86,7 +87,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (!/^[0-9a-f-]{36}$/i.test(id)) return NextResponse.json({ error: 'id inválido' }, { status: 400 });
   const parsed = Body.safeParse(await req.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: 'dados inválidos' }, { status: 400 });
-  const { forma, chaveConfirmada } = parsed.data;
+  const { forma, chaveConfirmada, zapConfirmado } = parsed.data;
 
   const r = await carregar(id, user.id);
   if ('erro' in r) return r.erro;
@@ -116,6 +117,14 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       return NextResponse.json(
         { error: 'Pix exige o WhatsApp de quem recebe (pra mandar o comprovante). Cadastre o WhatsApp com DDD e confirme.' },
         { status: 400 },
+      );
+    }
+    // Confirmação explícita do WhatsApp também (mesmo já cadastrado).
+    const dig = (v: string | null | undefined) => (v ?? '').replace(/\D/g, '').replace(/^55(?=\d{10,11}$)/, '');
+    if (dig(zapConfirmado) !== dig(r.forn.foneWhatsapp)) {
+      return NextResponse.json(
+        { error: 'Confirme o WhatsApp de quem recebe (o do cadastro mudou ou não foi confirmado). Recarregue e confirme de novo.' },
+        { status: 409 },
       );
     }
     pixChave = chaveCad;
