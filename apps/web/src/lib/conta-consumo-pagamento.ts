@@ -9,6 +9,7 @@
 import { db, schema } from '@concilia/db';
 import { and, eq, sql } from 'drizzle-orm';
 import { recalcularAgregado } from '@/lib/conta-pagar-baixa';
+import { enviarComprovanteContador, enviarComprovantesPendentes } from '@/lib/comprovante-contador';
 import { dateToBrYmd, diasAtrasBr, hojeBr } from '@/lib/datas';
 import {
   buscarPagamentosBoletoJanelas,
@@ -62,6 +63,13 @@ export async function pagamentoDoMesmoCodigo(
  * com multa). Se já tem baixa com a mesma observação, não baixa de novo.
  */
 export async function baixarContaConsumo(id: string, dataPagamento?: string | null) {
+  const r = await baixarContaConsumoTx(id, dataPagamento);
+  // comprovante pro contador (dono 23/11/2026) — melhor esforço, uma vez só
+  await enviarComprovanteContador(id).catch(() => null);
+  return r;
+}
+
+async function baixarContaConsumoTx(id: string, dataPagamento?: string | null) {
   return db.transaction(async (tx) => {
     const marcado = (await tx.execute(sql`
       UPDATE conta_consumo_pagamento SET baixado_em = now(), atualizado_em = now(), status = 'PAGO'
@@ -215,6 +223,8 @@ export async function sincronizarContasConsumo(
       break;
     }
   }
+  // pagos que ainda não foram pro contador (os de antes do envio e os que falharam)
+  if (fim - Date.now() > 3_000) await enviarComprovantesPendentes(filialId, 3).catch(() => 0);
   return out;
 }
 

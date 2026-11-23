@@ -277,7 +277,9 @@ export async function proxy(request: NextRequest) {
     // o toque e redireciona pro site da casa. O painel é /campanha (protegido).
     path.startsWith('/convite/') ||
     // recibo avulso enviado pelo celular (link assinado, sem login)
-    path.startsWith('/recibo/');
+    path.startsWith('/recibo/') ||
+    // comprovante de pagamento mandado pro contador por e-mail (link assinado)
+    path.startsWith('/comprovante-pagamento/');
 
   if (!user && !isPublicRoute) {
     const url = request.nextUrl.clone();

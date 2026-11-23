@@ -41,6 +41,10 @@ export const contaConsumoPagamento = pgTable(
     criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
     atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
     baixadoEm: timestamp('baixado_em', { withTimezone: true }),
+    /** Comprovante mandado pro contador por e-mail (dono 23/11/2026). */
+    comprovanteContadorEm: timestamp('comprovante_contador_em', { withTimezone: true }),
+    comprovanteContadorPara: text('comprovante_contador_para'),
+    comprovanteContadorErro: text('comprovante_contador_erro'),
   },
   (t) => ({
     filialIdx: index('idx_conta_consumo_pag_filial').on(t.filialId, t.criadoEm),
