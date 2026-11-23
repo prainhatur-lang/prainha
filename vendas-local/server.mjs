@@ -629,6 +629,12 @@ async function initSchema() {
     desconto numeric, pct numeric, nome text, nivel text, garcom text, nsu text,
     criado_em timestamptz DEFAULT now(), aplicado_em timestamptz, pago_em timestamptz,
     confirmado_em timestamptz, liberado_em timestamptz)`;
+  // DESCONTO NA PARCELA (dono 23/11/2026): conta dividida, só quem tem o cartão
+  // leva o desconto, e só sobre o que ELE paga. parcela = o valor da parte dele
+  // antes do desconto (nulo = conta inteira, como antes); base = o consumo
+  // dessa parte sobre o qual o % incidiu.
+  await addCol('lio_fidelidade', 'parcela numeric');
+  await addCol('lio_fidelidade', 'base numeric');
   // ⚠️ PIX CONFIRMADO NUNCA FICA SEM BAIXA (07/09/2026, mesas 45 e 23: a Cielo
   // aprovou R$ 390,50 e R$ 75,00, o Firebird falhou na hora de achar/gravar a
   // conta e o Pix virou "órfão" pra sempre — sem retentativa e sem aviso no
@@ -22489,19 +22495,30 @@ function fidBloqueado(mesa) {
   if (daMesa >= 5) return 'Muitas tentativas de código nesta conta. Aguarde uns minutos ou peça ajuda ao garçom.';
   return null;
 }
-async function fidReservarNaCobranca(conta, cob, body) {
+async function fidReservarNaCobranca(conta, cob, body, opts = {}) {
   const mesa = Number(body.mesa);
   const bloq = fidBloqueado(mesa);
   if (bloq) return { ok: false, erro: bloq };
   // conta inteira: dividir ou pagar uma parte não leva desconto (a base do %
   // é a conta toda — metade da mesa não pode levar o desconto da mesa inteira)
-  if (cob.partes > 1 || (body.valor != null && cob.valor < cob.restaTotal - 0.01)) {
+  // EXCEÇÃO (opts.parcela, só a LIO — dono 23/11/2026): desconto só na parte
+  // de quem tem o cartão; a base é o consumo DESSA parte (abaixo).
+  if (!opts.parcela && (cob.partes > 1 || (body.valor != null && cob.valor < cob.restaTotal - 0.01))) {
     return { ok: false, erro: 'O ' + FIDELIDADE_NOME + ' vale pra pagar a conta inteira no Pix — sem dividir.' };
   }
   const codigo = String(body.fidelidade || '').toUpperCase().replace(/[^A-Z]/g, '');
   if (codigo.length !== 4) return { ok: false, erro: 'O código do cartão tem 4 letras.' };
   // base = consumo menos desconto que o caixa já deu (não empilha % em cima de cortesia)
-  const consumo = Math.max(0, +(Number(conta.total || 0) - Number(conta.desconto || 0)).toFixed(2));
+  let consumo = Math.max(0, +(Number(conta.total || 0) - Number(conta.desconto || 0)).toFixed(2));
+  // PARCELA: a parte paga carrega consumo + serviço na mesma proporção da
+  // conta. Tira o serviço/acréscimo da parte (o % não incide sobre a gorjeta,
+  // igual à conta inteira): base = parte × consumo ÷ (conta com serviço).
+  // Conta inteira sem nada pago dá exatamente o consumo de antes.
+  if (opts.parcela) {
+    consumo = cob.comGorjeta > 0 ? Math.max(0, +(cob.valor * consumo / cob.comGorjeta).toFixed(2)) : 0;
+  }
+  // teto do desconto: o que vai ser cobrado agora (parte) ou o que falta (inteira)
+  const teto = opts.parcela ? cob.valor : cob.restaTotal;
   let j;
   try {
     j = await fidNuvem('reservar', { codigo, consumo, mesa });
@@ -22514,13 +22531,14 @@ async function fidReservarNaCobranca(conta, cob, body) {
     return { ok: false, erro: j.mensagem || j.error || 'Código não aceito.' };
   }
   const desconto = +Number(j.desconto || 0).toFixed(2);
-  if (!(desconto > 0) || desconto >= cob.restaTotal) {
+  if (!(desconto > 0) || desconto >= teto) {
     fidNuvem('liberar', { uso_id: j.uso_id }).catch(() => {});
     return { ok: false, erro: 'O desconto do cartão não se aplica a esta conta.' };
   }
-  console.log('[fidelidade] mesa ' + mesa + ': ' + j.nome + ' (' + j.nivel + ') ' + j.pct + '% = −R$ ' + desconto.toFixed(2) + ' sobre ' + consumo.toFixed(2));
+  console.log('[fidelidade] mesa ' + mesa + ': ' + j.nome + ' (' + j.nivel + ') ' + j.pct + '% = −R$ ' + desconto.toFixed(2) + ' sobre ' + consumo.toFixed(2)
+    + (opts.parcela ? ' (parcela de R$ ' + cob.valor.toFixed(2) + ')' : ''));
   return { ok: true, uso_id: String(j.uso_id), nome: String(j.nome || ''), nivel: String(j.nivel || ''),
-    pct: Number(j.pct) || 0, pct_bonus: Number(j.pct_bonus) || 0, desconto };
+    pct: Number(j.pct) || 0, pct_bonus: Number(j.pct_bonus) || 0, desconto, base: consumo };
 }
 /** Põe o desconto do cartão na conta (TOTALDESCONTO), uma vez só. Chamada na
  *  baixa do Pix, dentro da fila da mesa. A trava é o UPDATE de fid_aplicado_em:
@@ -22584,19 +22602,28 @@ async function apiLioFidelidade(body, garcom) {
   if (!conta.ok) return { ok: false, erro: conta.erro || 'conta não encontrada' };
   const ped = await fbAcharPedido(n);
   if (!ped) return { ok: false, erro: 'não há conta aberta no número ' + n };
-  const cob = valorDaCobranca(conta, { gorjeta_pct: body.gorjeta_pct });
+  // PARCELA (LIO >= 1.10.49, dono 23/11/2026): `valor` = quanto ESTA pessoa
+  // paga (antes do desconto). O desconto incide só sobre essa parte. Sem
+  // `valor` = conta inteira, como sempre (caixa/dinheiro e LIO antiga).
+  const parcial = body.valor != null && String(body.valor).trim() !== '';
+  const cob = valorDaCobranca(conta, parcial ? { gorjeta_pct: body.gorjeta_pct, valor: body.valor } : { gorjeta_pct: body.gorjeta_pct });
   if (cob.erro) return { ok: false, erro: cob.erro };
   // código digitado de novo na mesma conta: a reserva anterior não fica presa
   const velhas = await sql`UPDATE lio_fidelidade SET liberado_em=now()
     WHERE numero=${n} AND aplicado_em IS NULL AND liberado_em IS NULL RETURNING uso_id`;
   for (const v of velhas) fidNuvem('liberar', { uso_id: v.uso_id }).catch(() => {});
-  const f = await fidReservarNaCobranca(conta, cob, { mesa: n, fidelidade: body.codigo });
+  const f = await fidReservarNaCobranca(conta, cob, { mesa: n, fidelidade: body.codigo }, { parcela: parcial });
   if (!f.ok) return { ok: false, erro: f.erro, fidelidade_erro: true };
-  await sql`INSERT INTO lio_fidelidade (uso_id, numero, ped, desconto, pct, nome, nivel, garcom)
-    VALUES (${f.uso_id}, ${n}, ${Number(ped)}, ${f.desconto}, ${f.pct}, ${f.nome}, ${f.nivel}, ${garcom.login})
+  await sql`INSERT INTO lio_fidelidade (uso_id, numero, ped, desconto, pct, nome, nivel, garcom, parcela, base)
+    VALUES (${f.uso_id}, ${n}, ${Number(ped)}, ${f.desconto}, ${f.pct}, ${f.nome}, ${f.nivel}, ${garcom.login},
+      ${parcial ? cob.valor : null}, ${f.base})
     ON CONFLICT (uso_id) DO NOTHING`;
-  return { ok: true, uso_id: f.uso_id, nome: f.nome, nivel: f.nivel, pct: f.pct, pct_bonus: f.pct_bonus,
+  const r = { ok: true, uso_id: f.uso_id, nome: f.nome, nivel: f.nivel, pct: f.pct, pct_bonus: f.pct_bonus,
     desconto: f.desconto };
+  // a LIO confere este eco: servidor antigo ignorava `valor` e devolvia o
+  // desconto da conta inteira — o app solta a reserva se não vier `parcela`
+  if (parcial) { r.parcela = cob.valor; r.base = f.base; r.a_cobrar = +(cob.valor - f.desconto).toFixed(2); }
+  return r;
 }
 /** Recebimento da LIO com `fid_uso`: põe o desconto na conta UMA vez, antes do
  *  pagamento (senão a conta fica aberta com a diferença). Nunca derruba o

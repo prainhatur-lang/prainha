@@ -924,15 +924,21 @@ object Api {
 
     // -------- Cartão Prainha (fidelidade) na maquininha --------
     data class FidRes(val ok: Boolean, val usoId: String?, val nome: String, val nivel: String,
-                      val pct: Double, val desconto: Double, val erro: String?)
+                      val pct: Double, val desconto: Double, val erro: String?,
+                      /** eco do servidor quando a reserva foi da PARTE (`valor`); nulo = conta inteira */
+                      val parcela: Double? = null)
 
     /** Reserva o desconto do Cartão Prainha pra conta INTEIRA do número. O
      *  servidor da loja consulta a nuvem; o desconto só entra na conta quando
      *  o recebimento chega com o `fid_uso` (ver registrarPagamentos). */
-    fun lioFidelidade(base: String, token: String, numero: Int, codigo: String, gorjetaPct: Int): FidRes {
+    /** `valor` (opcional, dono 23/11/2026): quanto ESTA pessoa paga, antes do
+     *  desconto — o desconto incide só sobre essa parte. Nulo = conta inteira. */
+    fun lioFidelidade(base: String, token: String, numero: Int, codigo: String, gorjetaPct: Int,
+                      valor: Double? = null): FidRes {
         val j = try {
-            postJson("$base/api/lio/fidelidade", token, JSONObject()
-                .put("numero", numero).put("codigo", codigo).put("gorjeta_pct", gorjetaPct))
+            val b = JSONObject().put("numero", numero).put("codigo", codigo).put("gorjeta_pct", gorjetaPct)
+            if (valor != null) b.put("valor", valor)
+            postJson("$base/api/lio/fidelidade", token, b)
         } catch (e: IOException) {
             if ((e.message ?: "").contains("404"))
                 throw IOException("Servidor da loja ainda sem o cartão de fidelidade na maquininha — aguarde a atualização")
@@ -947,6 +953,7 @@ object Api {
             pct = j.optDouble("pct", 0.0),
             desconto = j.optDouble("desconto", 0.0),
             erro = j.optStringOrNull("erro"),
+            parcela = if (j.has("parcela") && !j.isNull("parcela")) j.optDouble("parcela") else null,
         )
     }
 

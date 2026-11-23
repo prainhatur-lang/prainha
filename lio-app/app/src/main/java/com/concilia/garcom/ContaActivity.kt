@@ -1041,17 +1041,34 @@ class ContaActivity : AppCompatActivity() {
         var gorj = if (Session.taxaServico(this) >= 15.0) 15 else 10
         var partes = 1
         var valorDig: Double? = null
-        // CARTÃO PRAINHA (fidelidade): reserva feita no servidor da loja. Só
-        // vale na conta INTEIRA — dividindo ou com valor digitado, a cobrança
-        // sai como sempre, sem o desconto.
+        // CARTÃO PRAINHA (fidelidade): reserva feita no servidor da loja.
+        // Conta inteira (1 parte, sem valor digitado) = desconto no total, como
+        // sempre. DESCONTO NA PARTE (dono 23/11/2026): dividindo ou com valor
+        // digitado, o código vale SÓ sobre o que esta pessoa paga — a reserva
+        // guarda a parte (fidParcela) e o % de serviço da hora; mudou o valor
+        // ou o serviço depois, o desconto deixa de valer (toca pra refazer).
         var fidUso: String? = null
         var fidDesc = 0.0
         var fidRot = ""
-        fun fidVale() = fidUso != null && partes == 1 && valorDig == null
+        var fidParcela: Double? = null
+        var fidGorj = gorj
+        fun modoInteiro() = partes == 1 && valorDig == null
+        // o que falta e a parte desta pessoa ANTES do desconto do cartão
+        fun bruto(): Pair<Double, Double> {
+            val svc = Math.round(itens * gorj) / 100.0
+            val resta = Math.max(0.0, Math.round((itens + svc - desconto + acrescimo - pago) * 100) / 100.0)
+            return resta to (valorDig?.coerceAtMost(resta) ?: (Math.round(resta / partes * 100) / 100.0))
+        }
+        fun fidVale(): Boolean {
+            if (fidUso == null) return false
+            val parc = fidParcela ?: return modoInteiro()
+            return !modoInteiro() && gorj == fidGorj && Math.abs(bruto().second - parc) < 0.01
+        }
         fun fidSoltar() {
             val uso = fidUso ?: return
             fidUso = null
             fidDesc = 0.0
+            fidParcela = null
             val base = Session.servidor(this)
             val tk = Session.token(this)
             Thread { Api.lioFidelidadeLiberar(base, tk, uso) }.start()
@@ -1099,7 +1116,8 @@ class ContaActivity : AppCompatActivity() {
             // canônico do Consumer: itens + serviço − desconto + acréscimo − pago
             val resta = Math.max(0.0, Math.round((itens + svc - desconto + acrescimo - pago) * 100) / 100.0)
             var cobrar = valorDig?.coerceAtMost(resta) ?: (Math.round(resta / partes * 100) / 100.0)
-            if (fidVale()) cobrar = Math.max(0.0, Math.round((resta - fidDesc) * 100) / 100.0)
+            if (fidVale()) cobrar = if (fidParcela == null) Math.max(0.0, Math.round((resta - fidDesc) * 100) / 100.0)
+                else Math.max(0.0, Math.round((cobrar - fidDesc) * 100) / 100.0)
             return Triple(svc, resta, cobrar)
         }
         fun pinta() {
@@ -1107,9 +1125,12 @@ class ContaActivity : AppCompatActivity() {
             valorTxt.text = Cupom.brl(cobrar)
             // o valor cobrado vai escrito NO BOTÃO — não há como confirmar sem ler
             dlg?.getButton(AlertDialog.BUTTON_POSITIVE)?.text = "💳 Cobrar ${Cupom.brl(cobrar)}"
+            // desconto na parte: diz de quanto era a parte e quanto o cartão tirou
+            val fidParte = if (fidVale() && fidParcela != null)
+                " · parte ${Cupom.brl(fidParcela ?: 0.0)} − ${Session.fidelidadeNome(this@ContaActivity)} ${Cupom.brl(fidDesc)}" else ""
             subTxt.text = when {
-                valorDig != null -> "valor digitado — o resto continua na conta"
-                partes > 1 -> "1/$partes do que falta (${Cupom.brl(resta)})"
+                valorDig != null -> "valor digitado — o resto continua na conta" + fidParte
+                partes > 1 -> "1/$partes do que falta (${Cupom.brl(resta)})" + fidParte
                 else -> "consumo ${Cupom.brl(itens)} + serviço ${Cupom.brl(svc)}" +
                     (if (desconto > 0) " − desconto ${Cupom.brl(desconto)}" else "") +
                     (if (acrescimo > 0) " + acréscimo ${Cupom.brl(acrescimo)}" else "") +
@@ -1119,7 +1140,7 @@ class ContaActivity : AppCompatActivity() {
             fidBtn.text = when {
                 fidUso == null -> "🎟️ ${Session.fidelidadeNome(this@ContaActivity)} (código do cliente)"
                 fidVale() -> "🎟️ $fidRot · −${Cupom.brl(fidDesc)}  (toque pra tirar)"
-                else -> "🎟️ ${Session.fidelidadeNome(this@ContaActivity)} só vale na conta inteira (toque pra tirar)"
+                else -> "🎟️ ${Session.fidelidadeNome(this@ContaActivity)}: o valor mudou — toque pra tirar e aplicar de novo"
             }
             gorjBtns.forEach { (p, b) ->
                 b.setBackgroundColor(if (p == gorj) 0xFF0C7091.toInt() else 0xFFE5E7EB.toInt())
@@ -1189,7 +1210,8 @@ class ContaActivity : AppCompatActivity() {
             cx.addView(codIn)
             AlertDialog.Builder(this)
                 .setTitle(Session.fidelidadeNome(this@ContaActivity))
-                .setMessage("Peça o código que aparece no cartão do cliente (4 letras). Vale pra conta inteira, sem dividir.")
+                .setMessage("Peça o código que aparece no cartão do cliente (4 letras). O desconto vale sobre o valor que está sendo pago agora: " +
+                    (if (modoInteiro()) "a conta inteira." else "só a parte desta pessoa (${Cupom.brl(bruto().second)}) — o resto da conta fica sem desconto."))
                 .setView(cx)
                 .setPositiveButton("Aplicar") { _, _ ->
                     val cod = codIn.text.toString().uppercase().filter { it in 'A'..'Z' }
@@ -1200,22 +1222,24 @@ class ContaActivity : AppCompatActivity() {
                     val base = Session.servidor(this)
                     val tk = Session.token(this)
                     val gorjAgora = gorj
+                    // parte desta pessoa (dividiu / digitou) — nulo = conta inteira, como antes
+                    val parteAgora: Double? = if (modoInteiro()) null else bruto().second
+                    if (parteAgora != null && parteAgora <= 0.009) {
+                        Toast.makeText(this, "Nada a cobrar", Toast.LENGTH_SHORT).show()
+                        return@setPositiveButton
+                    }
                     fidBtn.isEnabled = false
                     fidBtn.text = "🎟️ Consultando o cartão…"
-                    Thread {
-                        var r: Api.FidRes? = null
-                        var erro: String? = null
-                        try {
-                            if (tk == null) throw Api.SemSessao()
-                            r = Api.lioFidelidade(base, tk, alvo, cod, gorjAgora)
-                        } catch (e: Exception) { erro = e.message ?: "Sem resposta do servidor" }
-                        runOnUiThread {
+                    reservarFid(alvo, cod, gorjAgora, parteAgora) { r, erro ->
+                        run {
                             fidBtn.isEnabled = true
                             val res = r
                             if (res != null && res.ok && res.usoId != null && res.desconto > 0) {
                                 if (dlg?.isShowing == true) {
                                     fidUso = res.usoId
                                     fidDesc = res.desconto
+                                    fidParcela = parteAgora
+                                    fidGorj = gorjAgora
                                     val pctTxt = if (res.pct % 1.0 == 0.0) res.pct.toInt().toString() else res.pct.toString()
                                     fidRot = (res.nome.ifBlank { Session.fidelidadeNome(this@ContaActivity) }) + " · $pctTxt%"
                                 } else {
@@ -1228,7 +1252,7 @@ class ContaActivity : AppCompatActivity() {
                             }
                             pinta()
                         }
-                    }.start()
+                    }
                 }
                 .setNegativeButton("Cancelar", null)
                 .show()
@@ -1293,7 +1317,13 @@ class ContaActivity : AppCompatActivity() {
         outroBtn.setOnClickListener {
             // teto = o que falta com o serviço escolhido nos chips agora
             val (_, resta, _) = calc()
-            dialogOutroValor(rotuloAlvo, resta, "com $gorj% de serviço") { centavos ->
+            val gorjAgora = gorj
+            dialogOutroValor(rotuloAlvo, resta, "com $gorj% de serviço", onFid = { centavos ->
+                // DESCONTO NA PARTE (dono 23/11/2026): digitou o valor dela →
+                // "tem cartão?" → código → o desconto sai só dessa parte
+                dlg?.dismiss()
+                fidNaParte(alvo, linhasDoAlvo(texto, cAlvo), centavos, gorjAgora)
+            }) { centavos ->
                 dlg?.dismiss()
                 escolherCartao(onPix = { banco -> cobrarPixBanco(alvo, rotuloAlvo, centavos / 100.0, gorj, banco) }) { cartao ->
                     cobrarNoTerminal(alvo, linhasDoAlvo(texto, cAlvo), centavos, null, cartao)
@@ -1381,7 +1411,91 @@ class ContaActivity : AppCompatActivity() {
     // mora só aqui e é cobrado daqui: nada no Receber (serviço, dividir)
     // troca o parcial pela conta inteira no caminho (mesa 3, 05/09). Acima
     // do que falta o Cobrar trava — antes o excesso era cortado calado.
-    private fun dialogOutroValor(titulo: String, resta: Double, obs: String, onCobrar: (Long) -> Unit) {
+    // ---- CARTÃO PRAINHA NA PARTE (dono 23/11/2026) ----
+    /** Reserva o desconto no servidor da loja. `valor` = parte desta pessoa
+     *  (nulo = conta inteira). Servidor antigo ignora `valor` e devolveria o
+     *  desconto da conta TODA — sem o eco `parcela`, solta a reserva e avisa. */
+    private fun reservarFid(alvo: Int, cod: String, gorj: Int, valor: Double?, cb: (Api.FidRes?, String?) -> Unit) {
+        val base = Session.servidor(this)
+        val tk = Session.token(this)
+        Thread {
+            var r: Api.FidRes? = null
+            var erro: String? = null
+            try {
+                if (tk == null) throw Api.SemSessao()
+                r = Api.lioFidelidade(base, tk, alvo, cod, gorj, valor)
+                val res = r
+                if (valor != null && res != null && res.ok && res.usoId != null && res.parcela == null) {
+                    Api.lioFidelidadeLiberar(base, tk, res.usoId)
+                    r = null
+                    erro = "Servidor da loja ainda sem desconto na parte — atualize o servidor, ou use o cartão na conta inteira"
+                }
+            } catch (e: Exception) { erro = e.message ?: "Sem resposta do servidor" }
+            runOnUiThread { cb(r, erro) }
+        }.start()
+    }
+
+    /** Outro valor → "🎟️ Com cartão": pede o código, reserva o desconto SÓ
+     *  sobre `centavos` e cobra a parte menos o desconto. O resto da conta
+     *  continua sem desconto. */
+    private fun fidNaParte(alvo: Int, linhas: List<Linha>, centavos: Long, gorj: Int) {
+        val nome = Session.fidelidadeNome(this)
+        val parte = centavos / 100.0
+        val codIn = campo("Código de 4 letras",
+            android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS or
+                android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS)
+        codIn.filters = arrayOf(android.text.InputFilter.LengthFilter(4), android.text.InputFilter.AllCaps())
+        val cx = LinearLayout(this)
+        cx.orientation = LinearLayout.VERTICAL
+        cx.setPadding(dp(20), dp(8), dp(20), 0)
+        cx.addView(codIn)
+        AlertDialog.Builder(this)
+            .setTitle("$nome — parte de ${Cupom.brl(parte)}")
+            .setMessage("Peça o código do cartão do cliente (4 letras). O desconto vale só sobre a parte dele (${Cupom.brl(parte)}); o resto da conta fica sem desconto.")
+            .setView(cx)
+            .setPositiveButton("Aplicar") { _, _ ->
+                val cod = codIn.text.toString().uppercase().filter { it in 'A'..'Z' }
+                if (cod.length != 4) {
+                    Toast.makeText(this, "O código do cartão tem 4 letras", Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                Toast.makeText(this, "Consultando o cartão…", Toast.LENGTH_SHORT).show()
+                reservarFid(alvo, cod, gorj, parte) { r, erro ->
+                    val res = r
+                    val uso = res?.usoId
+                    if (res == null || !res.ok || uso == null || !(res.desconto > 0)) {
+                        Toast.makeText(this, erro ?: res?.erro ?: "Código não aceito", Toast.LENGTH_LONG).show()
+                        return@reservarFid
+                    }
+                    val cobrarCents = Math.round((parte - res.desconto) * 100)
+                    if (cobrarCents <= 0) { fidLiberar(uso); Toast.makeText(this, "Nada a cobrar", Toast.LENGTH_SHORT).show(); return@reservarFid }
+                    val pctTxt = if (res.pct % 1.0 == 0.0) res.pct.toInt().toString() else res.pct.toString()
+                    val quem = res.nome.ifBlank { nome } + " · $pctTxt%"
+                    var levou = false
+                    val conf = AlertDialog.Builder(this)
+                        .setTitle("🎟️ $quem")
+                        .setMessage("Parte: ${Cupom.brl(parte)}\nDesconto: −${Cupom.brl(res.desconto)}\nCobrar: ${Cupom.brl(cobrarCents / 100.0)}\n\nO resto da conta continua sem desconto.")
+                        .setPositiveButton("💳 Cobrar ${Cupom.brl(cobrarCents / 100.0)}") { _, _ ->
+                            levou = true
+                            escolherCartao(onCancelar = { fidLiberar(uso) }, onPix = { _ ->
+                                fidLiberar(uso)
+                                Toast.makeText(this, "$nome no Pix: use o QR da mesa, ou cobre a parte sem o cartão", Toast.LENGTH_LONG).show()
+                            }) { cartao ->
+                                cobrarNoTerminal(alvo, linhas, cobrarCents, uso, cartao)
+                            }
+                        }
+                        .setNegativeButton("Cancelar", null)
+                        .create()
+                    conf.setOnDismissListener { if (!levou) fidLiberar(uso) }
+                    conf.show()
+                }
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    private fun dialogOutroValor(titulo: String, resta: Double, obs: String,
+                                 onFid: ((Long) -> Unit)? = null, onCobrar: (Long) -> Unit) {
         val restaCents = Math.round(resta * 100)
         if (restaCents <= 0) {
             Toast.makeText(this, "Nada a cobrar — a conta já está paga", Toast.LENGTH_SHORT).show()
@@ -1485,6 +1599,13 @@ class ContaActivity : AppCompatActivity() {
                 if (!enviado && cents in 1..restaCents) { enviado = true; onCobrar(cents) }
             }
             .setNegativeButton("Voltar", null)
+            .also { b ->
+                // CARTÃO PRAINHA NA PARTE: botão A MAIS — o Cobrar segue igual
+                if (onFid != null) b.setNeutralButton("🎟️ Com cartão") { _, _ ->
+                    if (!enviado && cents in 1..restaCents) { enviado = true; onFid(cents) }
+                    else Toast.makeText(this, "Digite o valor da parte primeiro", Toast.LENGTH_SHORT).show()
+                }
+            }
             .create()
         // toque fora não perde o que foi digitado
         dlg?.setCanceledOnTouchOutside(false)

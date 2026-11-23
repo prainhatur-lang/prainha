@@ -187,8 +187,8 @@ android {
         // Cartão igual; servidor antigo ignora o ?pix=1 e nada muda.
         // 1.10.48 (14/11/2026): Cobrar abre "Pix Sicredi / Crédito / Débito /
         // Outros" — o botão Pix do rodapé ficava cortado na telinha da LIO.
-        versionCode = 72
-        versionName = "1.10.48"
+        versionCode = 73
+        versionName = "1.10.49"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
         buildConfigField("String", "CONCILIA_BASE", "\"$conciliaBase\"")
     }
