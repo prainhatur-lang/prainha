@@ -39,6 +39,8 @@ export type PessoaBordero = {
 
 export type RelacaoBordero = {
   borderoId: string;
+  /** Nº do borderô na casa (1, 2, 3… pela ordem em que foram feitos). */
+  numero: number;
   filialId: string;
   casa: string;
   tipo: TipoBordero;
@@ -107,6 +109,7 @@ type LinhaBordero = {
   valor: string;
   vencimento: string | null;
   status: string;
+  numero: number;
   criado_br: string;
   criado_ymd: string;
   f_ini: string | null;
@@ -142,6 +145,9 @@ export async function relacaoDoBordero(borderoId: string): Promise<RelacaoBorder
   const [b] = (await db.execute(sql`
     SELECT b.id, b.filial_id, f.nome AS casa, b.folha_semana_id, b.vt_quinzena_id, b.intermediario_id,
            b.conta_pagar_id, b.valor::text AS valor, b.data_vencimento::text AS vencimento, b.status,
+           (SELECT count(*)::int FROM bordero n
+             WHERE n.filial_id = b.filial_id
+               AND (n.criado_em < b.criado_em OR (n.criado_em = b.criado_em AND n.id <= b.id))) AS numero,
            to_char(b.criado_em AT TIME ZONE 'America/Sao_Paulo', 'DD/MM/YYYY') AS criado_br,
            to_char(b.criado_em AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD') AS criado_ymd,
            fs.data_inicio::text AS f_ini, fs.data_fim::text AS f_fim,
@@ -247,6 +253,7 @@ export async function relacaoDoBordero(borderoId: string): Promise<RelacaoBorder
 
   return {
     borderoId: b.id,
+    numero: Number(b.numero) || 0,
     filialId: b.filial_id,
     casa: b.casa ?? 'Prainha',
     tipo,
@@ -326,10 +333,10 @@ const pessoasTxt = (n: number) => `${n} ${n === 1 ? 'pessoa' : 'pessoas'}`;
 /** Frase curta pra mensagem: "borderô da folha semanal de 02/11 a 08/11/2026 — 44 pessoas". */
 export function resumoBorderos(relacoes: RelacaoBordero[]): string {
   if (relacoes.length === 0) return '';
-  const um = (r: RelacaoBordero) => `borderô ${r.tipo === 'avulso' ? 'do' : r.tipo === 'vt' ? 'do' : 'da'} ${r.titulo} — ${pessoasTxt(r.pessoas.length)}`;
+  const um = (r: RelacaoBordero) => `borderô${r.numero ? ` nº ${r.numero}` : ''} ${r.tipo === 'avulso' ? 'do' : r.tipo === 'vt' ? 'do' : 'da'} ${r.titulo} — ${pessoasTxt(r.pessoas.length)}`;
   if (relacoes.length === 1) return um(relacoes[0]);
   const total = relacoes.reduce((s, r) => s + r.pessoas.length, 0);
-  return `${relacoes.length} borderôs (${relacoes.map((r) => r.titulo).join('; ')}) — ${pessoasTxt(total)}`;
+  return `${relacoes.length} borderôs (${relacoes.map((r) => (r.numero ? `nº ${r.numero}, ${r.titulo}` : r.titulo)).join('; ')}) — ${pessoasTxt(total)}`;
 }
 
 /** Texto do WhatsApp (conversa aberta / wa.me) quando o borderô vai junto. */

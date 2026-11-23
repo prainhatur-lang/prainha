@@ -9,6 +9,7 @@ import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { exigirPermPage } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { diasAtrasBr } from '@/lib/datas';
 import { PERM_LOTERICA, pessoasUnicas, sugestoesPorValor } from '@/lib/comprovante-loterica';
 import { AcoesComprovante, BaixarCasados, EnviarComprovantes, EscolherCasa, EscolherConta } from './enviar';
 
@@ -154,6 +155,46 @@ export default async function ComprovantesLotericaPage() {
   const qtdAberto = gruposAbertos.reduce((s, g) => s + g.contas.length, 0);
   const totalCasados = casados.reduce((s, c) => s + Number(c.valor ?? 0), 0);
 
+  // Controle dos borderôs (pedido do dono 23/11/2026): nº do borderô, quantas
+  // contas foram pra pagamento e quantas já estão pagas — pra saber se o
+  // borderô foi pago inteiro. Nº = ordem do borderô na casa (1, 2, 3…).
+  type LinhaControle = {
+    id: string;
+    filial_id: string;
+    numero: number;
+    folha: boolean;
+    vt: boolean;
+    criado: string;
+    venc: string | null;
+    valor: string;
+    qtd: number;
+    pagas: number;
+    titulo: string | null;
+    pix_pago: string | null;
+  };
+  const controle = ids.length
+    ? ((await db.execute(sql`
+        SELECT * FROM (
+          SELECT b.id, b.filial_id,
+                 row_number() OVER (PARTITION BY b.filial_id ORDER BY b.criado_em, b.id)::int AS numero,
+                 b.status, b.folha_semana_id IS NOT NULL AS folha, b.vt_quinzena_id IS NOT NULL AS vt,
+                 to_char(b.criado_em AT TIME ZONE 'America/Sao_Paulo', 'YYYY-MM-DD') AS criado,
+                 b.data_vencimento::text AS venc, b.valor::text AS valor,
+                 (SELECT count(*)::int FROM conta_pagar c WHERE c.bordero_id = b.id AND c.data_delete IS NULL) AS qtd,
+                 (SELECT count(*)::int FROM conta_pagar c WHERE c.bordero_id = b.id AND c.data_delete IS NULL
+                     AND c.data_pagamento IS NOT NULL) AS pagas,
+                 (SELECT split_part(c.descricao, ' — ', 1) FROM conta_pagar c
+                   WHERE c.bordero_id = b.id AND c.data_delete IS NULL ORDER BY c.descricao LIMIT 1) AS titulo,
+                 (SELECT cp.data_pagamento::text FROM conta_pagar cp
+                   WHERE cp.id = b.conta_pagar_id AND cp.data_delete IS NULL) AS pix_pago
+            FROM bordero b
+           WHERE b.filial_id IN (${sql.join(ids.map((i) => sql`${i}::uuid`), sql`, `)})
+        ) x
+        WHERE x.status = 'ATIVO' AND x.criado >= ${diasAtrasBr(60)}
+        ORDER BY x.criado DESC, x.numero DESC
+      `)) as unknown as LinhaControle[])
+    : [];
+
   return (
     <main className="min-h-screen bg-slate-50">
       <AppHeader userEmail={user.email} />
@@ -172,6 +213,66 @@ export default async function ComprovantesLotericaPage() {
         </p>
 
         <EnviarComprovantes casas={casas} />
+
+        {controle.length > 0 ? (
+          <div className="mt-6 overflow-x-auto rounded-lg border border-slate-200 bg-white">
+            <div className="flex flex-wrap items-baseline justify-between gap-2 px-3 pt-3">
+              <h2 className="text-sm font-semibold text-slate-900">Borderôs — pago inteiro?</h2>
+              <span className="text-xs text-slate-500">últimos 60 dias · nº é a ordem do borderô na casa</span>
+            </div>
+            <table className="mt-2 min-w-full text-sm">
+              <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500">
+                <tr>
+                  <th className="px-3 py-2">Borderô</th>
+                  <th className="px-3 py-2">Feito / vence</th>
+                  <th className="px-3 py-2 text-right">Valor</th>
+                  <th className="px-3 py-2 text-right">Contas</th>
+                  <th className="px-3 py-2 text-right">Pagas</th>
+                  <th className="px-3 py-2">Situação</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {controle.map((b) => {
+                  const falta = b.qtd - b.pagas;
+                  const tipo = b.folha ? 'Folha semanal' : b.vt ? 'Vale transporte' : 'Avulso';
+                  return (
+                    <tr key={b.id}>
+                      <td className="px-3 py-2">
+                        <div className="font-medium text-slate-900">
+                          nº {b.numero} · {nomeCasa.get(b.filial_id) ?? ''}
+                        </div>
+                        <div className="text-xs text-slate-500">
+                          {tipo}
+                          {b.titulo ? ` · ${b.titulo}` : ''}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-xs text-slate-600">
+                        {dmy(b.criado)} / {dmy(b.venc)}
+                        <div className={b.pix_pago ? 'text-emerald-700' : 'text-amber-700'}>
+                          {b.pix_pago ? `Pix ao intermediário ${dmy(b.pix_pago)}` : 'Pix ao intermediário em aberto'}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-right whitespace-nowrap">{brl(Number(b.valor))}</td>
+                      <td className="px-3 py-2 text-right font-semibold">{b.qtd}</td>
+                      <td className="px-3 py-2 text-right font-semibold">{b.pagas}</td>
+                      <td className="px-3 py-2">
+                        {b.qtd > 0 && falta === 0 ? (
+                          <span className="rounded bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800">
+                            todo pago ✓
+                          </span>
+                        ) : (
+                          <span className="rounded bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
+                            faltam {falta} de {b.qtd}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
 
         {gruposAbertos.length > 0 ? (
           <div className="mt-6 rounded-lg border border-amber-300 bg-amber-50 p-4">

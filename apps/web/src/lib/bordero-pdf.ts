@@ -195,7 +195,7 @@ function paginasRelacao(r: RelacaoBordero, comp: DadosComprovantePix | null): Pa
   pags.push(pg);
 
   let y = 800;
-  pg.txt(X0, y, 16, true, 'Borderô de pagamento');
+  pg.txt(X0, y, 16, true, r.numero ? `Borderô de pagamento nº ${r.numero}` : 'Borderô de pagamento');
   y -= 19;
   for (const l of quebrarLarg(maiuscula(r.titulo), X1 - X0, 11.5, true)) {
     pg.txt(X0, y, 11.5, true, l);
@@ -239,7 +239,7 @@ function paginasRelacao(r: RelacaoBordero, comp: DadosComprovantePix | null): Pa
     pg = new Pagina();
     pags.push(pg);
     let yy = 800;
-    pg.txt(X0, yy, 10.5, true, `Borderô de pagamento — ${r.titulo} (continuação)`);
+    pg.txt(X0, yy, 10.5, true, `Borderô de pagamento${r.numero ? ` nº ${r.numero}` : ''} — ${r.titulo} (continuação)`);
     yy -= 24;
     return cabecalhoTabela(pg, yy);
   };
