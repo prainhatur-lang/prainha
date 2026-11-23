@@ -10,6 +10,7 @@ import { resolverCredenciaisInterPagamentos } from '@/lib/inter';
 import { baixarIndividuaisDeBorderoAvulso } from '@/lib/bordero-avulso-baixa';
 import { filiaisComPixAberto, sincronizarPixAbertos } from '@/lib/pix-pagamento';
 import { filiaisComContaConsumoAberta, sincronizarContasConsumo } from '@/lib/conta-consumo-pagamento';
+import { enviarComprovantesBaixaPendentes } from '@/lib/comprovante-contador-baixa';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -38,7 +39,7 @@ export async function GET(req: Request) {
       const cred = resolverCredenciaisInterPagamentos(filialId);
       if (!cred) continue;
       try {
-        contaConsumo[filialId] = await sincronizarContasConsumo(filialId, cred, 12_000);
+        contaConsumo[filialId] = await sincronizarContasConsumo(filialId, cred, 8_000);
       } catch (e) {
         contaConsumo[filialId] = { erro: e instanceof Error ? e.message : String(e) };
       }
@@ -55,5 +56,13 @@ export async function GET(req: Request) {
   } catch (e) {
     borderoAvulso = { erro: e instanceof Error ? e.message : String(e) };
   }
-  return NextResponse.json({ ok: true, casas: saida, contaConsumo, borderoAvulso });
+  // comprovante pro contador de todo pagamento do Inter (Pix por chave, DDA,
+  // extrato) — dono 23/11/2026. Depois das baixas acima, pra já pegar as novas.
+  let comprovanteContador: unknown = null;
+  try {
+    comprovanteContador = await enviarComprovantesBaixaPendentes(15_000, 10);
+  } catch (e) {
+    comprovanteContador = { erro: e instanceof Error ? e.message : String(e) };
+  }
+  return NextResponse.json({ ok: true, casas: saida, contaConsumo, borderoAvulso, comprovanteContador });
 }

@@ -247,6 +247,7 @@
     "migrate:pix-pagamento": "tsx scripts/migrate-pix-pagamento.ts",
     "migrate:conta-consumo-pagamento": "tsx scripts/migrate-conta-consumo-pagamento.ts",
     "migrate:comprovante-contador": "tsx scripts/migrate-comprovante-contador.ts",
+    "migrate:comprovante-contador-baixa": "tsx scripts/migrate-comprovante-contador-baixa.ts",
     "migrate:pix-comprovante": "tsx scripts/migrate-pix-comprovante.ts",
     "migrate:marketing-post": "tsx scripts/migrate-marketing-post.ts",
     "migrate:marketing-espelho": "tsx scripts/migrate-marketing-espelho.ts",
