@@ -498,6 +498,12 @@ export const MENU_AREAS: MenuArea[] = [
             aka: ['Pedidos a pagar por Pix', 'pedidos Pix'],
           },
           {
+            label: 'Pagar conta (código/QR)',
+            href: '/financeiro/pagar-conta',
+            perm: 'conta_pagar.read',
+            aka: ['pagar guia', 'pagar DARF', 'pagar DAE', 'código de barras', 'conta de luz', 'boleto fora do DDA'],
+          },
+          {
             label: 'Impostos (guias)',
             href: '/financeiro/impostos',
             perm: 'conta_pagar.read',
