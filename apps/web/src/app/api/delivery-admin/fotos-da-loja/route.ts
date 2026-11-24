@@ -19,7 +19,7 @@ export async function POST(request: Request) {
   if (!filiais.some((f) => f.id === filialId)) {
     return NextResponse.json({ error: 'filial não acessível' }, { status: 403 });
   }
-  const r = await puxarFotosDaLoja(filialId);
+  const r = await puxarFotosDaLoja(filialId, undefined, { sondarTunel: true });
   if (!r.ok) return NextResponse.json({ error: r.erro ?? 'falhou', ...r }, { status: 502 });
   return NextResponse.json(r);
 }

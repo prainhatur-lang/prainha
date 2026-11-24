@@ -368,12 +368,13 @@ export function CardapioAdminClient({
 
   // Foto vinda do servidor da loja (dono 22/11/2026: "não está trazendo as fotos").
   function textoFotos(f: unknown): string {
-    const x = f as { ok?: boolean; trazidas?: number; semFotoNaLoja?: number; falhas?: number } | null;
+    const x = f as { ok?: boolean; trazidas?: number; semFotoNaLoja?: number; falhas?: number; lojaFora?: string } | null;
     if (!x || !x.ok) return '';
     const partes: string[] = [];
     if (x.trazidas) partes.push(`${x.trazidas} foto(s) trazida(s) da loja`);
     if (x.semFotoNaLoja) partes.push(`${x.semFotoNaLoja} sem foto na loja`);
-    if (x.falhas) partes.push(`${x.falhas} não responderam (tente de novo)`);
+    if (x.falhas && x.lojaFora) partes.push(`${x.falhas} não responderam: ${x.lojaFora}`);
+    else if (x.falhas) partes.push(`${x.falhas} não responderam (tente de novo)`);
     return partes.length ? ` · ${partes.join(' · ')}` : '';
   }
   const [puxandoFotos, setPuxandoFotos] = useState(false);

@@ -12,7 +12,7 @@ import { randomBytes } from 'node:crypto';
 import { db, schema } from '@concilia/db';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { createAdminClient } from '@/lib/supabase/server';
-import { caixaUrlDaFilial } from '@/lib/caixa-loja';
+import { caixaUrlDaFilial, sondarTunelLoja } from '@/lib/caixa-loja';
 
 const BUCKET = 'cardapio';
 const TIMEOUT_MS = 8000;
@@ -25,6 +25,10 @@ export type ResultadoFotos = {
   trazidas: number;
   semFotoNaLoja: number;
   falhas: number;
+  /** Só com `sondarTunel`: nenhuma foto veio e a nuvem não alcança a loja por
+   *  nenhum caminho — o porquê, pra tela dizer (Tabuará 24/11/2026: o Tailscale
+   *  da máquina deslogou e o botão só dizia "não responderam, tente de novo"). */
+  lojaFora?: string;
 };
 
 function extOf(mime: string): string {
@@ -39,6 +43,7 @@ function extOf(mime: string): string {
 export async function puxarFotosDaLoja(
   filialId: string,
   itemIds?: string[],
+  opts?: { sondarTunel?: boolean },
 ): Promise<ResultadoFotos> {
   const vazio = { verificados: 0, trazidas: 0, semFotoNaLoja: 0, falhas: 0 };
   if (itemIds && itemIds.length === 0) return { ok: true, ...vazio };
@@ -118,6 +123,19 @@ export async function puxarFotosDaLoja(
 
     for (let i = 0; i < fila.length; i += PARALELO) {
       await Promise.all(fila.slice(i, i + PARALELO).map(um));
+    }
+    if (opts?.sondarTunel && r.falhas > 0 && r.trazidas === 0) {
+      const s = await sondarTunelLoja(filialId);
+      if (s.alcancavel === false) {
+        const ninguem = s.outras && s.outras.total > 0 && s.outras.alcancaveis === 0;
+        return {
+          ok: true,
+          ...r,
+          lojaFora: ninguem
+            ? 'nenhuma casa está respondendo pela internet agora (Tailscale ou nuvem fora) — tente de novo daqui a pouco'
+            : 'o servidor desta casa não está respondendo pela internet (o Tailscale da máquina caiu ou deslogou) — as fotos ficam lá até alguém religar o Tailscale na máquina da casa',
+        };
+      }
     }
     return { ok: true, ...r };
   } catch (e) {
