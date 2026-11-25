@@ -162,6 +162,7 @@ export function LancarContaBoleto({ boleto }: { boleto: BoletoSemConta }) {
         descricao: `Boleto ${boleto.fornecedorNome} pago no Inter (sem NF-e)`,
         valor: boleto.valor,
         dataVencimento: boleto.vencimento,
+        formaPagamento: 'boleto',
         observacao: `Lançada pela tela Boletos pagos no Inter — transação ${boleto.codigo}${boleto.codigoBarras ? `, código de barras ${boleto.codigoBarras}` : ''}`,
         forcar,
         forcarDuplicada,

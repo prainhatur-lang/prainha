@@ -114,6 +114,34 @@ export async function POST(req: Request) {
     }
   }
 
+  // Todo pagamento tem forma (dono 25/11/2026): conta que nasce EM ABERTO diz
+  // como se paga. Boleto = o prazo é o vencimento. Pix = só na chave Pix que
+  // está no cadastro do fornecedor (Pix só na chave autorizada).
+  if (!b.dataPagamento) {
+    if (!b.formaPagamento) {
+      return NextResponse.json(
+        { error: 'Informe como se paga: Boleto (com o vencimento) ou Pix (com a chave).' },
+        { status: 400 },
+      );
+    }
+    if (b.formaPagamento === 'pix') {
+      if (!fornecedorId) {
+        return NextResponse.json({ error: 'Pix: escolha o fornecedor — a chave Pix fica no cadastro dele.' }, { status: 400 });
+      }
+      const [fx] = await db
+        .select({ chavePix: schema.fornecedor.chavePix })
+        .from(schema.fornecedor)
+        .where(eq(schema.fornecedor.id, fornecedorId))
+        .limit(1);
+      if (!fx?.chavePix?.trim()) {
+        return NextResponse.json(
+          { error: 'Pix: o fornecedor não tem chave Pix no cadastro. Informe a chave que ele passou e lance de novo.' },
+          { status: 400 },
+        );
+      }
+    }
+  }
+
   // Trava "nota de outra casa" — só avisa; com forcar=true lança igual.
   if (!b.forcar) {
     const outra = await notaDeOutraCasa({

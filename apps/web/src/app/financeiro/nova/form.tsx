@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { EditPix } from '@/app/cadastros/fornecedores/edit-pix';
 import { hojeBr } from '@/lib/datas';
 import { brl, formatValorBr, parseValorBr } from '@/lib/format';
 
@@ -230,7 +231,7 @@ export function NovaContaForm({
   filiais: Opcao[];
   filialId: string;
   categorias: CategoriaPai[];
-  fornecedores: Opcao[];
+  fornecedores: Array<Opcao & { chavePix?: string | null; pixFavorecido?: string | null; doc?: string | null }>;
 }) {
   const router = useRouter();
   const hoje = hojeBr();
@@ -248,6 +249,7 @@ export function NovaContaForm({
   const [observacao, setObservacao] = useState('');
   // Como se paga (dono 25/11/2026): informa no lançamento, não na hora de pagar.
   const [forma, setForma] = useState<'' | 'boleto' | 'pix'>('');
+  const fornPix = fornecedores.find((f) => f.id === fornecedorId) ?? null;
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   // Repetir todo mês (04/11/2026): aluguel, pró-labore... um lançamento, vários vencimentos.
@@ -355,6 +357,12 @@ export function NovaContaForm({
       return setErro(
         'Escolha o fornecedor na lista — ou apague o campo pra lançar sem fornecedor.',
       );
+    }
+    // Todo pagamento tem forma (dono 25/11/2026) — conta em aberto não sai sem.
+    if (status === 'ABERTA' || repetir) {
+      if (!forma) return setErro('Informe como se paga: Boleto ou Pix.');
+      if (forma === 'pix' && !fornecedorId) return setErro('Pix: escolha o fornecedor — a chave Pix fica no cadastro dele.');
+      if (forma === 'pix' && !fornPix?.chavePix) return setErro('Pix: informe a chave Pix do fornecedor (botão logo abaixo de "Como se paga?").');
     }
     if (repetir) return submitRepetido(v);
     setSalvando(true);
@@ -504,8 +512,12 @@ export function NovaContaForm({
               filialIdCadastro={filialId}
             />
           </div>
-          <div className="md:col-span-2">
-            <label className={labelCls}>Como se paga?</label>
+          <div
+            className={`md:col-span-2 rounded-lg border p-3 ${
+              forma || (status === 'PAGA' && !repetir) ? 'border-slate-200 bg-white' : 'border-amber-300 bg-amber-50'
+            }`}
+          >
+            <label className={labelCls}>Como se paga? {status === 'ABERTA' || repetir ? '*' : ''}</label>
             <div className="mt-1 flex flex-wrap items-center gap-2">
               {([
                 ['boleto', '🧾 Boleto'],
@@ -514,8 +526,8 @@ export function NovaContaForm({
                 <button
                   key={v}
                   type="button"
-                  onClick={() => setForma(forma === v ? '' : v)}
-                  className={`rounded-md border px-3 py-1.5 text-xs font-medium ${
+                  onClick={() => setForma(v)}
+                  className={`rounded-md border px-4 py-2 text-sm font-medium ${
                     forma === v
                       ? 'border-slate-900 bg-slate-900 text-white'
                       : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
@@ -524,14 +536,58 @@ export function NovaContaForm({
                   {rot}
                 </button>
               ))}
-              <span className={`text-[11px] ${forma ? 'text-slate-500' : 'text-amber-700'}`}>
-                {forma === 'boleto'
-                  ? 'paga pelo boleto — não sai Pix por esta conta'
-                  : forma === 'pix'
-                    ? 'sai na chave Pix autorizada no cadastro do fornecedor'
-                    : 'informe aqui, no lançamento — não na hora de pagar'}
-              </span>
+              {!forma && (
+                <span className="text-xs text-amber-800">
+                  {status === 'ABERTA' || repetir ? 'obrigatório — escolha um dos dois' : 'já paga: opcional'}
+                </span>
+              )}
             </div>
+            {forma === 'boleto' && (
+              <p className="mt-2 text-xs text-slate-700">
+                Prazo do boleto: vence em{' '}
+                <span className="font-semibold">{dataVencimento.split('-').reverse().join('/')}</span> — confira o campo
+                Vencimento abaixo{repetir ? ' (e os meses seguintes)' : ''}.
+              </p>
+            )}
+            {forma === 'pix' && (
+              <div className="mt-2 text-xs text-slate-700">
+                {!fornecedorId ? (
+                  <p className="font-medium text-amber-800">Escolha o fornecedor acima — a chave Pix fica no cadastro dele.</p>
+                ) : fornPix?.chavePix ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span>
+                      Paga na chave{' '}
+                      <span className="rounded bg-emerald-50 px-1.5 py-0.5 font-mono font-semibold text-emerald-900">
+                        {fornPix.chavePix}
+                      </span>
+                      {fornPix.pixFavorecido ? <> — recebe: {fornPix.pixFavorecido}</> : null}
+                    </span>
+                    <span className="text-[11px] text-slate-500">chave errada?</span>
+                    <EditPix
+                      fornecedorId={fornecedorId}
+                      chaveAtual={fornPix.chavePix}
+                      favorecidoAtual={fornPix.pixFavorecido ?? null}
+                      docFornecedor={fornPix.doc ?? null}
+                    />
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium text-amber-800">
+                      Este fornecedor não tem chave Pix. Informe a chave que ele passou:
+                    </span>
+                    <EditPix
+                      fornecedorId={fornecedorId}
+                      chaveAtual={null}
+                      favorecidoAtual={fornPix?.pixFavorecido ?? null}
+                      docFornecedor={fornPix?.doc ?? null}
+                    />
+                  </div>
+                )}
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Data do Pix: {dataVencimento.split('-').reverse().join('/')} (campo Vencimento).
+                </p>
+              </div>
+            )}
           </div>
           <div>
             <label className={labelCls}>Valor (R$) *</label>

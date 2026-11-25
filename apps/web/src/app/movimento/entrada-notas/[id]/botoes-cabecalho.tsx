@@ -6,6 +6,7 @@ import { flushSync } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { perguntarMotivo } from '@/lib/perguntar-motivo';
 import { brl } from '@/lib/format';
+import { FormaPagamentoNota } from '../forma-pagamento-nota';
 
 interface Duplicata {
   id: string;
@@ -725,6 +726,22 @@ function ModalLancar({
   }
 
   async function confirmar() {
+    // Todo pagamento nasce com a forma: sem "Como se paga?" não lança conta a
+    // pagar (dono 25/11/2026). Cartão e à vista não criam conta — ficam de fora.
+    if (vaiCriarContas) {
+      try {
+        const rf = await fetch(`/api/nota-compra/${notaId}/forma-pagamento`, { cache: 'no-store' });
+        if (rf.ok) {
+          const df = (await rf.json()) as { forma?: string | null };
+          if (!df.forma) {
+            setErro('Informe como se paga antes de lançar: Boleto (com o vencimento) ou Pix (com a chave) — logo acima.');
+            return;
+          }
+        }
+      } catch {
+        /* sem rede: a rota de lançar responde */
+      }
+    }
     if (
       parcelasDivergem &&
       valorReferencia != null &&
@@ -1037,6 +1054,15 @@ function ModalLancar({
         {!temFornecedor && vaiCriarContas && (
           <div className="rounded bg-amber-50 px-2 py-1 text-[10px] text-amber-800">
             ⚠ Esta nota não tem fornecedor vinculado — não dá pra criar contas a pagar.
+          </div>
+        )}
+
+        {vaiCriarContas && (
+          <div className="rounded-md border-2 border-amber-300 bg-amber-50 p-2">
+            <div className="mb-1 text-[11px] font-semibold text-amber-900">
+              Como se paga? <span className="font-normal">obrigatório — sem isso não lança</span>
+            </div>
+            <FormaPagamentoNota notaId={notaId} compacto />
           </div>
         )}
 

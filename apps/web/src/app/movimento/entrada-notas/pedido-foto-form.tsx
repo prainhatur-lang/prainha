@@ -157,6 +157,8 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
   const [paginas, setPaginas] = useState<File[]>([]);
   const [selecionada, setSelecionada] = useState(filialId);
   const [lancarDireto, setLancarDireto] = useState(true);
+  // Como se paga: obrigatório ANTES de fotografar (dono 25/11/2026)
+  const [formaEntrada, setFormaEntrada] = useState<'' | 'boleto' | 'pix'>('');
   const [andamento, setAndamento] = useState<string | null>(null);
   const [resultados, setResultados] = useState<Resultado[]>([]);
   // No computador o "Escanear pedido agora" mostra o QR pro celular tirar a foto
@@ -170,6 +172,14 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
 
   /** Uma foto = um pedido (como sempre); várias = UM pedido com os itens de todas. */
   async function enviar(fs: File[]): Promise<Resultado> {
+    if (!formaEntrada) {
+      return {
+        arquivo: fs.map((x) => x.name).join(' + '),
+        ok: false,
+        titulo: 'Escolha antes como se paga: Boleto ou Pix',
+        detalhes: [],
+      };
+    }
     const f = fs.length === 1 ? fs[0]! : new File([], fs.map((x) => x.name).join(' + '));
     let fotos: File[];
     if (fs.length === 1) {
@@ -193,6 +203,15 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
         titulo: r.status === 413 ? 'arquivo grande demais (máx. 4 MB)' : (d.error ?? `HTTP ${r.status}`),
         detalhes: [],
       };
+    }
+    // Boleto: já grava a forma na nota (o prazo é o vencimento lido/pedido abaixo).
+    // Pix não grava sozinho: a chave e o WhatsApp se confirmam, um por um, no resultado.
+    if (formaEntrada === 'boleto' && d.id && !d.duplicada && !d.jaLancada) {
+      await fetch(`/api/nota-compra/${d.id}/forma-pagamento`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ forma: 'boleto' }),
+      }).catch(() => null);
     }
     if (d.duplicada && d.servico) {
       // Mesmo serviço (prestador + número, ou valor + data) já estava lançado.
@@ -245,6 +264,7 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
       if (d.chavePix) det.push(`chave Pix do recibo: ${d.chavePix} (guardada no fornecedor e na conta)`);
       if (!d.categoriaId) det.push('conta a pagar ficou sem categoria (fornecedor ainda não tem histórico)');
       det.push('serviço não tem produto pra vincular — não mexe no estoque');
+      if (formaEntrada === 'pix') det.unshift('PIX: confirme aqui embaixo a chave Pix e o WhatsApp de quem recebe');
       return {
         arquivo: f.name,
         ok: true,
@@ -255,12 +275,18 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
       };
     }
     const cab = `${d.emitNome ?? 'fornecedor não identificado'} · ${brl(d.valorTotal)} · ${d.qtdItens} item(ns)`;
-    if (!d.pronto || !lancarDireto) {
+    if (!d.pronto || !lancarDireto || formaEntrada === 'pix') {
       return {
         arquivo: f.name,
         ok: true,
         titulo: d.pronto ? `Lido, aguardando você confirmar — ${cab}` : `Lido, precisa conferir — ${cab}`,
-        detalhes: [...((d.avisos as string[] | undefined) ?? []), ...(d.pendencias ?? [])],
+        detalhes: [
+          ...(formaEntrada === 'pix'
+            ? ['PIX: confirme aqui embaixo a chave Pix e o WhatsApp de quem recebe; depois abra e clique em Lançar']
+            : []),
+          ...((d.avisos as string[] | undefined) ?? []),
+          ...(d.pendencias ?? []),
+        ],
         notaId: d.id,
         pedeCnpj: !!d.pedeCnpj,
         pedeVencimento: !!d.semVencimento,
@@ -392,6 +418,42 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
           </div>
         )}
 
+        {/* Como se paga: obrigatório antes de fotografar (dono 25/11/2026) */}
+        <div className="rounded-lg border-2 border-amber-300 bg-amber-50 p-3">
+          <div className="text-xs font-semibold text-amber-900">
+            Como se paga? <span className="font-normal">obrigatório — escolha antes de fotografar</span>
+          </div>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            {(['boleto', 'pix'] as const).map((f) => (
+              <button
+                key={f}
+                type="button"
+                disabled={enviando}
+                onClick={() => setFormaEntrada(f)}
+                className={`rounded-lg border-2 px-3 py-3 text-sm font-semibold ${
+                  formaEntrada === f
+                    ? 'border-emerald-600 bg-emerald-600 text-white'
+                    : 'border-slate-300 bg-white text-slate-700 hover:border-emerald-500'
+                }`}
+              >
+                {f === 'boleto' ? '🧾 Boleto' : '⚡ Pix'}
+              </button>
+            ))}
+          </div>
+          {formaEntrada === 'boleto' && (
+            <p className="mt-2 text-[11px] text-amber-900">
+              Prazo = vencimento do boleto. O sistema lê no papel; se não achar, pede a data logo depois da leitura.
+            </p>
+          )}
+          {formaEntrada === 'pix' && (
+            <p className="mt-2 text-[11px] text-amber-900">
+              Depois da leitura aparece a chave Pix do fornecedor pra você confirmar (ou informar, se não tiver). Só
+              lança depois de confirmada.
+            </p>
+          )}
+        </div>
+
+        <div className={`space-y-3 ${formaEntrada ? '' : 'pointer-events-none opacity-40'}`} aria-disabled={!formaEntrada}>
         {/* Escanear: no celular/tablet abre a câmera traseira direto, sem passar pela galeria */}
         <label
           className="block"
@@ -548,6 +610,7 @@ export function PedidoFotoForm({ filialId, filiais }: { filialId: string; filiai
               </button>
             </>
           )}
+        </div>
         </div>
 
         <label className="flex items-start gap-2 text-xs text-slate-600">

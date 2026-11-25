@@ -63,6 +63,20 @@ export default async function NovaContaPage(props: {
   // Cadastro único: os fornecedores desta casa + os que só existem nas outras
   // casas (a rota cria a linha daqui quando um deles é escolhido).
   const fornecedores = await fornecedoresParaLancar(filial.id);
+  // Chave Pix do cadastro de cada fornecedor: o "Como se paga?" mostra a chave
+  // na hora de lançar (dono 25/11/2026).
+  const idsForn = fornecedores.map((f) => f.id);
+  const comChave = idsForn.length
+    ? await db
+        .select({
+          id: schema.fornecedor.id,
+          chavePix: schema.fornecedor.chavePix,
+          pixFavorecido: schema.fornecedor.pixFavorecido,
+        })
+        .from(schema.fornecedor)
+        .where(inArray(schema.fornecedor.id, idsForn))
+    : [];
+  const pixPorId = new Map(comChave.map((f) => [f.id, f]));
 
   return (
     <main className="min-h-screen bg-slate-50">
@@ -77,7 +91,13 @@ export default async function NovaContaPage(props: {
           filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
           filialId={filial.id}
           categorias={pais}
-          fornecedores={fornecedores.map((f) => ({ id: f.id, nome: f.nome ?? '(sem nome)' }))}
+          fornecedores={fornecedores.map((f) => ({
+            id: f.id,
+            nome: f.nome ?? '(sem nome)',
+            chavePix: pixPorId.get(f.id)?.chavePix?.trim() || null,
+            pixFavorecido: pixPorId.get(f.id)?.pixFavorecido ?? null,
+            doc: f.cnpjOuCpf,
+          }))}
         />
       </div>
     </main>
