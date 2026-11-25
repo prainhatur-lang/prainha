@@ -10,6 +10,7 @@ import { JuntarNoMapa } from './juntar-mapa';
 import { TelefonePaisInput } from '@/components/telefone-pais-input';
 import { separarTelefone, telefoneComDdi, telefoneParaGravar, type PaisTel } from '@/lib/telefone-pais';
 import { parseJuntadas, textoMesas } from '@/lib/reservas/mesas-juntadas';
+import { LinkPagamentoPainel } from '@/components/link-pagamento-painel';
 
 /** Resposta de /api/reservas/quem — quem é a pessoa do telefone/CPF digitado. */
 interface QuemInfo {
@@ -578,6 +579,8 @@ function Linha({ r, hist, fiado, membro, podeAtualizar, podeExcluir = false, mos
     r.pagamentoStatus !== 'pago' &&
     !(r.pagamentoStatus ?? '').startsWith('estorn');
   const [cobranca, setCobranca] = useState<{ valor: number; pix: string; texto: string; zapEnviado: boolean; zapErro: string | null } | null>(null);
+  // Link de cartão (uso único, 3DS): o gerente gera e manda pro cliente. Fica ao lado do Pix da taxa.
+  const [linkCartao, setLinkCartao] = useState(false);
 
   async function cobrarTaxa() {
     setSalvando(true);
@@ -821,6 +824,11 @@ function Linha({ r, hist, fiado, membro, podeAtualizar, podeExcluir = false, mos
               💳 {r.pagamentoStatus === 'cobrado' ? 'Reenviar Pix da taxa' : 'Cobrar taxa'}
             </Btn>
           )}
+          {r.status !== 'cancelada' && (
+            <Btn onClick={() => setLinkCartao((v) => !v)} disabled={salvando} cls="border-indigo-300 text-indigo-700 active:bg-indigo-100 hover:bg-indigo-50" title="Gera um link pro cliente pagar por cartão (qualquer valor): uso único, com confirmação do banco (3-D Secure)">
+              💳 Link de cartão
+            </Btn>
+          )}
           {r.pagamentoStatus === 'cobrado' && (
             <Btn onClick={conferirPagamento} disabled={salvando} cls="border-emerald-300 text-emerald-700 active:bg-emerald-100 hover:bg-emerald-50" title="Pergunta pra operadora se o Pix já caiu">
               🔄 Conferir pagamento
@@ -864,6 +872,20 @@ function Linha({ r, hist, fiado, membro, podeAtualizar, podeExcluir = false, mos
             )}
             <button onClick={() => setCobranca(null)} className="text-xs text-violet-700 underline">fechar</button>
           </div>
+        </div>
+      )}
+      {podeAtualizar && linkCartao && (
+        <div className="mt-3 rounded-lg border border-indigo-200 bg-indigo-50 p-3 text-sm">
+          <div className="mb-2 flex items-center justify-between">
+            <p className="font-semibold text-indigo-900">💳 Link de pagamento por cartão</p>
+            <button onClick={() => setLinkCartao(false)} className="text-xs text-indigo-700 underline">fechar</button>
+          </div>
+          <LinkPagamentoPainel
+            reservaId={r.id}
+            descricaoPadrao={`Reserva de ${r.data.slice(8, 10)}/${r.data.slice(5, 7)}/${r.data.slice(0, 4)} — ${r.clienteNome}`}
+            nomePadrao={r.clienteNome}
+            telefonePadrao={r.clienteTelefone ?? ''}
+          />
         </div>
       )}
       {podeAtualizar && editandoData && (

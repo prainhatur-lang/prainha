@@ -269,6 +269,7 @@
     "migrate:conta-valor-nota": "tsx scripts/migrate-conta-valor-nota.ts",
     "migrate:loja-certificado": "tsx scripts/migrate-loja-certificado.ts",
     "migrate:pedido-encomenda": "tsx scripts/migrate-pedido-encomenda.ts",
+    "migrate:link-pagamento": "tsx scripts/migrate-link-pagamento.ts",
     "migrate:vale-presente": "tsx scripts/migrate-vale-presente.ts",
     "migrate:vale-presente-valor": "tsx scripts/migrate-vale-presente-valor.ts",
     "migrate:vale-presente-presenteado": "tsx scripts/migrate-vale-presente-presenteado.ts",

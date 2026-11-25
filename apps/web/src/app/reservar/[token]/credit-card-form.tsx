@@ -117,6 +117,10 @@ interface Props {
   };
   /** Recusa por falta de limite: botão "Pagar com Pix" chama isto. */
   onPreferirPix?: () => void;
+  /** Link de pagamento avulso (25/11/2026): só passa cartão AUTENTICADO pelo
+   *  banco (3DS). Sem autenticação, para aqui com esta mensagem e nem envia.
+   *  Ausente = comportamento de sempre (segue e o servidor decide pelo teto). */
+  exigir3ds?: string;
 }
 
 // Delivery com ?lang= (turista): a tela do cartão sai no idioma do cliente.
@@ -357,6 +361,7 @@ export function CreditCardForm({
   lang = 'pt',
   preenchido,
   onPreferirPix,
+  exigir3ds,
 }: Props) {
   const t = TXT_CARTAO[lang] ?? TXT_CARTAO.pt;
   const urlPagamento = endpointPagamento ?? `/api/reservar/${token}/pagamento-cartao`;
@@ -642,6 +647,12 @@ export function CreditCardForm({
     detalheRef.current = null;
     if (semAutenticacao && motivo === 'failure') {
       setError(t.bancoNegou);
+      setProcessing(false);
+      return;
+    }
+    if (semAutenticacao && exigir3ds) {
+      console.warn('[3ds] exigido e não veio:', motivo, detalhe);
+      setError(exigir3ds);
       setProcessing(false);
       return;
     }

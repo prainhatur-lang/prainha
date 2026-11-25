@@ -209,6 +209,8 @@ export async function proxy(request: NextRequest) {
   // pagina publica do orcamento de evento: cliente aceita o contrato e paga
   // a entrada via Pix. Token na URL identifica o orcamento; sem login.
   const isOrcamentoPublico = path.startsWith('/orcamento/');
+  // Link de pagamento avulso por cartão: o cliente abre /cobranca/<token> sem login.
+  const isCobrancaPublica = path.startsWith('/cobranca/');
   // /delivery é o cardápio/checkout público de pedidos online (sem login).
   // O painel interno é /delivery-admin (protegido, fora desta lista).
   const isDeliveryPublico = path === '/delivery' || path.startsWith('/delivery/');
@@ -249,6 +251,7 @@ export async function proxy(request: NextRequest) {
     isCotacaoPublica ||
     isPagarMesaPublico ||
     isOrcamentoPublico ||
+    isCobrancaPublica ||
     isDeliveryPublico ||
     isTrabalhePublico ||
     isTabuaraPublico ||
