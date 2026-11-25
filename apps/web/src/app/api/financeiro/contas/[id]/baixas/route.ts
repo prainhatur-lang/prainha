@@ -22,6 +22,7 @@ import { consumerParado } from '@/lib/consumer-contas';
 import { travaMesmaDivida } from '@/lib/conta-mesma-divida';
 import { recalcularAgregado } from '@/lib/conta-pagar-baixa';
 import { lerMotivo, registrarExclusao } from '@/lib/registro-exclusao';
+import { estornarPagamentoDoPortador, lancarPagamentoDoPortador, portadorAtivoDaCasa } from '@/lib/portador';
 
 export const dynamic = 'force-dynamic';
 
@@ -36,6 +37,9 @@ const Body = z.object({
    *  sai do caixa. Na baixa grava valor = valor + desconto (principal). */
   desconto: z.number().min(0).optional(),
   observacao: z.string().trim().max(500).nullable().optional(),
+  /** Pago em DINHEIRO (25/11/2026): de qual portador saiu (Cofre, Elison…).
+   *  Lança a saída nele junto com a baixa. Ausente = saiu do banco. */
+  portadorId: z.string().uuid().nullable().optional(),
 });
 
 async function carregarConta(id: string, userId: string) {
@@ -134,16 +138,34 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
     );
   }
 
-  await db.insert(schema.contaPagarBaixa).values({
+  const portador = parsed.data.portadorId ? await portadorAtivoDaCasa(conta.filialId, parsed.data.portadorId) : null;
+  if (parsed.data.portadorId && !portador) {
+    return NextResponse.json({ error: 'portador do dinheiro não encontrado nesta casa' }, { status: 400 });
+  }
+  const obsDinheiro = portador ? `Dinheiro · ${portador.nome}` : null;
+
+  const [baixa] = await db.insert(schema.contaPagarBaixa).values({
     filialId: conta.filialId,
     contaPagarId: id,
     data: parsed.data.data,
     valor: principal.toFixed(2),
     juros: parsed.data.juros && parsed.data.juros > 0 ? parsed.data.juros.toFixed(2) : null,
     desconto: desconto > 0 ? desconto.toFixed(2) : null,
-    observacao: parsed.data.observacao ?? null,
+    observacao: [obsDinheiro, parsed.data.observacao].filter(Boolean).join(' — ') || null,
     criadoPor: user.id,
-  });
+  }).returning({ id: schema.contaPagarBaixa.id });
+
+  if (portador && baixa) {
+    await lancarPagamentoDoPortador({
+      filialId: conta.filialId,
+      portadorId: portador.id,
+      baixaId: baixa.id,
+      contaId: id,
+      data: parsed.data.data,
+      valor: parsed.data.valor + (parsed.data.juros ?? 0),
+      userId: user.id,
+    });
+  }
 
   const agregado = await recalcularAgregado(id, valorConta);
   return NextResponse.json({ ok: true, ...agregado }, { status: 201 });
@@ -200,6 +222,8 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }
   if (apagadas.length === 0) {
     return NextResponse.json({ error: 'baixa não encontrada' }, { status: 404 });
   }
+  // baixa em dinheiro: o dinheiro volta pro portador
+  await estornarPagamentoDoPortador(conta.filialId, baixaId, user.id);
 
   const agregado = await recalcularAgregado(id, Number(conta.valor));
   return NextResponse.json({ ok: true, ...agregado });

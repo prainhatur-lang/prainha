@@ -227,11 +227,14 @@ export function NovaContaForm({
   filialId,
   categorias,
   fornecedores,
+  portadores = [],
 }: {
   filiais: Opcao[];
   filialId: string;
   categorias: CategoriaPai[];
   fornecedores: Array<Opcao & { chavePix?: string | null; pixFavorecido?: string | null; doc?: string | null }>;
+  /** portadores do dinheiro da casa — conta já paga em dinheiro sai de um deles */
+  portadores?: Array<{ id: string; nome: string }>;
 }) {
   const router = useRouter();
   const hoje = hojeBr();
@@ -246,6 +249,8 @@ export function NovaContaForm({
   const [dataVencimento, setDataVencimento] = useState(hoje);
   const [status, setStatus] = useState<'ABERTA' | 'PAGA'>('ABERTA');
   const [dataPagamento, setDataPagamento] = useState(hoje);
+  // já paga: de onde saiu o dinheiro — '' | 'banco' | id do portador
+  const [origem, setOrigem] = useState('');
   const [observacao, setObservacao] = useState('');
   // Como se paga (dono 25/11/2026): informa no lançamento, não na hora de pagar.
   const [forma, setForma] = useState<'' | 'boleto' | 'pix'>('');
@@ -298,6 +303,7 @@ export function NovaContaForm({
               dataVencimento: venc,
               dataLancamento,
               dataPagamento: i === 0 && status === 'PAGA' ? dataPagamento : null,
+              portadorId: i === 0 && status === 'PAGA' && origem && origem !== 'banco' ? origem : null,
               fornecedorId: fornecedorId || null,
               categoriaId,
               observacao: observacao.trim() || null,
@@ -358,6 +364,8 @@ export function NovaContaForm({
         'Escolha o fornecedor na lista — ou apague o campo pra lançar sem fornecedor.',
       );
     }
+    // Não sai dinheiro do nada (dono 25/11/2026): já paga diz de onde saiu.
+    if (status === 'PAGA' && !origem) return setErro('Diga de onde saiu o dinheiro: do banco ou de qual portador (dinheiro).');
     // Todo pagamento tem forma (dono 25/11/2026) — conta em aberto não sai sem.
     if (status === 'ABERTA' || repetir) {
       if (!forma) return setErro('Informe como se paga: Boleto ou Pix.');
@@ -380,6 +388,7 @@ export function NovaContaForm({
             dataVencimento,
             dataLancamento,
             dataPagamento: status === 'PAGA' ? dataPagamento : null,
+            portadorId: status === 'PAGA' && origem && origem !== 'banco' ? origem : null,
             fornecedorId: fornecedorId || null,
             categoriaId,
             observacao: observacao.trim() || null,
@@ -661,6 +670,24 @@ export function NovaContaForm({
                 onChange={(e) => setDataPagamento(e.target.value)}
                 className={inputCls}
               />
+            </div>
+          )}
+          {status === 'PAGA' && (
+            <div>
+              <label className={labelCls}>De onde saiu o dinheiro?</label>
+              <select
+                value={origem}
+                onChange={(e) => setOrigem(e.target.value)}
+                className={`${inputCls} ${origem ? '' : 'border-amber-400 bg-amber-50'}`}
+              >
+                <option value="">— escolha —</option>
+                <option value="banco">🏦 Banco (Pix, boleto, cartão)</option>
+                {portadores.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    💵 Dinheiro — {p.nome}
+                  </option>
+                ))}
+              </select>
             </div>
           )}
         </div>

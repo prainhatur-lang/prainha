@@ -15,12 +15,15 @@ export function BaixaForm({
   saldo,
   vencimento,
   estornarId,
+  portadores = [],
 }: {
   contaId: string;
   saldo?: number;
   /** vencimento da conta — pagamento depois dele acende o campo de juros */
   vencimento?: string;
   estornarId?: string;
+  /** portadores do dinheiro da casa (Cofre, Elison…) — pago em dinheiro sai de um deles */
+  portadores?: Array<{ id: string; nome: string }>;
 }) {
   const router = useRouter();
   const [data, setData] = useState(hojeBr());
@@ -28,6 +31,8 @@ export function BaixaForm({
   const [juros, setJuros] = useState('');
   const [desconto, setDesconto] = useState('');
   const [observacao, setObservacao] = useState('');
+  // de onde saiu o dinheiro: '' (não disse) | 'banco' | id do portador
+  const [origem, setOrigem] = useState('');
   const [ocupado, setOcupado] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   // pagando depois do vencimento? lembra dos juros
@@ -77,6 +82,8 @@ export function BaixaForm({
     if (saldo != null && v + dsc > saldo + 0.005) {
       return setErro(`Valor + desconto passa do saldo (${saldo.toFixed(2).replace('.', ',')}).`);
     }
+    // só desconto (sem dinheiro) não precisa dizer de onde saiu
+    if (v > 0 && !origem) return setErro('Diga de onde saiu o dinheiro: do banco ou de qual portador (dinheiro).');
     setOcupado(true);
     try {
       const r = await fetch(`/api/financeiro/contas/${contaId}/baixas`, {
@@ -88,6 +95,7 @@ export function BaixaForm({
           juros: j || undefined,
           desconto: dsc || undefined,
           observacao: observacao.trim() || null,
+          portadorId: v > 0 && origem && origem !== 'banco' ? origem : null,
         }),
       });
       const d = await r.json().catch(() => ({}));
@@ -162,6 +170,24 @@ export function BaixaForm({
             className="mt-0.5 w-24 rounded-md border border-slate-300 px-2 py-1 text-right font-mono text-xs"
           />
         </div>
+        <div>
+          <label className={`block text-[10px] ${origem ? 'text-slate-400' : 'font-semibold text-amber-700'}`}>
+            De onde saiu o dinheiro?
+          </label>
+          <select
+            value={origem}
+            onChange={(e) => setOrigem(e.target.value)}
+            className={`mt-0.5 rounded-md border px-2 py-1 text-xs ${origem ? 'border-slate-300' : 'border-amber-400 bg-amber-50'}`}
+          >
+            <option value="">— escolha —</option>
+            <option value="banco">🏦 Banco (Pix, boleto, cartão)</option>
+            {portadores.map((p) => (
+              <option key={p.id} value={p.id}>
+                💵 Dinheiro — {p.nome}
+              </option>
+            ))}
+          </select>
+        </div>
         <div className="min-w-40 flex-1">
           <label className="block text-[10px] text-slate-400">Observação</label>
           <input
@@ -182,6 +208,7 @@ export function BaixaForm({
       <p className="mt-1.5 text-[10px] text-slate-400">
         Valor menor que o saldo = pagamento parcial; a conta fica como PARCIAL até quitar.
         {' '}O juros vai por fora: não abate o saldo, fica registrado na baixa e no total pago.
+        {' '}Pago em dinheiro: escolha de quem saiu (Cofre, pessoa) e a saída já entra em Portadores.
         {' '}Desconto abate o saldo junto com o valor, sem contar como dinheiro pago (valor + desconto = quanto da conta foi quitado).
       </p>
       {atrasado && (

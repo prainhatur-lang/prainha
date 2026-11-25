@@ -22,6 +22,7 @@
 
 import { NextResponse } from 'next/server';
 import { ebLiberadaNoFinanceiro } from '@/lib/eb/acesso-financeiro';
+import { lancarPagamentoDoPortador, portadorAtivoDaCasa } from '@/lib/portador';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
@@ -41,6 +42,8 @@ const Body = z.object({
   dataVencimento: z.string().regex(YMD),
   dataLancamento: z.string().regex(YMD).optional(),
   dataPagamento: z.string().regex(YMD).nullable().optional(),
+  /** já paga em DINHEIRO: portador de onde saiu (lança a saída nele) */
+  portadorId: z.string().uuid().nullable().optional(),
   fornecedorId: z.string().uuid().nullable().optional(),
   categoriaId: z.string().uuid().nullable().optional(),
   observacao: z.string().trim().max(1000).nullable().optional(),
@@ -179,6 +182,10 @@ export async function POST(req: Request) {
 
   const lancamento = b.dataLancamento ?? hojeBr();
   const paga = !!b.dataPagamento;
+  const portador = paga && b.portadorId ? await portadorAtivoDaCasa(b.filialId, b.portadorId) : null;
+  if (paga && b.portadorId && !portador) {
+    return NextResponse.json({ error: 'portador do dinheiro não encontrado nesta casa' }, { status: 400 });
+  }
 
   const [conta] = await db
     .insert(schema.contaPagar)
@@ -205,14 +212,25 @@ export async function POST(req: Request) {
 
   // Nasceu paga → registra a baixa cheia no histórico também
   if (paga && conta) {
-    await db.insert(schema.contaPagarBaixa).values({
+    const [baixa] = await db.insert(schema.contaPagarBaixa).values({
       filialId: b.filialId,
       contaPagarId: conta.id,
       data: b.dataPagamento!,
       valor: b.valor.toFixed(2),
-      observacao: 'Lançada já paga',
+      observacao: portador ? `Lançada já paga — Dinheiro · ${portador.nome}` : 'Lançada já paga',
       criadoPor: user.id,
-    });
+    }).returning({ id: schema.contaPagarBaixa.id });
+    if (portador && baixa) {
+      await lancarPagamentoDoPortador({
+        filialId: b.filialId,
+        portadorId: portador.id,
+        baixaId: baixa.id,
+        contaId: conta.id,
+        data: b.dataPagamento!,
+        valor: b.valor,
+        userId: user.id,
+      });
+    }
   }
 
   return NextResponse.json({ id: conta?.id }, { status: 201 });

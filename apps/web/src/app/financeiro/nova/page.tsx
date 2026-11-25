@@ -13,6 +13,7 @@ import { and, asc, eq, isNull, inArray } from 'drizzle-orm';
 import { fornecedoresParaLancar } from '@/lib/fornecedor-unico';
 import { AppHeader } from '@/components/app-header';
 import { NovaContaForm } from './form';
+import { portadoresDaFilial } from '@/lib/portador';
 
 export const dynamic = 'force-dynamic';
 
@@ -98,6 +99,7 @@ export default async function NovaContaPage(props: {
             pixFavorecido: pixPorId.get(f.id)?.pixFavorecido ?? null,
             doc: f.cnpjOuCpf,
           }))}
+          portadores={(await portadoresDaFilial(filial.id, true)).map((p) => ({ id: p.id, nome: p.nome }))}
         />
       </div>
     </main>
