@@ -36,6 +36,8 @@ const Body = z.object({
   forma: z.enum(FORMAS_RECIBO).optional(),
   // Dinheiro tem que ter origem (25/11/2026): de qual portador saiu.
   portadorId: z.string().uuid().nullable().optional(),
+  // Pago pelo banco (Pix, cartão…): de qual conta saiu — vai na observação.
+  bancoOrigem: z.string().trim().max(60).nullable().optional(),
   dataPagamento: z.string().regex(YMD).optional(),
   dataVencimento: z.string().regex(YMD).optional(),
   categoriaId: z.string().uuid().nullable().optional(),
@@ -69,6 +71,8 @@ export async function POST(req: Request) {
   // Não sai dinheiro do nada (dono 25/11/2026): pago em dinheiro diz de qual
   // portador saiu (Cofre, Elison, Marta) — e a saída já entra no saldo dele.
   const emDinheiro = b.pago && b.forma === 'Dinheiro';
+  if (b.pago && !emDinheiro && !b.bancoOrigem)
+    return NextResponse.json({ error: 'Diga de qual banco ou conta saiu o dinheiro.' }, { status: 400 });
   if (emDinheiro && !b.portadorId)
     return NextResponse.json(
       { error: 'Pago em dinheiro: diga de onde saiu (Cofre ou quem estava com o dinheiro).' },
@@ -172,7 +176,9 @@ export async function POST(req: Request) {
       contaPagarId: conta.id,
       data: dataPagamento!,
       valor: b.valor.toFixed(2),
-      observacao: obsBaixaRecibo(b.forma!),
+      observacao: [portador ? `Dinheiro · ${portador.nome}` : b.bancoOrigem ? `Banco · ${b.bancoOrigem}` : null, obsBaixaRecibo(b.forma!)]
+        .filter(Boolean)
+        .join(' — '),
       criadoPor: user.id,
     }).returning({ id: schema.contaPagarBaixa.id });
     if (portador && baixa) {

@@ -40,6 +40,8 @@ const Body = z.object({
   /** Pago em DINHEIRO (25/11/2026): de qual portador saiu (Cofre, Elison…).
    *  Lança a saída nele junto com a baixa. Ausente = saiu do banco. */
   portadorId: z.string().uuid().nullable().optional(),
+  /** pago pelo banco: de qual conta saiu (Inter, Sicredi, cartão…) — vai na observação */
+  bancoOrigem: z.string().trim().max(60).nullable().optional(),
 });
 
 async function carregarConta(id: string, userId: string) {
@@ -142,7 +144,11 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   if (parsed.data.portadorId && !portador) {
     return NextResponse.json({ error: 'portador do dinheiro não encontrado nesta casa' }, { status: 400 });
   }
-  const obsDinheiro = portador ? `Dinheiro · ${portador.nome}` : null;
+  const obsDinheiro = portador
+    ? `Dinheiro · ${portador.nome}`
+    : parsed.data.bancoOrigem
+      ? `Banco · ${parsed.data.bancoOrigem}`
+      : null;
 
   const [baixa] = await db.insert(schema.contaPagarBaixa).values({
     filialId: conta.filialId,

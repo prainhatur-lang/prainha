@@ -4,6 +4,7 @@
 //  - sem estornarId: form de registrar pagamento (parcial ou total);
 //  - com estornarId: botãozinho de estornar aquela baixa do histórico.
 
+import { ORIGEM_BANCO_OUTRO, bancoDaOrigem, erroDaOrigem, portadorDaOrigem } from '@/lib/origem-dinheiro';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { perguntarMotivo } from '@/lib/perguntar-motivo';
@@ -16,6 +17,7 @@ export function BaixaForm({
   vencimento,
   estornarId,
   portadores = [],
+  bancos = [],
 }: {
   contaId: string;
   saldo?: number;
@@ -24,6 +26,8 @@ export function BaixaForm({
   estornarId?: string;
   /** portadores do dinheiro da casa (Cofre, Elison…) — pago em dinheiro sai de um deles */
   portadores?: Array<{ id: string; nome: string }>;
+  /** contas de banco da casa (Inter, Sicredi, cartões) — pago pelo banco diz de qual saiu */
+  bancos?: string[];
 }) {
   const router = useRouter();
   const [data, setData] = useState(hojeBr());
@@ -33,6 +37,7 @@ export function BaixaForm({
   const [observacao, setObservacao] = useState('');
   // de onde saiu o dinheiro: '' (não disse) | 'banco' | id do portador
   const [origem, setOrigem] = useState('');
+  const [bancoOutro, setBancoOutro] = useState('');
   const [ocupado, setOcupado] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   // pagando depois do vencimento? lembra dos juros
@@ -83,7 +88,8 @@ export function BaixaForm({
       return setErro(`Valor + desconto passa do saldo (${saldo.toFixed(2).replace('.', ',')}).`);
     }
     // só desconto (sem dinheiro) não precisa dizer de onde saiu
-    if (v > 0 && !origem) return setErro('Diga de onde saiu o dinheiro: do banco ou de qual portador (dinheiro).');
+    const erroOrigem = v > 0 ? erroDaOrigem(origem, bancoOutro) : null;
+    if (erroOrigem) return setErro(erroOrigem);
     setOcupado(true);
     try {
       const r = await fetch(`/api/financeiro/contas/${contaId}/baixas`, {
@@ -95,7 +101,8 @@ export function BaixaForm({
           juros: j || undefined,
           desconto: dsc || undefined,
           observacao: observacao.trim() || null,
-          portadorId: v > 0 && origem && origem !== 'banco' ? origem : null,
+          portadorId: v > 0 ? portadorDaOrigem(origem) : null,
+          bancoOrigem: v > 0 ? bancoDaOrigem(origem, bancoOutro) : null,
         }),
       });
       const d = await r.json().catch(() => ({}));
@@ -180,13 +187,27 @@ export function BaixaForm({
             className={`mt-0.5 rounded-md border px-2 py-1 text-xs ${origem ? 'border-slate-300' : 'border-amber-400 bg-amber-50'}`}
           >
             <option value="">— escolha —</option>
-            <option value="banco">🏦 Banco (Pix, boleto, cartão)</option>
+            {bancos.map((b) => (
+              <option key={`banco:${b}`} value={`banco:${b}`}>
+                🏦 {b}
+              </option>
+            ))}
+            <option value={ORIGEM_BANCO_OUTRO}>🏦 Outro banco (digitar)</option>
             {portadores.map((p) => (
               <option key={p.id} value={p.id}>
                 💵 Dinheiro — {p.nome}
               </option>
             ))}
           </select>
+          {origem === ORIGEM_BANCO_OUTRO && (
+            <input
+              value={bancoOutro}
+              onChange={(e) => setBancoOutro(e.target.value)}
+              placeholder="Qual banco / conta?"
+              maxLength={60}
+              className={`ml-1 mt-0.5 w-40 rounded-md border px-2 py-1 text-xs ${bancoOutro.trim() ? 'border-slate-300' : 'border-amber-400 bg-amber-50'}`}
+            />
+          )}
         </div>
         <div className="min-w-40 flex-1">
           <label className="block text-[10px] text-slate-400">Observação</label>

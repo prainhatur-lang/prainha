@@ -44,6 +44,8 @@ const Body = z.object({
   dataPagamento: z.string().regex(YMD).nullable().optional(),
   /** já paga em DINHEIRO: portador de onde saiu (lança a saída nele) */
   portadorId: z.string().uuid().nullable().optional(),
+  /** já paga pelo BANCO: de qual conta saiu — vai na observação da baixa */
+  bancoOrigem: z.string().trim().max(60).nullable().optional(),
   fornecedorId: z.string().uuid().nullable().optional(),
   categoriaId: z.string().uuid().nullable().optional(),
   observacao: z.string().trim().max(1000).nullable().optional(),
@@ -217,7 +219,11 @@ export async function POST(req: Request) {
       contaPagarId: conta.id,
       data: b.dataPagamento!,
       valor: b.valor.toFixed(2),
-      observacao: portador ? `Lançada já paga — Dinheiro · ${portador.nome}` : 'Lançada já paga',
+      observacao: portador
+        ? `Lançada já paga — Dinheiro · ${portador.nome}`
+        : b.bancoOrigem
+          ? `Lançada já paga — Banco · ${b.bancoOrigem}`
+          : 'Lançada já paga',
       criadoPor: user.id,
     }).returning({ id: schema.contaPagarBaixa.id });
     if (portador && baixa) {

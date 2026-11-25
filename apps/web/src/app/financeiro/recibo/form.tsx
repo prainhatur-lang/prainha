@@ -4,6 +4,7 @@
 // recebeu, valor, a que se refere e a pergunta: já foi pago? Sim → como
 // (dinheiro, Pix...) e nasce paga. Não → entra no contas a pagar.
 
+import { ORIGEM_BANCO_OUTRO, bancoDaOrigem } from '@/lib/origem-dinheiro';
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { hojeBr } from '@/lib/datas';
@@ -50,12 +51,15 @@ export function ReciboForm({
   filialId,
   categorias,
   portadores = [],
+  bancos = [],
 }: {
   filiais: Opcao[];
   filialId: string;
   categorias: CategoriaPai[];
   /** Quem guarda dinheiro nesta casa (Cofre, Elison, Marta) — origem do pago em dinheiro. */
   portadores?: Opcao[];
+  /** Contas de banco da casa — pago por Pix, cartão etc. diz de qual saiu. */
+  bancos?: string[];
 }) {
   const router = useRouter();
   const [nome, setNome] = useState('');
@@ -67,6 +71,8 @@ export function ReciboForm({
   const [pago, setPago] = useState<boolean | null>(null);
   const [forma, setForma] = useState<FormaRecibo | ''>('');
   const [portadorId, setPortadorId] = useState('');
+  const [bancoSel, setBancoSel] = useState('');
+  const [bancoOutro, setBancoOutro] = useState('');
   const [dataPagamento, setDataPagamento] = useState(hojeBr());
   const [dataVencimento, setDataVencimento] = useState(hojeBr());
   const [salvando, setSalvando] = useState(false);
@@ -152,6 +158,9 @@ export function ReciboForm({
           : 'Esta casa não tem portador de dinheiro cadastrado (Cofre, etc.). Cadastre em Financeiro › Portadores antes de lançar pagamento em dinheiro.',
       );
 
+    const bancoOrigem = pago && forma && forma !== 'Dinheiro' ? bancoDaOrigem(bancoSel, bancoOutro) : null;
+    if (pago && forma && forma !== 'Dinheiro' && !bancoOrigem) return setErro('Diga de qual banco ou conta saiu o dinheiro.');
+
     setSalvando(true);
     try {
       const r = await fetch('/api/financeiro/recibo', {
@@ -165,7 +174,7 @@ export function ReciboForm({
           valor: valorNum,
           descricao: descricao.trim(),
           pago,
-          ...(pago ? { forma, dataPagamento, ...(forma === 'Dinheiro' ? { portadorId } : {}) } : { dataVencimento }),
+          ...(pago ? { forma, dataPagamento, ...(forma === 'Dinheiro' ? { portadorId } : { bancoOrigem }) } : { dataVencimento }),
           categoriaId: categoriaId || null,
           forcar,
         }),
@@ -352,6 +361,33 @@ export function ReciboForm({
                     ? 'A saída já entra no saldo de quem estava com o dinheiro.'
                     : 'Nenhum portador cadastrado nesta casa — cadastre em Financeiro › Portadores.'}
                 </span>
+              </label>
+            )}
+            {forma !== '' && forma !== 'Dinheiro' && (
+              <label className="block sm:col-span-2">
+                <span className={labelCls}>De qual conta saiu o dinheiro?</span>
+                <select
+                  className={`${inputCls} ${bancoSel ? '' : 'border-amber-400 bg-amber-50'}`}
+                  value={bancoSel}
+                  onChange={(e) => setBancoSel(e.target.value)}
+                >
+                  <option value="">— escolha —</option>
+                  {bancos.map((b) => (
+                    <option key={b} value={`banco:${b}`}>
+                      🏦 {b}
+                    </option>
+                  ))}
+                  <option value={ORIGEM_BANCO_OUTRO}>🏦 Outro banco (digitar)</option>
+                </select>
+                {bancoSel === ORIGEM_BANCO_OUTRO && (
+                  <input
+                    className={`mt-1 ${inputCls} ${bancoOutro.trim() ? '' : 'border-amber-400 bg-amber-50'}`}
+                    value={bancoOutro}
+                    onChange={(e) => setBancoOutro(e.target.value)}
+                    placeholder="Qual banco / conta?"
+                    maxLength={60}
+                  />
+                )}
               </label>
             )}
             <label className="block">

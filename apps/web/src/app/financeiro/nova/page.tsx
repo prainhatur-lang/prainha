@@ -14,6 +14,7 @@ import { fornecedoresParaLancar } from '@/lib/fornecedor-unico';
 import { AppHeader } from '@/components/app-header';
 import { NovaContaForm } from './form';
 import { portadoresDaFilial } from '@/lib/portador';
+import { bancosDaCasa } from '@/lib/bancos-da-casa';
 
 export const dynamic = 'force-dynamic';
 
@@ -100,6 +101,7 @@ export default async function NovaContaPage(props: {
             doc: f.cnpjOuCpf,
           }))}
           portadores={(await portadoresDaFilial(filial.id, true)).map((p) => ({ id: p.id, nome: p.nome }))}
+          bancos={await bancosDaCasa(filial.id)}
         />
       </div>
     </main>

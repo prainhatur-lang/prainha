@@ -14,6 +14,7 @@ import { hojeBr } from '@/lib/datas';
 import { consumerParado } from '@/lib/consumer-contas';
 import { BaixaForm } from './baixa-form';
 import { portadoresDaFilial } from '@/lib/portador';
+import { bancosDaCasa } from '@/lib/bancos-da-casa';
 import { AcoesConta } from './acoes-conta';
 import { ValorBoletoForm } from './valor-boleto-form';
 import { PagaOutraCasa } from './paga-outra-casa';
@@ -167,6 +168,7 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
 
   const consumer = conta.origem === 'CONSUMER';
   const portadores = (await portadoresDaFilial(conta.filialId, true)).map((p) => ({ id: p.id, nome: p.nome }));
+  const bancos = await bancosDaCasa(conta.filialId);
   // casa que saiu do Consumer: a conta CONSUMER se baixa aqui (lib/consumer-contas)
   const consumerAqui = consumer && (await consumerParado(conta.filialId));
   const pagaNoConsumer = consumer && !!conta.dataPagamento && baixas.length === 0;
@@ -457,7 +459,7 @@ export default async function ContaPagarPage(props: { params: Promise<{ id: stri
                   Conta que veio do PDV antigo. A loja não usa mais esse PDV, então a baixa é feita aqui.
                 </p>
               )}
-              <BaixaForm contaId={conta.id} saldo={saldo} vencimento={conta.dataVencimento} portadores={portadores} />
+              <BaixaForm contaId={conta.id} saldo={saldo} vencimento={conta.dataVencimento} portadores={portadores} bancos={bancos} />
             </>
           ) : (
             <p className="mt-3 rounded bg-emerald-50 px-3 py-2 text-[11px] text-emerald-700">

@@ -1,5 +1,6 @@
 'use client';
 
+import { ORIGEM_BANCO_OUTRO, bancoDaOrigem, erroDaOrigem, portadorDaOrigem } from '@/lib/origem-dinheiro';
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { EditPix } from '@/app/cadastros/fornecedores/edit-pix';
@@ -228,6 +229,7 @@ export function NovaContaForm({
   categorias,
   fornecedores,
   portadores = [],
+  bancos = [],
 }: {
   filiais: Opcao[];
   filialId: string;
@@ -235,6 +237,8 @@ export function NovaContaForm({
   fornecedores: Array<Opcao & { chavePix?: string | null; pixFavorecido?: string | null; doc?: string | null }>;
   /** portadores do dinheiro da casa — conta já paga em dinheiro sai de um deles */
   portadores?: Array<{ id: string; nome: string }>;
+  /** contas de banco da casa — conta já paga pelo banco diz de qual saiu */
+  bancos?: string[];
 }) {
   const router = useRouter();
   const hoje = hojeBr();
@@ -251,6 +255,7 @@ export function NovaContaForm({
   const [dataPagamento, setDataPagamento] = useState(hoje);
   // já paga: de onde saiu o dinheiro — '' | 'banco' | id do portador
   const [origem, setOrigem] = useState('');
+  const [bancoOutro, setBancoOutro] = useState('');
   const [observacao, setObservacao] = useState('');
   // Como se paga (dono 25/11/2026): informa no lançamento, não na hora de pagar.
   const [forma, setForma] = useState<'' | 'boleto' | 'pix'>('');
@@ -303,7 +308,8 @@ export function NovaContaForm({
               dataVencimento: venc,
               dataLancamento,
               dataPagamento: i === 0 && status === 'PAGA' ? dataPagamento : null,
-              portadorId: i === 0 && status === 'PAGA' && origem && origem !== 'banco' ? origem : null,
+              portadorId: i === 0 && status === 'PAGA' ? portadorDaOrigem(origem) : null,
+              bancoOrigem: i === 0 && status === 'PAGA' ? bancoDaOrigem(origem, bancoOutro) : null,
               fornecedorId: fornecedorId || null,
               categoriaId,
               observacao: observacao.trim() || null,
@@ -365,7 +371,8 @@ export function NovaContaForm({
       );
     }
     // Não sai dinheiro do nada (dono 25/11/2026): já paga diz de onde saiu.
-    if (status === 'PAGA' && !origem) return setErro('Diga de onde saiu o dinheiro: do banco ou de qual portador (dinheiro).');
+    const erroOrigem = status === 'PAGA' ? erroDaOrigem(origem, bancoOutro) : null;
+    if (erroOrigem) return setErro(erroOrigem);
     // Todo pagamento tem forma (dono 25/11/2026) — conta em aberto não sai sem.
     if (status === 'ABERTA' || repetir) {
       if (!forma) return setErro('Informe como se paga: Boleto ou Pix.');
@@ -388,7 +395,8 @@ export function NovaContaForm({
             dataVencimento,
             dataLancamento,
             dataPagamento: status === 'PAGA' ? dataPagamento : null,
-            portadorId: status === 'PAGA' && origem && origem !== 'banco' ? origem : null,
+            portadorId: status === 'PAGA' ? portadorDaOrigem(origem) : null,
+            bancoOrigem: status === 'PAGA' ? bancoDaOrigem(origem, bancoOutro) : null,
             fornecedorId: fornecedorId || null,
             categoriaId,
             observacao: observacao.trim() || null,
@@ -681,13 +689,27 @@ export function NovaContaForm({
                 className={`${inputCls} ${origem ? '' : 'border-amber-400 bg-amber-50'}`}
               >
                 <option value="">— escolha —</option>
-                <option value="banco">🏦 Banco (Pix, boleto, cartão)</option>
+                {bancos.map((b) => (
+                  <option key={`banco:${b}`} value={`banco:${b}`}>
+                    🏦 {b}
+                  </option>
+                ))}
+                <option value={ORIGEM_BANCO_OUTRO}>🏦 Outro banco (digitar)</option>
                 {portadores.map((p) => (
                   <option key={p.id} value={p.id}>
                     💵 Dinheiro — {p.nome}
                   </option>
                 ))}
               </select>
+              {origem === ORIGEM_BANCO_OUTRO && (
+                <input
+                  value={bancoOutro}
+                  onChange={(e) => setBancoOutro(e.target.value)}
+                  placeholder="Qual banco / conta?"
+                  maxLength={60}
+                  className={`mt-1 ${inputCls} ${bancoOutro.trim() ? '' : 'border-amber-400 bg-amber-50'}`}
+                />
+              )}
             </div>
           )}
         </div>
