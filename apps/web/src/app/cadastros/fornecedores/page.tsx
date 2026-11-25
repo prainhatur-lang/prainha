@@ -11,6 +11,7 @@ import { AppHeader } from '@/components/app-header';
 import { brl, formatFone, int, maskCnpj, pareceFixo } from '@/lib/format';
 import { EditPedidoMinimo } from './edit-pedido-minimo';
 import { EditPix } from './edit-pix';
+import { EditarFornecedor } from './editar-fornecedor';
 import { NovoFornecedor } from './novo-fornecedor';
 import { foneParaWhatsapp, origemDoFone } from '@/lib/vendedor-fone';
 import { fornecedoresDeOutrasCasas, outrasCasasDe } from '@/lib/fornecedor-unico';
@@ -84,6 +85,12 @@ export default async function FornecedoresPage(props: { searchParams: Promise<SP
       nome: schema.fornecedor.nome,
       razaoSocial: schema.fornecedor.razaoSocial,
       cnpjOuCpf: schema.fornecedor.cnpjOuCpf,
+      rgOuIe: schema.fornecedor.rgOuIe,
+      endereco: schema.fornecedor.endereco,
+      numero: schema.fornecedor.numero,
+      complemento: schema.fornecedor.complemento,
+      bairro: schema.fornecedor.bairro,
+      cep: schema.fornecedor.cep,
       cidade: schema.fornecedor.cidade,
       uf: schema.fornecedor.uf,
       email: schema.fornecedor.email,
@@ -255,6 +262,26 @@ export default async function FornecedoresPage(props: { searchParams: Promise<SP
                     <tr key={f.id} className="border-t border-slate-100">
                       <td className="px-4 py-2 font-medium text-slate-900">
                         {f.nome ?? '—'}
+                        <EditarFornecedor
+                          f={{
+                            id: f.id,
+                            nome: f.nome,
+                            razaoSocial: f.razaoSocial,
+                            cnpjOuCpf: f.cnpjOuCpf,
+                            rgOuIe: f.rgOuIe,
+                            endereco: f.endereco,
+                            numero: f.numero,
+                            complemento: f.complemento,
+                            bairro: f.bairro,
+                            cidade: f.cidade,
+                            uf: f.uf,
+                            cep: f.cep,
+                            email: f.email,
+                            fonePrincipal: f.fonePrincipal,
+                            chavePix: f.chavePix,
+                            pixFavorecido: f.pixFavorecido,
+                          }}
+                        />
                         {(tambemEm.get(f.id) ?? []).map((c) => (
                           <span
                             key={c}

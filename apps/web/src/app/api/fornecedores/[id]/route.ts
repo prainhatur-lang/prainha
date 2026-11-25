@@ -41,6 +41,18 @@ export async function PATCH(
     pixFavorecido?: string | null;
     /** Como recebe (23/11/2026): 'boleto' | 'pix' | null (indefinido). */
     formaPagamento?: 'boleto' | 'pix' | null;
+    /** Cadastro (tela Alterar fornecedor, 25/11/2026). */
+    razaoSocial?: string | null;
+    rgOuIe?: string | null;
+    endereco?: string | null;
+    numero?: string | null;
+    complemento?: string | null;
+    bairro?: string | null;
+    cidade?: string | null;
+    uf?: string | null;
+    cep?: string | null;
+    /** Só entra quando o cadastro ainda NÃO tem documento. */
+    cnpjOuCpf?: string | null;
   };
   try {
     body = (await req.json()) as typeof body;
@@ -83,6 +95,35 @@ export async function PATCH(
     updates.nome = body.nome.trim().slice(0, 200);
   }
 
+  // Dados de cadastro: endereço e afins (tela Alterar fornecedor).
+  const texto = (x: string | null | undefined, max: number) => x?.trim().slice(0, max) || null;
+  if ('razaoSocial' in body) updates.razaoSocial = texto(body.razaoSocial, 200);
+  if ('rgOuIe' in body) updates.rgOuIe = texto(body.rgOuIe, 30);
+  if ('endereco' in body) updates.endereco = texto(body.endereco, 300);
+  if ('numero' in body) updates.numero = texto(body.numero, 20);
+  if ('complemento' in body) updates.complemento = texto(body.complemento, 100);
+  if ('bairro' in body) updates.bairro = texto(body.bairro, 100);
+  if ('cidade' in body) updates.cidade = texto(body.cidade, 100);
+  if ('uf' in body) updates.uf = texto(body.uf, 2)?.toUpperCase() ?? null;
+  if ('cep' in body) updates.cep = texto(body.cep, 10);
+  // Documento: só preenche o que está vazio — trocar documento mudaria a
+  // conferência da chave Pix (anti-fraude) e o cadastro único entre casas.
+  if ('cnpjOuCpf' in body && body.cnpjOuCpf) {
+    const doc = body.cnpjOuCpf.replace(/\D/g, '');
+    if (doc.length !== 11 && doc.length !== 14) {
+      return NextResponse.json({ error: 'CNPJ/CPF inválido: precisa ter 11 ou 14 dígitos.' }, { status: 400 });
+    }
+    const [atualDoc] = await db
+      .select({ doc: schema.fornecedor.cnpjOuCpf })
+      .from(schema.fornecedor)
+      .where(eq(schema.fornecedor.id, id))
+      .limit(1);
+    if (atualDoc?.doc?.trim()) {
+      return NextResponse.json({ error: 'Este fornecedor já tem CNPJ/CPF — documento não se troca por aqui.' }, { status: 400 });
+    }
+    updates.cnpjOuCpf = doc;
+  }
+
   // Como o fornecedor recebe: chave Pix e quem recebe (quando o Pix cai no nome de outra pessoa)
   if ('chavePix' in body) updates.chavePix = body.chavePix?.trim().slice(0, 100) || null;
   if ('pixFavorecido' in body) updates.pixFavorecido = body.pixFavorecido?.trim().slice(0, 200) || null;
@@ -104,7 +145,7 @@ export async function PATCH(
       .where(eq(schema.fornecedor.id, id))
       .limit(1);
     const favorecido = 'pixFavorecido' in updates ? updates.pixFavorecido : atual?.favorecido;
-    const c = conferirChavePix({ chave: updates.chavePix, docFornecedor: atual?.doc, favorecido });
+    const c = conferirChavePix({ chave: updates.chavePix, docFornecedor: updates.cnpjOuCpf ?? atual?.doc, favorecido });
     if (c?.nivel === 'diverge') {
       return NextResponse.json(
         {
