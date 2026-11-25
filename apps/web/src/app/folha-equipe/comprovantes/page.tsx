@@ -9,7 +9,7 @@ import { and, desc, eq, inArray, isNull, or, sql } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { exigirPermPage } from '@/lib/exigir-perm';
 import { filiaisDoUsuario } from '@/lib/filiais';
-import { diasAtrasBr } from '@/lib/datas';
+import { dateToBrYmd, diasAtrasBr } from '@/lib/datas';
 import { PERM_LOTERICA, pessoasUnicas, sugestoesPorValor } from '@/lib/comprovante-loterica';
 import { AcoesComprovante, BaixarCasados, EnviarComprovantes, EscolherCasa, EscolherConta } from './enviar';
 
@@ -154,6 +154,9 @@ export default async function ComprovantesLotericaPage() {
   const totalAberto = gruposAbertos.reduce((s, g) => s + g.total, 0);
   const qtdAberto = gruposAbertos.reduce((s, g) => s + g.contas.length, 0);
   const totalCasados = casados.reduce((s, c) => s + Number(c.valor ?? 0), 0);
+  const maisAntigoCasado = casados.reduce<Date | null>((m, c) => (!m || c.enviadoEm < m ? c.enviadoEm : m), null);
+  const casadosDesde = maisAntigoCasado ? dmy(dateToBrYmd(maisAntigoCasado)) : null;
+  const casadosComFalha = casados.filter((c) => (c.erro ?? '').startsWith('não baixou')).length;
 
   // Controle dos borderôs (pedido do dono 23/11/2026): nº do borderô, quantas
   // contas foram pra pagamento e quantas já estão pagas — pra saber se o
@@ -213,6 +216,25 @@ export default async function ComprovantesLotericaPage() {
         </p>
 
         <EnviarComprovantes casas={casas} />
+
+        {/* Foto chegou e casou, mas a conta segue em aberto: avisa em cima, com
+            o mesmo botão verde (o de baixo continua). 33 comprovantes de
+            23/11/2026 ficaram dois dias assim sem ninguém ver — dono 25/11/2026. */}
+        {casados.length > 0 ? (
+          <div className="mt-6 rounded-lg border border-amber-300 bg-amber-50 p-4">
+            <p className="text-sm font-semibold text-amber-900">
+              ⚠ {casados.length} comprovante(s) já enviado(s) e ainda SEM BAIXA — {brl(totalCasados)}
+            </p>
+            <p className="mt-1 text-sm text-amber-900">
+              A foto chegou e achou a conta, mas a conta continua em aberto até clicar no botão verde.
+              {casadosDesde ? ` O mais antigo foi enviado em ${casadosDesde}.` : ''}
+              {casadosComFalha > 0 ? ` ${casadosComFalha} já teve tentativa de baixa que falhou — o motivo está na lista abaixo.` : ''}
+            </p>
+            <div className="mt-3">
+              <BaixarCasados ids={casados.map((c) => c.id)} total={totalCasados} />
+            </div>
+          </div>
+        ) : null}
 
         {controle.length > 0 ? (
           <div className="mt-6 overflow-x-auto rounded-lg border border-slate-200 bg-white">
