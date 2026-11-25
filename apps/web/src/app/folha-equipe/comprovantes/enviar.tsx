@@ -91,7 +91,9 @@ export function EnviarComprovantes({ casas }: { casas: Array<{ id: string; nome:
             casa: casa || undefined,
           });
           const quem = `${String(r.nome ?? '?')} — ${brl(r.valor)}`;
-          if (r.status === 'CASADO') marcar(i, `${quem}: achei a conta ✓`);
+          if (r.status === 'BAIXADO') marcar(i, `${quem}: conta baixada ✓`);
+          else if (r.status === 'CASADO')
+            marcar(i, `${quem}: achei a conta — falta a baixa no botão verde${r.erro ? ` (${String(r.erro)})` : ''}`, !!r.erro);
           else if (r.status === 'DUPLICADO') marcar(i, `${quem}: ${String(r.erro)}`, true);
           else if (r.status === 'SEM_CONTA') marcar(i, `${quem}: ${String(r.erro)}`, true);
           else marcar(i, `guardada, mas não li: ${String(r.erro ?? 'erro')}`, true);

@@ -212,7 +212,8 @@ export default async function ComprovantesLotericaPage() {
           Suba as fotos dos comprovantes de depósito ou Pix feitos pra equipe (lotérica, banco ou Pix). Cada uma é
           lida (nome, valor, data) e casada com a conta em aberto da pessoa — 10%/taxa de serviço, comissão,
           bonificação/gratificação, vale-transporte ou rescisão; uma conta, ou a soma das contas dela na mesma folha.
-          A baixa só acontece no botão verde, na data do depósito. As fotos ficam guardadas.
+          Achou a conta sem ressalva, a baixa já sai na hora, na data do depósito; com ressalva (valor corrigido, casado
+          na mão) fica esperando o botão verde. As fotos ficam guardadas.
         </p>
 
         <EnviarComprovantes casas={casas} />

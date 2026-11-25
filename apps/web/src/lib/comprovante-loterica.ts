@@ -20,6 +20,7 @@ import { db, schema } from '@concilia/db';
 import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { createAdminClient } from '@/lib/supabase/server';
 import { filiaisDoUsuario } from '@/lib/filiais';
+import { hojeBr } from '@/lib/datas';
 
 export const BUCKET_LOTERICA = 'extratos-fechamento';
 export const PERM_LOTERICA = 'folha_equipe.read';
@@ -1081,6 +1082,38 @@ export async function baixarComprovante(comprovanteId: string, userId: string, f
       .where(eq(schema.comprovanteLoterica.id, c.id));
     return r.length;
   });
+}
+
+/** Baixa automática (dono 25/11/2026: 'Sim, baixa automática'): o comprovante
+ *  que achou a conta SEM ressalva já dá a baixa na hora — 33 de 23/11 ficaram
+ *  dois dias casados esperando o botão. Casou com aviso (valor corrigido, pela
+ *  relação do borderô) ou na mão → continua esperando o botão verde, como antes.
+ *  Não lança: se a baixa falhar, o motivo fica no comprovante e ele segue casado. */
+export async function baixarSeCasouLimpo(
+  comprovanteId: string,
+  userId: string,
+  r: ResultadoComprovante,
+): Promise<ResultadoComprovante> {
+  if (r.status !== 'CASADO') return r;
+  const [c] = await db
+    .select({ erro: schema.comprovanteLoterica.erro })
+    .from(schema.comprovanteLoterica)
+    .where(eq(schema.comprovanteLoterica.id, comprovanteId))
+    .limit(1);
+  if (!c || c.erro) return r; // tem ressalva: alguém confere antes
+  try {
+    await baixarComprovante(comprovanteId, userId, await filialIdsDoUsuario(userId));
+    return { ...r, status: 'BAIXADO' };
+  } catch (e) {
+    if (!(e instanceof RecusaComprovante)) console.error('[comprovantes/baixa-automatica]', comprovanteId, e);
+    const erro = `não baixou em ${hojeBr().split('-').reverse().join('/')}: ${(e as Error).message}`.slice(0, 500);
+    await db
+      .update(schema.comprovanteLoterica)
+      .set({ erro })
+      .where(and(eq(schema.comprovanteLoterica.id, comprovanteId), eq(schema.comprovanteLoterica.status, 'CASADO')))
+      .catch(() => undefined);
+    return { ...r, erro };
+  }
 }
 
 /** Desfaz a baixa: as contas voltam a ficar em aberto (só as que este

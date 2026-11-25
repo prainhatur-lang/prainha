@@ -1,13 +1,13 @@
 // POST /api/folha-equipe/comprovantes — passo 2 do envio: registra a foto que
 // o navegador acabou de mandar pro bucket (passo 1 em ./upload-url), LÊ o
-// comprovante e casa com a(s) conta(s) FOLHA em aberto. Não dá baixa: a baixa
-// é no botão (./baixar). A foto fica guardada mesmo se a leitura falhar.
+// comprovante e casa com a(s) conta(s) FOLHA em aberto. Casou sem ressalva →
+// já dá a baixa (dono 25/11/2026); com ressalva, a baixa é no botão (./baixar). A foto fica guardada mesmo se a leitura falhar.
 
 import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { createAdminClient } from '@/lib/supabase/server';
 import { exigirPermApi } from '@/lib/exigir-perm';
-import { BUCKET_LOTERICA, PERM_LOTERICA, filialIdsDoUsuario, lerECasar, pastaLoterica } from '@/lib/comprovante-loterica';
+import { BUCKET_LOTERICA, PERM_LOTERICA, baixarSeCasouLimpo, filialIdsDoUsuario, lerECasar, pastaLoterica } from '@/lib/comprovante-loterica';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -62,6 +62,6 @@ export async function POST(req: Request) {
     .returning({ id: schema.comprovanteLoterica.id });
   if (!novo) return NextResponse.json({ error: 'essa foto já foi registrada' }, { status: 409 });
 
-  const r = await lerECasar(novo.id, auth.user.id);
+  const r = await baixarSeCasouLimpo(novo.id, auth.user.id, await lerECasar(novo.id, auth.user.id));
   return NextResponse.json({ ok: true, id: novo.id, ...r });
 }

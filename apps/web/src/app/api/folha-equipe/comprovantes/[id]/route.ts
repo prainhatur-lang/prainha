@@ -17,6 +17,7 @@ import {
   BUCKET_LOTERICA,
   PERM_LOTERICA,
   RecusaComprovante,
+  baixarSeCasouLimpo,
   casarEGravar,
   casarManual,
   desfazerBaixa,
@@ -79,7 +80,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       throw e;
     }
   }
-  const r = body?.acao === 'ler' ? await lerECasar(id, auth.user.id) : await casarEGravar(id, auth.user.id);
+  const r0 = body?.acao === 'ler' ? await lerECasar(id, auth.user.id) : await casarEGravar(id, auth.user.id);
+  const r = await baixarSeCasouLimpo(id, auth.user.id, r0);
   return NextResponse.json({ ok: true, ...r });
 }
 
