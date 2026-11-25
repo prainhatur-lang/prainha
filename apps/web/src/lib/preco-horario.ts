@@ -25,6 +25,10 @@ export type RegraPreco = {
   horaInicio: string | null;
   horaFim: string | null;
   excetoFeriados: boolean;
+  /** Vigência (25/11/2026, Black Friday): 'YYYY-MM-DD' ou null = sem data. Sem o
+   *  campo (undefined) ao salvar = mantém a vigência que a regra já tinha. */
+  dataInicio?: string | null;
+  dataFim?: string | null;
 };
 
 export type RegraPrecoSalva = RegraPreco & {
@@ -46,6 +50,8 @@ type Linha = {
   hora_inicio: string | null;
   hora_fim: string | null;
   exceto_feriados: boolean;
+  data_inicio: string | null;
+  data_fim: string | null;
   estado_aplicado: string | null;
   aplicado_em: string | null;
   atualizado_por: string | null;
@@ -64,6 +70,8 @@ function deLinha(l: Linha): RegraPreco & { estadoAplicado: 'dentro' | 'fora' | n
     horaInicio: l.hora_inicio,
     horaFim: l.hora_fim,
     excetoFeriados: l.exceto_feriados,
+    dataInicio: l.data_inicio,
+    dataFim: l.data_fim,
     estadoAplicado: l.estado_aplicado === 'dentro' || l.estado_aplicado === 'fora' ? l.estado_aplicado : null,
   };
 }
@@ -73,7 +81,7 @@ const SELECT = sql.raw(`
          preco_normal::text AS preco_normal, preco_horario::text AS preco_horario,
          array_to_string(dias_semana, ',') AS dias,
          to_char(hora_inicio, 'HH24:MI') AS hora_inicio, to_char(hora_fim, 'HH24:MI') AS hora_fim,
-         exceto_feriados, estado_aplicado,
+         exceto_feriados, data_inicio::text AS data_inicio, data_fim::text AS data_fim, estado_aplicado,
          to_char(aplicado_em AT TIME ZONE 'America/Sao_Paulo', 'DD/MM HH24:MI') AS aplicado_em,
          atualizado_por
     FROM preco_horario`);
@@ -89,7 +97,7 @@ export async function feriadosPerto(): Promise<string[]> {
 
 /** A regra vale agora? Reaproveita a conta do horário dos combos. */
 export function precoHorarioValeAgora(
-  r: Pick<RegraPreco, 'ativa' | 'dias' | 'horaInicio' | 'horaFim' | 'excetoFeriados'>,
+  r: Pick<RegraPreco, 'ativa' | 'dias' | 'horaInicio' | 'horaFim' | 'excetoFeriados'> & Partial<Pick<RegraPreco, 'dataInicio' | 'dataFim'>>,
   feriados: string[],
   ms = Date.now(),
 ): boolean {
@@ -99,8 +107,8 @@ export function precoHorarioValeAgora(
     dias: r.dias,
     horaInicio: r.horaInicio,
     horaFim: r.horaFim,
-    dataInicio: null,
-    dataFim: null,
+    dataInicio: r.dataInicio ?? null,
+    dataFim: r.dataFim ?? null,
     datasFora: r.excetoFeriados ? feriados : [],
     datasExtra: [],
   };
@@ -160,16 +168,20 @@ export async function listarPrecosHorario(filialId: string): Promise<RegraPrecoS
 /** Grava a regra e aplica na hora (sem esperar o cron). */
 export async function salvarPrecoHorario(filialId: string, r: RegraPreco, por: string | null) {
   const arr = `{${r.dias.join(',')}}`;
+  // Vigência: a tela não manda as datas → a regra fica com as que já tinha.
+  const manterDatas = r.dataInicio === undefined && r.dataFim === undefined;
   await db.execute(sql`
     INSERT INTO preco_horario (filial_id, codigo_variante_externo, ativa, preco_normal, preco_horario,
-                               dias_semana, hora_inicio, hora_fim, exceto_feriados, atualizado_por, atualizado_em)
+                               dias_semana, hora_inicio, hora_fim, exceto_feriados, data_inicio, data_fim, atualizado_por, atualizado_em)
     VALUES (${filialId}, ${r.codigo}, ${r.ativa}, ${r.precoNormal}, ${r.precoHorario}, ${arr}::smallint[],
             NULLIF(${r.horaInicio ?? ''}, '')::time, NULLIF(${r.horaFim ?? ''}, '')::time,
-            ${r.excetoFeriados}, ${por}, now())
+            ${r.excetoFeriados}, NULLIF(${r.dataInicio ?? ''}, '')::date, NULLIF(${r.dataFim ?? ''}, '')::date, ${por}, now())
     ON CONFLICT (filial_id, codigo_variante_externo) DO UPDATE SET
       ativa = EXCLUDED.ativa, preco_normal = EXCLUDED.preco_normal, preco_horario = EXCLUDED.preco_horario,
       dias_semana = EXCLUDED.dias_semana, hora_inicio = EXCLUDED.hora_inicio, hora_fim = EXCLUDED.hora_fim,
       exceto_feriados = EXCLUDED.exceto_feriados,
+      data_inicio = CASE WHEN ${manterDatas}::boolean THEN preco_horario.data_inicio ELSE EXCLUDED.data_inicio END,
+      data_fim = CASE WHEN ${manterDatas}::boolean THEN preco_horario.data_fim ELSE EXCLUDED.data_fim END,
       atualizado_por = EXCLUDED.atualizado_por, atualizado_em = now()`);
   if (r.ativa) {
     try {

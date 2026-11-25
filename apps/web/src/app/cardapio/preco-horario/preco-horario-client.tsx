@@ -63,6 +63,9 @@ export function PrecoHorarioClient(props: { filialId: string; regras: RegraPreco
                   · {r.dias.length === 0 || r.dias.length === 7 ? 'todos os dias' : r.dias.map((d) => DIAS[d]).join(', ')} ·{' '}
                   {r.horaInicio}–{r.horaFim}
                   {r.excetoFeriados ? ' · exceto feriados' : ''}
+                  {r.dataInicio || r.dataFim
+                    ? ` · só ${r.dataInicio ? `de ${r.dataInicio.slice(8, 10)}/${r.dataInicio.slice(5, 7)}` : ''}${r.dataFim ? ` até ${r.dataFim.slice(8, 10)}/${r.dataFim.slice(5, 7)}` : ''}`
+                    : ''}
                 </div>
                 <div className="mt-1 text-xs text-slate-500">
                   {!r.ativa ? (

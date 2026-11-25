@@ -338,6 +338,9 @@ export const precoHorario = pgTable(
     horaInicio: time('hora_inicio'),
     horaFim: time('hora_fim'),
     excetoFeriados: boolean('exceto_feriados').notNull().default(true),
+    /** Vigência (Black Friday 26–27/11/2026): fora dessas datas a regra não vale. null = sem data. */
+    dataInicio: date('data_inicio'),
+    dataFim: date('data_fim'),
     estadoAplicado: text('estado_aplicado'),
     aplicadoEm: timestamp('aplicado_em', { withTimezone: true }),
     atualizadoPor: text('atualizado_por'),
