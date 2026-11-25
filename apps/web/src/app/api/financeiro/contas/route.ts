@@ -44,6 +44,8 @@ const Body = z.object({
   fornecedorId: z.string().uuid().nullable().optional(),
   categoriaId: z.string().uuid().nullable().optional(),
   observacao: z.string().trim().max(1000).nullable().optional(),
+  /** Como se paga (25/11/2026): informado no lançamento, não na hora de pagar. */
+  formaPagamento: z.enum(['boleto', 'pix']).nullable().optional(),
   forcar: z.boolean().optional(),
   forcarDuplicada: z.boolean().optional(),
   // Lançamento repetido mês a mês (04/11/2026): cada mês é uma conta, com n/N.
@@ -164,6 +166,7 @@ export async function POST(req: Request) {
       valorPago: paga ? b.valor.toFixed(2) : null,
       competencia: b.dataVencimento.slice(0, 7),
       ...(b.parcela && b.totalParcelas ? { parcela: b.parcela, totalParcelas: b.totalParcelas } : {}),
+      ...(b.formaPagamento ? { formaPagamento: b.formaPagamento } : {}),
       origem: 'MANUAL',
       criadoPor: user.id,
       criadoEm: new Date(),

@@ -246,6 +246,8 @@ export function NovaContaForm({
   const [status, setStatus] = useState<'ABERTA' | 'PAGA'>('ABERTA');
   const [dataPagamento, setDataPagamento] = useState(hoje);
   const [observacao, setObservacao] = useState('');
+  // Como se paga (dono 25/11/2026): informa no lançamento, não na hora de pagar.
+  const [forma, setForma] = useState<'' | 'boleto' | 'pix'>('');
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   // Repetir todo mês (04/11/2026): aluguel, pró-labore... um lançamento, vários vencimentos.
@@ -297,6 +299,7 @@ export function NovaContaForm({
               fornecedorId: fornecedorId || null,
               categoriaId,
               observacao: observacao.trim() || null,
+              formaPagamento: forma || null,
               parcela: i + 1,
               totalParcelas: total,
               ...(forcarCasa ? { forcar: true } : {}),
@@ -372,6 +375,7 @@ export function NovaContaForm({
             fornecedorId: fornecedorId || null,
             categoriaId,
             observacao: observacao.trim() || null,
+            formaPagamento: forma || null,
             ...(forcar ? { forcar: true } : {}),
             ...(forcarDuplicada ? { forcarDuplicada: true } : {}),
           }),
@@ -499,6 +503,35 @@ export function NovaContaForm({
               onPick={(f) => setFornecedorId(f?.id ?? '')}
               filialIdCadastro={filialId}
             />
+          </div>
+          <div className="md:col-span-2">
+            <label className={labelCls}>Como se paga?</label>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              {([
+                ['boleto', '🧾 Boleto'],
+                ['pix', '💠 Pix'],
+              ] as const).map(([v, rot]) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setForma(forma === v ? '' : v)}
+                  className={`rounded-md border px-3 py-1.5 text-xs font-medium ${
+                    forma === v
+                      ? 'border-slate-900 bg-slate-900 text-white'
+                      : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  {rot}
+                </button>
+              ))}
+              <span className={`text-[11px] ${forma ? 'text-slate-500' : 'text-amber-700'}`}>
+                {forma === 'boleto'
+                  ? 'paga pelo boleto — não sai Pix por esta conta'
+                  : forma === 'pix'
+                    ? 'sai na chave Pix autorizada no cadastro do fornecedor'
+                    : 'informe aqui, no lançamento — não na hora de pagar'}
+              </span>
+            </div>
           </div>
           <div>
             <label className={labelCls}>Valor (R$) *</label>
