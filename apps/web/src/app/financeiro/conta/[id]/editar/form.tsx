@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { parseValorBr } from '@/lib/format';
+import { EditPix } from '@/app/cadastros/fornecedores/edit-pix';
 import { FornecedorPicker, type CategoriaPai, type Opcao } from '../../../nova/form';
 
 const inputCls = 'mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm';
@@ -17,6 +18,7 @@ export interface ValoresConta {
   subId: string;
   fornecedorId: string;
   fornecedorNome: string;
+  forma: '' | 'boleto' | 'pix';
   observacao: string;
 }
 
@@ -24,11 +26,14 @@ export function EditarContaForm({
   contaId,
   categorias,
   fornecedores,
+  aberta,
   inicial,
 }: {
   contaId: string;
   categorias: CategoriaPai[];
-  fornecedores: Opcao[];
+  fornecedores: Array<Opcao & { chavePix?: string | null; pixFavorecido?: string | null; doc?: string | null }>;
+  /** Conta ainda em aberto: forma de pagamento obrigatória. */
+  aberta?: boolean;
   inicial: ValoresConta;
 }) {
   const router = useRouter();
@@ -41,6 +46,9 @@ export function EditarContaForm({
   const [dataLancamento, setDataLancamento] = useState(inicial.dataLancamento);
   const [dataVencimento, setDataVencimento] = useState(inicial.dataVencimento);
   const [observacao, setObservacao] = useState(inicial.observacao);
+  // Como se paga (dono 25/11/2026): toda conta em aberto tem forma.
+  const [forma, setForma] = useState<'' | 'boleto' | 'pix'>(inicial.forma);
+  const fornPix = fornecedores.find((f) => f.id === fornecedorId) ?? null;
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
 
@@ -56,6 +64,11 @@ export function EditarContaForm({
     if (!fornecedorId && fornecedorTexto.trim()) {
       return setErro('Escolha o fornecedor na lista — ou apague o campo pra deixar sem fornecedor.');
     }
+    if (aberta && !forma) return setErro('Informe como se paga: Boleto ou Pix.');
+    if (forma === 'pix' && !fornecedorId) return setErro('Pix: escolha o fornecedor — a chave Pix fica no cadastro dele.');
+    if (forma === 'pix' && !fornPix?.chavePix) {
+      return setErro('Pix: informe a chave Pix do fornecedor (botão logo abaixo de "Como se paga?").');
+    }
     setSalvando(true);
     try {
       const r = await fetch(`/api/financeiro/contas/${contaId}`, {
@@ -69,6 +82,7 @@ export function EditarContaForm({
           fornecedorId: fornecedorId || null,
           categoriaId,
           observacao: observacao.trim() || null,
+          ...(forma ? { formaPagamento: forma } : {}),
         }),
       });
       const d = await r.json().catch(() => ({}));
@@ -176,6 +190,82 @@ export function EditarContaForm({
               required
               className={inputCls}
             />
+          </div>
+
+          <div className="rounded-lg border-2 border-amber-300 bg-amber-50 p-3 md:col-span-2">
+            <label className="block text-xs font-semibold text-amber-900">Como se paga?</label>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {(
+                [
+                  ['boleto', '🧾 Boleto'],
+                  ['pix', '⚡ Pix'],
+                ] as const
+              ).map(([v, rot]) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setForma(v)}
+                  className={`rounded-lg border-2 px-5 py-2.5 text-sm font-semibold ${
+                    forma === v
+                      ? 'border-emerald-600 bg-emerald-600 text-white'
+                      : 'border-slate-300 bg-white text-slate-700 hover:border-emerald-500'
+                  }`}
+                >
+                  {rot}
+                </button>
+              ))}
+              {!forma && (
+                <span className="text-xs text-amber-800">
+                  {aberta ? 'obrigatório — escolha um dos dois' : 'já paga: opcional'}
+                </span>
+              )}
+            </div>
+            {forma === 'boleto' && (
+              <p className="mt-2 text-xs text-slate-700">
+                Prazo do boleto: vence em{' '}
+                <span className="font-semibold">{dataVencimento.split('-').reverse().join('/')}</span> — confira o campo
+                Vencimento.
+              </p>
+            )}
+            {forma === 'pix' && (
+              <div className="mt-2 text-xs text-slate-700">
+                {!fornecedorId ? (
+                  <p className="font-medium text-amber-800">Escolha o fornecedor acima — a chave Pix fica no cadastro dele.</p>
+                ) : fornPix?.chavePix ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span>
+                      Paga na chave{' '}
+                      <span className="rounded bg-emerald-50 px-1.5 py-0.5 font-mono font-semibold text-emerald-900">
+                        {fornPix.chavePix}
+                      </span>
+                      {fornPix.pixFavorecido ? <> — recebe: {fornPix.pixFavorecido}</> : null}
+                    </span>
+                    <span className="text-[11px] text-slate-500">chave errada?</span>
+                    <EditPix
+                      fornecedorId={fornecedorId}
+                      chaveAtual={fornPix.chavePix}
+                      favorecidoAtual={fornPix.pixFavorecido ?? null}
+                      docFornecedor={fornPix.doc ?? null}
+                    />
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium text-amber-800">
+                      Este fornecedor não tem chave Pix. Informe a chave que ele passou:
+                    </span>
+                    <EditPix
+                      fornecedorId={fornecedorId}
+                      chaveAtual={null}
+                      favorecidoAtual={fornPix?.pixFavorecido ?? null}
+                      docFornecedor={fornPix?.doc ?? null}
+                    />
+                  </div>
+                )}
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Data do Pix: {dataVencimento.split('-').reverse().join('/')} (campo Vencimento).
+                </p>
+              </div>
+            )}
           </div>
 
           <div className="md:col-span-2">

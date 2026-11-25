@@ -27,6 +27,8 @@ const Body = z.object({
   fornecedorId: z.string().uuid().nullable().optional(),
   categoriaId: z.string().uuid().nullable().optional(),
   observacao: z.string().trim().max(1000).nullable().optional(),
+  // Como se paga (dono 25/11/2026). Ausente = não mexe na forma da conta.
+  formaPagamento: z.enum(['boleto', 'pix']).optional(),
 });
 
 async function carregarContaManual(id: string, userId: string, paraExcluir = false) {
@@ -135,6 +137,24 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     }
   }
 
+  // Pix só sai na chave do cadastro: sem fornecedor ou sem chave, não marca Pix.
+  if (b.formaPagamento === 'pix') {
+    if (!fornecedorId) {
+      return NextResponse.json({ error: 'Pix: escolha o fornecedor — a chave Pix fica no cadastro dele.' }, { status: 400 });
+    }
+    const [fp] = await db
+      .select({ chavePix: schema.fornecedor.chavePix })
+      .from(schema.fornecedor)
+      .where(eq(schema.fornecedor.id, fornecedorId))
+      .limit(1);
+    if (!fp?.chavePix?.trim()) {
+      return NextResponse.json(
+        { error: 'Pix: o fornecedor não tem chave Pix no cadastro. Informe a chave que ele passou e salve de novo.' },
+        { status: 400 },
+      );
+    }
+  }
+
   // Valor não pode ficar menor que o já pago (senão o histórico vira mentira)
   const baixas = await db
     .select({
@@ -165,6 +185,7 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
       fornecedorId,
       categoriaId: b.categoriaId ?? null,
       observacao: b.observacao ?? null,
+      ...(b.formaPagamento ? { formaPagamento: b.formaPagamento } : {}),
       ...(b.dataLancamento
         ? { dataCadastro: new Date(`${b.dataLancamento}T12:00:00-03:00`) }
         : {}),

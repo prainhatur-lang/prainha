@@ -2,7 +2,7 @@ import { redirect } from 'next/navigation';
 import { exigirPerm } from '@/lib/exigir-perm';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/server';
-import { filiaisDoUsuario } from '@/lib/filiais';
+import { filiaisDoFinanceiro } from '@/lib/eb/acesso-financeiro';
 import { escolherFilial } from '@/lib/filial-ativa';
 import { db, schema } from '@concilia/db';
 import { and, asc, count, desc, eq, ilike, isNull, sql, sum } from 'drizzle-orm';
@@ -32,7 +32,9 @@ export default async function FornecedoresPage(props: { searchParams: Promise<SP
   if (!user) redirect('/login');
    await exigirPerm(user.id, 'fornecedor.read');
 
-  const filiais = await filiaisDoUsuario(user.id);
+  // Casas do usuário + E.B. e Lelis no fim, só pro Admin (dono 25/11/2026: sem
+  // isso não havia onde informar a chave Pix de fornecedor da Lelis).
+  const filiais = await filiaisDoFinanceiro(user.id);
   const sp = await props.searchParams;
   const filialSelecionada =
     await escolherFilial(filiais, sp.filialId);

@@ -621,7 +621,10 @@ export function GrupoPix({
           {grupo.fornecedorId && podeEditarFornecedor && (
             <div className="mt-1 text-[11px] text-slate-500">
               Forma ou chave errada? Corrija na entrada da nota/pedido ou no{' '}
-              <Link href="/cadastros/fornecedores" className="underline hover:text-slate-700">
+              <Link
+                href={`/cadastros/fornecedores?${filialId ? `filialId=${filialId}&` : ''}q=${encodeURIComponent(grupo.nome)}`}
+                className="underline hover:text-slate-700"
+              >
                 cadastro do fornecedor
               </Link>
               .

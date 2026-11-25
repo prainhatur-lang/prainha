@@ -104,6 +104,20 @@ export default async function EditarContaPage(props: { params: Promise<{ id: str
     ? fornecedores.find((f) => f.id === conta.fornecedorId)
     : undefined;
 
+  // Chave Pix de cada fornecedor: "Como se paga?" mostra (ou pede) a chave aqui.
+  const idsForn = fornecedores.map((f) => f.id);
+  const comChave = idsForn.length
+    ? await db
+        .select({
+          id: schema.fornecedor.id,
+          chavePix: schema.fornecedor.chavePix,
+          pixFavorecido: schema.fornecedor.pixFavorecido,
+        })
+        .from(schema.fornecedor)
+        .where(inArray(schema.fornecedor.id, idsForn))
+    : [];
+  const pixPorId = new Map(comChave.map((f) => [f.id, f]));
+
   const dataLancamento = conta.dataCadastro
     ? new Date(conta.dataCadastro).toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' })
     : '';
@@ -123,7 +137,14 @@ export default async function EditarContaPage(props: { params: Promise<{ id: str
         <EditarContaForm
           contaId={conta.id}
           categorias={pais}
-          fornecedores={fornecedores.map((f) => ({ id: f.id, nome: f.nome ?? '(sem nome)' }))}
+          fornecedores={fornecedores.map((f) => ({
+            id: f.id,
+            nome: f.nome ?? '(sem nome)',
+            chavePix: pixPorId.get(f.id)?.chavePix?.trim() || null,
+            pixFavorecido: pixPorId.get(f.id)?.pixFavorecido ?? null,
+            doc: f.cnpjOuCpf,
+          }))}
+          aberta={!conta.dataPagamento}
           inicial={{
             descricao: conta.descricao ?? '',
             valor: Number(conta.valor).toFixed(2).replace('.', ','),
@@ -134,6 +155,7 @@ export default async function EditarContaPage(props: { params: Promise<{ id: str
             fornecedorId: fornecedorAtual?.id ?? '',
             fornecedorNome: fornecedorAtual?.nome ?? '',
             observacao: conta.observacao ?? '',
+            forma: conta.formaPagamento === 'boleto' || conta.formaPagamento === 'pix' ? conta.formaPagamento : '',
           }}
         />
       </div>
