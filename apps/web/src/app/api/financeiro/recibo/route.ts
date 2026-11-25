@@ -7,7 +7,8 @@
 // cadastra na hora (fornecedor novo só entra com documento que confere).
 //
 // Body: { filialId, nome, documento, telefone?, valor, descricao,
-//         pago, forma?, dataPagamento?, dataVencimento?, categoriaId?, forcar? }
+//         pago, forma?, portadorId? (obrigatório se forma = Dinheiro),
+//         dataPagamento?, dataVencimento?, categoriaId?, forcar? }
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -19,6 +20,7 @@ import { hojeBr } from '@/lib/datas';
 import { validarDocumento } from '@/lib/nfce/documento';
 import { resolverFornecedorParaNota } from '@/lib/match-fornecedor';
 import { FORMAS_RECIBO, REF_RECIBO, obsBaixaRecibo } from '@/lib/recibo-avulso';
+import { lancarPagamentoDoPortador, portadorAtivoDaCasa } from '@/lib/portador';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,6 +34,8 @@ const Body = z.object({
   descricao: z.string().trim().min(2, 'diga a que se refere').max(400),
   pago: z.boolean(),
   forma: z.enum(FORMAS_RECIBO).optional(),
+  // Dinheiro tem que ter origem (25/11/2026): de qual portador saiu.
+  portadorId: z.string().uuid().nullable().optional(),
   dataPagamento: z.string().regex(YMD).optional(),
   dataVencimento: z.string().regex(YMD).optional(),
   categoriaId: z.string().uuid().nullable().optional(),
@@ -61,6 +65,18 @@ export async function POST(req: Request) {
   const doc = validarDocumento(b.documento);
   if (!doc) return NextResponse.json({ error: 'CPF/CNPJ não confere — revise os números.' }, { status: 400 });
   if (b.pago && !b.forma) return NextResponse.json({ error: 'Diga como foi pago (dinheiro, Pix...).' }, { status: 400 });
+
+  // Não sai dinheiro do nada (dono 25/11/2026): pago em dinheiro diz de qual
+  // portador saiu (Cofre, Elison, Marta) — e a saída já entra no saldo dele.
+  const emDinheiro = b.pago && b.forma === 'Dinheiro';
+  if (emDinheiro && !b.portadorId)
+    return NextResponse.json(
+      { error: 'Pago em dinheiro: diga de onde saiu (Cofre ou quem estava com o dinheiro).' },
+      { status: 400 },
+    );
+  const portador = emDinheiro ? await portadorAtivoDaCasa(b.filialId, b.portadorId!) : null;
+  if (emDinheiro && !portador)
+    return NextResponse.json({ error: 'portador do dinheiro não encontrado nesta casa' }, { status: 400 });
 
   if (b.categoriaId) {
     const [cat] = await db
@@ -151,14 +167,25 @@ export async function POST(req: Request) {
   if (!conta) return NextResponse.json({ error: 'não consegui lançar a conta' }, { status: 500 });
 
   if (b.pago) {
-    await db.insert(schema.contaPagarBaixa).values({
+    const [baixa] = await db.insert(schema.contaPagarBaixa).values({
       filialId: b.filialId,
       contaPagarId: conta.id,
       data: dataPagamento!,
       valor: b.valor.toFixed(2),
       observacao: obsBaixaRecibo(b.forma!),
       criadoPor: user.id,
-    });
+    }).returning({ id: schema.contaPagarBaixa.id });
+    if (portador && baixa) {
+      await lancarPagamentoDoPortador({
+        filialId: b.filialId,
+        portadorId: portador.id,
+        baixaId: baixa.id,
+        contaId: conta.id,
+        data: dataPagamento!,
+        valor: b.valor,
+        userId: user.id,
+      });
+    }
   }
 
   return NextResponse.json({ id: conta.id, pago: b.pago }, { status: 201 });

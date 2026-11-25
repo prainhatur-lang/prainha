@@ -10,6 +10,7 @@ import { NextResponse } from 'next/server';
 import { ebLiberadaNoFinanceiro } from '@/lib/eb/acesso-financeiro';
 import { z } from 'zod';
 import { and, asc, eq } from 'drizzle-orm';
+import { estornarPagamentoDoPortador } from '@/lib/portador';
 import { db, schema } from '@concilia/db';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { lerMotivo, registrarExclusao, resumoConta } from '@/lib/registro-exclusao';
@@ -256,6 +257,16 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }
     .update(schema.contaPagar)
     .set({ dataDelete: new Date() })
     .where(eq(schema.contaPagar.id, id));
+
+  // Conta paga em dinheiro de um portador (25/11/2026): excluída a conta, a
+  // saída sai do saldo dele — senão o cofre fica devendo um pagamento que sumiu.
+  if (linha?.conta.filialId) {
+    const baixasDaConta = await db
+      .select({ id: schema.contaPagarBaixa.id })
+      .from(schema.contaPagarBaixa)
+      .where(eq(schema.contaPagarBaixa.contaPagarId, id));
+    for (const bx of baixasDaConta) await estornarPagamentoDoPortador(linha.conta.filialId, bx.id, user.id);
+  }
 
   return NextResponse.json({ ok: true });
 }

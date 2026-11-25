@@ -49,10 +49,13 @@ export function ReciboForm({
   filiais,
   filialId,
   categorias,
+  portadores = [],
 }: {
   filiais: Opcao[];
   filialId: string;
   categorias: CategoriaPai[];
+  /** Quem guarda dinheiro nesta casa (Cofre, Elison, Marta) — origem do pago em dinheiro. */
+  portadores?: Opcao[];
 }) {
   const router = useRouter();
   const [nome, setNome] = useState('');
@@ -63,6 +66,7 @@ export function ReciboForm({
   const [categoriaId, setCategoriaId] = useState('');
   const [pago, setPago] = useState<boolean | null>(null);
   const [forma, setForma] = useState<FormaRecibo | ''>('');
+  const [portadorId, setPortadorId] = useState('');
   const [dataPagamento, setDataPagamento] = useState(hojeBr());
   const [dataVencimento, setDataVencimento] = useState(hojeBr());
   const [salvando, setSalvando] = useState(false);
@@ -141,6 +145,12 @@ export function ReciboForm({
     if (descricao.trim().length < 2) return setErro('Diga a que se refere o pagamento.');
     if (pago == null) return setErro('Responda: já foi pago?');
     if (pago && !forma) return setErro('Diga como foi pago.');
+    if (pago && forma === 'Dinheiro' && !portadorId)
+      return setErro(
+        portadores.length
+          ? 'Pago em dinheiro: diga de onde saiu o dinheiro.'
+          : 'Esta casa não tem portador de dinheiro cadastrado (Cofre, etc.). Cadastre em Financeiro › Portadores antes de lançar pagamento em dinheiro.',
+      );
 
     setSalvando(true);
     try {
@@ -155,7 +165,7 @@ export function ReciboForm({
           valor: valorNum,
           descricao: descricao.trim(),
           pago,
-          ...(pago ? { forma, dataPagamento } : { dataVencimento }),
+          ...(pago ? { forma, dataPagamento, ...(forma === 'Dinheiro' ? { portadorId } : {}) } : { dataVencimento }),
           categoriaId: categoriaId || null,
           forcar,
         }),
@@ -322,6 +332,28 @@ export function ReciboForm({
                 ))}
               </div>
             </div>
+            {forma === 'Dinheiro' && (
+              <label className="block sm:col-span-2">
+                <span className={labelCls}>De onde saiu o dinheiro?</span>
+                <select
+                  className={`${inputCls} ${portadorId ? '' : 'border-amber-400 bg-amber-50'}`}
+                  value={portadorId}
+                  onChange={(e) => setPortadorId(e.target.value)}
+                >
+                  <option value="">— escolha —</option>
+                  {portadores.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      💵 {p.nome}
+                    </option>
+                  ))}
+                </select>
+                <span className="mt-1 block text-xs text-slate-500">
+                  {portadores.length
+                    ? 'A saída já entra no saldo de quem estava com o dinheiro.'
+                    : 'Nenhum portador cadastrado nesta casa — cadastre em Financeiro › Portadores.'}
+                </span>
+              </label>
+            )}
             <label className="block">
               <span className={labelCls}>Data do pagamento</span>
               <input

@@ -13,6 +13,7 @@ import { db, schema } from '@concilia/db';
 import { and, asc, eq, isNull, inArray } from 'drizzle-orm';
 import { AppHeader } from '@/components/app-header';
 import { ReciboForm } from './form';
+import { portadoresDaFilial } from '@/lib/portador';
 
 export const dynamic = 'force-dynamic';
 
@@ -69,6 +70,7 @@ export default async function FazerReciboPage(props: { searchParams: Promise<{ f
           filiais={filiais.map((f) => ({ id: f.id, nome: f.nome }))}
           filialId={filial.id}
           categorias={pais}
+          portadores={(await portadoresDaFilial(filial.id, true)).map((p) => ({ id: p.id, nome: p.nome }))}
         />
       </div>
     </main>
