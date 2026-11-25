@@ -79,7 +79,7 @@ export function EditPix({
         className={`mt-1 block text-left text-xs ${
           tem
             ? 'text-slate-700 underline decoration-dotted underline-offset-2 hover:text-sky-700'
-            : 'text-slate-400 hover:text-sky-700'
+            : 'rounded-lg border-2 border-emerald-500 bg-emerald-50 px-3 py-1.5 text-sm font-semibold text-emerald-800 hover:bg-emerald-100'
         }`}
         title="Chave Pix e nome de quem recebe o pagamento"
       >
@@ -89,7 +89,7 @@ export function EditPix({
             {favorecidoAtual ? ` — em nome de ${favorecidoAtual}` : ''}
           </>
         ) : (
-          '+ Pix (chave e quem recebe)'
+          '⚡ Informar chave Pix'
         )}
       </button>
       <ConferenciaPixLinha c={conferido} />
@@ -98,33 +98,41 @@ export function EditPix({
   }
 
   return (
-    <div className="mt-1 flex flex-col gap-1">
+    <div className="mt-1 flex w-72 max-w-full flex-col gap-1.5 rounded-lg border-2 border-emerald-400 bg-white p-2.5">
+      <label className="text-xs font-semibold text-slate-700">Chave Pix</label>
       <input
         autoFocus
         value={chave}
-        placeholder="chave Pix (CPF, telefone, e-mail…)"
+        placeholder="CPF, CNPJ, telefone, e-mail ou aleatória"
         onChange={(e) => setChave(e.target.value)}
-        className="w-56 rounded border border-slate-300 px-1.5 py-1 text-xs"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') void salvar();
+          if (e.key === 'Escape') setEditando(false);
+        }}
+        className="w-full rounded border border-slate-300 px-2 py-1.5 text-sm"
       />
+      <label className="text-xs font-semibold text-slate-700">
+        Quem recebe <span className="font-normal text-slate-500">(se o Pix cai no nome de outra pessoa)</span>
+      </label>
       <input
         value={favorecido}
-        placeholder="quem recebe (nome que aparece no Pix)"
+        placeholder="nome que aparece no Pix (opcional)"
         onChange={(e) => setFavorecido(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter') void salvar();
           if (e.key === 'Escape') setEditando(false);
         }}
-        className="w-56 rounded border border-slate-300 px-1.5 py-1 text-xs"
+        className="w-full rounded border border-slate-300 px-2 py-1.5 text-sm"
       />
       <ConferenciaPixLinha c={conferindo} />
-      <div className="flex gap-1">
+      <div className="flex gap-2">
         <button
           type="button"
           onClick={() => void salvar()}
           disabled={pending}
-          className="rounded bg-emerald-600 px-2 py-0.5 text-[10px] font-semibold text-white disabled:bg-slate-400"
+          className="rounded-lg bg-emerald-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-emerald-700 disabled:bg-slate-400"
         >
-          {pending ? '…' : 'salvar'}
+          {pending ? 'Salvando…' : 'Salvar chave'}
         </button>
         <button
           type="button"
@@ -134,12 +142,12 @@ export function EditPix({
             setFavorecido(favorecidoAtual ?? '');
             setErro(null);
           }}
-          className="rounded border border-slate-300 px-2 py-0.5 text-[10px] text-slate-600"
+          className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-600"
         >
-          cancelar
+          Cancelar
         </button>
       </div>
-      {erro && <span className="text-[10px] text-rose-600">{erro}</span>}
+      {erro && <span className="text-xs font-medium text-rose-600">{erro}</span>}
     </div>
   );
 }

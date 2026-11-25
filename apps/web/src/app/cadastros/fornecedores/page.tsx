@@ -235,7 +235,7 @@ export default async function FornecedoresPage(props: { searchParams: Promise<SP
                 <th className="px-4 py-2">Razão Social</th>
                 <th className="px-4 py-2">CNPJ / CPF</th>
                 <th className="px-4 py-2">Cidade/UF</th>
-                <th className="px-4 py-2">Contato</th>
+                <th className="px-4 py-2">Contato / Pix</th>
                 <th className="px-4 py-2 text-right">Pedido mín.</th>
                 <th className="px-4 py-2 text-right">Produtos</th>
                 <th className="px-4 py-2 text-right">Em aberto</th>
