@@ -28,7 +28,12 @@ import {
 export const dynamic = 'force-dynamic';
 
 const PERMS = ['conta_receber.create', 'reserva.update', 'orcamento.update'];
-const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://app.prainhabar.com';
+// O NEXT_PUBLIC_APP_URL de produção tem quebra de linha no fim: sem limpar, o
+// link saía 'https://app.prainhabar.com\n/cobranca/…' e o WhatsApp abria só a
+// página inicial (que pede login) — dono 25/11/2026.
+const BASE_URL =
+  (process.env.NEXT_PUBLIC_APP_URL || '').trim().replace(/\\n/g, '').replace(/\/+$/, '') ||
+  'https://app.prainhabar.com';
 
 async function temAcesso(userId: string, filialId: string): Promise<boolean> {
   const [acesso] = await db
