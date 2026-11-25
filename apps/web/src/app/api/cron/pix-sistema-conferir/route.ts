@@ -11,6 +11,7 @@ import { baixarIndividuaisDeBorderoAvulso } from '@/lib/bordero-avulso-baixa';
 import { filiaisComPixAberto, sincronizarPixAbertos } from '@/lib/pix-pagamento';
 import { filiaisComContaConsumoAberta, sincronizarContasConsumo } from '@/lib/conta-consumo-pagamento';
 import { enviarComprovantesBaixaPendentes } from '@/lib/comprovante-contador-baixa';
+import { avisarRescisoesPagasPendentes } from '@/lib/rh/rescisao-aviso-esocial';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -64,5 +65,12 @@ export async function GET(req: Request) {
   } catch (e) {
     comprovanteContador = { erro: e instanceof Error ? e.message : String(e) };
   }
-  return NextResponse.json({ ok: true, casas: saida, contaConsumo, borderoAvulso, comprovanteContador });
+  // rescisão paga → avisa o contador pra dar baixa no eSocial (dono 25/11/2026)
+  let rescisaoEsocial: unknown = null;
+  try {
+    rescisaoEsocial = await avisarRescisoesPagasPendentes(8_000, 5);
+  } catch (e) {
+    rescisaoEsocial = { erro: e instanceof Error ? e.message : String(e) };
+  }
+  return NextResponse.json({ ok: true, casas: saida, contaConsumo, borderoAvulso, comprovanteContador, rescisaoEsocial });
 }
