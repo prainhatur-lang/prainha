@@ -26,6 +26,9 @@ export const linkPagamento = pgTable(
     /** Reserva que originou o link (gerente gera pela tela de reservas). Sem FK:
      *  reserva excluída não apaga o registro do pagamento. */
     reservaId: uuid('reserva_id'),
+    /** Orçamento de evento a que o link pertence. Pago, entra como recebido no
+     *  evento (saldo = total − entrada − links pagos). Sem FK, como a reserva. */
+    orcamentoId: uuid('orcamento_id'),
     /** Vai na URL — é a "senha" do link. */
     token: text('token').notNull().unique(),
     descricao: varchar('descricao', { length: 300 }).notNull(),
@@ -58,5 +61,6 @@ export const linkPagamento = pgTable(
   (t) => [
     index('link_pagamento_filial_criado_idx').on(t.filialId, t.criadoEm),
     index('link_pagamento_reserva_idx').on(t.reservaId),
+    index('link_pagamento_orcamento_idx').on(t.orcamentoId),
   ],
 );

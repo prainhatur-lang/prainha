@@ -14,6 +14,8 @@ import { DocActions } from './doc-actions';
 import { LinkAceiteBox } from './link-aceite-box';
 import { ConferenciaBox } from './conferencia-box';
 import { hojeBr } from '@/lib/datas';
+import { recebimentosDoOrcamento } from '@/lib/orcamentos-server';
+import { RecebimentosBox } from './recebimentos-box';
 
 export const dynamic = 'force-dynamic';
 
@@ -49,6 +51,10 @@ export default async function OrcamentoDocPage(props: {
   const proto = host.startsWith('localhost') || host.startsWith('127.') ? 'http' : 'https';
   const linkAceite = o.aceiteToken ? `${proto}://${host}/orcamento/${o.aceiteToken}` : null;
 
+  // Recebido × saldo + link de cartão do que falta (só quem edita orçamento).
+  const recebimentos = podeEditar ? await recebimentosDoOrcamento(o) : null;
+  const [, mesEv, diaEv] = String(o.dataEvento).slice(0, 10).split('-');
+
   return (
     <main className="min-h-screen bg-slate-100 print:bg-white">
       <DocActions
@@ -69,6 +75,16 @@ export default async function OrcamentoDocPage(props: {
           aceiteEm={o.aceiteEm ? o.aceiteEm.toISOString() : null}
           pagamentoStatus={o.pagamentoStatus}
           pagoEm={o.pagoEm ? o.pagoEm.toISOString() : null}
+        />
+      )}
+
+      {recebimentos && (
+        <RecebimentosBox
+          orcamentoId={o.id}
+          inicial={recebimentos}
+          descricaoPadrao={`Evento ${diaEv}/${mesEv} — orçamento nº ${numeroOrcamento(o.numero)}`}
+          nomePadrao={o.clienteNome ?? ''}
+          telefonePadrao={o.clienteTelefone ?? ''}
         />
       )}
 

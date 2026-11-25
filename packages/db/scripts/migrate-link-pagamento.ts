@@ -40,6 +40,8 @@ async function main() {
   await sql`CREATE INDEX IF NOT EXISTS link_pagamento_filial_criado_idx ON link_pagamento (filial_id, criado_em)`;
   await sql`ALTER TABLE link_pagamento ADD COLUMN IF NOT EXISTS reserva_id uuid`;
   await sql`CREATE INDEX IF NOT EXISTS link_pagamento_reserva_idx ON link_pagamento (reserva_id)`;
+  await sql`ALTER TABLE link_pagamento ADD COLUMN IF NOT EXISTS orcamento_id uuid`;
+  await sql`CREATE INDEX IF NOT EXISTS link_pagamento_orcamento_idx ON link_pagamento (orcamento_id)`;
   await sql`ALTER TABLE link_pagamento ENABLE ROW LEVEL SECURITY`;
   await sql.end();
   console.log('link_pagamento OK');

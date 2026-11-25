@@ -4,6 +4,8 @@
 // GET   ?reservaId=…           → links daquela reserva (tela de Reservas)
 // POST  { filialId, valor, descricao, clienteNome?, clienteTelefone?, validadeHoras? }
 // POST  { reservaId, valor, descricao?, validadeHoras? }  → casa/cliente vêm da reserva
+// GET   ?orcamentoId=…         → links do orçamento de evento + recebido/saldo
+// POST  { orcamentoId, valor, … } → casa/cliente vêm do orçamento; valor ≤ saldo
 // PATCH { id, acao: 'cancelar' | 'reabrir' }
 //
 // Quem pode: financeiro (conta_receber.create) ou quem mexe em reserva
@@ -15,6 +17,8 @@ import { and, desc, eq } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
 import { exigirAlgumaPermApi } from '@/lib/exigir-perm';
 import { ebLiberadaNoFinanceiro } from '@/lib/eb/acesso-financeiro';
+import { recebimentosDoOrcamento } from '@/lib/orcamentos-server';
+import { numeroOrcamento } from '@/lib/orcamentos';
 import {
   LINK_PG_VALIDADE_PADRAO_H,
   novoTokenLinkPagamento,
@@ -23,7 +27,7 @@ import {
 
 export const dynamic = 'force-dynamic';
 
-const PERMS = ['conta_receber.create', 'reserva.update'];
+const PERMS = ['conta_receber.create', 'reserva.update', 'orcamento.update'];
 const BASE_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://app.prainhabar.com';
 
 async function temAcesso(userId: string, filialId: string): Promise<boolean> {
@@ -56,6 +60,7 @@ function paraTela(l: typeof schema.linkPagamento.$inferSelect) {
     criadoPor: l.criadoPor,
     criadoEm: l.criadoEm.toISOString(),
     reservaId: l.reservaId,
+    orcamentoId: l.orcamentoId,
   };
 }
 
@@ -64,8 +69,17 @@ export async function GET(req: Request) {
   if (error) return error;
   const sp = new URL(req.url).searchParams;
   const reservaId = sp.get('reservaId');
+  const orcamentoId = sp.get('orcamentoId');
   let filialId = sp.get('filialId');
   const uuid = z.string().uuid();
+
+  let orc: typeof schema.orcamentoEvento.$inferSelect | null = null;
+  if (orcamentoId) {
+    if (!uuid.safeParse(orcamentoId).success) return NextResponse.json({ error: 'orçamento inválido' }, { status: 400 });
+    [orc = null] = await db.select().from(schema.orcamentoEvento).where(eq(schema.orcamentoEvento.id, orcamentoId)).limit(1);
+    if (!orc) return NextResponse.json({ error: 'orçamento não encontrado' }, { status: 404 });
+    filialId = orc.filialId;
+  }
 
   if (reservaId) {
     if (!uuid.safeParse(reservaId).success) return NextResponse.json({ error: 'reserva inválida' }, { status: 400 });
@@ -86,18 +100,25 @@ export async function GET(req: Request) {
     .select()
     .from(schema.linkPagamento)
     .where(
-      reservaId
-        ? and(eq(schema.linkPagamento.filialId, filialId), eq(schema.linkPagamento.reservaId, reservaId))
-        : eq(schema.linkPagamento.filialId, filialId),
+      orcamentoId
+        ? and(eq(schema.linkPagamento.filialId, filialId), eq(schema.linkPagamento.orcamentoId, orcamentoId))
+        : reservaId
+          ? and(eq(schema.linkPagamento.filialId, filialId), eq(schema.linkPagamento.reservaId, reservaId))
+          : eq(schema.linkPagamento.filialId, filialId),
     )
     .orderBy(desc(schema.linkPagamento.criadoEm))
     .limit(100);
-  return NextResponse.json({ ok: true, links: links.map(paraTela) });
+  return NextResponse.json({
+    ok: true,
+    links: links.map(paraTela),
+    ...(orc ? { recebimentos: await recebimentosDoOrcamento(orc) } : {}),
+  });
 }
 
 const Criar = z.object({
   filialId: z.string().uuid().optional(),
   reservaId: z.string().uuid().optional(),
+  orcamentoId: z.string().uuid().optional(),
   valor: z.number().positive('informe o valor').max(200000),
   descricao: z.string().trim().max(300).optional(),
   clienteNome: z.string().trim().max(200).nullable().optional(),
@@ -140,6 +161,48 @@ export async function POST(req: Request) {
       descricao = `Reserva de ${d}/${m}/${a} — ${res.clienteNome}`;
     }
   }
+  if (b.orcamentoId) {
+    const [orc] = await db
+      .select()
+      .from(schema.orcamentoEvento)
+      .where(eq(schema.orcamentoEvento.id, b.orcamentoId))
+      .limit(1);
+    if (!orc) return NextResponse.json({ error: 'orçamento não encontrado' }, { status: 404 });
+    filialId = orc.filialId;
+    if (!(await temAcesso(user.id, orc.filialId)))
+      return NextResponse.json({ error: 'sem acesso a esta casa' }, { status: 403 });
+    clienteNome = clienteNome ?? orc.clienteNome;
+    clienteTelefone = clienteTelefone ?? orc.clienteTelefone;
+    if (!descricao) {
+      const [, m, d] = String(orc.dataEvento).slice(0, 10).split('-');
+      descricao = `Evento ${d}/${m} — orçamento nº ${numeroOrcamento(orc.numero)}`;
+    }
+    // Não cobra mais do que falta: conta o que já entrou e os links ainda em
+    // aberto/processando do mesmo orçamento (senão dois links pagam o mesmo saldo).
+    const rec = await recebimentosDoOrcamento(orc);
+    if (rec.saldo != null) {
+      const emAberto = await db
+        .select()
+        .from(schema.linkPagamento)
+        .where(eq(schema.linkPagamento.orcamentoId, orc.id));
+      const pendente = emAberto
+        .filter((l) => ['aberto', 'processando', 'verificar'].includes(situacaoLinkPagamento(l)))
+        .reduce((s, l) => s + Number(l.valor), 0);
+      const livre = Math.round((rec.saldo - pendente) * 100) / 100;
+      if (b.valor > livre + 0.001) {
+        const brl = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+        return NextResponse.json(
+          {
+            error:
+              pendente > 0
+                ? `Falta receber ${brl(rec.saldo)} e já há ${brl(pendente)} em link aguardando pagamento. Cancele o link aberto ou gere no máximo ${brl(Math.max(livre, 0))}.`
+                : `O valor passa do que falta receber deste evento (${brl(rec.saldo)}).`,
+          },
+          { status: 409 },
+        );
+      }
+    }
+  }
   if (!filialId) return NextResponse.json({ error: 'informe a casa' }, { status: 400 });
   if (descricao.length < 2) return NextResponse.json({ error: 'diga a que se refere' }, { status: 400 });
   if (!(await temAcesso(user.id, filialId)))
@@ -151,6 +214,7 @@ export async function POST(req: Request) {
     .values({
       filialId,
       reservaId: b.reservaId ?? null,
+      orcamentoId: b.orcamentoId ?? null,
       token: novoTokenLinkPagamento(),
       descricao: descricao.slice(0, 300),
       clienteNome,

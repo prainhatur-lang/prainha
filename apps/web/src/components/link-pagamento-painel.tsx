@@ -67,18 +67,27 @@ function textoZap(l: LinkPg): string {
 export function LinkPagamentoPainel({
   filialId,
   reservaId,
+  orcamentoId,
+  valorPadrao = '',
+  aoMudar,
   descricaoPadrao = '',
   nomePadrao = '',
   telefonePadrao = '',
 }: {
   filialId?: string;
   reservaId?: string;
+  /** Orçamento de evento: o link pago entra como recebido no evento. */
+  orcamentoId?: string;
+  /** Valor já preenchido (ex.: o saldo do evento), no formato 0,00. */
+  valorPadrao?: string;
+  /** Avisa a tela de fora quando a lista muda (gerou, cancelou, recarregou). */
+  aoMudar?: () => void;
   descricaoPadrao?: string;
   nomePadrao?: string;
   telefonePadrao?: string;
 }) {
   const [links, setLinks] = useState<LinkPg[] | null>(null);
-  const [valor, setValor] = useState('');
+  const [valor, setValor] = useState(valorPadrao);
   const [descricao, setDescricao] = useState(descricaoPadrao);
   const [nome, setNome] = useState(nomePadrao);
   const [telefone, setTelefone] = useState(telefonePadrao);
@@ -87,7 +96,7 @@ export function LinkPagamentoPainel({
   const [erro, setErro] = useState<string | null>(null);
   const [copiado, setCopiado] = useState<string | null>(null);
 
-  const qs = reservaId ? `reservaId=${reservaId}` : `filialId=${filialId}`;
+  const qs = orcamentoId ? `orcamentoId=${orcamentoId}` : reservaId ? `reservaId=${reservaId}` : `filialId=${filialId}`;
   const carregar = useCallback(async () => {
     const r = await fetch(`/api/financeiro/link-pagamento?${qs}`, { cache: 'no-store' });
     const d = await r.json().catch(() => ({}));
@@ -110,7 +119,7 @@ export function LinkPagamentoPainel({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ...(reservaId ? { reservaId } : { filialId }),
+          ...(orcamentoId ? { orcamentoId } : reservaId ? { reservaId } : { filialId }),
           valor: v,
           descricao: descricao.trim(),
           clienteNome: nome.trim() || null,
@@ -122,6 +131,7 @@ export function LinkPagamentoPainel({
       if (!r.ok || !d.ok) return setErro(d.error ?? `Erro ${r.status} ao gerar o link.`);
       setValor('');
       setLinks((ls) => [d.link, ...(ls ?? [])]);
+      aoMudar?.();
     } finally {
       setSalvando(false);
     }
@@ -141,6 +151,7 @@ export function LinkPagamentoPainel({
     const d = await r.json().catch(() => ({}));
     if (!r.ok || !d.ok) alert(d.error ?? `Erro ${r.status}.`);
     void carregar();
+    aoMudar?.();
   }
 
   function copiar(l: LinkPg) {

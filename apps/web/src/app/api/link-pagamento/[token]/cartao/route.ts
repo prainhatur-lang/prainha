@@ -14,6 +14,7 @@ import { NextResponse } from 'next/server';
 import { db, schema } from '@concilia/db';
 import { and, eq, gt, lt, sql } from 'drizzle-orm';
 import { createCieloCardPayment, friendlyCieloError, cieloRecusaPorLimite, MSG_SEM_LIMITE } from '@/lib/cielo';
+import { registrarCartaoNoOrcamento } from '@/lib/orcamentos-server';
 import { eciAutenticado, LINK_PG_MAX_TENTATIVAS, MSG_SEM_3DS, situacaoLinkPagamento } from '@/lib/link-pagamento';
 
 export const dynamic = 'force-dynamic';
@@ -162,6 +163,13 @@ export async function POST(request: Request, ctx: { params: Promise<{ token: str
         erro: null,
       })
       .where(eq(schema.linkPagamento.id, pego.id));
+    // Link de orçamento de evento: o link pago JÁ é a baixa (o saldo do evento
+    // sai dos links pagos). Aqui só registra o aceite. Falha não desfaz o pago.
+    if (pego.orcamentoId) {
+      await registrarCartaoNoOrcamento(pego.orcamentoId).catch((e) =>
+        console.error('Link de pagamento', pego.numero, '— aceite do orçamento falhou:', e),
+      );
+    }
     return NextResponse.json({ ok: true, pago: true });
   }
 
