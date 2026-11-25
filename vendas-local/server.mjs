@@ -5693,6 +5693,14 @@ async function apiVendaAbertas() {
         conta_pedida: false, nome: '🔔 CHAMOU', chamou_garcom: true });
     }
   }
+  // MESA DE TESTE (homologação): leva o nome pra ninguém confundir com cliente,
+  // e fica pronta na grade enquanto o login de teste estiver em uso.
+  if (LOGINS_TESTE.size && MESA_TESTE) {
+    for (const r of rows) if (Number(r.numero) === MESA_TESTE) r.nome = '🧪 TESTE' + (r.nome ? ' · ' + r.nome : '');
+    if (testeEmUso() && MESA_TESTE < COMANDA_DE && !numsAbertos.has(MESA_TESTE) && !extras.some((x) => x.numero === MESA_TESTE)) {
+      extras.push({ numero: MESA_TESTE, valor_total: 0, itens: 0, status: 'andamento', conta_pedida: false, nome: '🧪 TESTE' });
+    }
+  }
   const mesas = rows.filter((x) => Number(x.numero) < COMANDA_DE)
     .concat(extras).sort((a, b) => Number(a.numero) - Number(b.numero));
   return {
@@ -9671,6 +9679,8 @@ async function apiGarcomEntrar(body) {
     return { ok: true, token: garcomGeraToken(login), nome: pode.nome, criado: true, gerente: await ehGerente(login), entregas };
   }
   if (!pinConfere(pin, atual.salt, atual.pin_hash)) return { ok: false, erro: 'PIN incorreto' };
+  // login de teste: a mesa dele já fica pronta na grade (campo a mais na resposta)
+  if (ehLoginTeste(login)) { marcarTesteEmUso(login); return { ok: true, token: garcomGeraToken(login), nome: pode.nome, gerente: await ehGerente(login), entregas, mesa_teste: MESA_TESTE }; }
   return { ok: true, token: garcomGeraToken(login), nome: pode.nome, gerente: await ehGerente(login), entregas };
 }
 
@@ -35016,6 +35026,56 @@ document.addEventListener('visibilitychange',function(){PAUSA=document.hidden;if
 if(TOK)iniciar();else telaLogin();
 </script></body></html>`;
 
+// ===== USUÁRIO DE TESTE (homologação da maquininha) — dono 25/11/2026 =====
+// O login `cielo` é do rapaz que homologa o app na Cielo, e ele testa na loja
+// de PRODUÇÃO. Em 25/11 "recebeu" as mesas 7, 8 e 15 do Prainha Bar com cartão
+// de teste (R$ 302,50 que não liquidam) e as contas de cliente fecharam.
+// Regra: login de teste só mexe na MESA DE TESTE, e a mesa de teste é só dele.
+//   - LOGINS_TESTE (env, separado por vírgula; padrão "cielo"; vazio desliga)
+//   - MESA_TESTE (env; padrão a última mesa da casa — 299, que nenhuma casa usa)
+// Só vale pra quem manda a sessão (x-garcom). Garçom, caixa e cliente do QR
+// seguem exatamente como antes em todas as outras mesas.
+const LOGINS_TESTE = new Set(String(process.env.LOGINS_TESTE ?? 'cielo').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean));
+// (casa com menos de 299 mesas e sem MESA_TESTE: fica 0 = o login de teste não
+// mexe em mesa nenhuma e nenhuma mesa da casa é reservada)
+const MESA_TESTE = Number(process.env.MESA_TESTE ?? (MESA_MAX >= 299 ? 299 : 0));
+const ehLoginTeste = (login) => LOGINS_TESTE.size > 0 && LOGINS_TESTE.has(String(login || '').trim().toLowerCase());
+// quando o login de teste entrou/usou por último: enquanto estiver "em uso" a
+// mesa dele aparece pronta na grade (a grade da maquininha vem sem sessão)
+let _testeVistoEm = 0; let _testeLogin = '';
+const marcarTesteEmUso = (login) => { _testeVistoEm = Date.now(); _testeLogin = String(login || '').toLowerCase(); };
+const testeEmUso = () => LOGINS_TESTE.size > 0 && Date.now() - _testeVistoEm < 12 * 3600 * 1000;
+// o que o login de teste NÃO faz em hipótese nenhuma (não tem mesa no meio):
+// venda direta/ticket, totem, fechar caixa, saída, entrega, nota fiscal de
+// verdade na SEFAZ, e juntar/mudar comanda e mesa.
+const TESTE_PROIBIDO = /^\/api\/(lio\/(ticket|totem)\/|lio\/fechar-caixa$|saida\/|entregador\/|nfce\/emitir$|venda\/(vincular|transferir|comanda-baixa)$|caixa\/)/;
+// onde o garçom comum ABRE/LANÇA numa mesa — nesses a mesa de teste é barrada
+// (receber, fechar e cancelar a mesa de teste seguem livres, pra limpar)
+const TESTE_SO_DELE = /^\/api\/venda\/(enviar|vincular|transferir|pessoas)$/;
+// Devolve a mensagem de recusa, ou null pra seguir normal.
+async function travaUsuarioTeste(req, u, p) {
+  if (!LOGINS_TESTE.size || !p.startsWith('/api/') || p === '/api/garcom/entrar') return null;
+  const tok = (req.headers['x-garcom'] || u.searchParams.get('t') || '').toString();
+  if (!tok) return null;
+  const v = garcomVerificaToken(tok);
+  if (!v) return null;
+  const teste = ehLoginTeste(v.login);
+  const post = req.method === 'POST';
+  if (!teste && !(post && TESTE_SO_DELE.test(p))) return null;
+  const nums = [];
+  const junta = (x) => { const n = Number(x); if (x != null && x !== '' && Number.isFinite(n) && n > 0) nums.push(n); };
+  for (const k of ['n', 'numero', 'mesa']) junta(u.searchParams.get(k));
+  if (post) { const b = await readBody(req); for (const k of ['numero', 'mesa', 'de', 'para', 'comanda']) junta(b && b[k]); }
+  if (teste) {
+    marcarTesteEmUso(v.login);
+    if (!MESA_TESTE) return (post || nums.length) ? 'Usuário de teste: esta casa não tem mesa de teste. Nada foi lançado nem recebido.' : null;
+    if (post && TESTE_PROIBIDO.test(p)) return 'Usuário de teste: isto não está liberado. Use só a mesa ' + MESA_TESTE + '.';
+    if (nums.some((n) => n !== MESA_TESTE)) return 'Usuário de teste só usa a mesa ' + MESA_TESTE + '. Esta é mesa de cliente — nada foi lançado nem recebido.';
+    return null;
+  }
+  if (MESA_TESTE && nums.some((n) => n === MESA_TESTE)) return 'A mesa ' + MESA_TESTE + ' é reservada pro teste da maquininha. Use outra mesa.';
+  return null;
+}
 function readBody(req) {
   if (req._corpo) return req._corpo;
   req._corpo = new Promise((r) => { let b = ''; req.on('data', (c) => { b += c; if (b.length > 1e6) req.destroy(); }); req.on('end', () => { try { r(JSON.parse(b || '{}')); } catch { r({}); } }); });
@@ -35044,6 +35104,16 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('x-app-versao', VERSAO);
     // Servidor de demonstração: impressão pelo navegador sai marcada (ver DEMO_CSS).
     if (DEMO) marcarImpressaoDemo(res);
+
+    // usuário de teste (homologação): só a mesa de teste — ver travaUsuarioTeste
+    {
+      const recusa = await travaUsuarioTeste(req, u, p).catch(() => null);
+      if (recusa) {
+        console.error('[teste] RECUSADO ' + req.method + ' ' + p + ' · ' + recusa);
+        res.writeHead(req.method === 'POST' ? 200 : 403, { 'content-type': 'application/json' });
+        return res.end(JSON.stringify({ ok: false, erro: recusa, so_teste: true }));
+      }
+    }
 
     // ---- ATALHO DE TELA CHEIA (sem barra de endereço) ----
     // "Adicionar à tela inicial" só abre em modo app quando existe manifest
