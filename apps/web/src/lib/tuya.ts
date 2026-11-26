@@ -92,7 +92,24 @@ export interface TuyaStatusItem {
 /** Estado bruto (todos os datapoints) do dispositivo na Tuya. */
 export async function getDeviceStatus(tuyaDeviceId: string): Promise<TuyaStatusItem[]> {
   const token = await getAccessToken();
-  return tuyaFetch<TuyaStatusItem[]>('GET', `/v1.0/devices/${tuyaDeviceId}/status`, undefined, token);
+  try {
+    return await tuyaFetch<TuyaStatusItem[]>('GET', `/v1.0/devices/${tuyaDeviceId}/status`, undefined, token);
+  } catch (e) {
+    // Aparelho sem "conjunto padrão" de funções responde 2003 (function not
+    // support) no /status — caso do emissor infravermelho novo da Mar
+    // (26/11/2026). A leitura dele sai pela sombra do aparelho (v2.0).
+    try {
+      const r = await tuyaFetch<{ properties?: TuyaStatusItem[] }>(
+        'GET',
+        `/v2.0/cloud/thing/${tuyaDeviceId}/shadow/properties`,
+        undefined,
+        token,
+      );
+      return (r.properties ?? []).map((p) => ({ code: p.code, value: p.value }));
+    } catch {
+      throw e;
+    }
+  }
 }
 
 export interface TuyaDeviceInfo {

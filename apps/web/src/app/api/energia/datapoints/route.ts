@@ -21,7 +21,10 @@ export async function GET(req: Request) {
     const opcoes = status
       .filter((i) => typeof i.value === 'boolean')
       .map((i) => ({ code: i.code, ligado: i.value as boolean }));
-    return NextResponse.json({ nome: info.name, produto: info.product_name ?? null, online: info.online, opcoes });
+    // `brutos`: tudo o que o aparelho informa (código → valor), pra conferir
+    // sensor novo que não tem liga/desliga (temperatura, umidade...).
+    const brutos = status.map((i) => ({ code: i.code, value: i.value }));
+    return NextResponse.json({ nome: info.name, produto: info.product_name ?? null, online: info.online, opcoes, brutos });
   } catch (e) {
     return NextResponse.json(
       { error: `A Tuya não achou esse dispositivo (${(e as Error).message}). Confira o ID e se a conta do Smart Life está vinculada ao projeto.` },
