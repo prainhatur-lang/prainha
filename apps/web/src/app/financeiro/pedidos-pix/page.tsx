@@ -257,6 +257,8 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
     .select({
       id: c.id,
       venc: sql<string>`${c.dataVencimento}::text`,
+      // Data de inclusão (dono 26/11/2026): quando a conta entrou no sistema, em BRT.
+      incluida: sql<string | null>`(coalesce(${c.criadoEm}, ${c.dataCadastro}) AT TIME ZONE 'America/Sao_Paulo')::date::text`,
       valor: c.valor,
       descricao: c.descricao,
       origem: c.origem,
@@ -476,6 +478,7 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
     g.contas.push({
       id: l.id,
       venc: l.venc,
+      incluida: l.incluida,
       descricao: descricao || '—',
       valor: Number(l.valor),
       saldo,

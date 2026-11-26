@@ -22,6 +22,8 @@ import type { Gemea } from '@/lib/conta-mesma-divida';
 export interface PedidoPix {
   id: string;
   venc: string;
+  /** Data de inclusão no sistema (aaaa-mm-dd, BRT); null = sem registro. */
+  incluida?: string | null;
   descricao: string;
   valor: number;
   saldo: number;
@@ -654,7 +656,12 @@ export function GrupoPix({
                 onChange={() => alternar(c.id)}
                 className="h-4 w-4"
               />
-              <span className="w-20 shrink-0 font-mono text-xs text-slate-600">{dataBr(c.venc)}</span>
+              <span className="w-32 shrink-0 font-mono text-xs leading-tight text-slate-600">
+                <span className="block" title="Data de vencimento">venc. {dataBr(c.venc)}</span>
+                <span className="block text-[10px] text-slate-400" title="Data de inclusão no sistema">
+                  incl. {c.incluida ? dataBr(c.incluida) : '—'}
+                </span>
+              </span>
               {travadas.has(c.id) && (
                 <span className="shrink-0 rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-700">
                   Pix em andamento{situacaoPix[c.id] ? `: ${situacaoPix[c.id]}` : ''}
