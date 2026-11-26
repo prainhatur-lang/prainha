@@ -6,6 +6,7 @@
 // (CONTATOS é sincronizado por completo). Isso evita cliente fantasma na nuvem
 // com código inventado — que depois brigaria com o código real.
 
+import { validarDocumento } from '@/lib/nfce/documento';
 import { NextResponse } from 'next/server';
 import { negarSemPerm } from '@/lib/exigir-perm';
 import { podeUsuario } from '@/lib/permissoes-runtime';
@@ -55,6 +56,13 @@ export async function POST(req: Request) {
 
   // Duplicado por documento: barra antes de mandar pra loja.
   const doc = campos.nuvem.cpfOuCnpj as string | null;
+  // Cadastro não aceita documento errado (dono 26/11/2026).
+  if (doc && !validarDocumento(doc)) {
+    return NextResponse.json(
+      { error: 'CPF/CNPJ não confere (dígito verificador). Confira os números com o documento.' },
+      { status: 400 },
+    );
+  }
   if (doc) {
     const [existe] = await db
       .select({ id: schema.cliente.id, nome: schema.cliente.nome })

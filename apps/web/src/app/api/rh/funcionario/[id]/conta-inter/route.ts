@@ -13,6 +13,7 @@ import { and, eq } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
 import { createClient } from '@/lib/supabase/server';
 import { negarSemPerm } from '@/lib/exigir-perm';
+import { validarDocumento } from '@/lib/nfce/documento';
 
 export const dynamic = 'force-dynamic';
 
@@ -44,6 +45,14 @@ export async function PUT(req: Request, ctx: { params: Promise<{ id: string }> }
   if (cpf.length !== 11) return NextResponse.json({ error: 'cadastre o CPF antes da conta do Inter' }, { status: 400 });
 
   const digitos = (parsed.data.conta ?? '').replace(/\D/g, '');
+  // Conta do Inter amarrada em CPF errado é Pix recusado na hora de pagar
+  // (Dias, 26/11/2026: PIXP57). Tirar a conta continua podendo.
+  if (digitos && !validarDocumento(cpf)) {
+    return NextResponse.json(
+      { error: 'O CPF do cadastro não confere (dígito verificador). Corrija o CPF antes de gravar a conta do Inter.' },
+      { status: 400 },
+    );
+  }
   const onde = and(eq(schema.contaInterFolha.empresa, empresa), eq(schema.contaInterFolha.cpf, cpf));
   if (!digitos) {
     await db.delete(schema.contaInterFolha).where(onde);

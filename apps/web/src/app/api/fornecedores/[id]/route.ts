@@ -11,6 +11,7 @@ import { db, schema } from '@concilia/db';
 import { eq } from 'drizzle-orm';
 import { propagarParaIrmaos } from '@/lib/fornecedor-unico';
 import { conferirChavePix } from '@/lib/pix-titular';
+import { validarDocumento } from '@/lib/nfce/documento';
 
 export async function PATCH(
   req: Request,
@@ -112,6 +113,9 @@ export async function PATCH(
     const doc = body.cnpjOuCpf.replace(/\D/g, '');
     if (doc.length !== 11 && doc.length !== 14) {
       return NextResponse.json({ error: 'CNPJ/CPF inválido: precisa ter 11 ou 14 dígitos.' }, { status: 400 });
+    }
+    if (!validarDocumento(doc)) {
+      return NextResponse.json({ error: 'CNPJ/CPF não confere (dígito verificador). Confira os números: cadastro não aceita documento errado.' }, { status: 400 });
     }
     const [atualDoc] = await db
       .select({ doc: schema.fornecedor.cnpjOuCpf })

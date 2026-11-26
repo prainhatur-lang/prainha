@@ -10,6 +10,7 @@
 // campos; onde não existe, enfileira criar_cliente com o cadastro completo
 // (o CODIGO nasce na loja, e o CDC traz a linha de volta pra nuvem).
 
+import { validarDocumento } from '@/lib/nfce/documento';
 import { NextResponse } from 'next/server';
 import { negarSemPerm } from '@/lib/exigir-perm';
 import { podeUsuario } from '@/lib/permissoes-runtime';
@@ -52,6 +53,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       id: schema.cliente.id,
       filialId: schema.cliente.filialId,
       codigoExterno: schema.cliente.codigoExterno,
+      cpfOuCnpj: schema.cliente.cpfOuCnpj,
     })
     .from(schema.cliente)
     .where(eq(schema.cliente.id, id))
@@ -64,6 +66,15 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   } catch (e) {
     if (e instanceof ErroCadastro) return NextResponse.json({ error: e.message }, { status: 400 });
     throw e;
+  }
+  // Cadastro não aceita documento errado (dono 26/11/2026). Só barra o número
+  // NOVO: cliente antigo com documento errado segue editável nos outros campos.
+  const docNovo = campos.nuvem.cpfOuCnpj as string | null | undefined;
+  if (docNovo && docNovo !== (cliente.cpfOuCnpj ?? '').replace(/\D/g, '') && !validarDocumento(docNovo)) {
+    return NextResponse.json(
+      { error: 'CPF/CNPJ não confere (dígito verificador). Confira os números com o documento.' },
+      { status: 400 },
+    );
   }
   if (Object.keys(campos.nuvem).length === 0) {
     return NextResponse.json({ error: 'nada pra atualizar' }, { status: 400 });

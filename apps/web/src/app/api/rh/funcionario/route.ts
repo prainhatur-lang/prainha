@@ -8,6 +8,7 @@ import { db, schema } from '@concilia/db';
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import { negarSemPerm } from '@/lib/exigir-perm';
 import { garantirPapeisDaPessoa } from '@/lib/rh/pessoa-unica';
+import { validarCnpj, validarCpf } from '@/lib/nfce/documento';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -102,6 +103,14 @@ export async function POST(req: Request) {
 
   if (!(await checarAcesso(user.id, filialId))) {
     return NextResponse.json({ error: 'sem acesso' }, { status: 403 });
+  }
+
+  // Cadastro não aceita documento errado (dono 26/11/2026): confere o dígito.
+  if (campos.cpf && !validarCpf(campos.cpf)) {
+    return NextResponse.json({ error: 'CPF não confere (dígito verificador). Confira os números com o documento: cadastro não aceita CPF errado.' }, { status: 400 });
+  }
+  if (campos.cnpjRegistro && !validarCnpj(campos.cnpjRegistro)) {
+    return NextResponse.json({ error: 'CNPJ não confere (dígito verificador). Confira os números: cadastro não aceita CNPJ errado.' }, { status: 400 });
   }
 
   try {

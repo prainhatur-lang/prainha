@@ -567,6 +567,34 @@ function FuncionarioForm({
     setFiliaisExtras((atual) => (atual.includes(id) ? atual.filter((x) => x !== id) : [...atual, id]));
   }
 
+  // CPF informado é CONSULTADO (dono 26/11/2026): nosso cadastro → SPC. Número
+  // errado avisa na hora (o servidor também barra); o nome que voltar aparece
+  // pra conferir e preenche o campo se estiver vazio.
+  const [cpfInfo, setCpfInfo] = useState<{ ok: boolean; texto: string } | null>(null);
+  const [consultandoCpf, setConsultandoCpf] = useState(false);
+  async function consultarCpf() {
+    const doc = cpf.replace(/\D/g, '');
+    if (!doc) { setCpfInfo(null); return; }
+    if (doc.length !== 11) { setCpfInfo({ ok: false, texto: 'CPF tem 11 dígitos.' }); return; }
+    setConsultandoCpf(true);
+    try {
+      const r = await fetch('/api/documento/consultar', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ documento: doc, filialId }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setCpfInfo(null); return; }
+      if (!d.valido) { setCpfInfo({ ok: false, texto: d.erro ?? 'CPF não confere.' }); return; }
+      setCpfInfo({ ok: true, texto: d.nome ? `${d.nome} · ${d.onde}` : d.onde });
+      if (d.nome) setNome((v) => v.trim() || d.nome);
+    } catch {
+      setCpfInfo(null);
+    } finally {
+      setConsultandoCpf(false);
+    }
+  }
+
   async function salvar() {
     const cpfDigits = cpf.replace(/\D/g, '');
     if (cpfDigits && cpfDigits.length !== 11) {
@@ -736,10 +764,17 @@ function FuncionarioForm({
           CPF
           <input
             value={cpf}
-            onChange={(e) => setCpf(e.target.value)}
+            onChange={(e) => { setCpf(e.target.value); setCpfInfo(null); }}
+            onBlur={consultarCpf}
             placeholder="só números"
             className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
           />
+          {consultandoCpf && <span className="mt-1 block text-[11px] text-slate-500">Consultando…</span>}
+          {!consultandoCpf && cpfInfo && (
+            <span className={`mt-1 block text-[11px] ${cpfInfo.ok ? 'text-emerald-700' : 'font-medium text-red-600'}`}>
+              {cpfInfo.ok ? '✓ ' : '✕ '}{cpfInfo.texto}
+            </span>
+          )}
         </label>
         <label className="text-xs text-slate-500">
           Telefone

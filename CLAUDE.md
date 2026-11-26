@@ -42,6 +42,17 @@ integração com o **Consumer** (PDV Firebird on-site, via agente + CDC).
    CPF no registro que criou (reserva, pedido, inscrição): a reserva do site jogou
    o CPF fora até 10/10/2026 e ficou só com o primeiro nome.
 
+8. **Cadastro nenhum aceita CPF/CNPJ errado, e documento informado é CONSULTADO.**
+   Norma do dono (26/11/2026, "já falei mais de 20 vezes"): toda rota que grava
+   CPF/CNPJ confere o dígito com `validarCpf`/`validarCnpj`/`validarDocumento` de
+   `@/lib/nfce/documento` (só 11/14 dígitos NÃO basta) — na edição, barra só o
+   número que MUDOU, pra não travar quem já está errado. Tela que pede documento
+   chama `POST /api/documento/consultar` ao sair do campo: nosso cadastro primeiro
+   (funcionário, fornecedor, cliente); não tendo, CPF → SPC (`identificarPorCpf`),
+   CNPJ → Receita (`buscarCnpjReceita`), e preenche o nome. Nunca perguntar ao
+   dono um dado que o cadastro ou o SPC tem. Caso: o Dias (Mar) entrou com CPF
+   134.402.999-13 (inválido) e o Pix do adiantamento foi recusado (PIXP57).
+
 ## Multi-tenant & permissões
 - Hierarquia: `organizacao → filial → dados`. Toda query filtra por `filialId`.
 - Permissões: guards `exigirPermPage`/`exigirPermApi`/`negarSemPerm` de `@/lib/exigir-perm` (códigos tipo `reserva.update`, `cotacao.create`). Acesso à filial via `usuario_filial`.

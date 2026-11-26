@@ -11,6 +11,7 @@ import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
+import { validarDocumento } from '@/lib/nfce/documento';
 
 const Body = z.object({
   fornecedorId: z.string().uuid(),
@@ -35,6 +36,9 @@ export async function POST(req: NextRequest) {
   const cpfDigits = body.cpf.replace(/\D/g, '');
   if (cpfDigits.length !== 11) {
     return new NextResponse('CPF deve ter 11 dígitos', { status: 400 });
+  }
+  if (!validarDocumento(cpfDigits)) {
+    return new NextResponse('CPF não confere (dígito verificador). Corrija o CPF no cadastro antes de criar o cliente.', { status: 400 });
   }
 
   // Confere fornecedor + RBAC

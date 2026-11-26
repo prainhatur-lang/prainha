@@ -19,7 +19,43 @@ export function NovoFornecedor({ filialId }: { filialId: string }) {
   const [vendedorNome, setVendedorNome] = useState('');
   const [vendedorZap, setVendedorZap] = useState('');
 
+  // Documento informado é CONSULTADO (dono 26/11/2026): nosso cadastro → Receita
+  // (CNPJ) / SPC (CPF). Número errado avisa na hora; o que voltar preenche só o
+  // que está vazio.
+  const [docInfo, setDocInfo] = useState<{ ok: boolean; texto: string } | null>(null);
+  const [consultando, setConsultando] = useState(false);
+  async function consultarDocumento() {
+    const doc = cnpj.replace(/\D/g, '');
+    if (!doc) { setDocInfo(null); return; }
+    if (doc.length !== 11 && doc.length !== 14) {
+      setDocInfo({ ok: false, texto: 'CNPJ tem 14 dígitos e CPF tem 11.' });
+      return;
+    }
+    setConsultando(true);
+    try {
+      const r = await fetch('/api/documento/consultar', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ documento: doc, filialId }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setDocInfo(null); return; }
+      if (!d.valido) { setDocInfo({ ok: false, texto: d.erro ?? 'CPF/CNPJ não confere.' }); return; }
+      setDocInfo({ ok: true, texto: d.nome ? `${d.nome} · ${d.onde}` : d.onde });
+      if (d.nome) setNome((v) => v.trim() || d.nome);
+      const x = d.dados ?? {};
+      if (x.razaoSocial) setRazaoSocial((v) => v.trim() || x.razaoSocial);
+      if (x.cidade) setCidade((v) => v.trim() || x.cidade);
+      if (x.uf) setUf((v) => v || String(x.uf).toUpperCase());
+    } catch {
+      setDocInfo(null);
+    } finally {
+      setConsultando(false);
+    }
+  }
+
   function limpar() {
+    setDocInfo(null);
     setNome('');
     setCnpj('');
     setRazaoSocial('');
@@ -131,11 +167,18 @@ export function NovoFornecedor({ filialId }: { filialId: string }) {
                 <input
                   type="text"
                   value={cnpj}
-                  onChange={(e) => setCnpj(e.target.value)}
+                  onChange={(e) => { setCnpj(e.target.value); setDocInfo(null); }}
+                  onBlur={consultarDocumento}
                   required
                   placeholder="Só números"
                   className="mt-1 w-full rounded-md border border-slate-300 px-3 py-1.5 font-mono text-sm"
                 />
+                {consultando && <p className="mt-1 text-[11px] text-slate-500">Consultando…</p>}
+                {!consultando && docInfo && (
+                  <p className={`mt-1 text-[11px] ${docInfo.ok ? 'text-emerald-700' : 'font-medium text-red-600'}`}>
+                    {docInfo.ok ? '✓ ' : '✕ '}{docInfo.texto}
+                  </p>
+                )}
               </div>
               <div>
                 <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-500">

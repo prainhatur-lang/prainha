@@ -9,6 +9,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { negarSemPerm } from '@/lib/exigir-perm';
 import { garantirVinculoFolhaNasFiliais } from '@/lib/rh/vincular-folha-extras';
 import { hojeBr } from '@/lib/datas';
+import { validarCnpj, validarCpf } from '@/lib/nfce/documento';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -89,6 +90,15 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
   const set: Record<string, unknown> = { atualizadoEm: new Date() };
   if (d.nome !== undefined) set.nome = d.nome.trim();
+  // Cadastro não aceita documento errado (dono 26/11/2026). Só barra quando o
+  // número enviado MUDOU: quem já está com documento errado segue editável nos
+  // outros campos, e a correção (número certo) passa.
+  if (d.cpf && d.cpf !== check.fn.cpf && !validarCpf(d.cpf)) {
+    return NextResponse.json({ error: 'CPF não confere (dígito verificador). Confira os números com o documento: cadastro não aceita CPF errado.' }, { status: 400 });
+  }
+  if (d.cnpjRegistro && d.cnpjRegistro !== check.fn.cnpjRegistro && !validarCnpj(d.cnpjRegistro)) {
+    return NextResponse.json({ error: 'CNPJ não confere (dígito verificador). Confira os números: cadastro não aceita CNPJ errado.' }, { status: 400 });
+  }
   if (d.cpf !== undefined) set.cpf = d.cpf;
   if (d.telefone !== undefined) set.telefone = d.telefone;
   if (d.endereco !== undefined) set.endereco = d.endereco;

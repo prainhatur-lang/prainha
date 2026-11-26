@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/server';
 import { db, schema } from '@concilia/db';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
+import { validarDocumento } from '@/lib/nfce/documento';
 
 const Body = z.object({
   fornecedorId: z.string().uuid(),
@@ -38,6 +39,7 @@ export async function POST(req: NextRequest) {
     .select({
       filialId: schema.fornecedor.filialId,
       codigoExterno: schema.fornecedor.codigoExterno,
+      cnpjOuCpf: schema.fornecedor.cnpjOuCpf,
     })
     .from(schema.fornecedor)
     .where(eq(schema.fornecedor.id, body.fornecedorId))
@@ -60,6 +62,15 @@ export async function POST(req: NextRequest) {
   const cnpfDigits = body.campos.cnpjOuCpf?.replace(/\D/g, '') ?? undefined;
   if (cnpfDigits && cnpfDigits.length !== 11 && cnpfDigits.length !== 14) {
     return new NextResponse('CPF/CNPJ inválido', { status: 400 });
+  }
+  // Cadastro não aceita documento errado (dono 26/11/2026). Só barra o número
+  // NOVO: reenviar o que já está gravado não trava a edição dos outros campos.
+  if (
+    cnpfDigits &&
+    cnpfDigits !== (forn.cnpjOuCpf ?? '').replace(/\D/g, '') &&
+    !validarDocumento(cnpfDigits)
+  ) {
+    return new NextResponse('CPF/CNPJ não confere (dígito verificador). Confira os números com o documento.', { status: 400 });
   }
 
   const ids: { fornecedor?: string; cliente?: string } = {};
