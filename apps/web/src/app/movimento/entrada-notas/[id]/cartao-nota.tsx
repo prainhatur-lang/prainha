@@ -11,6 +11,15 @@ import { brl } from '@/lib/format';
 export interface CartaoOpcaoUi {
   banco: string;
   final: string;
+  tipo?: 'debito';
+}
+
+export interface DebitoAchadoUi {
+  id: string;
+  data: string;
+  valor: number;
+  descricao: string | null;
+  conta: string;
 }
 
 export interface ParcelaAchadaUi {
@@ -33,6 +42,7 @@ export function CartaoNota({
   valorTotal,
   achadas,
   contasAbertas,
+  debito = null,
 }: {
   notaId: string;
   cartoes: CartaoOpcaoUi[];
@@ -41,6 +51,9 @@ export function CartaoNota({
   achadas: ParcelaAchadaUi[];
   /** Contas a pagar que esta nota já gerou (aviso de pagar duas vezes). */
   contasAbertas: number;
+  /** Cartão de débito: a conta de onde sai e o débito achado no extrato.
+   *  null = cartão de crédito (encontro com a fatura, como sempre). */
+  debito?: { conta: string; achados: DebitoAchadoUi[] } | null;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -50,10 +63,12 @@ export function CartaoNota({
   const [erro, setErro] = useState<string | null>(null);
   const [salvando, setSalvando] = useState(false);
 
+  const selDebito = cartoes.some((c) => c.tipo === 'debito' && `${c.banco}|${c.final}` === cartao);
+
   async function salvar(limpar: boolean) {
     setErro(null);
     const [banco, final] = cartao.split('|');
-    const n = Number(parcelas);
+    const n = selDebito ? 1 : Number(parcelas);
     if (!limpar && (!banco || !final || !Number.isInteger(n) || n < 1)) {
       setErro('Escolha o cartão e o número de parcelas.');
       return;
@@ -92,6 +107,7 @@ export function CartaoNota({
           {cartoes.map((c) => (
             <option key={`${c.banco}|${c.final}`} value={`${c.banco}|${c.final}`}>
               {c.banco} final {c.final}
+              {c.tipo === 'debito' ? ' (débito)' : ''}
             </option>
           ))}
         </select>
@@ -102,9 +118,10 @@ export function CartaoNota({
           type="number"
           min={1}
           max={36}
-          value={parcelas}
+          value={selDebito ? '1' : parcelas}
+          disabled={selDebito}
           onChange={(e) => setParcelas(e.target.value)}
-          className="mt-0.5 block w-16 rounded-md border border-slate-300 px-2 py-1 text-xs"
+          className="mt-0.5 block w-16 rounded-md border border-slate-300 px-2 py-1 text-xs disabled:bg-slate-100"
         />
       </label>
       <button
@@ -131,7 +148,7 @@ export function CartaoNota({
     return (
       <div className="mt-4 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-600">
         <div className="flex items-center justify-between gap-4">
-          <span>💳 Esta compra foi paga no cartão de crédito?</span>
+          <span>💳 Esta compra foi paga no cartão (crédito ou débito)?</span>
           {!editando && (
             <button
               type="button"
@@ -158,12 +175,20 @@ export function CartaoNota({
       <div className="flex items-start justify-between gap-4">
         <div className="text-xs text-violet-900">
           <div className="text-sm font-semibold">
-            💳 Pago no cartão {atual.banco} final {atual.final}
+            💳 Pago no cartão {debito ? 'de débito ' : ''}
+            {atual.banco} final {atual.final}
           </div>
-          <div className="mt-0.5">
-            {atual.parcelas}x de <span className="font-mono font-semibold">{brl(valorParcela)}</span> · não gera
-            conta a pagar (quem paga é a fatura)
-          </div>
+          {debito ? (
+            <div className="mt-0.5">
+              <span className="font-mono font-semibold">{brl(valorTotal)}</span> · sai na hora da conta{' '}
+              {debito.conta} · não gera conta a pagar
+            </div>
+          ) : (
+            <div className="mt-0.5">
+              {atual.parcelas}x de <span className="font-mono font-semibold">{brl(valorParcela)}</span> · não gera
+              conta a pagar (quem paga é a fatura)
+            </div>
+          )}
         </div>
         {!editando && (
           <div className="flex shrink-0 gap-2">
@@ -197,6 +222,36 @@ export function CartaoNota({
         </p>
       )}
 
+      {debito && (
+        <div className="mt-3 border-t border-violet-200 pt-2">
+          <div className="text-[11px] font-semibold uppercase tracking-wide text-violet-800">
+            Encontro com o extrato da conta — {debito.achados.length > 0 ? 'débito achado' : 'débito não achado'}
+          </div>
+          {debito.achados.length === 0 ? (
+            <p className="mt-1 text-[11px] text-violet-800">
+              Ainda não apareceu compra no débito deste valor no extrato da conta {debito.conta}. Quando o
+              extrato entrar, o débito aparece aqui.
+            </p>
+          ) : (
+            <div className="mt-1 space-y-0.5 text-[11px]">
+              {debito.achados.map((d) => (
+                <div key={d.id} className="flex flex-wrap justify-between gap-x-3 font-mono text-slate-700">
+                  <span>✓ {dataBr(d.data)}</span>
+                  <span className="min-w-0 flex-1 truncate font-sans">{d.descricao ?? 'Compra no débito'}</span>
+                  <span className="font-semibold">{brl(d.valor)}</span>
+                </div>
+              ))}
+              {debito.achados.length > 1 && (
+                <p className="font-sans text-amber-800">
+                  ⚠ Mais de um débito deste valor no período — confira qual é o desta nota.
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {!debito && (
       <div className="mt-3 border-t border-violet-200 pt-2">
         <div className="text-[11px] font-semibold uppercase tracking-wide text-violet-800">
           Encontro com a fatura — {achadas.length} de {atual.parcelas} parcela(s) achada(s)
@@ -227,6 +282,7 @@ export function CartaoNota({
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }

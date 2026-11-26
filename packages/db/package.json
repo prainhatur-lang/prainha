@@ -241,6 +241,7 @@
     "migrate:portador-atribuido": "tsx scripts/migrate-portador-atribuido.ts",
     "migrate:cartao-rateio": "tsx scripts/migrate-cartao-rateio.ts",
     "migrate:nota-cartao": "tsx scripts/migrate-nota-cartao.ts",
+    "migrate:cartao-debito": "tsx scripts/migrate-cartao-debito.ts",
     "migrate:fornecedor-contato-bordero": "tsx scripts/migrate-fornecedor-contato-bordero.ts",
     "migrate:conta-pagar-criado-por": "tsx scripts/migrate-conta-pagar-criado-por.ts",
     "migrate:registro-exclusao": "tsx scripts/migrate-registro-exclusao.ts",

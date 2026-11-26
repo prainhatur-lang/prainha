@@ -84,3 +84,28 @@ export const cartaoLancamento = pgTable(
     orgDataIdx: index('idx_cartao_lanc_org_data').on(t.organizacaoId, t.dataCompra),
   }),
 );
+
+// Cartão de DÉBITO da empresa (dono, 26/11/2026): não tem fatura — a compra
+// sai da conta na mesma hora. O cadastro diz de QUAL conta o cartão debita,
+// pra nota de entrada paga nele se ligar ao débito do extrato
+// (lancamento_banco, histórico COMPRA_DEBITO). O extrato não traz o final do
+// cartão: a ligação é pela conta + valor + data.
+export const cartaoDebito = pgTable(
+  'cartao_debito',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    organizacaoId: uuid('organizacao_id')
+      .notNull()
+      .references(() => organizacao.id, { onDelete: 'cascade' }),
+    banco: varchar('banco', { length: 60 }).notNull(),
+    cartaoFinal: varchar('cartao_final', { length: 8 }).notNull(),
+    /** Conta de onde a compra sai (conta_bancaria da casa dona da conta). */
+    contaBancariaId: uuid('conta_bancaria_id').notNull(),
+    apelido: varchar('apelido', { length: 100 }),
+    criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
+    excluidoEm: timestamp('excluido_em', { withTimezone: true }),
+  },
+  (t) => ({
+    orgIdx: index('idx_cartao_debito_org').on(t.organizacaoId),
+  }),
+);

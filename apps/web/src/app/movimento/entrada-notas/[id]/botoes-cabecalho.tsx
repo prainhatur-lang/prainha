@@ -116,7 +116,7 @@ export function BotoesCabecalho({
   /** Emissão da nota (YYYY-MM-DD BRT): vencimento lido antes dela é leitura errada. */
   dataEmissao?: string | null;
   /** Cartões de crédito da empresa (faturas enviadas) pra opção "paguei no cartão". */
-  cartoes?: { banco: string; final: string }[];
+  cartoes?: { banco: string; final: string; tipo?: 'debito' }[];
   /** Cartão já informado nesta nota (pré-marca a opção). */
   cartaoAtual?: { banco: string; final: string; parcelas: number } | null;
   /** Pagamento antecipado (16/11/2026): nota com fornecedor e ainda sem conta a
@@ -407,7 +407,7 @@ function ModalLancar({
   lerPagamentoXml: boolean;
   valorTotalNota: number | null;
   dataEmissao: string | null;
-  cartoes: { banco: string; final: string }[];
+  cartoes: { banco: string; final: string; tipo?: 'debito' }[];
   cartaoAtual: { banco: string; final: string; parcelas: number } | null;
   onXmlLido: () => void;
   onSuccess: (texto: string) => void;
@@ -578,7 +578,9 @@ function ModalLancar({
 
   // Quando precisa criar contas a pagar?
   const vaiCriarContas = !noCartao && (temDuplicatasXml || (!temDuplicatasXml && modoSemDup !== 'avista'));
-  const nParcelasCartao = Number(cartaoParcelas);
+  // Cartão de débito (26/11/2026): sai da conta na hora, sempre 1x.
+  const cartaoEhDebito = cartoes.some((c) => c.tipo === 'debito' && `${c.banco}|${c.final}` === cartaoSel);
+  const nParcelasCartao = cartaoEhDebito ? 1 : Number(cartaoParcelas);
   const cartaoValido =
     !noCartao || (cartaoSel !== '' && Number.isInteger(nParcelasCartao) && nParcelasCartao >= 1 && nParcelasCartao <= 36);
   const precisaCategoria = vaiCriarContas && temFornecedor;
@@ -856,7 +858,7 @@ function ModalLancar({
                 onChange={(e) => setNoCartao(e.target.checked)}
                 className="h-4 w-4"
               />
-              💳 Paguei no cartão de crédito
+              💳 Paguei no cartão (crédito ou débito)
             </label>
             {noCartao && (
               <div className="mt-2 space-y-2">
@@ -872,6 +874,7 @@ function ModalLancar({
                       {cartoes.map((c) => (
                         <option key={`${c.banco}|${c.final}`} value={`${c.banco}|${c.final}`}>
                           {c.banco} final {c.final}
+                          {c.tipo === 'debito' ? ' (débito)' : ''}
                         </option>
                       ))}
                     </select>
@@ -882,7 +885,8 @@ function ModalLancar({
                       type="number"
                       min={1}
                       max={36}
-                      value={cartaoParcelas}
+                      value={cartaoEhDebito ? '1' : cartaoParcelas}
+                      disabled={cartaoEhDebito}
                       onChange={(e) => setCartaoParcelas(e.target.value)}
                       className="mt-0.5 block w-20 rounded-md border border-slate-300 px-2 py-1.5 text-sm"
                     />
@@ -899,7 +903,13 @@ function ModalLancar({
                     Nenhum cartão ainda: envie uma fatura em Financeiro → Cartões.
                   </p>
                 )}
-                <p className="text-[10px] text-violet-900">
+                {cartaoEhDebito && (
+                  <p className="text-[10px] font-medium text-violet-900">
+                    Cartão de débito: sai da conta na hora. Não cria conta a pagar; a nota fica ligada ao
+                    débito do extrato da conta.
+                  </p>
+                )}
+                <p className={`text-[10px] text-violet-900 ${cartaoEhDebito ? 'hidden' : ''}`}>
                   Não cria conta a pagar: quem paga é a fatura. A nota fica ligada ao cartão e mostra as
                   parcelas conforme as faturas forem entrando.
                 </p>

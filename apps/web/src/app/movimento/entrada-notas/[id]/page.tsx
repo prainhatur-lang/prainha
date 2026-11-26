@@ -28,7 +28,7 @@ import { EditPix } from '@/app/cadastros/fornecedores/edit-pix';
 import { ReciboPeloCelular } from './recibo-pelo-celular';
 import { CartaoNota } from './cartao-nota';
 import { FormaPagamentoNota } from '../forma-pagamento-nota';
-import { cartoesDaEmpresa, parcelasDaNotaNoCartao } from '@/lib/nota-cartao';
+import { cartoesDaEmpresa, debitoDaNotaNaConta, parcelasDaNotaNoCartao } from '@/lib/nota-cartao';
 
 export const dynamic = 'force-dynamic';
 
@@ -432,6 +432,16 @@ export default async function NotaDetalhePage(props: {
         dataEmissao: nota.dataEmissao ? dateToBrYmd(new Date(nota.dataEmissao)) : null,
       })
     : [];
+  // Cartão de débito (26/11/2026): em vez da fatura, o débito no extrato da conta.
+  const debitoCartao = cartaoAtual
+    ? await debitoDaNotaNaConta({
+        filialId: nota.filialId,
+        banco: cartaoAtual.banco,
+        final: cartaoAtual.final,
+        valorTotal: valorTotalNota,
+        dataEmissao: nota.dataEmissao ? dateToBrYmd(new Date(nota.dataEmissao)) : null,
+      })
+    : null;
   const valorProdutos = Number(nota.valorProdutos ?? 0);
   const valorFrete = Number(nota.valorFrete ?? 0);
   const valorSeguro = Number(nota.valorSeguro ?? 0);
@@ -741,6 +751,7 @@ export default async function NotaDetalhePage(props: {
             atual={cartaoAtual}
             valorTotal={valorTotalNota}
             achadas={parcelasCartao}
+            debito={debitoCartao}
             contasAbertas={cartaoAtual ? contasPagar.length : 0}
           />
         )}
