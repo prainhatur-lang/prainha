@@ -62,6 +62,11 @@ export interface PedidoPix {
     /** Foto do pedido / nota de serviço / boleto anexado (20/10/2026). */
     fotos?: Array<{ url: string; rotulo: string }>;
   };
+  /** Diferença de pedido pago em partes: só se paga depois que a mercadoria
+   *  chegar ou com autorização do Admin (dono 26/11/2026). */
+  aguardaMercadoria?: boolean;
+  /** Autorização do Admin pra pagar antes de chegar. */
+  liberada?: { em: string; motivo: string | null } | null;
 }
 
 const quemCurto = (s: string) => (s.includes('@') ? s.split('@')[0]! : s);
@@ -319,7 +324,7 @@ function AvisoGemeas({ conta, podeMarcar }: { conta: PedidoPix; podeMarcar: bool
 
 /** Conta que não pode sair por Pix agora: boleto, ou gêmea já paga (vinculada ou sem conferir). */
 function bloqueiaPix(c: PedidoPix) {
-  return c.forma === 'boleto' || !!c.jaPagaPorGemea || (c.gemeas ?? []).some((g) => g.paga);
+  return c.forma === 'boleto' || !!c.jaPagaPorGemea || (c.gemeas ?? []).some((g) => g.paga) || !!c.aguardaMercadoria;
 }
 
 export interface GrupoPedidos {
@@ -403,7 +408,7 @@ export function GrupoPix({
 }) {
   const router = useRouter();
   const [marcadas, setMarcadas] = useState<Set<string>>(
-    () => new Set(grupo.contas.filter((c) => !c.pareceBoleto && !c.jaPagaPorGemea).map((c) => c.id)),
+    () => new Set(grupo.contas.filter((c) => !c.pareceBoleto && !c.jaPagaPorGemea && !c.aguardaMercadoria).map((c) => c.id)),
   );
   const [dataPgto, setDataPgto] = useState(hoje);
   const [pending, setPending] = useState(false);
@@ -481,6 +486,31 @@ export function GrupoPix({
     }
     window.dispatchEvent(new Event(EVENTO_SALDO_PIX));
     router.refresh();
+  }
+
+  // Autorizar pagar antes de a mercadoria chegar — só o Admin (26/11/2026).
+  async function autorizar(c: PedidoPix) {
+    const motivo = window.prompt(
+      `Autorizar o pagamento de "${c.descricao}" (${brl(c.saldo)}) ANTES de a mercadoria chegar?\n\nEscreva o motivo:`,
+    );
+    if (!motivo || motivo.trim().length < 3) return;
+    setPending(true);
+    setMsg(null);
+    try {
+      const r = await fetch(`/api/financeiro/contas/${c.id}/liberar-pagamento`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ motivo: motivo.trim() }),
+      });
+      if (!r.ok) {
+        const d = (await r.json().catch(() => ({}))) as { error?: string };
+        setMsg({ tipo: 'erro', texto: d.error ?? `erro ${r.status}` });
+        return;
+      }
+      router.refresh();
+    } finally {
+      setPending(false);
+    }
   }
 
   function alternar(id: string) {
@@ -652,7 +682,9 @@ export function GrupoPix({
             <div className="flex items-center gap-3 px-4 py-2 text-sm">
               <input
                 type="checkbox"
-                checked={marcadas.has(c.id)}
+                checked={marcadas.has(c.id) && !c.aguardaMercadoria}
+                disabled={!!c.aguardaMercadoria}
+                title={c.aguardaMercadoria ? 'Só se paga depois que a mercadoria chegar, ou com autorização' : undefined}
                 onChange={() => alternar(c.id)}
                 className="h-4 w-4"
               />
@@ -693,6 +725,32 @@ export function GrupoPix({
               {c.jaPagaPorGemea && (
                 <span className="shrink-0 rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800">
                   já paga pela outra
+                </span>
+              )}
+              {c.aguardaMercadoria && (
+                <span
+                  className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900"
+                  title="Diferença de pedido pago em partes: só se paga depois que a mercadoria chegar (conferência / lançar no estoque) ou com autorização do Admin"
+                >
+                  🔒 Aguardando a mercadoria chegar
+                </span>
+              )}
+              {c.aguardaMercadoria && podePagarPix && (
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() => void autorizar(c)}
+                  className="shrink-0 rounded-md border border-amber-400 bg-white px-2 py-0.5 text-[10px] font-semibold text-amber-900 hover:bg-amber-50 disabled:opacity-50"
+                >
+                  Autorizar pagamento
+                </button>
+              )}
+              {!c.aguardaMercadoria && c.liberada && (
+                <span
+                  className="shrink-0 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-800"
+                  title={c.liberada.motivo ?? undefined}
+                >
+                  ✓ autorizada antes de chegar ({c.liberada.em})
                 </span>
               )}
               <span className={`w-24 shrink-0 text-right font-medium ${c.jaPagaPorGemea ? 'text-slate-400 line-through' : 'text-slate-900'}`}>

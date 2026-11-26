@@ -336,6 +336,13 @@ export const contaPagar = pgTable(
     boletoStoragePath: text('boleto_storage_path'),
     /** Forma desta conta (23/11/2026), por cima da do fornecedor: 'boleto' | 'pix' | NULL (segue o fornecedor). */
     formaPagamento: varchar('forma_pagamento', { length: 10 }),
+    /** Só se paga depois que a mercadoria da nota chegar, ou com autorização (dono 26/11/2026:
+     *  a diferença do pedido pago em partes não fica solta no Pagar por Pix). */
+    soAposChegar: boolean('so_apos_chegar').notNull().default(false),
+    /** Autorização pra pagar antes de chegar: quando, quem e por quê. */
+    liberadaEm: timestamp('liberada_em', { withTimezone: true }),
+    liberadaPor: uuid('liberada_por'),
+    liberadaMotivo: text('liberada_motivo'),
     /** Mesma dívida lançada duas vezes (ex.: boleto e pedido sem nota): aponta pra outra conta.
      *  Paga uma, a outra não se paga de novo. */
     mesmaDividaId: uuid('mesma_divida_id'),

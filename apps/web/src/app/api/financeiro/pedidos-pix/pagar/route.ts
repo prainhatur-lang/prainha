@@ -29,6 +29,7 @@ import { folhaMensalDasContas } from '@/lib/rh/folha-mensal-pix';
 import { destinoContaInter, folhaSemanalChavePixDasContas, folhaSemanalPixDasContas, funcionarioContaInterDasContas } from '@/lib/rh/folha-semanal-pix';
 import { consumerParado, FORNECEDORES_CONSUMER_NO_PIX } from '@/lib/consumer-contas';
 import { formaEfetiva, travaMesmaDivida } from '@/lib/conta-mesma-divida';
+import { travaAguardaMercadoria } from '@/lib/conta-aguarda-mercadoria';
 import { baixarContasDoPix, lerSaldoParaPix, podePagarPix, sincronizarPixAbertos, type SaldoParaPix } from '@/lib/pix-pagamento';
 
 export const dynamic = 'force-dynamic';
@@ -188,6 +189,9 @@ export async function POST(req: Request) {
   // Mesma dívida (23/11/2026): gêmea já paga (boleto, baixa, borderô) → não manda.
   const dobro = await travaMesmaDivida(contaIds);
   if (dobro) return NextResponse.json({ error: `${dobro.msg} O Pix NÃO foi enviado.`, mesmaDivida: dobro.tipo }, { status: 409 });
+  // Diferença de pedido pago em partes (26/11/2026): só depois que a mercadoria chegar ou com autorização.
+  const aguarda = await travaAguardaMercadoria(contaIds);
+  if (aguarda) return NextResponse.json({ error: `${aguarda.msg} O Pix NÃO foi enviado.`, aguardaMercadoria: true }, { status: 409 });
 
   // Trava por casa + confere conta presa + confere saldo + cria a linha
   // ENVIANDO, tudo junto. O saldo fica dentro da trava: dois Pix da mesma casa

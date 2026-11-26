@@ -15,6 +15,14 @@
 // outra metade depois no pix"): divide o pagamento em partes, cada uma com a
 // sua data. Só quando a nota não traz parcelas próprias (0 ou 1 gravada) e a
 // soma bate com o total. Sem `parcelas`, tudo igual a antes.
+// Cada parte pode trazer (dono 26/11/2026, "a diferença só pode ser paga depois
+// que chegar a mercadoria ou que já for autorizado... pode ser paga em Pix ou em
+// boleto"):
+//   aposChegar — a conta nasce TRAVADA até a mercadoria chegar ou o Admin
+//                autorizar (@/lib/conta-aguarda-mercadoria). Sem informar, a 1ª
+//                parte (a antecipada) fica livre e as seguintes travadas.
+//   forma      — 'pix' | 'boleto' só desta parte (por cima da forma da nota).
+//                Pix exige a chave já confirmada no "Como se paga?" da nota.
 // NÃO paga nada: só deixa a conta em aberto (aparece no Pagar por Pix).
 
 import { NextResponse } from 'next/server';
@@ -36,6 +44,8 @@ const Body = z.object({
       z.object({
         dataVencimento: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
         valor: z.number().positive(),
+        aposChegar: z.boolean().optional(),
+        forma: z.enum(['pix', 'boleto']).nullable().optional(),
       }),
     )
     .min(2)
@@ -72,6 +82,7 @@ export async function POST(
       origemImportacao: schema.notaCompra.origemImportacao,
       situacao: schema.notaCompra.situacao,
       valorTotal: schema.notaCompra.valorTotal,
+      formaPagamento: schema.notaCompra.formaPagamento,
     })
     .from(schema.notaCompra)
     .where(eq(schema.notaCompra.id, id))
@@ -165,6 +176,14 @@ export async function POST(
         { status: 400 },
       );
     }
+    // Parte no Pix com a nota em outra forma: a chave se confirma na entrada
+    // ("Como se paga?"), não aqui — Pix só na chave autorizada.
+    if (partes.some((p) => p.forma === 'pix') && nota.formaPagamento !== 'pix') {
+      return NextResponse.json(
+        { error: 'Pra pagar uma parte no Pix, marque 💠 Pix em "Como se paga?" e confirme a chave do fornecedor primeiro. A parte do boleto se marca aqui.' },
+        { status: 400 },
+      );
+    }
     const novas: typeof parcelas = [];
     for (let i = 0; i < partes.length; i++) {
       const p = partes[i]!;
@@ -244,7 +263,13 @@ export async function POST(
         valor: d.valor,
         descricao,
         codigoReferencia: REF_ANTECIPADO,
-        observacao: 'Pagamento antecipado — mercadoria ainda não recebida quando a conta foi lançada.',
+        // partes vêm ordenadas por data, igual às parcelas: mesmo índice.
+        soAposChegar: partes ? (partes[i]?.aposChegar ?? i > 0) : false,
+        formaPagamento: partes ? (partes[i]?.forma ?? null) : null,
+        observacao:
+          partes && (partes[i]?.aposChegar ?? i > 0)
+            ? 'Diferença de pedido pago em partes — só pagar depois que a mercadoria chegar, ou com autorização.'
+            : 'Pagamento antecipado — mercadoria ainda não recebida quando a conta foi lançada.',
       })
       .returning({ id: schema.contaPagar.id });
     if (!conta) continue;

@@ -55,6 +55,7 @@ import { folhaMensalDasContas, sqlEhFolhaMensal } from '@/lib/rh/folha-mensal-pi
 import { destinoContaInter, folhaSemanalChavePixDasContas, folhaSemanalPixDasContas, funcionarioContaInterDasContas, sqlEhFolhaSemanalPix } from '@/lib/rh/folha-semanal-pix';
 import { consumerParado, FORNECEDORES_CONSUMER_NO_PIX } from '@/lib/consumer-contas';
 import { formaEfetiva, gemeasDasContas } from '@/lib/conta-mesma-divida';
+import { sqlAguardaMercadoria } from '@/lib/conta-aguarda-mercadoria';
 
 export const dynamic = 'force-dynamic';
 
@@ -273,6 +274,10 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
       formaForn: f.formaPagamento,
       // Forma informada NA ENTRADA da nota (23/11/2026) vale quando a conta não tem a dela.
       formaConta: sql<string | null>`coalesce(${c.formaPagamento}, (select n.forma_pagamento from nota_compra n where n.id = ${c.notaCompraId}))`,
+      // Diferença de pedido pago em partes (26/11/2026): travada até a mercadoria chegar ou o Admin autorizar.
+      aguardaMercadoria: sql<boolean>`${sqlAguardaMercadoria(sql`"conta_pagar"`)}`,
+      liberadaEm: sql<string | null>`to_char(${c.liberadaEm} AT TIME ZONE 'America/Sao_Paulo', 'DD/MM HH24:MI')`,
+      liberadaMotivo: c.liberadaMotivo,
     })
     .from(c)
     .leftJoin(f, eq(f.id, c.fornecedorId))
@@ -494,6 +499,8 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
       forma,
       formaConta: formaEfetiva(l.formaConta, null),
       aguardandoBoleto: ehBoletoMarcado && !l.temBoleto,
+      aguardaMercadoria: !!l.aguardaMercadoria,
+      liberada: l.liberadaEm ? { em: l.liberadaEm, motivo: l.liberadaMotivo } : null,
       origem: (() => {
         const o = origens.get(l.id);
         if (!o) return undefined;

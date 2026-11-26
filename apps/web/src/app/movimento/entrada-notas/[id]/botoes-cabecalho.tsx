@@ -134,7 +134,9 @@ export function BotoesCabecalho({
   // Antecipado em partes (dono 26/11/2026): metade agora, metade depois.
   // Desligado = uma conta só, como sempre foi.
   const [emPartes, setEmPartes] = useState(false);
-  const [partes, setPartes] = useState<{ dataVencimento: string; valor: string }[]>([]);
+  const [partes, setPartes] = useState<
+    { dataVencimento: string; valor: string; forma?: '' | 'pix' | 'boleto'; aposChegar?: boolean }[]
+  >([]);
   const podeDividir = duplicatas.length <= 1 && (valorAntecipar ?? 0) > 0;
   const num = (v: string) => Number(v.replace(/\./g, '').replace(',', '.')) || 0;
   const somaPartes = partes.reduce((a, p) => a + Math.round(num(p.valor) * 100), 0);
@@ -151,7 +153,8 @@ export function BotoesCabecalho({
       const fmt = (c: number) => (c / 100).toFixed(2).replace('.', ',');
       setPartes([
         { dataVencimento: hojeBr(), valor: fmt(metade) },
-        { dataVencimento: '', valor: fmt(total - metade) },
+        // A diferença só se paga depois que a mercadoria chegar (26/11/2026).
+        { dataVencimento: '', valor: fmt(total - metade), aposChegar: true },
       ]);
     }
   }
@@ -243,7 +246,16 @@ export function BotoesCabecalho({
         body: JSON.stringify({
           categoriaId: catAntecipar || null,
           ...(emPartes
-            ? { parcelas: partes.map((p) => ({ dataVencimento: p.dataVencimento, valor: num(p.valor) })) }
+            ? {
+                parcelas: partes.map((p, i) => ({
+                  dataVencimento: p.dataVencimento,
+                  valor: num(p.valor),
+                  // 1ª parte se paga agora; as outras esperam a mercadoria
+                  // (a não ser que desmarquem) — dono 26/11/2026.
+                  aposChegar: i > 0 && p.aposChegar !== false,
+                  forma: p.forma || null,
+                })),
+              }
             : {}),
         }),
       });
@@ -350,7 +362,8 @@ export function BotoesCabecalho({
                 {emPartes && (
                   <div className="mt-2 space-y-1.5">
                     {partes.map((p, i) => (
-                      <div key={i} className="flex items-center gap-2">
+                      <div key={i} className="rounded border border-slate-200 bg-white p-1.5">
+                      <div className="flex items-center gap-2">
                         <span className="w-8 font-mono text-[10px] text-slate-500">
                           {i + 1}/{partes.length}
                         </span>
@@ -383,11 +396,44 @@ export function BotoesCabecalho({
                           </button>
                         )}
                       </div>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 pl-10 text-[10px] text-slate-600">
+                        <label className="flex items-center gap-1">
+                          paga por
+                          <select
+                            value={p.forma ?? ''}
+                            onChange={(e) =>
+                              setPartes((arr) =>
+                                arr.map((x, j) => (j === i ? { ...x, forma: e.target.value as '' | 'pix' | 'boleto' } : x)),
+                              )
+                            }
+                            className="rounded border border-slate-300 px-1 py-0.5 text-[10px]"
+                          >
+                            <option value="">como a nota</option>
+                            <option value="pix">💠 Pix</option>
+                            <option value="boleto">🧾 Boleto</option>
+                          </select>
+                        </label>
+                        {i === 0 ? (
+                          <span className="text-emerald-700">paga agora</span>
+                        ) : (
+                          <label className="flex items-center gap-1">
+                            <input
+                              type="checkbox"
+                              checked={p.aposChegar !== false}
+                              onChange={(e) =>
+                                setPartes((arr) => arr.map((x, j) => (j === i ? { ...x, aposChegar: e.target.checked } : x)))
+                              }
+                            />
+                            🔒 só pagar depois que a mercadoria chegar
+                          </label>
+                        )}
+                      </div>
+                      </div>
                     ))}
                     <div className="flex items-center justify-between">
                       <button
                         type="button"
-                        onClick={() => setPartes((arr) => [...arr, { dataVencimento: '', valor: '' }])}
+                        onClick={() => setPartes((arr) => [...arr, { dataVencimento: '', valor: '', aposChegar: true }])}
                         className="text-[10px] text-sky-700 hover:underline"
                       >
                         + adicionar parte
@@ -401,7 +447,10 @@ export function BotoesCabecalho({
                       </span>
                     </div>
                     <p className="text-[10px] text-slate-500">
-                      Cada parte vira uma conta a pagar com a sua data, no Pagar por Pix. Informe a data de cada uma.
+                      Cada parte vira uma conta a pagar com a sua data, no Pagar por Pix. Informe a data de cada uma. A
+                      parte com 🔒 fica travada: só libera quando a chegada do pedido for marcada (conferência / lançar no
+                      estoque) ou com autorização do Admin. Parte em Pix exige a nota marcada 💠 Pix em &quot;Como se
+                      paga?&quot; (chave confirmada).
                     </p>
                   </div>
                 )}

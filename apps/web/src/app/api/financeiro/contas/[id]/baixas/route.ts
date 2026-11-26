@@ -20,6 +20,7 @@ import { db, schema } from '@concilia/db';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { consumerParado } from '@/lib/consumer-contas';
 import { travaMesmaDivida } from '@/lib/conta-mesma-divida';
+import { travaAguardaMercadoria } from '@/lib/conta-aguarda-mercadoria';
 import { recalcularAgregado } from '@/lib/conta-pagar-baixa';
 import { lerMotivo, registrarExclusao } from '@/lib/registro-exclusao';
 import { estornarPagamentoDoPortador, lancarPagamentoDoPortador, portadorAtivoDaCasa } from '@/lib/portador';
@@ -113,6 +114,10 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
   // não leva segunda baixa. Só a parecida (sem vínculo) não trava aqui.
   const dobro = await travaMesmaDivida([id]).catch(() => null);
   if (dobro?.tipo === 'vinculada') return NextResponse.json({ error: dobro.msg }, { status: 409 });
+  // Diferença de pedido pago em partes (26/11/2026): sem baixa antes de a
+  // mercadoria chegar ou de o Admin autorizar.
+  const aguarda = await travaAguardaMercadoria([id]);
+  if (aguarda) return NextResponse.json({ error: aguarda.msg, aguardaMercadoria: true }, { status: 409 });
 
   const valorConta = Number(conta.valor);
   const jaPago = (
