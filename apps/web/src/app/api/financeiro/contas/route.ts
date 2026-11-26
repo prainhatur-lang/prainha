@@ -28,6 +28,7 @@ import { and, eq } from 'drizzle-orm';
 import { db, schema } from '@concilia/db';
 import { exigirPermApi } from '@/lib/exigir-perm';
 import { hojeBr } from '@/lib/datas';
+import { lerCodigoConta } from '@/lib/conta-consumo';
 import { garantirFornecedorNaFilial } from '@/lib/fornecedor-unico';
 import { notaDeOutraCasa } from '@/lib/conta-casa-errada';
 import { acharContaMesmoPedido, msgContaDuplicada, numerosDoTexto } from '@/lib/conta-duplicada';
@@ -50,7 +51,10 @@ const Body = z.object({
   categoriaId: z.string().uuid().nullable().optional(),
   observacao: z.string().trim().max(1000).nullable().optional(),
   /** Como se paga (25/11/2026): informado no lançamento, não na hora de pagar. */
-  formaPagamento: z.enum(['boleto', 'pix']).nullable().optional(),
+  formaPagamento: z.enum(['boleto', 'pix', 'qr']).nullable().optional(),
+  /** forma 'qr' (26/11/2026): o Pix copia-e-cola do QR (Meta, site, guia). Vai
+   *  na observação e o Pagar conta (código/QR) oferece "Pagar esta". */
+  pixCopiaCola: z.string().trim().max(700).nullable().optional(),
   forcar: z.boolean().optional(),
   forcarDuplicada: z.boolean().optional(),
   // Lançamento repetido mês a mês (04/11/2026): cada mês é uma conta, com n/N.
@@ -122,6 +126,7 @@ export async function POST(req: Request) {
   // Todo pagamento tem forma (dono 25/11/2026): conta que nasce EM ABERTO diz
   // como se paga. Boleto = o prazo é o vencimento. Pix = só na chave Pix que
   // está no cadastro do fornecedor (Pix só na chave autorizada).
+  let pixCopiaCola: string | null = null;
   if (!b.dataPagamento) {
     if (!b.formaPagamento) {
       return NextResponse.json(
@@ -144,6 +149,28 @@ export async function POST(req: Request) {
           { status: 400 },
         );
       }
+    }
+    // QR / Pix copia-e-cola (26/11/2026, recarga da Meta): não tem chave no
+    // cadastro — o código É o destino. Confere que é um Pix válido e guarda.
+    if (b.formaPagamento === 'qr') {
+      const lido = b.pixCopiaCola ? lerCodigoConta(b.pixCopiaCola) : null;
+      if (!lido) {
+        return NextResponse.json({ error: 'QR / copia-e-cola: cole o código Pix (começa com 000201).' }, { status: 400 });
+      }
+      if (!lido.ok) return NextResponse.json({ error: `QR / copia-e-cola: ${lido.erro}` }, { status: 400 });
+      if (lido.dado.tipo !== 'PIX') {
+        return NextResponse.json(
+          { error: 'Isso é um boleto, não Pix copia-e-cola. Marque Boleto.' },
+          { status: 400 },
+        );
+      }
+      if (lido.dado.valor != null && Math.abs(lido.dado.valor - b.valor) > 0.005) {
+        return NextResponse.json(
+          { error: `O QR é de R$ ${lido.dado.valor.toFixed(2).replace('.', ',')} e a conta está com outro valor. Acerte o valor.` },
+          { status: 400 },
+        );
+      }
+      pixCopiaCola = lido.dado.codigo;
     }
   }
 
@@ -196,7 +223,9 @@ export async function POST(req: Request) {
       fornecedorId,
       categoriaId: b.categoriaId ?? null,
       descricao: b.descricao,
-      observacao: b.observacao ?? null,
+      observacao: pixCopiaCola
+        ? `${b.observacao ? `${b.observacao}\n` : ''}Pix copia-e-cola: ${pixCopiaCola}`
+        : (b.observacao ?? null),
       valor: b.valor.toFixed(2),
       dataVencimento: b.dataVencimento,
       dataPagamento: b.dataPagamento ?? null,

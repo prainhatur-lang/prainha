@@ -22,6 +22,8 @@ export const dynamic = 'force-dynamic';
 
 interface SP {
   filialId?: string;
+  /** conta recém-lançada como QR / copia-e-cola: já chega escolhida */
+  contaId?: string;
 }
 
 export default async function PagarContaPage(props: { searchParams: Promise<SP> }) {
@@ -98,7 +100,11 @@ export default async function PagarContaPage(props: { searchParams: Promise<SP> 
       // repasse entre casas não paga a guia (quem paga é a pagadora)
       codigo: (c.descricao ?? '').startsWith('Repasse ') || emAndamento.has(c.id)
         ? null
-        : (c.observacao?.match(/C[óo]digo de barras:\s*(\d{44,48})/)?.[1] ?? null),
+        : (c.observacao?.match(/C[óo]digo de barras:\s*(\d{44,48})/)?.[1] ??
+          // conta lançada como QR / copia-e-cola (26/11/2026, recarga da Meta);
+          // o código tem espaço (nome do favorecido): vai até o fim da linha
+          c.observacao?.match(/Pix copia-e-cola:\s*(000201[^\n\r]+)/)?.[1] ??
+          null),
     }));
   const linhas: PagamentoLinha[] = pagamentos.map((p) => ({
     id: p.id,
@@ -154,6 +160,7 @@ export default async function PagarContaPage(props: { searchParams: Promise<SP> 
           temInter={temInter}
           hoje={hojeBr()}
           contas={contasAbertas}
+          contaInicial={contasAbertas.find((c) => c.id === sp.contaId && c.codigo)?.id ?? null}
           pagamentos={linhas}
         />
       </section>

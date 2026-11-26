@@ -54,16 +54,22 @@ export function PagarContaCliente(props: {
   temInter: boolean;
   hoje: string;
   contas: ContaAberta[];
+  /** conta que acabou de ser lançada como QR / copia-e-cola: chega escolhida */
+  contaInicial?: string | null;
   pagamentos: PagamentoLinha[];
 }) {
   const router = useRouter();
-  const [texto, setTexto] = useState('');
+  const ini = props.contaInicial ? (props.contas.find((c) => c.id === props.contaInicial) ?? null) : null;
+  const rotuloCurto = (c: ContaAberta) => c.rotulo.split(' · ').slice(1).join(' · ').slice(0, 100);
+  // Pix dinâmico (QR da Meta) não traz o valor no código: entra o da conta.
+  const valorDaConta = (c: ContaAberta) => ((c.codigo ?? '').startsWith('000201') ? c.valor.toFixed(2).replace('.', ',') : '');
+  const [texto, setTexto] = useState(ini?.codigo ?? '');
   const [lendo, setLendo] = useState(false);
   const [avisoLeitura, setAvisoLeitura] = useState<string | null>(null);
-  const [valorDigitado, setValorDigitado] = useState('');
+  const [valorDigitado, setValorDigitado] = useState(ini ? valorDaConta(ini) : '');
   const [data, setData] = useState(props.hoje);
-  const [contaId, setContaId] = useState('');
-  const [descricao, setDescricao] = useState('');
+  const [contaId, setContaId] = useState(ini?.id ?? '');
+  const [descricao, setDescricao] = useState(ini ? rotuloCurto(ini) : '');
   const [enviando, setEnviando] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; texto: string } | null>(null);
   const [conferindo, setConferindo] = useState(false);
@@ -200,7 +206,7 @@ export function PagarContaCliente(props: {
       {props.contas.some((c) => c.codigo) && (
         <div className="space-y-2 rounded-xl border border-emerald-200 bg-emerald-50 p-4 shadow-sm">
           <p className="text-sm font-medium text-emerald-900">
-            Guias e boletos já lançados com o código (ex.: guia que o contador subiu) — é só tocar e confirmar
+            Guias, boletos e Pix copia-e-cola já lançados com o código (ex.: guia que o contador subiu, recarga da Meta) — é só tocar e confirmar
           </p>
           {props.contas
             .filter((c) => c.codigo)
@@ -214,6 +220,7 @@ export function PagarContaCliente(props: {
                     setTexto(c.codigo ?? '');
                     setContaId(c.id);
                     setDescricao(c.rotulo.split(' · ').slice(1).join(' · ').slice(0, 100));
+                    if (valorDaConta(c)) setValorDigitado(valorDaConta(c));
                     setMsg(null);
                   }}
                   className={`rounded-lg px-3 py-1.5 text-xs font-medium ${contaId === c.id ? 'bg-emerald-700 text-white' : 'bg-emerald-600 text-white hover:bg-emerald-700'}`}

@@ -175,6 +175,13 @@ export async function POST(req: Request) {
       { status: 409 },
     );
   }
+  // Conta de QR / copia-e-cola (26/11/2026): o destino é o código, não a chave.
+  if (contas.some((x) => x.formaConta === 'qr')) {
+    return NextResponse.json(
+      { error: 'Esta conta é paga pelo QR / Pix copia-e-cola, em Pagar conta (código/QR). O Pix NÃO foi enviado.' },
+      { status: 409 },
+    );
+  }
   // Chave confirmada NA ENTRADA da nota (23/11/2026): se o cadastro trocou a
   // chave depois, não manda — confirma de novo na nota.
   const chaveTrocada = contas.find((x) => x.pixChaveNota && x.pixChaveNota.trim() !== chave);

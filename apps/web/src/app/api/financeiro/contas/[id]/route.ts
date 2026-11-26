@@ -29,7 +29,7 @@ const Body = z.object({
   categoriaId: z.string().uuid().nullable().optional(),
   observacao: z.string().trim().max(1000).nullable().optional(),
   // Como se paga (dono 25/11/2026). Ausente = não mexe na forma da conta.
-  formaPagamento: z.enum(['boleto', 'pix']).optional(),
+  formaPagamento: z.enum(['boleto', 'pix', 'qr']).optional(),
 });
 
 async function carregarContaManual(id: string, userId: string, paraExcluir = false) {

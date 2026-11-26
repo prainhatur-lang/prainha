@@ -18,7 +18,7 @@ export interface ValoresConta {
   subId: string;
   fornecedorId: string;
   fornecedorNome: string;
-  forma: '' | 'boleto' | 'pix';
+  forma: '' | 'boleto' | 'pix' | 'qr';
   observacao: string;
 }
 
@@ -47,7 +47,7 @@ export function EditarContaForm({
   const [dataVencimento, setDataVencimento] = useState(inicial.dataVencimento);
   const [observacao, setObservacao] = useState(inicial.observacao);
   // Como se paga (dono 25/11/2026): toda conta em aberto tem forma.
-  const [forma, setForma] = useState<'' | 'boleto' | 'pix'>(inicial.forma);
+  const [forma, setForma] = useState<'' | 'boleto' | 'pix' | 'qr'>(inicial.forma);
   const fornPix = fornecedores.find((f) => f.id === fornecedorId) ?? null;
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -199,6 +199,8 @@ export function EditarContaForm({
                 [
                   ['boleto', '🧾 Boleto'],
                   ['pix', '⚡ Pix'],
+                  // só aparece em conta que já nasceu QR (lançada em Nova conta)
+                  ...(inicial.forma === 'qr' ? ([['qr', '🔳 QR / copia-e-cola']] as const) : []),
                 ] as const
               ).map(([v, rot]) => (
                 <button
@@ -225,6 +227,12 @@ export function EditarContaForm({
                 Prazo do boleto: vence em{' '}
                 <span className="font-semibold">{dataVencimento.split('-').reverse().join('/')}</span> — confira o campo
                 Vencimento.
+              </p>
+            )}
+            {forma === 'qr' && (
+              <p className="mt-2 text-xs text-slate-700">
+                Paga pelo Pix copia-e-cola que está na observação — em Financeiro → Pagar conta (código/QR), botão
+                "Pagar esta".
               </p>
             )}
             {forma === 'pix' && (

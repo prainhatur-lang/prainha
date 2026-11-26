@@ -460,7 +460,9 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
     // chave Pix e sem 💸 Pagar.
     const forma = formaEfetiva(l.formaConta, l.formaForn);
     const ehBoletoMarcado = forma === 'boleto';
-    const entra = ehPix || forma === 'pix';
+    // Conta de QR / copia-e-cola (26/11/2026) se paga no Pagar conta (código/QR),
+    // não por chave: fica de fora daqui (aparece em "Todas").
+    const entra = l.formaConta === 'qr' ? false : ehPix || forma === 'pix';
     if (!entra && !verTodas) {
       escondidas += 1;
       continue;

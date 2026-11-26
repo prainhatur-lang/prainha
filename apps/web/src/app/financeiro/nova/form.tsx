@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { EditPix } from '@/app/cadastros/fornecedores/edit-pix';
 import { hojeBr } from '@/lib/datas';
 import { brl, formatValorBr, parseValorBr } from '@/lib/format';
+import { lerCodigoConta } from '@/lib/conta-consumo';
 
 export interface Opcao {
   id: string;
@@ -258,7 +259,12 @@ export function NovaContaForm({
   const [bancoOutro, setBancoOutro] = useState('');
   const [observacao, setObservacao] = useState('');
   // Como se paga (dono 25/11/2026): informa no lançamento, não na hora de pagar.
-  const [forma, setForma] = useState<'' | 'boleto' | 'pix'>('');
+  const [forma, setForma] = useState<'' | 'boleto' | 'pix' | 'qr'>('');
+  // QR / Pix copia-e-cola (26/11/2026, recarga da Meta): não tem chave — cola o
+  // código, a conta nasce com ele e o Pagar conta (código/QR) paga e dá baixa.
+  const [pixCc, setPixCc] = useState('');
+  const leituraQr = useMemo(() => (pixCc.trim() ? lerCodigoConta(pixCc) : null), [pixCc]);
+  const qrPix = leituraQr?.ok && leituraQr.dado.tipo === 'PIX' ? leituraQr.dado : null;
   const fornPix = fornecedores.find((f) => f.id === fornecedorId) ?? null;
   const [salvando, setSalvando] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
@@ -378,6 +384,16 @@ export function NovaContaForm({
       if (!forma) return setErro('Informe como se paga: Boleto ou Pix.');
       if (forma === 'pix' && !fornecedorId) return setErro('Pix: escolha o fornecedor — a chave Pix fica no cadastro dele.');
       if (forma === 'pix' && !fornPix?.chavePix) return setErro('Pix: informe a chave Pix do fornecedor (botão logo abaixo de "Como se paga?").');
+      if (forma === 'qr') {
+        if (repetir) return setErro('QR / copia-e-cola vale pra um pagamento só — não dá pra repetir todo mês.');
+        if (status !== 'ABERTA') return setErro('QR / copia-e-cola é pra conta em aberto. Já paga: marque Pix ou Boleto.');
+        if (!pixCc.trim()) return setErro('Cole o Pix copia-e-cola (começa com 000201).');
+        if (!leituraQr?.ok) return setErro(`QR / copia-e-cola: ${leituraQr && !leituraQr.ok ? leituraQr.erro : 'código inválido'}`);
+        if (!qrPix) return setErro('Isso é um boleto, não Pix copia-e-cola — marque Boleto.');
+        if (qrPix.valor != null && Math.abs(qrPix.valor - v) > 0.005) {
+          return setErro(`O QR é de ${brl(qrPix.valor)} e o valor digitado é ${brl(v)}. Acerte o valor.`);
+        }
+      }
     }
     if (repetir) return submitRepetido(v);
     setSalvando(true);
@@ -401,6 +417,7 @@ export function NovaContaForm({
             categoriaId,
             observacao: observacao.trim() || null,
             formaPagamento: forma || null,
+            ...(forma === 'qr' && status === 'ABERTA' ? { pixCopiaCola: pixCc.trim() } : {}),
             ...(forcar ? { forcar: true } : {}),
             ...(forcarDuplicada ? { forcarDuplicada: true } : {}),
           }),
@@ -436,7 +453,14 @@ export function NovaContaForm({
         setErro(d.error ?? `HTTP ${r.status}`);
         return;
       }
-      router.push(d.id ? `/financeiro/conta/${d.id}` : '/financeiro');
+      // QR / copia-e-cola: já cai no Pagar conta com a conta escolhida e o código lido.
+      router.push(
+        d.id && forma === 'qr' && status === 'ABERTA'
+          ? `/financeiro/pagar-conta?filialId=${filialId}&contaId=${d.id}`
+          : d.id
+            ? `/financeiro/conta/${d.id}`
+            : '/financeiro',
+      );
       router.refresh();
     } finally {
       setSalvando(false);
@@ -539,6 +563,7 @@ export function NovaContaForm({
               {([
                 ['boleto', '🧾 Boleto'],
                 ['pix', '💠 Pix'],
+                ['qr', '🔳 QR / copia-e-cola'],
               ] as const).map(([v, rot]) => (
                 <button
                   key={v}
@@ -565,6 +590,41 @@ export function NovaContaForm({
                 <span className="font-semibold">{dataVencimento.split('-').reverse().join('/')}</span> — confira o campo
                 Vencimento abaixo{repetir ? ' (e os meses seguintes)' : ''}.
               </p>
+            )}
+            {forma === 'qr' && (
+              <div className="mt-2 text-xs text-slate-700">
+                <p>
+                  Pagamento que vem com QR Code ou Pix copia-e-cola (recarga da Meta, site, guia). Cole o código aqui — não
+                  precisa de chave Pix no fornecedor.
+                </p>
+                <textarea
+                  value={pixCc}
+                  onChange={(e) => {
+                    setPixCc(e.target.value);
+                    const l = e.target.value.trim() ? lerCodigoConta(e.target.value) : null;
+                    // QR que traz o valor preenche o campo Valor vazio
+                    if (l?.ok && l.dado.tipo === 'PIX' && l.dado.valor && !valor.trim()) setValor(formatValorBr(l.dado.valor));
+                  }}
+                  rows={3}
+                  placeholder="Pix copia-e-cola (000201…)"
+                  className={`${inputCls} font-mono text-xs`}
+                />
+                {pixCc.trim() &&
+                  (qrPix ? (
+                    <p className="mt-1 text-emerald-700">
+                      ✓ Pix lido{qrPix.favorecido ? <> — recebe: <b>{qrPix.favorecido}</b></> : null}
+                      {qrPix.valor ? <> · valor do QR: <b>{brl(qrPix.valor)}</b></> : <> · o QR não traz o valor: vale o campo Valor</>}
+                    </p>
+                  ) : (
+                    <p className="mt-1 font-medium text-rose-700">
+                      {leituraQr && !leituraQr.ok ? leituraQr.erro : 'Isso é um boleto — marque Boleto.'}
+                    </p>
+                  ))}
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Ao lançar, abre o Pagar conta (código/QR) com esta conta escolhida: o Admin confere e paga pelo Inter, e a
+                  baixa cai sozinha. O QR tem validade — pague antes de vencer.
+                </p>
+              </div>
             )}
             {forma === 'pix' && (
               <div className="mt-2 text-xs text-slate-700">
@@ -602,6 +662,13 @@ export function NovaContaForm({
                 )}
                 <p className="mt-1 text-[11px] text-slate-500">
                   Data do Pix: {dataVencimento.split('-').reverse().join('/')} (campo Vencimento).
+                </p>
+                <p className="mt-1 text-[11px] text-slate-600">
+                  Recebeu um QR Code ou um código que começa com 000201? Isso não é chave —{' '}
+                  <button type="button" className="font-semibold text-sky-700 underline" onClick={() => setForma('qr')}>
+                    use 🔳 QR / copia-e-cola
+                  </button>
+                  .
                 </p>
               </div>
             )}

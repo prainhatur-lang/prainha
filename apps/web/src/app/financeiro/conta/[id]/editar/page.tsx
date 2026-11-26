@@ -155,7 +155,7 @@ export default async function EditarContaPage(props: { params: Promise<{ id: str
             fornecedorId: fornecedorAtual?.id ?? '',
             fornecedorNome: fornecedorAtual?.nome ?? '',
             observacao: conta.observacao ?? '',
-            forma: conta.formaPagamento === 'boleto' || conta.formaPagamento === 'pix' ? conta.formaPagamento : '',
+            forma: conta.formaPagamento === 'boleto' || conta.formaPagamento === 'pix' || conta.formaPagamento === 'qr' ? conta.formaPagamento : '',
           }}
         />
       </div>
