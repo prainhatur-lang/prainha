@@ -107,6 +107,25 @@ export async function getDeviceInfo(tuyaDeviceId: string): Promise<TuyaDeviceInf
   return tuyaFetch<TuyaDeviceInfo>('GET', `/v1.0/devices/${tuyaDeviceId}`, undefined, token);
 }
 
+export interface TuyaAparelhoConta {
+  id: string;
+  name: string;
+  online: boolean;
+  product_name?: string;
+  category?: string;
+}
+
+/**
+ * Todos os aparelhos da conta do app (Smart Life) dona de um aparelho já
+ * conhecido — pra cadastrar aparelho novo sem caçar o Device ID no celular.
+ */
+export async function listarAparelhosDaConta(deviceIdConhecido: string): Promise<TuyaAparelhoConta[]> {
+  const token = await getAccessToken();
+  const info = await tuyaFetch<{ uid?: string }>('GET', `/v1.0/devices/${deviceIdConhecido}`, undefined, token);
+  if (!info.uid) throw new Error('a Tuya não informou a conta dona do aparelho');
+  return tuyaFetch<TuyaAparelhoConta[]>('GET', `/v1.0/users/${info.uid}/devices`, undefined, token);
+}
+
 /** Manda um comando de datapoint (ex: { code: 'switch_1', value: true }). */
 export async function sendCommands(
   tuyaDeviceId: string,

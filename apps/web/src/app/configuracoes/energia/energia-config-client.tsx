@@ -77,6 +77,31 @@ export function EnergiaConfigClient({ filialId, filialNome, filiais, dispositivo
     opcoes: Array<{ code: string; ligado: boolean }>;
   } | null>(null);
 
+  const [conta, setConta] = useState<{
+    carregando: boolean;
+    erro: string | null;
+    aparelhos: Array<{
+      id: string;
+      nome: string;
+      produto: string | null;
+      categoria: string | null;
+      online: boolean;
+      cadastros: Array<{ nome: string; filialId: string }>;
+    }>;
+  } | null>(null);
+
+  async function buscarConta() {
+    setConta({ carregando: true, erro: null, aparelhos: [] });
+    try {
+      const r = await fetch('/api/energia/conta');
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error ?? 'erro ao listar os aparelhos');
+      setConta({ carregando: false, erro: null, aparelhos: data.aparelhos });
+    } catch (e) {
+      setConta({ carregando: false, erro: (e as Error).message, aparelhos: [] });
+    }
+  }
+
   async function buscarDatapoints(deviceId: string) {
     const id = deviceId.trim();
     if (id.length < 10 || dps?.deviceId === id) return;
@@ -275,6 +300,67 @@ export function EnergiaConfigClient({ filialId, filialNome, filiais, dispositivo
               </div>
             )}
           </div>
+        </div>
+        <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs text-slate-600">
+              Já pareou o aparelho no Smart Life? Escolha na lista em vez de copiar o ID.
+            </p>
+            <button
+              type="button"
+              onClick={buscarConta}
+              disabled={conta?.carregando}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:border-sky-400 hover:text-sky-700 disabled:opacity-50"
+            >
+              {conta?.carregando ? 'Buscando…' : conta ? 'Atualizar lista' : 'Buscar aparelhos da conta'}
+            </button>
+          </div>
+          {conta?.erro ? <p className="mt-2 rounded-md bg-rose-50 px-3 py-1.5 text-xs text-rose-700">{conta.erro}</p> : null}
+          {conta && !conta.carregando && !conta.erro ? (
+            <ul className="mt-2 space-y-1">
+              {conta.aparelhos.length === 0 ? (
+                <li className="text-xs text-slate-500">Nenhum aparelho na conta.</li>
+              ) : null}
+              {conta.aparelhos
+                .slice()
+                .sort((x, y) => x.cadastros.length - y.cadastros.length || x.nome.localeCompare(y.nome))
+                .map((a) => (
+                  <li key={a.id}>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setForm((f) => ({
+                          ...f,
+                          tuyaDeviceId: a.id,
+                          nome: f.nome.trim() ? f.nome : a.nome,
+                          tipo: f.tipo === 'outro' && a.categoria === 'wnykq' ? 'sensor_temperatura' : f.tipo,
+                        }));
+                        buscarDatapoints(a.id);
+                      }}
+                      className={`flex w-full flex-wrap items-center gap-x-2 rounded-lg border px-3 py-2 text-left text-sm ${
+                        form.tuyaDeviceId === a.id ? 'border-sky-500 bg-sky-50' : 'border-slate-200 bg-white hover:bg-slate-50'
+                      }`}
+                    >
+                      <span className="font-medium text-slate-900">{a.nome}</span>
+                      <span className="text-xs text-slate-500">
+                        {a.produto ?? a.categoria ?? ''} · {a.online ? 'online' : 'offline'}
+                      </span>
+                      {a.cadastros.length > 0 ? (
+                        <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[11px] text-slate-600">
+                          já cadastrado
+                          {a.cadastros.some((c) => c.filialId === filialId)
+                            ? ` aqui: ${a.cadastros.filter((c) => c.filialId === filialId).map((c) => c.nome).join(', ')}`
+                            : ' em outra casa'}
+                        </span>
+                      ) : (
+                        <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[11px] text-emerald-800">novo</span>
+                      )}
+                      <span className="w-full font-mono text-[11px] text-slate-400">{a.id}</span>
+                    </button>
+                  </li>
+                ))}
+            </ul>
+          ) : null}
         </div>
         <p className="mt-2 text-xs text-slate-400">
           O Device ID fica no app Tuya Smart/Smart Life: abra o dispositivo → ⚙️ → Informações do
