@@ -99,6 +99,9 @@ export function FormaPagamentoNota({ notaId, compacto = false }: { notaId: strin
             setConfChave(false);
             setConfZap(false);
             setEscolhendoPix(true);
+            // Relê o fornecedor: quem vinculou depois de abrir a tela via
+            // "Vincule o fornecedor" com ele já vinculado (26/11/2026).
+            void carregar();
           }}
         >
           💠 Pix

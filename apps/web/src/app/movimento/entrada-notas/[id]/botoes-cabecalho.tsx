@@ -6,6 +6,7 @@ import { flushSync } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { perguntarMotivo } from '@/lib/perguntar-motivo';
 import { brl } from '@/lib/format';
+import { hojeBr } from '@/lib/datas';
 import { FormaPagamentoNota } from '../forma-pagamento-nota';
 
 interface Duplicata {
@@ -130,6 +131,30 @@ export function BotoesCabecalho({
   const [loading, setLoading] = useState<'match' | 'lancar' | 'excluir' | 'antecipar' | null>(null);
   const [modalAntecipar, setModalAntecipar] = useState(false);
   const [catAntecipar, setCatAntecipar] = useState<string>(categoriaSugerida?.id ?? '');
+  // Antecipado em partes (dono 26/11/2026): metade agora, metade depois.
+  // Desligado = uma conta só, como sempre foi.
+  const [emPartes, setEmPartes] = useState(false);
+  const [partes, setPartes] = useState<{ dataVencimento: string; valor: string }[]>([]);
+  const podeDividir = duplicatas.length <= 1 && (valorAntecipar ?? 0) > 0;
+  const num = (v: string) => Number(v.replace(/\./g, '').replace(',', '.')) || 0;
+  const somaPartes = partes.reduce((a, p) => a + Math.round(num(p.valor) * 100), 0);
+  const partesOk =
+    !emPartes ||
+    (partes.length >= 2 &&
+      partes.every((p) => /^\d{4}-\d{2}-\d{2}$/.test(p.dataVencimento) && num(p.valor) > 0) &&
+      somaPartes === Math.round((valorAntecipar ?? 0) * 100));
+  function ligarPartes(liga: boolean) {
+    setEmPartes(liga);
+    if (liga && partes.length === 0) {
+      const total = Math.round((valorAntecipar ?? 0) * 100);
+      const metade = Math.round(total / 2);
+      const fmt = (c: number) => (c / 100).toFixed(2).replace('.', ',');
+      setPartes([
+        { dataVencimento: hojeBr(), valor: fmt(metade) },
+        { dataVencimento: '', valor: fmt(total - metade) },
+      ]);
+    }
+  }
   const [msg, setMsg] = useState<{ tipo: 'ok' | 'erro'; texto: string } | null>(null);
   const [modalLancar, setModalLancar] = useState(false);
 
@@ -215,7 +240,12 @@ export function BotoesCabecalho({
       const r = await fetch(`/api/nota-compra/${notaId}/pagar-antecipado`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ categoriaId: catAntecipar || null }),
+        body: JSON.stringify({
+          categoriaId: catAntecipar || null,
+          ...(emPartes
+            ? { parcelas: partes.map((p) => ({ dataVencimento: p.dataVencimento, valor: num(p.valor) })) }
+            : {}),
+        }),
       });
       const d = await r.json().catch(() => ({}));
       if (!r.ok) {
@@ -311,6 +341,72 @@ export function BotoesCabecalho({
                 ))}
               </select>
             </label>
+            {podeDividir && (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-2">
+                <label className="flex items-center gap-1.5 text-xs font-medium text-slate-700">
+                  <input type="checkbox" checked={emPartes} onChange={(e) => ligarPartes(e.target.checked)} />
+                  Pagar em partes (ex.: metade agora, metade depois)
+                </label>
+                {emPartes && (
+                  <div className="mt-2 space-y-1.5">
+                    {partes.map((p, i) => (
+                      <div key={i} className="flex items-center gap-2">
+                        <span className="w-8 font-mono text-[10px] text-slate-500">
+                          {i + 1}/{partes.length}
+                        </span>
+                        <input
+                          type="date"
+                          value={p.dataVencimento}
+                          onChange={(e) =>
+                            setPartes((arr) => arr.map((x, j) => (j === i ? { ...x, dataVencimento: e.target.value } : x)))
+                          }
+                          className="flex-1 rounded border border-slate-300 px-2 py-1 text-xs"
+                        />
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          placeholder="0,00"
+                          value={p.valor}
+                          onChange={(e) =>
+                            setPartes((arr) => arr.map((x, j) => (j === i ? { ...x, valor: e.target.value } : x)))
+                          }
+                          className="w-24 rounded border border-slate-300 px-2 py-1 text-right font-mono text-xs"
+                        />
+                        {partes.length > 2 && (
+                          <button
+                            type="button"
+                            onClick={() => setPartes((arr) => arr.filter((_, j) => j !== i))}
+                            className="text-[10px] text-rose-600 hover:underline"
+                            title="remover parte"
+                          >
+                            ×
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                    <div className="flex items-center justify-between">
+                      <button
+                        type="button"
+                        onClick={() => setPartes((arr) => [...arr, { dataVencimento: '', valor: '' }])}
+                        className="text-[10px] text-sky-700 hover:underline"
+                      >
+                        + adicionar parte
+                      </button>
+                      <span
+                        className={`text-[11px] ${
+                          somaPartes === Math.round((valorAntecipar ?? 0) * 100) ? 'text-emerald-700' : 'font-semibold text-rose-700'
+                        }`}
+                      >
+                        soma {brl(somaPartes / 100)} de {brl(valorAntecipar ?? 0)}
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-500">
+                      Cada parte vira uma conta a pagar com a sua data, no Pagar por Pix. Informe a data de cada uma.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
             <div className="flex justify-end gap-2">
               <button
                 type="button"
@@ -322,10 +418,14 @@ export function BotoesCabecalho({
               <button
                 type="button"
                 onClick={antecipar}
-                disabled={loading !== null}
+                disabled={loading !== null || !partesOk}
                 className="rounded-lg border border-amber-600 bg-amber-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-600 disabled:opacity-50"
               >
-                {loading === 'antecipar' ? 'Lançando...' : 'Lançar conta a pagar'}
+                {loading === 'antecipar'
+                  ? 'Lançando...'
+                  : emPartes
+                    ? `Lançar ${partes.length} contas a pagar`
+                    : 'Lançar conta a pagar'}
               </button>
             </div>
           </div>

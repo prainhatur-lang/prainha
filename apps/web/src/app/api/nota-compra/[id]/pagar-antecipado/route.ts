@@ -10,7 +10,11 @@
 // alimenta /compras/antecipados. Quando a mercadoria chegar e a nota for
 // lançada no estoque, as parcelas já têm conta e não duplicam.
 //
-// Body: { categoriaId?: uuid }
+// Body: { categoriaId?: uuid, parcelas?: [{ dataVencimento, valor }] }
+// `parcelas` (dono 26/11/2026, pedido 17351 da Kompack: "vou pagar a metade e a
+// outra metade depois no pix"): divide o pagamento em partes, cada uma com a
+// sua data. Só quando a nota não traz parcelas próprias (0 ou 1 gravada) e a
+// soma bate com o total. Sem `parcelas`, tudo igual a antes.
 // NÃO paga nada: só deixa a conta em aberto (aparece no Pagar por Pix).
 
 import { NextResponse } from 'next/server';
@@ -27,6 +31,16 @@ export const runtime = 'nodejs';
 
 const Body = z.object({
   categoriaId: z.string().uuid().nullable().optional(),
+  parcelas: z
+    .array(
+      z.object({
+        dataVencimento: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        valor: z.number().positive(),
+      }),
+    )
+    .min(2)
+    .max(12)
+    .optional(),
 });
 
 export async function POST(
@@ -128,7 +142,57 @@ export async function POST(
 
   // Sem parcela gravada: uma só, valor total, vencendo hoje (é antecipado).
   let parcelas = todas.map((d) => ({ id: d.id, numero: d.numero, dataVencimento: d.dataVencimento, valor: d.valor }));
-  if (parcelas.length === 0) {
+  const partes = parsed.data.parcelas
+    ? [...parsed.data.parcelas].sort((a, b) => a.dataVencimento.localeCompare(b.dataVencimento))
+    : null;
+  if (partes) {
+    // Em partes (metade agora, metade depois): só quando a nota não tem
+    // parcelas próprias — as do XML não se reescrevem por aqui.
+    if (todas.length > 1) {
+      return NextResponse.json(
+        { error: 'esta nota já traz as parcelas — o antecipado lança as que estão nela' },
+        { status: 400 },
+      );
+    }
+    const totalRef = todas.length === 1 ? Number(todas[0]!.valor) : Number(nota.valorTotal ?? 0);
+    if (!(totalRef > 0)) {
+      return NextResponse.json({ error: 'nota sem valor — não dá pra lançar o pagamento' }, { status: 400 });
+    }
+    const soma = partes.reduce((a, p) => a + Math.round(p.valor * 100), 0);
+    if (soma !== Math.round(totalRef * 100)) {
+      return NextResponse.json(
+        { error: `as partes somam R$ ${(soma / 100).toFixed(2)}, mas o total é R$ ${totalRef.toFixed(2)}` },
+        { status: 400 },
+      );
+    }
+    const novas: typeof parcelas = [];
+    for (let i = 0; i < partes.length; i++) {
+      const p = partes[i]!;
+      const numero = String(i + 1).padStart(3, '0');
+      const campos = { numero, dataVencimento: p.dataVencimento, valor: p.valor.toFixed(2) };
+      const retorno = {
+        id: schema.notaCompraDuplicata.id,
+        numero: schema.notaCompraDuplicata.numero,
+        dataVencimento: schema.notaCompraDuplicata.dataVencimento,
+        valor: schema.notaCompraDuplicata.valor,
+      };
+      // A parcela única que já existia vira a 1ª parte; as outras entram novas.
+      const [linha] =
+        i === 0 && todas.length === 1
+          ? await db
+              .update(schema.notaCompraDuplicata)
+              .set(campos)
+              .where(eq(schema.notaCompraDuplicata.id, todas[0]!.id))
+              .returning(retorno)
+          : await db
+              .insert(schema.notaCompraDuplicata)
+              .values({ filialId: nota.filialId, notaCompraId: id, ...campos })
+              .returning(retorno);
+      if (!linha) return NextResponse.json({ error: 'falha ao criar a parcela' }, { status: 500 });
+      novas.push(linha);
+    }
+    parcelas = novas;
+  } else if (parcelas.length === 0) {
     const total = Number(nota.valorTotal ?? 0);
     if (!(total > 0)) {
       return NextResponse.json({ error: 'nota sem valor — não dá pra lançar o pagamento' }, { status: 400 });
