@@ -5479,14 +5479,32 @@ async function apiVitrine() {
           AND preco > 1 ORDER BY preco LIMIT 1`)[0]
           || (await sql`SELECT nome, preco FROM produto_local WHERE nome ~* 'chopp' AND nome !~* 'dobrad' AND preco > 1 ORDER BY preco LIMIT 1`)[0] || null;
       } catch { chopp = null; }
-      slides.push({ tipo: 'happy', titulo: cHh.titulo || 'Happy hour', destaque: cHh.destaque || 'Chopp dobrado',
-        chamada: cHh.chamada || 'Peça 1, leve 2',
-        item: cHh.item || (chopp ? String(chopp.nome).replace(/\s+caneca/i, '') : 'Chopp 300ml'),
-        preco: Number(cHh.preco) || (chopp ? Number(chopp.preco) : 0),
+      // Dia SEM chopp dobrado (dono 26/11/2026, Black Friday: "amanhã não tem chopp
+      // dobrado", e a tela mostrou o chopp de R$ 6 como dobrado, "sai a R$ 3 cada").
+      // O dobrado é um produto próprio ("Chopp Dobrado ..."): pausado, some do
+      // produto_local. Se a casa já vendeu dobrado e hoje ele não está à venda, o
+      // slide mostra o chopp pelo preço dele, sem "leve 2" e sem dividir por 2.
+      // Com o dobrado à venda, o preço do slide é o DELE (o que se paga pelos 2).
+      // Casa que nunca teve o produto dobrado segue como sempre.
+      let dob = null; let semDobrado = false;
+      try {
+        dob = (await sql`SELECT nome, preco FROM produto_local WHERE nome ~* 'chopp' AND nome ~* 'dobrad' AND preco > 1
+          ORDER BY (nome ~* 'heineken') DESC, preco LIMIT 1`)[0] || null;
+        if (!dob) semDobrado = (await sql`SELECT 1 FROM comanda_item WHERE nome ~* 'chopp' AND nome ~* 'dobrad' LIMIT 1`).length > 0;
+      } catch { dob = null; semDobrado = false; }
+      const pHh = Number(cHh.preco) || (!semDobrado && dob ? Number(dob.preco) : 0) || (chopp ? Number(chopp.preco) : 0);
+      const brHh = 'R$ ' + pHh.toFixed(2).replace('.', ',').replace(',00', '');
+      const itemHh = cHh.item || (chopp ? String(chopp.nome).replace(/\s+caneca/i, '') : 'Chopp 300ml');
+      slides.push({ tipo: 'happy', titulo: cHh.titulo || 'Happy hour',
+        destaque: cHh.destaque || (semDobrado ? (pHh ? 'Chopp a ' + brHh : 'Chopp gelado') : 'Chopp dobrado'),
+        chamada: cHh.chamada || (semDobrado ? 'A caneca' : 'Peça 1, leve 2'),
+        simples: semDobrado,
+        item: itemHh,
+        preco: pHh,
         quando: diasTxt(dHh.dias) + ' · das ' + hTxt(ini) + ' às ' + hTxt(fim),
         // arte pronta do marketing (a do Instagram). 'vitrine_cfg'.happy.arte troca
         // (nome do arquivo em app.prainhabar.com/vitrine/ ou link https; '' desliga).
-        arte: arteVitrine(cHh.arte !== undefined ? cHh.arte : (ARTE_HAPPY_PADRAO[FILIAL_ID] || '')) });
+        arte: arteVitrine(cHh.arte !== undefined ? cHh.arte : (semDobrado ? '' : (ARTE_HAPPY_PADRAO[FILIAL_ID] || ''))) });
 
       // ---- Petiscos do happy (pedido do dono 11/11/2026): os itens ligados ao
       // destaque "Happy hour" na nuvem, menos as bebidas. Ligou mais um item lá,
@@ -5529,11 +5547,11 @@ async function apiVitrine() {
           } catch (e) { console.error('[vitrine petiscos]', e.message); pets = []; }
         }
         if (pets.length) {
-          const pc = Number(cHh.preco) || (chopp ? Number(chopp.preco) : 0);
+          const pc = pHh;
           slides.push({ tipo: 'petiscos', titulo: cHh.titulo_petiscos || 'Petiscos do happy',
             quando: diasTxt(dHh.dias) + ' · das ' + hTxt(ini) + ' às ' + hTxt(fim),
             itens: pets.slice(0, 4),
-            rodape: cHh.rodape_petiscos || (pc ? 'Pra acompanhar: chopp dobrado, sai a ' + ('R$ ' + (pc / 2).toFixed(2).replace('.', ',').replace(',00', '')) + ' cada' : '') });
+            rodape: cHh.rodape_petiscos || (semDobrado ? (pc ? 'Pra acompanhar: ' + itemHh + ' a ' + brHh : '') : pc ? 'Pra acompanhar: chopp dobrado, sai a ' + ('R$ ' + (pc / 2).toFixed(2).replace('.', ',').replace(',00', '')) + ' cada' : '') });
         }
       }
     }
@@ -32093,6 +32111,7 @@ html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:syste
   var esc=function(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})};
   // R$ 7 (sem ,00 quando é redondo) — "sai a R$ 7 cada"
   var brlC=function(v){v=Number(v||0);return 'R$ '+(Math.round(v*100)%100?v.toFixed(2).replace('.',','):String(Math.round(v)))};
+  var precoUm=function(p){return p?'<div class="preco duo"><small>por</small><b>'+brlC(p)+'</b><em>a caneca</em></div>':''};
   var precoDuo=function(p){return p?'<div class="preco duo"><small>sai a</small><b>'+brlC(p/2)+'</b><em>cada chopp</em></div><div class="sub2">2 chopps por '+brlC(p)+'</div>':''};
   var bolhas=function(n){var b='';for(var i=0;i<n;i++)b+='<span class="bolha" style="left:'+(Math.random()*100)+'%;animation-duration:'+(4+Math.random()*5)+'s;animation-delay:-'+(Math.random()*6)+'s;transform:scale('+(0.5+Math.random())+')"></span>';return b};
   var emoPet=function(n){n=String(n||'').toLowerCase();var e=[];if(/vinho|tinto|malbec|merlot|cabernet|carmen/.test(n))return ['🍷'];
@@ -32121,10 +32140,10 @@ html,body{margin:0;height:100%;background:var(--bg);color:#fff;font-family:syste
       return marca+'<div class="tag">Hoje no almoço</div><div class="tt">'+esc(s.titulo)+'</div><div class="qd">'+esc(s.quando)+'</div><div class="cards">'+c+'</div>'+op+'<div class="preco"><small>tudo por</small><b>'+brl(s.preco)+'</b></div>';
     }
     if(s.tipo==='happy'&&s.arte&&ARTE[s.arte]===true){
-      return bolhas(12)+'<img class="art" src="'+esc(s.arte)+'" alt=""><div class="lado"><div class="tag">'+esc(s.titulo)+' · '+esc(s.quando)+'</div><div class="ch">'+esc(s.destaque)+'</div><div class="it">'+esc(s.chamada)+' · '+esc(s.item)+'</div>'+precoDuo(s.preco)+'</div>';
+      return bolhas(12)+'<img class="art" src="'+esc(s.arte)+'" alt=""><div class="lado"><div class="tag">'+esc(s.titulo)+' · '+esc(s.quando)+'</div><div class="ch">'+esc(s.destaque)+'</div><div class="it">'+esc(s.chamada)+' · '+esc(s.item)+'</div>'+(s.simples?precoUm(s.preco):precoDuo(s.preco))+'</div>';
     }
     if(s.tipo==='happy'){
-      return bolhas(14)+marca+'<div class="tag">'+esc(s.quando)+'</div><div class="tt">'+esc(s.titulo)+'</div><div class="copos">🍺🍺</div><div class="ch">'+esc(s.destaque)+'</div><div class="it">'+esc(s.chamada)+' · '+esc(s.item)+'</div>'+precoDuo(s.preco);
+      return bolhas(14)+marca+'<div class="tag">'+esc(s.quando)+'</div><div class="tt">'+esc(s.titulo)+'</div><div class="copos">'+(s.simples?'🍺':'🍺🍺')+'</div><div class="ch">'+esc(s.destaque)+'</div><div class="it">'+esc(s.chamada)+' · '+esc(s.item)+'</div>'+(s.simples?precoUm(s.preco):precoDuo(s.preco));
     }
     if(s.tipo==='petiscos'){
       var c2='';
