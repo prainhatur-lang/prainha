@@ -106,3 +106,47 @@ export async function folhaSemanalChavePixDasContas(contaIds: string[]): Promise
   for (const r of rows) out.add(r.id);
   return out;
 }
+
+/**
+ * Conta lançada À MÃO pra um funcionário (adiantamento, vale pago em conta…)
+ * cujo CPF tem conta Inter no cadastro (dono 26/11/2026, adiantamento do Dias
+ * da Mar: a conta aparecia em Pagar por Pix sem chave e sem botão — "pagar").
+ * Sem chave Pix no cadastro, o destino é a CONTA Inter do funcionário, igual à
+ * folha semanal liberada; nunca o CPF como chave. Só vale pra:
+ *   1. conta origem MANUAL, em aberto e fora de borderô;
+ *   2. fornecedor com CPF de funcionário ATIVO; e
+ *   3. uma única conta Inter em conta_inter_folha pra esse CPF.
+ * Um Pix por conta (não junta lançamentos como a folha semanal).
+ */
+export async function funcionarioContaInterDasContas(contaIds: string[]): Promise<Map<string, FolhaSemanalPix>> {
+  const out = new Map<string, FolhaSemanalPix>();
+  if (contaIds.length === 0) return out;
+  const lista = sql.join(
+    contaIds.map((id) => sql`${id}::uuid`),
+    sql`, `,
+  );
+  const rows = (await db.execute(sql`
+    SELECT cp.id::text AS id, ci.cpf AS cpf,
+           min(ci.nome) AS nome,
+           min(ci.conta) AS conta,
+           count(DISTINCT regexp_replace(ci.conta, '[^0-9]', '', 'g'))::int AS contas
+      FROM conta_pagar cp
+      JOIN fornecedor fo ON fo.id = cp.fornecedor_id
+      JOIN conta_inter_folha ci ON ci.cpf = regexp_replace(coalesce(fo.cnpj_ou_cpf, ''), '[^0-9]', '', 'g')
+     WHERE cp.id IN (${lista})
+       AND cp.origem = 'MANUAL'
+       AND cp.bordero_id IS NULL
+       AND cp.data_pagamento IS NULL
+       AND cp.data_delete IS NULL
+       AND EXISTS (SELECT 1 FROM funcionario fu
+                    WHERE fu.ativo AND regexp_replace(coalesce(fu.cpf, ''), '[^0-9]', '', 'g') = ci.cpf)
+     GROUP BY cp.id, ci.cpf
+  `)) as unknown as Array<{ id: string; cpf: string; nome: string; conta: string; contas: number }>;
+  for (const r of rows) {
+    if (Number(r.contas) !== 1) continue;
+    const digitos = r.conta.replace(/\D/g, '');
+    if (!/^\d{11}$/.test(r.cpf) || digitos.length < 3) continue;
+    out.set(r.id, { contaId: r.id, cpf: r.cpf, nome: r.nome, conta: digitos, contaFmt: r.conta });
+  }
+  return out;
+}

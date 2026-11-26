@@ -26,7 +26,7 @@ import { consultarPagamentoPixInter, incluirPagamentoPixInter, incluirPagamentoP
 import { conferirChavePix, recebedorBate } from '@/lib/pix-titular';
 import { rescisoesDasContas } from '@/lib/rh/rescisao-pix';
 import { folhaMensalDasContas } from '@/lib/rh/folha-mensal-pix';
-import { destinoContaInter, folhaSemanalChavePixDasContas, folhaSemanalPixDasContas } from '@/lib/rh/folha-semanal-pix';
+import { destinoContaInter, folhaSemanalChavePixDasContas, folhaSemanalPixDasContas, funcionarioContaInterDasContas } from '@/lib/rh/folha-semanal-pix';
 import { consumerParado, FORNECEDORES_CONSUMER_NO_PIX } from '@/lib/consumer-contas';
 import { formaEfetiva, travaMesmaDivida } from '@/lib/conta-mesma-divida';
 import { baixarContasDoPix, lerSaldoParaPix, podePagarPix, sincronizarPixAbertos, type SaldoParaPix } from '@/lib/pix-pagamento';
@@ -100,7 +100,10 @@ export async function POST(req: Request) {
   const cpfRescisao = contaIds.map((id) => rescisoes.get(id)?.cpf).find(Boolean) ?? null;
   // Dono 10/11/2026 (permanente): Pix SÓ na chave autorizada no cadastro. O CPF do
   // funcionário NÃO vira chave sozinho (pode cair numa conta que a pessoa não usa).
-  const contaInter = !forn.chave?.trim() ? (semanais.get(contaIds[0]!) ?? null) : null;
+  // Conta à mão de funcionário com conta Inter no cadastro (26/11/2026,
+  // adiantamento do Dias): mesmo destino da folha semanal, um Pix por conta.
+  const manuaisInter = await funcionarioContaInterDasContas(contaIds);
+  const contaInter = !forn.chave?.trim() ? (semanais.get(contaIds[0]!) ?? manuaisInter.get(contaIds[0]!) ?? null) : null;
   const chave = forn.chave?.trim() || (contaInter ? destinoContaInter(contaInter.contaFmt) : null);
   if (!chave) return NextResponse.json({ error: 'Sem chave Pix autorizada no cadastro. Cadastre a chave que a pessoa informou; o sistema não usa o CPF como chave por conta própria.' }, { status: 400 });
   // Documento pra conferir a chave: o do cadastro; na rescisão sem documento, o CPF do funcionário.

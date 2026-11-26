@@ -52,7 +52,7 @@ import { urlFotoPedido } from '@/lib/pedido-sem-nota';
 import { recebedorBate } from '@/lib/pix-titular';
 import { rescisoesDasContas, sqlEhRescisao } from '@/lib/rh/rescisao-pix';
 import { folhaMensalDasContas, sqlEhFolhaMensal } from '@/lib/rh/folha-mensal-pix';
-import { destinoContaInter, folhaSemanalChavePixDasContas, folhaSemanalPixDasContas, sqlEhFolhaSemanalPix } from '@/lib/rh/folha-semanal-pix';
+import { destinoContaInter, folhaSemanalChavePixDasContas, folhaSemanalPixDasContas, funcionarioContaInterDasContas, sqlEhFolhaSemanalPix } from '@/lib/rh/folha-semanal-pix';
 import { consumerParado, FORNECEDORES_CONSUMER_NO_PIX } from '@/lib/consumer-contas';
 import { formaEfetiva, gemeasDasContas } from '@/lib/conta-mesma-divida';
 
@@ -403,6 +403,10 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
     if (!rescisoes.has(id)) rescisoes.set(id, { contaId: id, cpf: null });
   }
 
+  // Conta à mão de funcionário com conta Inter no cadastro (26/11/2026,
+  // adiantamento do Dias da Mar): sem chave Pix, paga na conta Inter dele.
+  const manuaisInter = await funcionarioContaInterDasContas(linhas.map((l) => l.id)).catch(() => new Map<string, { contaFmt: string; nome: string }>());
+
   let escondidas = 0;
   const grupos = new Map<string, GrupoPedidos>();
   for (const l of linhas) {
@@ -475,6 +479,9 @@ export default async function PedidosPixPage(props: { searchParams: Promise<SP> 
     if (rescisao?.cpf && !g.chaveCpfRescisao) g.chaveCpfRescisao = rescisao.cpf;
     if (semanal && !g.contaInterFolha) g.contaInterFolha = { destino: destinoContaInter(semanal.contaFmt), nome: semanal.nome, contaIds: [] };
     if (semanal) g.contaInterFolha?.contaIds?.push(l.id);
+    // Conta à mão: mostra a conta Inter como destino, sem juntar lançamentos (contaIds vazio).
+    const manualInter = manuaisInter.get(l.id);
+    if (manualInter && !g.contaInterFolha) g.contaInterFolha = { destino: destinoContaInter(manualInter.contaFmt), nome: manualInter.nome, contaIds: [] };
     g.contas.push({
       id: l.id,
       venc: l.venc,
