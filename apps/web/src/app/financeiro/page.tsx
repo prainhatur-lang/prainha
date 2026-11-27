@@ -11,6 +11,8 @@ import { and, asc, count, desc, eq, gte, inArray, isNotNull, isNull, lte, sql, s
 import { AppHeader } from '@/components/app-header';
 import { brl, formatDate, int } from '@/lib/format';
 import { hojeBr, diasAtrasBr, brDateStart, brDateEnd } from '@/lib/datas';
+import { podePagarPix } from '@/lib/pix-pagamento';
+import { codigoPagavelDaConta, STATUS_PAGAMENTO_EM_ANDAMENTO } from '@/lib/conta-codigo-pagavel';
 
 export const dynamic = 'force-dynamic';
 
@@ -224,6 +226,7 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
           origem: schema.contaPagar.origem,
           notaCompraId: schema.contaPagar.notaCompraId,
           borderoId: schema.contaPagar.borderoId,
+          observacao: schema.contaPagar.observacao,
         })
         .from(schema.contaPagar)
         .leftJoin(schema.fornecedor, eq(schema.fornecedor.id, schema.contaPagar.fornecedorId))
@@ -322,6 +325,32 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
         )
         .limit(500)
     : [];
+
+  // Guia / boleto / Pix copia-e-cola lançado com o código (os mesmos do
+  // "Pagar esta" da tela Pagar conta): aqui a conta ganha o link pra pagar lá
+  // (dono 27/11/2026 — "preciso ter todas as informações no contas a pagar").
+  const comCodigo = new Set(
+    contas
+      .filter((c) => !c.dataPagamento && !c.borderoId && codigoPagavelDaConta(c.descricao, c.observacao))
+      .map((c) => c.id),
+  );
+  // pagamento já saindo pela tela (aguardando aprovação/agendado): não chama
+  // pra pagar de novo, mostra que está em andamento
+  const pagamentoSaindo = new Set<string>();
+  if (comCodigo.size > 0) {
+    const emAnd = await db
+      .select({ contaPagarId: schema.contaConsumoPagamento.contaPagarId })
+      .from(schema.contaConsumoPagamento)
+      .where(
+        and(
+          inArray(schema.contaConsumoPagamento.contaPagarId, [...comCodigo]),
+          inArray(schema.contaConsumoPagamento.status, [...STATUS_PAGAMENTO_EM_ANDAMENTO]),
+        ),
+      )
+      .catch(() => []);
+    for (const p of emAnd) if (p.contaPagarId) pagamentoSaindo.add(p.contaPagarId);
+  }
+  const podePagarPeloSistema = comCodigo.size > 0 ? await podePagarPix(user.id).catch(() => false) : false;
 
   // Resumo do que o filtro puxou — pra não ter que rolar a lista pra saber
   // se achou alguma coisa e quanto dá. Só as linhas listadas (máx. 500).
@@ -1006,6 +1035,31 @@ export default async function FinanceiroPage(props: { searchParams: Promise<SP> 
                                 aberta
                               </span>
                             )}
+                            {comCodigo.has(c.id) &&
+                              (pagamentoSaindo.has(c.id) ? (
+                                <Link
+                                  href={`/financeiro/pagar-conta?filialId=${c.filialId}`}
+                                  className="mt-1 block w-fit rounded-md bg-amber-100 px-2 py-0.5 text-amber-800 hover:underline"
+                                  title="O pagamento desta conta já saiu pela tela Pagar conta (aguardando aprovação, agendado ou esperando a baixa). Clique pra acompanhar."
+                                >
+                                  ⏳ pagamento saindo
+                                </Link>
+                              ) : podePagarPeloSistema ? (
+                                <Link
+                                  href={`/financeiro/pagar-conta?filialId=${c.filialId}&contaId=${c.id}`}
+                                  className="mt-1 block w-fit rounded-md bg-emerald-600 px-2 py-0.5 font-medium text-white hover:bg-emerald-700"
+                                  title="Conta lançada com o código (guia, boleto ou Pix copia-e-cola). Abre o Pagar conta já com ela escolhida — é só conferir e confirmar."
+                                >
+                                  🔳 Pagar pelo código →
+                                </Link>
+                              ) : (
+                                <span
+                                  className="mt-1 block w-fit rounded-md bg-slate-100 px-2 py-0.5 text-slate-600"
+                                  title="Conta lançada com o código (guia, boleto ou Pix copia-e-cola). Quem tem permissão paga pela tela Pagar conta."
+                                >
+                                  🔳 tem código pra pagar
+                                </span>
+                              ))}
                           </td>
                         </tr>
                       );

@@ -16,6 +16,7 @@ import { AppHeader } from '@/components/app-header';
 import { podePagarPix } from '@/lib/pix-pagamento';
 import { resolverCredenciaisInterPagamentos } from '@/lib/inter';
 import { diasAtrasBr, hojeBr } from '@/lib/datas';
+import { codigoPagavelDaConta } from '@/lib/conta-codigo-pagavel';
 import { PagarContaCliente, type ContaAberta, type PagamentoLinha } from './pagar-conta-cliente';
 
 export const dynamic = 'force-dynamic';
@@ -98,13 +99,7 @@ export default async function PagarContaPage(props: { searchParams: Promise<SP> 
       vencimento: c.dataVencimento,
       // guia do contador / boleto lançado já traz o código na observação;
       // repasse entre casas não paga a guia (quem paga é a pagadora)
-      codigo: (c.descricao ?? '').startsWith('Repasse ') || emAndamento.has(c.id)
-        ? null
-        : (c.observacao?.match(/C[óo]digo de barras:\s*(\d{44,48})/)?.[1] ??
-          // conta lançada como QR / copia-e-cola (26/11/2026, recarga da Meta);
-          // o código tem espaço (nome do favorecido): vai até o fim da linha
-          c.observacao?.match(/Pix copia-e-cola:\s*(000201[^\n\r]+)/)?.[1] ??
-          null),
+      codigo: emAndamento.has(c.id) ? null : codigoPagavelDaConta(c.descricao, c.observacao),
     }));
   const linhas: PagamentoLinha[] = pagamentos.map((p) => ({
     id: p.id,
