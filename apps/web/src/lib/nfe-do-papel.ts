@@ -61,8 +61,8 @@ async function detalhar(id: string, por: NfeDoPapel['por'], importacao: string |
       origem: schema.notaCompra.origemImportacao,
       jaLancada: sql<boolean>`(
         exists (select 1 from movimento_estoque m join nota_compra_item i on i.id = m.nota_compra_item_id
-                 where i.nota_compra_id = ${schema.notaCompra.id})
-        or exists (select 1 from conta_pagar c where c.nota_compra_id = ${schema.notaCompra.id}))`,
+                 where i.nota_compra_id = "nota_compra"."id")
+        or exists (select 1 from conta_pagar c where c.nota_compra_id = "nota_compra"."id"))`,
     })
     .from(schema.notaCompra)
     .where(eq(schema.notaCompra.id, id))

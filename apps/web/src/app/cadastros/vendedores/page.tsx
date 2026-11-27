@@ -102,8 +102,9 @@ export default async function VendedoresPage(props: { searchParams: Promise<SP> 
     .select({
       id: schema.fornecedor.id,
       nome: schema.fornecedor.nome,
+      // tabela escrita por extenso: em campo de seleção de consulta de uma tabela só o drizzle solta "id" sem a tabela, e a subconsulta lê o id dela mesma (27/11/2026)
       produtos: sql<number>`(SELECT count(*)::int FROM produto_fornecedor pf
-        WHERE pf.fornecedor_id = ${schema.fornecedor.id})`,
+        WHERE pf.fornecedor_id = "fornecedor"."id")`,
     })
     .from(schema.fornecedor)
     .where(

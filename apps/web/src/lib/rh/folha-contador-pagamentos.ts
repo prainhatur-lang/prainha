@@ -543,7 +543,7 @@ export async function relancarPagamentosDaFolha(p: {
         fornecedorId: cp.fornecedorId,
         observacao: cp.observacao,
         codigoReferencia: cp.codigoReferencia,
-        baixas: sql<string>`(select count(*) from conta_pagar_baixa b where b.conta_pagar_id = ${cp.id})::text`,
+        baixas: sql<string>`(select count(*) from conta_pagar_baixa b where b.conta_pagar_id = "conta_pagar"."id")::text`,
       })
       .from(cp)
       .where(and(eq(cp.filialId, p.casaFilialId), inArray(cp.id, ids), isNull(cp.dataDelete)));
@@ -579,7 +579,7 @@ export async function relancarPagamentosDaFolha(p: {
           dataPagamento: cp.dataPagamento,
           borderoId: cp.borderoId,
           codigoReferencia: cp.codigoReferencia,
-          baixas: sql<string>`(select count(*) from conta_pagar_baixa b where b.conta_pagar_id = ${cp.id})::text`,
+          baixas: sql<string>`(select count(*) from conta_pagar_baixa b where b.conta_pagar_id = "conta_pagar"."id")::text`,
         })
         .from(cp)
         .where(
@@ -620,7 +620,7 @@ export async function relancarPagamentosDaFolha(p: {
               dataPagamento: cp.dataPagamento,
               borderoId: cp.borderoId,
               codigoReferencia: cp.codigoReferencia,
-              baixas: sql<string>`(select count(*) from conta_pagar_baixa b where b.conta_pagar_id = ${cp.id})::text`,
+              baixas: sql<string>`(select count(*) from conta_pagar_baixa b where b.conta_pagar_id = "conta_pagar"."id")::text`,
             })
             .from(cp)
             .where(and(eq(cp.filialId, lelisFilial.id), inArray(cp.codigoReferencia, refsLelis), isNull(cp.dataDelete)))
