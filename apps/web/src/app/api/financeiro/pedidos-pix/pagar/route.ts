@@ -137,7 +137,11 @@ export async function POST(req: Request) {
       formaConta: sql<string | null>`coalesce(${c.formaPagamento}, (select n.forma_pagamento from nota_compra n where n.id = ${c.notaCompraId}))`,
       // Pix confirmado na entrada da nota: a chave que quem deu entrada viu.
       pixChaveNota: sql<string | null>`(select n.pix_chave_confirmada from nota_compra n where n.id = ${c.notaCompraId} and n.forma_pagamento = 'pix')`,
-      jaPago: sql<string>`coalesce((select sum(b.valor) from conta_pagar_baixa b where b.conta_pagar_id = ${c.id}), 0)::text`,
+      // "conta_pagar"."id" escrito à mão: nesta consulta de uma tabela só o drizzle
+      // renderiza ${c.id} como "id" solto, que dentro da subconsulta vira b.id →
+      // soma 0 e a conta com pagamento parcial era recusada ("o valor em aberto é
+      // o cheio"). Pedido Lelis nº 6 da Tabuará, 27/11/2026.
+      jaPago: sql<string>`coalesce((select sum(b.valor) from conta_pagar_baixa b where b.conta_pagar_id = "conta_pagar"."id"), 0)::text`,
     })
     .from(c)
     .where(and(inArray(c.id, contaIds), eq(c.filialId, filialId), isNull(c.dataPagamento), isNull(c.dataDelete), isNull(c.borderoId)));
