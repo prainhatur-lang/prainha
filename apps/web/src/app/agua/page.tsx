@@ -7,6 +7,7 @@
 import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
 import { exigirPerm } from '@/lib/exigir-perm';
+import { podeUsuario } from '@/lib/permissoes-runtime';
 import { AppHeader } from '@/components/app-header';
 import { carregarEstadoAgua } from '@/lib/agua';
 import { AguaClient } from './agua-client';
@@ -22,11 +23,13 @@ export default async function AguaPage() {
   await exigirPerm(user.id, 'agua.read');
 
   const estado = await carregarEstadoAgua();
+  // quem pode comandar vê os botões da placa dos filtros; os outros só olham
+  const podeComandar = await podeUsuario(user.id, 'agua.control');
 
   return (
     <main className="min-h-screen bg-slate-50">
       <AppHeader userEmail={user.email} />
-      <AguaClient inicial={estado} />
+      <AguaClient inicial={estado} podeComandar={podeComandar} />
     </main>
   );
 }

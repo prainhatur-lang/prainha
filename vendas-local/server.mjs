@@ -34221,7 +34221,265 @@ async function initAgua() {
     ON agua_alarmes (codigo, coalesce(bomba_id, 0)) WHERE resolvido_em IS NULL`;
   // senha que a placa do quadro manda junto com a leitura (rede interna)
   if (!(await cfgGet('agua_token', ''))) await cfgSet('agua_token', randomBytes(12).toString('hex'));
+  // PLACA DOS FILTROS (28/11/2026): comandos mandados pra placa e histórico das
+  // retrolavagens. Tabelas novas; as de cima seguem iguais.
+  await sql`CREATE TABLE IF NOT EXISTS agua_comandos (id bigserial PRIMARY KEY,
+    criado_em timestamptz NOT NULL DEFAULT now(), tipo text NOT NULL, bomba_id smallint,
+    solicitado_por text, origem text NOT NULL DEFAULT 'loja', id_nuvem bigint,
+    executado_em timestamptz, resultado text, ok boolean, nuvem_avisada boolean NOT NULL DEFAULT false)`;
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS agua_comandos_id_nuvem ON agua_comandos (id_nuvem) WHERE id_nuvem IS NOT NULL`;
+  await sql`CREATE TABLE IF NOT EXISTS agua_retrolavagens (id bigserial PRIMARY KEY,
+    iniciado_em timestamptz NOT NULL DEFAULT now(), terminado_em timestamptz, resultado text,
+    teste boolean NOT NULL DEFAULT false, origem text, solicitado_por text)`;
+  await sql`INSERT INTO agua_config (chave, valor, descricao) VALUES
+    ('placa_sem_resposta_min', 5, 'Minutos sem resposta da placa dos filtros para avisar'),
+    ('filtros_instalados', 0, 'Válvulas dos filtros instaladas no campo (1 libera a retrolavagem pelo sistema)')
+    ON CONFLICT (chave) DO NOTHING`;
+  aguaPlaca.vistaEm = Number(await cfgGet('agua_placa_vista_em', '0')) || 0;
   aguaPronta = true;
+}
+
+// ============================================================================
+// PLACA DOS FILTROS — CLP VDC I4.0 (ESP32) no quadro das bombas, firmware
+// prainha_agua_v3 (estado real da instalação, dono 28/11/2026).
+//
+// A placa é um servidor HTTP na REDE LOCAL (só GET, JSON, SEM SENHA): quem fala
+// com ela é este servidor, nunca a nuvem. Por isso o endereço só pode ser da
+// rede interna e nenhuma rota daqui repassa chamada livre pra placa — só as
+// ações da lista AGUA_ACOES, com login de gerente.
+//
+//   /api/estado            relés, ciclo da retrolavagem, sinal, última, agenda
+//   /api/retro?a=iniciar   retrolavagem real (~9 min, a própria placa executa)
+//   /api/retro?a=teste     sequência rápida de 43 s
+//   /api/retro?a=parar     interrompe e volta pra FILTRAR
+//   /api/tudo              volta pra FILTRAR
+//
+// Posição normal FILTRAR: só os relés 5 (válvula A) e 6 (válvula B) ligados.
+// O relé 4 põe a bomba 4 em MODO RETROLAVAGEM (pula as boias da superior e
+// corta a dosadora) — por isso a retrolavagem pelo sistema fica travada até
+// alguém marcar que as válvulas dos filtros estão instaladas.
+// Níveis, pressões e corrente NÃO vêm da placa ainda (módulo de medição não
+// instalado): nada aqui inventa leitura.
+// ============================================================================
+const AGUA_FILIAL_BAR = '7c5c66ce-cceb-4e89-9c6d-d0785255c4f9';
+const AGUA_PLACA_PADRAO = 'http://prainha-agua.local';
+const AGUA_FILTRAR = [0, 0, 0, 0, 1, 1];
+const AGUA_ACOES = {
+  retrolavar: '/api/retro?a=iniciar',
+  retro_teste: '/api/retro?a=teste',
+  retro_parar: '/api/retro?a=parar',
+  filtrar: '/api/tudo',
+};
+const aguaPlaca = {
+  url: '', estado: null, lidoEm: 0, erro: '', vistaEm: 0, vistaGravada: 0, foraDesde: 0, avaliadoEm: 0,
+  cicloId: null, passoVisto: 0, totalVisto: 10, testeVisto: false, orfasFechadas: false, acompanhando: false,
+  pedido: null,
+};
+// Só http e só rede interna (IP privado ou nome .local): a API da placa não tem
+// senha e este servidor não pode virar ponte pra outro lugar.
+function aguaPlacaUrlOk(s) {
+  let t = String(s || '').trim();
+  if (!t) return '';
+  if (!/^[a-z]+:\/\//i.test(t)) t = 'http://' + t;
+  try {
+    const u = new URL(t);
+    if (u.protocol !== 'http:') return '';
+    const h = u.hostname.toLowerCase();
+    const interno = /^10\.\d+\.\d+\.\d+$/.test(h) || /^192\.168\.\d+\.\d+$/.test(h)
+      || /^172\.(1[6-9]|2\d|3[01])\.\d+\.\d+$/.test(h) || /^[a-z0-9-]+\.local$/.test(h);
+    return interno ? 'http://' + u.host : '';
+  } catch { return ''; }
+}
+// Endereço cadastrado na tela; sem cadastro, só o Prainha Bar tenta o nome
+// padrão (as outras casas rodam este mesmo servidor e não têm placa).
+async function aguaPlacaUrl() {
+  const c = aguaPlacaUrlOk(await cfgGet('agua_placa_url', ''));
+  if (c) return c;
+  return FILIAL_ID === AGUA_FILIAL_BAR ? AGUA_PLACA_PADRAO : '';
+}
+function aguaPlacaNormaliza(j) {
+  if (!j || typeof j !== 'object' || !Array.isArray(j.reles) || j.reles.length < 6) return null;
+  const c = j.ciclo && typeof j.ciclo === 'object' ? j.ciclo : {};
+  const int = (v, d = 0) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : d);
+  const txt = (v, n = 120) => (v === null || v === undefined ? '' : String(v).slice(0, n));
+  return {
+    reles: j.reles.slice(0, 6).map((v) => (v === 1 || v === true || v === '1' ? 1 : 0)),
+    nomes: Array.isArray(j.nomes) ? j.nomes.slice(0, 6).map((v) => txt(v, 40)) : [],
+    rssi: Number.isFinite(Number(j.rssi)) ? Number(j.rssi) : null,
+    ip: txt(j.ip, 40), hora: txt(j.hora, 20),
+    chip: j.chip === false ? false : (j.chip === true ? true : null),
+    ultima: txt(j.ultima), agenda: txt(j.agenda, 60),
+    ciclo: { ativo: c.ativo === true, teste: c.teste === true, passo: int(c.passo), total: int(c.total, 10) || 10,
+      nome: txt(c.nome, 80), resta: Math.max(0, int(c.resta)) },
+  };
+}
+// Uma chamada GET pra placa. Toda rota dela devolve o mesmo JSON do /api/estado.
+async function aguaPlacaLer(caminho) {
+  const url = aguaPlaca.url || (aguaPlaca.url = await aguaPlacaUrl());
+  if (!url) throw new Error('sem placa');
+  try {
+    const r = await fetch(url + caminho, { signal: AbortSignal.timeout(4000), cache: 'no-store' });
+    const e = aguaPlacaNormaliza(await r.json().catch(() => null));
+    if (!r.ok || !e) throw new Error('resposta inválida (HTTP ' + r.status + ')');
+    aguaPlaca.estado = e; aguaPlaca.lidoEm = Date.now(); aguaPlaca.erro = '';
+    aguaPlaca.vistaEm = aguaPlaca.lidoEm;
+    if (aguaPlaca.lidoEm - aguaPlaca.vistaGravada > 60000) {
+      aguaPlaca.vistaGravada = aguaPlaca.lidoEm;
+      cfgSet('agua_placa_vista_em', String(aguaPlaca.lidoEm)).catch(() => {});
+    }
+    aguaPlacaAcompanha(e).catch((x) => console.error('[agua] retrolavagem:', x && x.message));
+    return e;
+  } catch (x) {
+    aguaPlaca.erro = String((x && x.message) || x).slice(0, 160);
+    throw x;
+  }
+}
+// Histórico das retrolavagens, pelo que a placa conta: ciclo começou → abre a
+// linha; ciclo acabou → fecha dizendo se foi até o último passo.
+async function aguaPlacaAcompanha(e) {
+  if (aguaPlaca.acompanhando) return;
+  aguaPlaca.acompanhando = true;
+  try {
+    const c = e.ciclo;
+    if (c.ativo) {
+      if (!aguaPlaca.cicloId) {
+        const ab = (await sql`SELECT id FROM agua_retrolavagens WHERE terminado_em IS NULL ORDER BY id DESC LIMIT 1`)[0];
+        if (ab) aguaPlaca.cicloId = Number(ab.id);
+        else {
+          const pd = aguaPlaca.pedido && Date.now() - aguaPlaca.pedido.em < 90000 ? aguaPlaca.pedido : null;
+          aguaPlaca.cicloId = Number((await sql`INSERT INTO agua_retrolavagens (teste, origem, solicitado_por)
+            VALUES (${c.teste}, ${pd ? pd.origem : 'placa'}, ${pd ? String(pd.quem || '').slice(0, 60) : null}) RETURNING id`)[0].id);
+        }
+        aguaPlaca.passoVisto = 0;
+      }
+      aguaPlaca.orfasFechadas = true;
+      aguaPlaca.passoVisto = Math.max(aguaPlaca.passoVisto, c.passo);
+      aguaPlaca.totalVisto = c.total || 10;
+      aguaPlaca.testeVisto = c.teste;
+    } else if (aguaPlaca.cicloId) {
+      const tot = aguaPlaca.totalVisto || 10;
+      // no teste os passos duram poucos segundos: aceita ter visto até o penúltimo
+      const foi = aguaPlaca.passoVisto >= (aguaPlaca.testeVisto ? tot - 1 : tot);
+      const res = (foi ? 'concluída' : 'interrompida no passo ' + aguaPlaca.passoVisto + ' de ' + tot)
+        + (e.ultima ? ' · placa: ' + e.ultima : '');
+      await sql`UPDATE agua_retrolavagens SET terminado_em=now(), resultado=${res.slice(0, 200)}
+        WHERE id=${aguaPlaca.cicloId} AND terminado_em IS NULL`;
+      aguaPlaca.cicloId = null; aguaPlaca.passoVisto = 0;
+    } else if (!aguaPlaca.orfasFechadas) {
+      aguaPlaca.orfasFechadas = true;
+      await sql`UPDATE agua_retrolavagens SET terminado_em=now(), resultado='fim não registrado (o servidor da loja reiniciou no meio)'
+        WHERE terminado_em IS NULL`;
+    }
+  } finally { aguaPlaca.acompanhando = false; }
+}
+// Avisos que vêm da placa. Separado do aguaAvaliar (que depende das leituras do
+// módulo de medição): placa que nunca respondeu não abre nada.
+async function aguaPlacaAvaliar() {
+  if (!aguaPronta || !aguaPlaca.vistaEm) return;
+  if (Date.now() - aguaPlaca.avaliadoEm < 15000) return;
+  aguaPlaca.avaliadoEm = Date.now();
+  const c = await aguaCfg();
+  const limite = Number.isFinite(c.placa_sem_resposta_min) ? c.placa_sem_resposta_min : 5;
+  const visto = aguaPlaca.lidoEm || aguaPlaca.vistaEm;
+  if (Date.now() - visto > limite * 60000) {
+    // com as válvulas no campo, placa parada = válvulas fechadas = caixa superior sem encher
+    await aguaAbrir('placa_sem_resposta', c.filtros_instalados === 1 ? 'critico' : 'aviso', 'Placa dos filtros sem resposta',
+      'A placa de controle dos filtros (quadro das bombas) parou de responder na rede da loja. Sem ela o sistema não acompanha nem comanda a retrolavagem. Verifique a alimentação de 24 V do quadro e o Wi-Fi.');
+    return;
+  }
+  await aguaFechar('placa_sem_resposta');
+  const e = aguaPlaca.estado;
+  if (!e || Date.now() - aguaPlaca.lidoEm > 60000) return;
+  if (e.chip === false) {
+    await aguaAbrir('placa_chip', 'critico', 'Falha no acionamento dos relés dos filtros',
+      'A placa de controle avisou que não consegue acionar os relés. As válvulas dos filtros e a bomba 4 em retrolavagem podem não obedecer. Chame a manutenção do quadro.');
+  } else await aguaFechar('placa_chip');
+  const normal = e.reles.every((v, i) => v === AGUA_FILTRAR[i]);
+  if (e.ciclo.ativo || normal) { aguaPlaca.foraDesde = 0; await aguaFechar('filtros_fora_posicao'); }
+  else {
+    if (!aguaPlaca.foraDesde) aguaPlaca.foraDesde = Date.now();
+    if (Date.now() - aguaPlaca.foraDesde > 120000) {
+      await aguaAbrir('filtros_fora_posicao', 'aviso', 'Filtros fora da posição normal',
+        'Não há retrolavagem em andamento e os relés não estão na posição de filtrar (só o 5 e o 6 ligados). Use "Voltar a filtrar" na tela da água.');
+    }
+  }
+}
+// Consulta a placa de 15 em 15 s (de 2 em 2 s durante a retrolavagem, pra
+// acompanhar os passos). Loja sem placa não consulta nada.
+async function loopAguaPlaca() {
+  let prox = 15000;
+  try {
+    if (aguaPronta) {
+      aguaPlaca.url = await aguaPlacaUrl();
+      if (aguaPlaca.url) {
+        try { await aguaPlacaLer('/api/estado'); } catch { /* fica registrado em aguaPlaca.erro */ }
+        await aguaPlacaAvaliar();
+        if (aguaPlaca.estado && aguaPlaca.estado.ciclo.ativo && Date.now() - aguaPlaca.lidoEm < 30000) prox = 2000;
+      }
+    }
+  } catch (e) { console.error('[agua] placa:', e && e.message); }
+  setTimeout(loopAguaPlaca, prox);
+}
+// Manda uma ação pra placa e registra em agua_comandos. origem: 'loja' (tela
+// /agua, gerente) ou 'nuvem' (pedido no Concilia online, buscado pelo
+// loopAguaNuvem — idNuvem evita executar o mesmo pedido duas vezes).
+async function aguaPlacaComando(acao, quem, origem, idNuvem = null) {
+  if (!aguaPronta) return { ok: false, erro: 'água ainda não iniciada' };
+  if (!Object.prototype.hasOwnProperty.call(AGUA_ACOES, acao)) return { ok: false, erro: 'ação desconhecida' };
+  if (idNuvem && (await sql`SELECT 1 FROM agua_comandos WHERE id_nuvem=${idNuvem}`).length) return { ok: false, erro: 'pedido já tratado' };
+  aguaPlaca.url = await aguaPlacaUrl();
+  let erro = '';
+  let estado = null;
+  if (!aguaPlaca.url) erro = 'Esta loja não tem placa dos filtros configurada.';
+  else if (acao === 'retro_teste' && origem !== 'loja') erro = 'O teste rápido só pode ser pedido na tela da loja.';
+  else if (acao === 'retrolavar' || acao === 'retro_teste') {
+    // iniciar exige a placa respondendo AGORA e em condição de rodar
+    try { estado = await aguaPlacaLer('/api/estado'); } catch { erro = 'A placa dos filtros não respondeu. Nada foi enviado.'; }
+    if (!erro) {
+      const c = await aguaCfg();
+      if (estado.chip === false) erro = 'A placa acusa falha no acionamento dos relés. Retrolavagem não enviada.';
+      else if (estado.ciclo.ativo) erro = 'Já existe uma retrolavagem em andamento.';
+      else if (acao === 'retrolavar' && c.filtros_instalados !== 1) {
+        erro = 'As válvulas dos filtros ainda não estão marcadas como instaladas. A retrolavagem põe a bomba 4 pra rodar sem as boias da caixa superior — só libere depois de instalar as válvulas.';
+      }
+    }
+  }
+  if (!erro) {
+    try {
+      aguaPlaca.pedido = { quem, origem, em: Date.now() };
+      estado = await aguaPlacaLer(AGUA_ACOES[acao]);
+      if ((acao === 'retrolavar' || acao === 'retro_teste') && !estado.ciclo.ativo) erro = 'A placa recebeu o comando mas não iniciou a retrolavagem.';
+      if ((acao === 'retro_parar' || acao === 'filtrar') && estado.ciclo.ativo) erro = 'A placa recebeu o comando mas a retrolavagem continua.';
+    } catch { erro = 'A placa dos filtros não respondeu ao comando.'; }
+  }
+  await sql`INSERT INTO agua_comandos (tipo, solicitado_por, origem, id_nuvem, executado_em, resultado, ok)
+    VALUES (${acao}, ${String(quem || '').slice(0, 60)}, ${origem}, ${idNuvem}, now(), ${erro ? erro.slice(0, 200) : 'enviado pra placa'}, ${!erro})`;
+  aguaPlaca.avaliadoEm = 0;
+  return erro ? { ok: false, erro } : { ok: true, estado };
+}
+// POST /api/agua/config {placa_url?, filtros_instalados?} — endereço da placa
+// na rede interna e a marca de "válvulas dos filtros instaladas".
+async function apiAguaConfig(b, quem) {
+  if (!aguaPronta) return { ok: false, erro: 'água ainda não iniciada' };
+  const tem = (k) => Object.prototype.hasOwnProperty.call(b || {}, k);
+  if (tem('placa_url')) {
+    const s = String(b.placa_url || '').trim();
+    const ok = s ? aguaPlacaUrlOk(s) : '';
+    if (s && !ok) return { ok: false, erro: 'O endereço precisa ser da rede interna da loja, por exemplo http://192.168.0.50 ou http://prainha-agua.local.' };
+    await cfgSet('agua_placa_url', ok);
+    aguaPlaca.url = await aguaPlacaUrl();
+    aguaPlaca.estado = null; aguaPlaca.lidoEm = 0; aguaPlaca.erro = '';
+    await sql`INSERT INTO agua_comandos (tipo, solicitado_por, executado_em, resultado, ok)
+      VALUES ('config', ${String(quem || '').slice(0, 60)}, now(), ${'endereço da placa: ' + (ok || 'padrão')}, true)`;
+    if (aguaPlaca.url) { try { await aguaPlacaLer('/api/estado'); } catch { /* a tela mostra o erro */ } }
+  }
+  if (tem('filtros_instalados')) {
+    const v = b.filtros_instalados === true || b.filtros_instalados === 1 || b.filtros_instalados === '1' ? 1 : 0;
+    await sql`UPDATE agua_config SET valor=${v} WHERE chave='filtros_instalados'`;
+    await sql`INSERT INTO agua_comandos (tipo, solicitado_por, executado_em, resultado, ok)
+      VALUES ('config', ${String(quem || '').slice(0, 60)}, now(), ${'válvulas dos filtros instaladas: ' + (v ? 'sim' : 'não')}, true)`;
+  }
+  return { ok: true };
 }
 
 async function aguaCfg() {
@@ -34370,6 +34628,10 @@ async function apiAguaEstado() {
       (gravidade='critico' AND (visto_em IS NULL OR visto_em < now() - (${Math.round(reaviso)}::int * interval '1 minute'))) AS avisar
     FROM agua_alarmes WHERE resolvido_em IS NULL ORDER BY aberto_em`;
   const pend = (await sql`SELECT count(*)::int AS n FROM agua_leituras WHERE id > ${Number(await cfgGet('agua_nuvem_ate', '0')) || 0}`)[0].n;
+  const placaCad = aguaPlacaUrlOk(await cfgGet('agua_placa_url', ''));
+  const placaUrl = await aguaPlacaUrl();
+  const retro = await sql`SELECT * FROM agua_retrolavagens ORDER BY id DESC LIMIT 8`;
+  const cmds = await sql`SELECT * FROM agua_comandos ORDER BY id DESC LIMIT 8`;
   return {
     ok: true,
     agora: new Date().toISOString(),
@@ -34386,7 +34648,21 @@ async function apiAguaEstado() {
       detalhe: a.detalhe, abertoEm: new Date(a.aberto_em).toISOString(), avisar: !!a.avisar })),
     config,
     nuvem: { ligada: !!(FILIAL_ID && PAGAR_MESA_SECRET), ultimoEnvio: (await cfgGet('agua_nuvem_em', '')) || null, pendentes: pend },
-    placa: { token: await cfgGet('agua_token', '') },
+    placa: {
+      token: await cfgGet('agua_token', ''),
+      // placa dos filtros (CLP no quadro): o que ela respondeu por último
+      url: placaUrl, urlCadastrada: placaCad, respondeu: !!aguaPlaca.vistaEm,
+      lidoEm: aguaPlaca.lidoEm ? new Date(aguaPlaca.lidoEm).toISOString() : null,
+      vistaEm: aguaPlaca.vistaEm ? new Date(aguaPlaca.vistaEm).toISOString() : null,
+      erro: aguaPlaca.erro || null,
+      estado: aguaPlaca.estado && Date.now() - aguaPlaca.lidoEm < 90000 ? aguaPlaca.estado : null,
+    },
+    filtros: { instalados: config.filtros_instalados === 1 },
+    retrolavagens: retro.map((r) => ({ id: Number(r.id), iniciadoEm: new Date(r.iniciado_em).toISOString(),
+      terminadoEm: r.terminado_em ? new Date(r.terminado_em).toISOString() : null, resultado: r.resultado,
+      teste: !!r.teste, origem: r.origem, por: r.solicitado_por })),
+    comandos: cmds.map((r) => ({ id: Number(r.id), em: new Date(r.criado_em).toISOString(), tipo: r.tipo,
+      por: r.solicitado_por, origem: r.origem, resultado: r.resultado, ok: r.ok })),
   };
 }
 // POST /api/agua/ciente {ids} — "Estou ciente" na loja. O aviso volta depois
@@ -34412,7 +34688,8 @@ async function loopAguaNuvem() {
   if (!FILIAL_ID || !PAGAR_MESA_SECRET) return;
   aguaNuvemRodando = true;
   try {
-    if (!(await sql`SELECT 1 FROM agua_leituras LIMIT 1`).length) return;
+    // placa dos filtros que já respondeu também conta (ela chegou antes do módulo de medição)
+    if (!(await sql`SELECT 1 FROM agua_leituras LIMIT 1`).length && !aguaPlaca.vistaEm) return;
     for (let volta = 0; volta < 10; volta++) {
       const ate = Number(await cfgGet('agua_nuvem_ate', '0')) || 0;
       const leituras = await sql`SELECT id, criado_em, nivel_terrea, nivel_intermediaria, nivel_superior,
@@ -34423,6 +34700,10 @@ async function loopAguaNuvem() {
       const config = await sql`SELECT chave, valor, descricao FROM agua_config`;
       const alarmes = await sql`SELECT codigo, gravidade, titulo, detalhe, bomba_id, aberto_em, visto_em
         FROM agua_alarmes WHERE resolvido_em IS NULL ORDER BY aberto_em`;
+      const retros = await sql`SELECT id, iniciado_em, terminado_em, resultado, teste, origem, solicitado_por
+        FROM agua_retrolavagens ORDER BY id DESC LIMIT 20`;
+      const feitos = await sql`SELECT id, id_nuvem, executado_em, resultado, ok FROM agua_comandos
+        WHERE id_nuvem IS NOT NULL AND nuvem_avisada = false ORDER BY id LIMIT 50`;
       const e = Math.floor(Date.now() / 1000) + 120;
       const r = await fetch(`${PAGAR_MESA_URL}/api/loja/agua`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
@@ -34446,6 +34727,22 @@ async function loopAguaNuvem() {
             codigo: a.codigo, gravidade: a.gravidade, titulo: a.titulo, detalhe: a.detalhe, bomba_id: a.bomba_id,
             aberto_em: new Date(a.aberto_em).toISOString(), visto_em: a.visto_em ? new Date(a.visto_em).toISOString() : null,
           })),
+          // placa dos filtros: o que ela respondeu por último, o histórico das
+          // retrolavagens e o resultado dos pedidos que vieram da nuvem
+          placa: aguaPlaca.vistaEm ? {
+            estado: aguaPlaca.estado && Date.now() - aguaPlaca.lidoEm < 90000 ? aguaPlaca.estado : null,
+            lido_em: new Date(aguaPlaca.lidoEm || aguaPlaca.vistaEm).toISOString(),
+            erro: aguaPlaca.erro || null,
+          } : undefined,
+          retrolavagens: retros.map((x) => ({
+            id: Number(x.id), iniciado_em: new Date(x.iniciado_em).toISOString(),
+            terminado_em: x.terminado_em ? new Date(x.terminado_em).toISOString() : null,
+            resultado: x.resultado, teste: !!x.teste, origem: x.origem, solicitado_por: x.solicitado_por,
+          })),
+          comandos_feitos: feitos.map((x) => ({
+            id_nuvem: Number(x.id_nuvem), executado_em: new Date(x.executado_em).toISOString(),
+            resultado: x.resultado, ok: !!x.ok,
+          })),
         }),
         signal: AbortSignal.timeout(25000),
       });
@@ -34453,7 +34750,21 @@ async function loopAguaNuvem() {
       if (!r.ok || !d || !d.ok) { console.error('[agua] nuvem recusou:', r.status, d && d.erro); return; }
       if (leituras.length) await cfgSet('agua_nuvem_ate', String(leituras[leituras.length - 1].id));
       await cfgSet('agua_nuvem_em', new Date().toISOString());
-      if (leituras.length < 300) return;
+      for (const x of feitos) await sql`UPDATE agua_comandos SET nuvem_avisada = true WHERE id = ${x.id}`;
+      // pedidos feitos no Concilia online: a nuvem não alcança a placa, então
+      // entrega aqui e a loja executa. Só as ações de retrolavagem; o teste
+      // rápido e a configuração não vêm pela nuvem.
+      let executou = false;
+      for (const cm of (Array.isArray(d.comandos) ? d.comandos : []).slice(0, 5)) {
+        const idN = Number(cm && cm.id);
+        const tipo = String((cm && cm.tipo) || '');
+        if (!Number.isInteger(idN) || idN <= 0) continue;
+        if (!['retrolavar', 'retro_parar', 'filtrar'].includes(tipo)) continue;
+        await aguaPlacaComando(tipo, String((cm && cm.por) || 'Concilia online').slice(0, 60), 'nuvem', idN);
+        executou = true;
+      }
+      // executou pedido: mais uma volta pra nuvem saber o resultado já
+      if (leituras.length < 300 && !executou) return;
     }
   } catch { /* sem internet: tenta no próximo minuto, sem perder nada */ }
   finally { aguaNuvemRodando = false; }
@@ -34502,6 +34813,17 @@ h1{font-size:22px;margin:0}h2{font-size:17px;margin:0 0 10px}
 .entrar{max-width:420px;margin:60px auto;text-align:center}
 .entrar a{display:inline-block;margin-top:14px;background:#0f172a;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none}
 code{background:#f1f5f9;padding:1px 5px;border-radius:4px;font-size:12px;word-break:break-all}
+.reles{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px;margin-top:10px}
+.rele{border:1px solid #e2e8f0;border-left:4px solid #cbd5e1;border-radius:8px;padding:8px;font-size:13px}
+.rele.on{border-left-color:#0ea5e9;background:#f0f9ff}
+.rele span{display:block;font-size:12px;color:#64748b;margin-top:2px}.rele.on span{color:#0369a1;font-weight:600}
+.barra{height:8px;border-radius:4px;background:#e2e8f0;margin-top:8px;overflow:hidden}.barra i{display:block;height:100%;background:#f59e0b}
+.acoes{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:8px;margin-top:12px}
+.acoes button,.btn2{padding:11px;border:1px solid #0f172a;border-radius:8px;background:#0f172a;color:#fff;font-size:14px;font-weight:600;cursor:pointer}
+.acoes button.sec,.btn2.sec{background:#fff;color:#0f172a}
+.acoes button:disabled,.btn2:disabled{background:#f1f5f9;border-color:#cbd5e1;color:#94a3b8;cursor:not-allowed}
+.hist{font-size:13px;padding:5px 0;border-bottom:1px solid #f1f5f9}
+.campo{padding:9px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;width:100%;max-width:300px}
 @media(max-width:560px){.pct{font-size:19px}.tanque{height:110px}}
 </style></head><body>
 <div id="alerta"><div class="cx"><div class="tt">Atenção: problema na água do Prainha</div><div id="alerta-itens"></div>
@@ -34517,15 +34839,77 @@ code{background:#f1f5f9;padding:1px 5px;border-radius:4px;font-size:12px;word-br
  function hora(s){if(!s)return '—';var d=new Date(s);return d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}
  function telaEntrar(){APP.innerHTML='<div class="card entrar"><h1>Água do Prainha</h1><div class="sub">Entre como gerente para ver as caixas e as bombas.</div><a href="/gerente">Entrar como gerente</a><div class="peq" style="margin-top:14px">Depois de entrar, volte para esta tela.</div></div>'}
  function valv(v){return v==null?'—':(v?'aberta':'fechada')}
+ var RELES=['Lavar filtro 1 (válvulas C1 e D1)','Lavar filtro 2 (válvulas C2 e D2)','Descarte do enxágue (válvula E)','Bomba 4 em modo retrolavagem','Entrada do filtro 1 (válvula A)','Saída pra caixa superior (válvula B)'];
+ var ACOES={retrolavar:'Iniciar retrolavagem',retro_teste:'Teste rápido',retro_parar:'Parar retrolavagem',filtrar:'Voltar a filtrar',config:'Configuração'};
+ var MSG='',MSGTOM='fraco',RAPIDO=null,OCUPADO=false;
+ function tempo(s){s=Math.max(0,Math.round(s||0));var m=Math.floor(s/60);return (m?m+' min ':'')+(s%60)+' s'}
+ function cartaoFiltros(d){
+  var pl=d.placa||{},pe=pl.estado,fi=d.filtros||{},h='<div class="card"><h2>Filtros e retrolavagem</h2>';
+  var roda=!!(pe&&pe.ciclo&&pe.ciclo.ativo);
+  if(!pe){
+   h+='<div style="font-size:14px"><b class="'+(pl.respondeu?'critico':'fraco')+'">'+(pl.respondeu?'A placa dos filtros parou de responder.':'A placa dos filtros ainda não respondeu.')+'</b> Endereço: <code>'+esc(pl.url)+'</code>'+(pl.vistaEm?' · última resposta '+hora(pl.vistaEm):'')+(pl.erro?'<div class="peq">'+esc(pl.erro)+'</div>':'')+'</div>';
+  }else{
+   var ci=pe.ciclo||{},normal=pe.reles.join('')==='000011';
+   if(roda){var pc=ci.total?Math.round(100*Math.max(0,ci.passo-1)/ci.total):0;
+    h+='<div class="geral aviso">'+(ci.teste?'Teste rápido':'Retrolavagem')+' em andamento</div><div style="font-size:14px;margin-top:4px">Passo '+ci.passo+' de '+ci.total+': <b>'+esc(ci.nome)+'</b> · faltam '+tempo(ci.resta)+' neste passo</div><div class="barra"><i style="width:'+pc+'%"></i></div>'}
+   else h+='<div class="geral '+(normal?'ok':'aviso')+'">'+(normal?'Filtrando (posição normal)':'Fora da posição normal de filtrar')+'</div>';
+   if(pe.chip===false)h+='<div style="margin-top:6px;font-size:14px"><b class="critico">Falha no acionamento dos relés.</b> A placa avisou que não consegue comandar as válvulas.</div>';
+   h+='<div class="reles">';
+   RELES.forEach(function(n,i){var on=pe.reles[i]===1;h+='<div class="rele'+(on?' on':'')+'"><b>R'+(i+1)+'</b> · '+n+'<span>'+(on?'ligado':'desligado')+'</span></div>'});
+   h+='</div><div class="peq" style="margin-top:8px">Última retrolavagem (pela placa): '+esc(pe.ultima||'—')+' · Agenda: '+esc(pe.agenda||'—')+' · Wi-Fi '+(pe.rssi==null?'—':pe.rssi+' dBm')+' · relógio da placa '+esc(pe.hora||'—')+' · '+esc(pe.ip||pl.url)+'</div>';
+  }
+  h+='<div class="acoes"><button type="button" data-acao="retrolavar"'+(!pe||roda||!fi.instalados?' disabled':'')+'>Iniciar retrolavagem (9 min)</button>';
+  h+='<button type="button" data-acao="retro_parar"'+(!pe||!roda?' disabled':'')+'>Parar e voltar a filtrar</button>';
+  h+='<button type="button" class="sec" data-acao="filtrar"'+(!pe||roda?' disabled':'')+'>Voltar a filtrar</button>';
+  h+='<button type="button" class="sec" data-acao="retro_teste"'+(!pe||roda?' disabled':'')+'>Teste rápido (43 s)</button></div>';
+  if(!fi.instalados)h+='<div class="peq" style="margin-top:8px">A retrolavagem de verdade está travada: as válvulas dos filtros ainda não foram marcadas como instaladas. Ela põe a bomba 4 pra rodar 8 min 20 s sem as boias da caixa superior. O teste rápido continua disponível.</div>';
+  if(MSG)h+='<div style="margin-top:8px;font-size:14px"><b class="'+MSGTOM+'">'+esc(MSG)+'</b></div>';
+  h+='<label style="display:block;margin-top:12px;font-size:14px"><input type="checkbox" id="filtros-inst"'+(fi.instalados?' checked':'')+'> Válvulas dos filtros instaladas no campo (libera a retrolavagem de verdade)</label>';
+  h+='<div style="margin-top:10px;font-size:14px">Endereço da placa na rede da loja<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px"><input class="campo" id="placa-url" value="'+esc(pl.urlCadastrada||'')+'" placeholder="'+esc(pl.url)+'"><button type="button" class="btn2 sec" data-acao="salvar-url">Salvar</button></div><div class="peq">Só endereço da rede interna (ex.: http://192.168.0.50). Em branco, usa http://prainha-agua.local. A placa não tem senha: não abrir pra internet.</div></div>';
+  var rs=d.retrolavagens||[],cs=d.comandos||[];
+  if(rs.length){h+='<div style="margin-top:12px"><b style="font-size:14px">Retrolavagens</b>';
+   rs.forEach(function(r){h+='<div class="hist">'+hora(r.iniciadoEm)+(r.teste?' · teste':'')+' · '+esc(r.terminadoEm?(r.resultado||'terminou'):'em andamento')+' <span class="fraco">· pedida '+(r.origem==='nuvem'?'pelo Concilia online':(r.origem==='loja'?'nesta tela':'na própria placa'))+(r.por?' por '+esc(r.por):'')+'</span></div>'});h+='</div>'}
+  if(cs.length){h+='<div style="margin-top:12px"><b style="font-size:14px">Últimos comandos</b>';
+   cs.forEach(function(r){h+='<div class="hist">'+hora(r.em)+' · '+esc(ACOES[r.tipo]||r.tipo)+(r.por?' · '+esc(r.por):'')+(r.origem==='nuvem'?' (online)':'')+' · <span class="'+(r.ok===false?'critico':'fraco')+'">'+esc(r.resultado||'')+'</span></div>'});h+='</div>'}
+  return h+'</div>';
+ }
+ function mandar(rota,corpo,certo){
+  if(OCUPADO)return;OCUPADO=true;MSG='Enviando…';MSGTOM='fraco';if(ULT)desenhar(ULT);
+  fetch(rota,{method:'POST',headers:{'content-type':'application/json','x-garcom':TOK||''},body:JSON.stringify(corpo)}).then(function(r){return r.json()}).then(function(d){
+   OCUPADO=false;if(d&&d.sem_sessao){telaEntrar();return}
+   if(d&&d.ok){MSG=certo;MSGTOM='ok'}else{MSG=(d&&d.erro)||'Não foi possível.';MSGTOM='critico'}
+   carregar()
+  }).catch(function(){OCUPADO=false;MSG='Sem resposta do servidor da loja.';MSGTOM='critico';if(ULT)desenhar(ULT)})
+ }
+ APP.addEventListener('click',function(ev){
+  var b=ev.target&&ev.target.closest?ev.target.closest('[data-acao]'):null;if(!b||b.disabled)return;
+  var a=b.getAttribute('data-acao');
+  if(a==='salvar-url'){var i=document.getElementById('placa-url');mandar('/api/agua/config',{placa_url:i?i.value:''},'Endereço da placa salvo.');return}
+  if(a==='retrolavar'&&!confirm('Iniciar a retrolavagem dos filtros agora? Dura 9 minutos; a bomba 4 roda 8 min 20 s sem as boias da caixa superior e a dosadora fica cortada.'))return;
+  if(a==='retro_teste'&&!confirm('Rodar o teste rápido (43 segundos)? Os relés vão estalar na sequência da retrolavagem, inclusive o da bomba 4 em modo retrolavagem.'))return;
+  if(a==='retro_parar'&&!confirm('Parar a retrolavagem e voltar a filtrar?'))return;
+  mandar('/api/agua/placa',{acao:a},a==='retrolavar'?'Retrolavagem iniciada.':(a==='retro_teste'?'Teste rápido iniciado.':'Placa na posição de filtrar.'))
+ });
+ APP.addEventListener('change',function(ev){
+  var t=ev.target;if(!t||t.id!=='filtros-inst')return;
+  var v=!!t.checked;
+  if(v&&!confirm('Confirmar que as 7 válvulas motorizadas dos filtros JÁ ESTÃO instaladas no campo? Isso libera a retrolavagem de verdade (bomba 4 em modo retrolavagem).')){t.checked=false;return}
+  mandar('/api/agua/config',{filtros_instalados:v},v?'Retrolavagem liberada.':'Retrolavagem travada de novo.')
+ });
  function desenhar(d){
   var l=d.leitura,c=d.config||{},cz=c.corrente_zero==null?0.3:c.corrente_zero,sc=c.superior_critico==null?20:c.superior_critico,mt=c.max_tentativas==null?3:c.max_tentativas;
   var crit=d.alarmes.some(function(a){return a.gravidade==='critico'});
+  var pl=d.placa||{},pe=pl.estado||null;
   var tom=!l?'fraco':(d.alarmes.length?(crit?'critico':'aviso'):'ok');
   var tit=!l?'Aguardando a instalação do quadro':(d.alarmes.length?(crit?'Atenção: há problema no sistema':'Avisos'):'Tudo funcionando');
+  // a placa dos filtros chegou antes do módulo de medição: sem leitura, mas ela já fala
+  if(!l&&d.alarmes.length){tom=crit?'critico':'aviso';tit=crit?'Atenção: há problema no sistema':'Avisos'}
+  else if(!l&&pl.respondeu){tom='ok';tit='Placa dos filtros ligada — medição ainda não instalada'}
   var idade=l?(new Date(d.agora).getTime()-new Date(l.criadoEm).getTime())/60000:null;
   var h='<div class="topo"><div><h1>Água do Prainha</h1><div class="sub">Caixas, bombas dos poços e de recalque. Lido do servidor da loja — funciona sem internet.</div></div><a href="/gerente">Painel do gerente</a></div>';
   h+='<div class="card b-'+tom+'"><div class="geral '+tom+'">'+tit+'</div>';
-  if(!l)h+='<div class="sub" style="font-size:14px;margin-top:6px">Nenhuma leitura chegou ainda. Os níveis, as pressões e a corrente das bombas aparecem aqui quando a placa do quadro estiver ligada na rede da loja. Até lá nenhum aviso é disparado.</div>';
+  if(!l&&pl.respondeu)h+='<div class="sub" style="font-size:14px;margin-top:6px">A placa de controle dos filtros já responde na rede da loja. Os níveis das caixas, as pressões e a corrente das bombas ainda não têm leitura: o módulo de medição não foi instalado. Avisos de nível e de bomba só começam quando ele chegar.</div>';
+  else if(!l)h+='<div class="sub" style="font-size:14px;margin-top:6px">Nenhuma leitura chegou ainda. Os níveis, as pressões e a corrente das bombas aparecem aqui quando a placa do quadro estiver ligada na rede da loja. Até lá nenhum aviso é disparado.</div>';
   d.alarmes.forEach(function(a){h+='<div style="margin-top:8px;font-size:14px"><b class="'+(a.gravidade==='critico'?'critico':'aviso')+'">'+esc(a.titulo)+'.</b> '+esc(a.detalhe)+'</div>'});
   h+='</div><div class="card"><h2>Caixas</h2><div class="caixas">';
   CAIXAS.forEach(function(k){var p=l?l[k[0]]:null,alt=Math.max(0,Math.min(100,p==null?0:p));
@@ -34535,16 +34919,26 @@ code{background:#f1f5f9;padding:1px 5px;border-radius:4px;font-size:12px;word-br
   d.bombas.forEach(function(b){var amp=l?l.correntes[b.id]:null,t='fraco',r='Parada';
    if(!l){r='Sem leitura'}else if(b.falha){t='critico';r='Desarmada'}else if((amp||0)>cz){t='ok';r='Ligada'}else if(!b.liberada){t='aviso';r='Bloqueada'}
    h+='<div class="bomba l-'+t+'"><div class="linha"><b>'+esc(b.nome)+'</b><span class="'+t+'" style="font-weight:600;font-size:14px">'+r+'</span></div><div class="amp">'+n1(amp)+' A</div><div class="peq">Fases '+esc(b.fases||'—')+' · chave em '+(b.modo==='auto'?'Automático':(b.modo==='manual'?'Manual':'0'))+(b.falha?' · '+esc(String(b.falha).replace(/_/g,' '))+', tentativa '+b.tentativas+' de '+mt:'')+'</div><button type="button" disabled title="Ligar em manual só é possível na chave do quadro" style="margin-top:8px;width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:8px;background:#f1f5f9;color:#94a3b8;font-size:13px;cursor:not-allowed">Ligar em manual pelo sistema</button><div class="peq">Manual pelo sistema: não disponível. Só na chave do quadro.</div></div>'});
-  h+='</div></div><div class="card"><h2>Checklist do sistema</h2>';
+  h+='</div></div>';
+  if(pl.url)h+=cartaoFiltros(d);
+  h+='<div class="card"><h2>Checklist do sistema</h2>';
   var chk=[['Leituras chegando (menos de 5 min)',!l?null:idade<5],['Caixa superior acima de '+sc+'%',!l||l.nivelSuperior==null?null:l.nivelSuperior>=sc],
    ['Válvulas V1 e V2 (pelo menos uma aberta)',!l||(l.v1Aberta==null&&l.v2Aberta==null)?null:!!(l.v1Aberta||l.v2Aberta)],
    ['Bombas sem falha',d.bombas.every(function(b){return !b.falha})],['Todas as bombas em automático e liberadas',d.bombas.every(function(b){return b.modo==='auto'&&b.liberada})]];
+  if(pl.url){chk.push(['Placa dos filtros respondendo',pl.respondeu?!!pe:null]);
+   chk.push(['Filtros na posição normal (ou em retrolavagem)',pe?(pe.ciclo.ativo||pe.reles.join('')==='000011'):null]);
+   chk.push(['Acionamento dos relés dos filtros',pe&&pe.chip!=null?pe.chip:null])}
   chk.forEach(function(k){h+='<div class="chk"><b class="'+(k[1]==null?'fraco':(k[1]?'ok':'critico'))+'">'+(k[1]==null?'Sem leitura':(k[1]?'OK':'Problema'))+'</b>'+k[0]+'</div>'});
   h+='<div class="peq" style="margin-top:8px">Última leitura: '+(l?hora(l.criadoEm):'nenhuma ainda')+'</div></div>';
   var nv=d.nuvem||{};
-  h+='<div class="card"><h2>Cópia na nuvem</h2><div class="sub" style="font-size:14px">'+(!nv.ligada?'Este servidor não está ligado ao Concilia online.':(!l?'Começa a enviar quando chegar a primeira leitura.':('Último envio: '+hora(nv.ultimoEnvio)+(nv.pendentes?' · <b class="aviso">'+nv.pendentes+' leitura(s) esperando a internet voltar</b>':' · tudo enviado'))))+'</div>';
+  h+='<div class="card"><h2>Cópia na nuvem</h2><div class="sub" style="font-size:14px">'+(!nv.ligada?'Este servidor não está ligado ao Concilia online.':(!l&&!pl.respondeu?'Começa a enviar quando chegar a primeira leitura.':('Último envio: '+hora(nv.ultimoEnvio)+(nv.pendentes?' · <b class="aviso">'+nv.pendentes+' leitura(s) esperando a internet voltar</b>':' · tudo enviado'))))+'</div>';
   h+='<div class="peq" style="margin-top:10px">Para a placa do quadro gravar a leitura (rede interna): POST <code>'+esc(location.origin)+'/api/agua/leitura</code> com a senha <code>'+esc(d.placa&&d.placa.token)+'</code> no cabeçalho <code>x-agua-token</code>.</div></div>';
+  var cu=document.getElementById('placa-url'),foco=!!cu&&document.activeElement===cu,dig=foco?cu.value:null;
   APP.innerHTML=h;
+  if(foco){cu=document.getElementById('placa-url');if(cu){cu.value=dig;cu.focus()}}
+  // durante a retrolavagem acompanha passo a passo
+  if(RAPIDO){clearTimeout(RAPIDO);RAPIDO=null}
+  if(pe&&pe.ciclo&&pe.ciclo.ativo)RAPIDO=setTimeout(carregar,3000);
   var av=d.alarmes.filter(function(a){return a.avisar});
   document.getElementById('reaviso').textContent=c.reaviso_min==null?30:c.reaviso_min;
   if(av.length){document.getElementById('alerta-itens').innerHTML=av.map(function(a){return '<div class="it"><b>'+esc(a.titulo)+'</b>'+esc(a.detalhe)+'<div class="peq">Desde '+hora(a.abertoEm)+'</div></div>'}).join('');AL.style.display='flex';AL.setAttribute('data-ids',av.map(function(a){return a.id}).join(','))}
@@ -35475,6 +35869,16 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/agua/estado') return res.end(JSON.stringify(await apiAguaEstado()));
       if (req.method !== 'POST') return res.end(JSON.stringify({ ok: false, erro: 'use POST' }));
       return res.end(JSON.stringify(await apiAguaCiente(await readBody(req), g.nome || g.login)));
+    }
+    // comando pra placa dos filtros e configuração dela — só gerente, só POST
+    if (p === '/api/agua/placa' || p === '/api/agua/config') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      const g = await gerenteDaRequisicao(req, u);
+      if (!g) return res.end(JSON.stringify({ ok: false, sem_sessao: true, erro: 'entre como gerente' }));
+      if (req.method !== 'POST') return res.end(JSON.stringify({ ok: false, erro: 'use POST' }));
+      const b = (await readBody(req)) || {};
+      if (p === '/api/agua/config') return res.end(JSON.stringify(await apiAguaConfig(b, g.nome || g.login)));
+      return res.end(JSON.stringify(await aguaPlacaComando(String(b.acao || ''), g.nome || g.login, 'loja')));
     }
     // ---- PAINEL DO GERENTE (/gerente): entrar, resumo ao vivo e ações ----
     if (p === '/gerente') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return res.end(GERENTE_HTML); }
@@ -36613,6 +37017,7 @@ async function main() {
   // Não segura o boot: se falhar, o resto do servidor segue igual.
   initAgua().catch((e) => console.error('[agua] não iniciou:', e && e.message));
   setInterval(() => aguaAvaliar().catch((e) => console.error('[agua] alarmes:', e && e.message)), 60 * 1000);
+  setTimeout(() => loopAguaPlaca(), 20 * 1000);
   setTimeout(() => loopAguaNuvem().catch(() => {}), 55 * 1000);
   setInterval(() => loopAguaNuvem().catch(() => {}), 60 * 1000);
   setInterval(() => aguaPoda().catch(() => {}), 6 * 60 * 60 * 1000);

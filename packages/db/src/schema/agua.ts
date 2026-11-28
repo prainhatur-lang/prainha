@@ -6,12 +6,16 @@
 // tudo funciona sem internet. Estas tabelas são a CÓPIA, alimentada por
 // /api/loja/agua a cada minuto.
 // Migrations: packages/db/scripts/migrate-agua.ts e migrate-agua-replica.ts
+// Placa dos filtros (28/11/2026): a placa só responde na rede da loja. A nuvem
+// guarda a cópia do estado (agua_placa) e a fila de pedidos (agua_comandos) que
+// a loja busca a cada minuto. Migration: migrate-agua-placa.ts
 
 import { sql } from 'drizzle-orm';
 import {
   bigint,
   boolean,
   index,
+  jsonb,
   numeric,
   pgTable,
   smallint,
@@ -93,12 +97,18 @@ export const aguaAlarmes = pgTable('agua_alarmes', {
 export const aguaComandos = pgTable('agua_comandos', {
   id: bigint('id', { mode: 'number' }).primaryKey().generatedAlwaysAsIdentity(),
   criadoEm: timestamp('criado_em', { withTimezone: true }).notNull().defaultNow(),
-  /** liberar | bloquear | rearmar | retrolavar | abrir_v1 | abrir_v2. */
+  /** liberar | bloquear | rearmar | retrolavar | abrir_v1 | abrir_v2 | retro_parar | filtrar. */
   tipo: text('tipo').notNull(),
   bombaId: smallint('bomba_id').references(() => aguaBombas.id),
   solicitadoPor: uuid('solicitado_por'),
   executadoEm: timestamp('executado_em', { withTimezone: true }),
   resultado: text('resultado'),
+  /** Quando a loja buscou o pedido (a nuvem não alcança a placa). */
+  entregueEm: timestamp('entregue_em', { withTimezone: true }),
+  /** Nome de quem pediu, pra aparecer no histórico da loja. */
+  solicitadoNome: text('solicitado_nome'),
+  /** A loja conseguiu executar? */
+  ok: boolean('ok'),
 });
 
 export const aguaRetrolavagens = pgTable('agua_retrolavagens', {
@@ -108,4 +118,21 @@ export const aguaRetrolavagens = pgTable('agua_retrolavagens', {
   resultado: text('resultado'),
   nivelTerreaAntes: numeric('nivel_terrea_antes', { precision: 5, scale: 1 }),
   nivelTerreaDepois: numeric('nivel_terrea_depois', { precision: 5, scale: 1 }),
+  /** Id da retrolavagem no servidor da loja (reenvio não duplica). */
+  idLocal: bigint('id_local', { mode: 'number' }),
+  /** Teste rápido (43 s), sem lavar de verdade. */
+  teste: boolean('teste').notNull().default(false),
+  /** loja | nuvem | agenda (a própria placa). */
+  origem: text('origem'),
+  pedidoPor: text('pedido_por'),
+});
+
+/** O que a placa dos filtros respondeu por último (uma linha só, id = 1). */
+export const aguaPlaca = pgTable('agua_placa', {
+  id: smallint('id').primaryKey(),
+  /** JSON do /api/estado da placa; null = a loja não conseguiu ler agora. */
+  estado: jsonb('estado'),
+  lidoEm: timestamp('lido_em', { withTimezone: true }),
+  erro: text('erro'),
+  atualizadoEm: timestamp('atualizado_em', { withTimezone: true }).notNull().defaultNow(),
 });

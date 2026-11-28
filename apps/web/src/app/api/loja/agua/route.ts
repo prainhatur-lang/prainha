@@ -7,6 +7,11 @@
 // são regravados; alarmes são espelhados (abre o que veio, fecha o que saiu).
 // O "Estou ciente" dado na loja vem junto; o dado aqui na nuvem não volta.
 // Auth: a MESMA assinatura HMAC das outras rotas /api/loja (PAGAR_MESA_SECRET).
+// Placa dos filtros (28/11/2026): ela só responde na rede da loja e a API dela
+// não tem senha, então a nuvem NUNCA fala com a placa. A loja manda junto o que
+// a placa respondeu, o histórico das retrolavagens e o resultado dos pedidos; e
+// leva na resposta os pedidos feitos aqui no online (fila em agua_comandos),
+// que ela mesma executa. Pedido que a loja não busca em 10 minutos expira.
 // Assina [f, 'agua', e]. Só o PRAINHA BAR envia (dono 20/11/2026: esse quadro é
 // só do Bar; as outras casas são diferentes e ainda não têm). AGUA_FILIAL_ID troca a casa.
 import { NextResponse } from 'next/server';
@@ -75,6 +80,46 @@ const Alarme = z.object({
   aberto_em: z.string().nullable().optional(),
   visto_em: z.string().nullable().optional(),
 });
+const Placa = z.object({
+  // o JSON do /api/estado da placa, já conferido pela loja
+  estado: z
+    .object({
+      reles: z.array(z.coerce.number().int().min(0).max(1)).length(6),
+      nomes: z.array(z.string().max(40)).max(6).default([]),
+      rssi: z.coerce.number().nullable().optional(),
+      ip: z.string().max(40).optional(),
+      hora: z.string().max(20).optional(),
+      chip: z.boolean().nullable().optional(),
+      ultima: z.string().max(120).optional(),
+      agenda: z.string().max(60).optional(),
+      ciclo: z.object({
+        ativo: z.boolean(),
+        teste: z.boolean(),
+        passo: z.coerce.number().int(),
+        total: z.coerce.number().int(),
+        nome: z.string().max(80),
+        resta: z.coerce.number().int(),
+      }),
+    })
+    .nullable(),
+  lido_em: z.string().nullable().optional(),
+  erro: z.string().max(300).nullable().optional(),
+});
+const Retrolavagem = z.object({
+  id: z.coerce.number().int().positive(),
+  iniciado_em: z.string().min(10),
+  terminado_em: z.string().nullable().optional(),
+  resultado: z.string().max(300).nullable().optional(),
+  teste: z.boolean().default(false),
+  origem: z.string().max(20).nullable().optional(),
+  solicitado_por: z.string().max(80).nullable().optional(),
+});
+const ComandoFeito = z.object({
+  id_nuvem: z.coerce.number().int().positive(),
+  executado_em: z.string().min(10),
+  resultado: z.string().max(300).nullable().optional(),
+  ok: z.boolean(),
+});
 const Body = z.object({
   f: z.string(),
   e: z.coerce.number(),
@@ -83,7 +128,15 @@ const Body = z.object({
   bombas: z.array(Bomba).max(10).default([]),
   config: z.array(Config).max(60).default([]),
   alarmes: z.array(Alarme).max(60).default([]),
+  placa: Placa.optional(),
+  retrolavagens: z.array(Retrolavagem).max(50).default([]),
+  comandos_feitos: z.array(ComandoFeito).max(60).default([]),
 });
+
+/** Pedidos do online que a loja executa na placa. Relé avulso e teste não passam. */
+const TIPOS_DA_PLACA = ['retrolavar', 'retro_parar', 'filtrar'];
+/** Pedido que a loja não buscou nesse tempo não é mais executado. */
+const PEDIDO_EXPIRA_MIN = 10;
 
 const str = (n: number | null | undefined) => (n === null || n === undefined || !Number.isFinite(n) ? null : String(n));
 const data = (s: string | null | undefined) => {
@@ -102,7 +155,7 @@ const ALARME_DA_NUVEM = 'loja_sem_nuvem';
 export async function POST(request: Request) {
   const parsed = Body.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ ok: false, erro: 'corpo inválido' }, { status: 400 });
-  const { f, e, s, leituras, bombas, config, alarmes } = parsed.data;
+  const { f, e, s, leituras, bombas, config, alarmes, placa, retrolavagens, comandos_feitos } = parsed.data;
   if (!autoriza(f, e, s)) return NextResponse.json({ ok: false, erro: 'assinatura inválida' }, { status: 403 });
   const soEssa = process.env.AGUA_FILIAL_ID || FILIAL_PRAINHA_BAR;
   if (soEssa.toLowerCase() !== f.toLowerCase()) {
@@ -202,7 +255,73 @@ export async function POST(request: Request) {
       .onConflictDoUpdate({ target: schema.aguaConfig.chave, set: { valor: agora } });
     await db.execute(sql`select agua_fechar_alarme(${ALARME_DA_NUVEM}, null::smallint)`);
 
-    return NextResponse.json({ ok: true, leituras: linhas.length });
+    // Placa dos filtros. Bloco à parte: se a migration da placa ainda não rodou,
+    // a cópia das leituras e dos alarmes acima segue valendo.
+    let comandos: { id: number; tipo: string; por: string }[] = [];
+    try {
+      if (placa) {
+        const campos = {
+          estado: placa.estado,
+          lidoEm: data(placa.lido_em),
+          erro: placa.erro ?? null,
+          atualizadoEm: new Date(),
+        };
+        await db
+          .insert(schema.aguaPlaca)
+          .values({ id: 1, ...campos })
+          .onConflictDoUpdate({ target: schema.aguaPlaca.id, set: campos });
+      }
+      for (const r of retrolavagens) {
+        const inicio = data(r.iniciado_em);
+        if (!inicio) continue;
+        const campos = {
+          iniciadoEm: inicio,
+          terminadoEm: data(r.terminado_em),
+          resultado: r.resultado ?? null,
+          teste: r.teste,
+          origem: r.origem ?? null,
+          pedidoPor: r.solicitado_por ?? null,
+        };
+        await db
+          .insert(schema.aguaRetrolavagens)
+          .values({ idLocal: r.id, ...campos })
+          .onConflictDoUpdate({ target: schema.aguaRetrolavagens.idLocal, set: campos });
+      }
+      for (const c of comandos_feitos) {
+        await db
+          .update(schema.aguaComandos)
+          .set({ executadoEm: data(c.executado_em) ?? new Date(), resultado: c.resultado ?? null, ok: c.ok })
+          .where(sql`${schema.aguaComandos.id} = ${c.id_nuvem}`);
+      }
+      // quem não foi buscado a tempo não sai mais: retrolavagem atrasada, na
+      // hora errada, é pior que não fazer
+      await db.execute(sql`
+        update agua_comandos
+        set executado_em = now(), ok = false,
+            resultado = case when entregue_em is null
+              then 'expirou: a loja não buscou o pedido a tempo'
+              else 'a loja buscou o pedido e não informou o resultado' end
+        where executado_em is null
+          and coalesce(entregue_em, criado_em) < now() - make_interval(mins => ${PEDIDO_EXPIRA_MIN})`);
+      // entrega UMA vez: marca na mesma instrução que lê
+      const entregues = (await db.execute(sql`
+        update agua_comandos set entregue_em = now()
+        where id in (
+          select id from agua_comandos
+          where executado_em is null and entregue_em is null
+            and tipo in ('retrolavar', 'retro_parar', 'filtrar')
+          order by id limit 5
+        )
+        returning id, tipo, solicitado_nome`)) as unknown as { id: number | string; tipo: string; solicitado_nome: string | null }[];
+      comandos = [...entregues]
+        .filter((c) => TIPOS_DA_PLACA.includes(c.tipo))
+        .map((c) => ({ id: Number(c.id), tipo: c.tipo, por: c.solicitado_nome || 'Concilia online' }))
+        .sort((a, b) => a.id - b.id);
+    } catch (err) {
+      console.error('[agua] placa dos filtros: cópia falhou', err instanceof Error ? err.message : err);
+    }
+
+    return NextResponse.json({ ok: true, leituras: linhas.length, comandos });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[agua] cópia da loja falhou', msg);

@@ -38,11 +38,148 @@ export interface AguaAlarme {
   abertoEm: string;
 }
 
+/** O JSON do /api/estado da placa dos filtros, como a loja leu. */
+export interface AguaPlacaEstado {
+  reles: number[];
+  nomes?: string[];
+  rssi?: number | null;
+  ip?: string;
+  hora?: string;
+  /** false = falha no acionamento dos relés (alarme grave). */
+  chip?: boolean | null;
+  ultima?: string;
+  agenda?: string;
+  ciclo: { ativo: boolean; teste: boolean; passo: number; total: number; nome: string; resta: number };
+}
+
+export interface AguaPlaca {
+  /** null = a loja não conseguiu ler a placa no último envio. */
+  estado: AguaPlacaEstado | null;
+  lidoEm: string | null;
+  erro: string | null;
+  /** Quando a loja mandou essa cópia. */
+  atualizadoEm: string;
+}
+
+export interface AguaRetrolavagem {
+  id: number;
+  iniciadoEm: string;
+  terminadoEm: string | null;
+  resultado: string | null;
+  teste: boolean;
+  origem: string | null;
+  por: string | null;
+}
+
+export interface AguaComando {
+  id: number;
+  em: string;
+  tipo: string;
+  por: string | null;
+  entregueEm: string | null;
+  executadoEm: string | null;
+  resultado: string | null;
+  ok: boolean | null;
+}
+
 export interface AguaEstado {
   leitura: AguaLeitura | null;
   bombas: AguaBomba[];
   alarmes: AguaAlarme[];
   config: Record<string, number>;
+  /** Placa dos filtros: null enquanto a loja nunca mandou o estado dela. */
+  placa?: AguaPlaca | null;
+  retrolavagens?: AguaRetrolavagem[];
+  /** Pedidos feitos aqui no online (a loja busca e executa). */
+  comandos?: AguaComando[];
+}
+
+/** O que o online pode pedir pra placa dos filtros (a loja executa). */
+export const AGUA_TIPOS_PLACA = ['retrolavar', 'retro_parar', 'filtrar'] as const;
+export type AguaTipoPlaca = (typeof AGUA_TIPOS_PLACA)[number];
+
+/** Placa dos filtros, retrolavagens e pedidos. Vazio se a migration da placa não rodou. */
+async function carregarPlaca(): Promise<Pick<AguaEstado, 'placa' | 'retrolavagens' | 'comandos'>> {
+  try {
+    const [placas, retros, comandos] = await Promise.all([
+      db.select().from(schema.aguaPlaca).where(eq(schema.aguaPlaca.id, 1)),
+      db.select().from(schema.aguaRetrolavagens).orderBy(desc(schema.aguaRetrolavagens.iniciadoEm)).limit(8),
+      db
+        .select()
+        .from(schema.aguaComandos)
+        .where(inArray(schema.aguaComandos.tipo, [...AGUA_TIPOS_PLACA]))
+        .orderBy(desc(schema.aguaComandos.id))
+        .limit(8),
+    ]);
+    const p = placas[0];
+    return {
+      placa: p
+        ? {
+            estado: (p.estado as AguaPlacaEstado | null) ?? null,
+            lidoEm: p.lidoEm ? p.lidoEm.toISOString() : null,
+            erro: p.erro,
+            atualizadoEm: p.atualizadoEm.toISOString(),
+          }
+        : null,
+      retrolavagens: retros.map((r) => ({
+        id: r.id,
+        iniciadoEm: r.iniciadoEm.toISOString(),
+        terminadoEm: r.terminadoEm ? r.terminadoEm.toISOString() : null,
+        resultado: r.resultado,
+        teste: r.teste,
+        origem: r.origem,
+        por: r.pedidoPor,
+      })),
+      comandos: comandos.map((c) => ({
+        id: c.id,
+        em: c.criadoEm.toISOString(),
+        tipo: c.tipo,
+        por: c.solicitadoNome,
+        entregueEm: c.entregueEm ? c.entregueEm.toISOString() : null,
+        executadoEm: c.executadoEm ? c.executadoEm.toISOString() : null,
+        resultado: c.resultado,
+        ok: c.ok,
+      })),
+    };
+  } catch (e) {
+    console.error('[agua] placa dos filtros indisponível', e instanceof Error ? e.message : e);
+    return { placa: null, retrolavagens: [], comandos: [] };
+  }
+}
+
+/**
+ * Registra um pedido pra placa dos filtros. Não executa nada: a loja busca no
+ * próximo envio. Recusa se já há pedido igual esperando (dois toques no botão)
+ * e, pra retrolavar, se a loja ainda não marcou as válvulas como instaladas.
+ */
+export async function pedirComandoPlaca(
+  tipo: AguaTipoPlaca,
+  userId: string,
+  nome: string,
+): Promise<{ ok: true; id: number } | { ok: false; erro: string }> {
+  if (tipo === 'retrolavar') {
+    const [cfg] = await db
+      .select({ valor: schema.aguaConfig.valor })
+      .from(schema.aguaConfig)
+      .where(eq(schema.aguaConfig.chave, 'filtros_instalados'));
+    if (Number(cfg?.valor) !== 1) {
+      return {
+        ok: false,
+        erro: 'As válvulas dos filtros ainda não estão marcadas como instaladas. Isso se marca na tela Água da loja.',
+      };
+    }
+  }
+  const [esperando] = await db
+    .select({ id: schema.aguaComandos.id })
+    .from(schema.aguaComandos)
+    .where(and(eq(schema.aguaComandos.tipo, tipo), isNull(schema.aguaComandos.executadoEm)))
+    .limit(1);
+  if (esperando) return { ok: false, erro: 'Esse pedido já está na fila, esperando a loja.' };
+  const [novo] = await db
+    .insert(schema.aguaComandos)
+    .values({ tipo, solicitadoPor: userId, solicitadoNome: nome })
+    .returning({ id: schema.aguaComandos.id });
+  return { ok: true, id: novo.id };
 }
 
 const num = (v: string | null | undefined): number | null => {
@@ -71,7 +208,9 @@ export async function carregarEstadoAgua(): Promise<AguaEstado | null> {
       db.select().from(schema.aguaConfig),
     ]);
     const l = leituras[0];
+    const daPlaca = await carregarPlaca();
     return {
+      ...daPlaca,
       leitura: l
         ? {
             criadoEm: l.criadoEm.toISOString(),
